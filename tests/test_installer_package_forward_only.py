@@ -95,6 +95,37 @@ def test_linux_classifies_exact_git_relationships(
     ) == expected
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="the Linux shell version resolver is executed by the Linux contract job",
+)
+def test_linux_package_display_prefers_public_release_identity(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "versions"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    private_head = _commit(repo, "private")
+    (repo / "release-build.txt").write_text("2656\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "release-build.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c",
+         "user.email=test@example.invalid", "commit", "-qm", "public"],
+        check=True,
+    )
+    public_head = _git(repo, "rev-parse", "HEAD")
+
+    start = LINUX.index("source_build_for_commit()")
+    end = LINUX.index("\n}\n\npreflight_package_source_advance", start) + 3
+    function = LINUX[start:end]
+    script = f'''set -euo pipefail
+{function}
+printf '%s\\n' "$(source_build_for_commit {str(repo)!r} {private_head!r})"
+printf '%s\\n' "$(source_build_for_commit {str(repo)!r} {public_head!r})"
+'''
+    assert subprocess.check_output(["bash", "-c", script], text=True).splitlines() == ["1", "2656"]
+
+
 def test_linux_refuses_stale_or_divergent_package_before_quiescence() -> None:
     call = LINUX.index("\npreflight_package_source_advance\n")
     quiesce = LINUX.index("# ═══ PHASE 9 — QUIESCE UPDATE")

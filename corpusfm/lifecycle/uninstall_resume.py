@@ -444,6 +444,15 @@ def _proxy_record_state(manifest) -> str:
     for entry in policy.values():
         has_location = bool(entry.config_location)
         has_fingerprint = bool(entry.config_fingerprint)
+        # Discovery records WHERE an installed proxy would be configured even when CORPUSfm did
+        # not publish anything there.  A settled no-op therefore legitimately has a location and
+        # no fingerprint: the latter is authority over bytes we successfully applied, and there
+        # are no such bytes to remove.  This is the ordinary fresh-install shape for an available
+        # but inactive optional front (Windows Claris nginx beside active IIS).  Do not turn that
+        # observation into deletion authority, and do not let it poison removal of a different,
+        # actually-recorded front.
+        if has_location and not has_fingerprint and entry.last_result == R.NO_CHANGE:
+            continue
         if has_location != has_fingerprint:
             return inv.PROVIDER_INCOMPLETE
         recorded = recorded or (has_location and has_fingerprint)

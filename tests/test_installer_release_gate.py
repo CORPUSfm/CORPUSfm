@@ -38,6 +38,11 @@ def test_checks_cover_the_v01018_lessons():
         assert token in clean, token
 
 
+def test_public_gate_version_comes_from_the_release_build_not_short_git_history():
+    assert '(ROOT / "release-build.txt").read_text' in RG_SRC
+    assert '"rev-list", "--count"' not in RG_SRC
+
+
 # ── executed-runner safety contract (packet 030) ──────────────────────────────────
 
 def _run(args, env_extra=None):

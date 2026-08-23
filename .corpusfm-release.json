@@ -316,7 +316,7 @@
     "corpusfm/lifecycle/uninstall_inventory.py": "e44854c3968c19073e65a0791aa7304c7c6f5ae57aa25b4030c4b3fc9ca89889",
     "corpusfm/lifecycle/uninstall_pending.py": "3907020849046b45b8da7c4c5efaa626db35232e66a3f4b86269b07993f1d50f",
     "corpusfm/lifecycle/uninstall_plan.py": "3dd5ea4ca3ca349fc1c3bae171ec107f8f3ef54be4d7a45c7346596f2cfc250d",
-    "corpusfm/lifecycle/uninstall_resume.py": "9444200d9f65e67e2af75575e4113b5f2e4bf368c949defef93ae3f3f69aeabe",
+    "corpusfm/lifecycle/uninstall_resume.py": "0a2553eb3607600149548d34d417d618de66f0c55c430e67d79b624f8259c4f9",
     "corpusfm/lifecycle/uninstall_runtime.py": "dafa7b2c6a7d6a32b4ed1f0fd27f02ab534a5ba52d49c101231301f04416b140",
     "corpusfm/lifecycle/uninstall_terminal.py": "0f84878dc511c5cf52fa9903cc65ca398d69175cd2e7f331a6bccff56536e58b",
     "corpusfm/lifecycle/update_boundary.py": "e09a344eefc02a4a4cc0d02d81beb63ae2b634169774c568a8150073bedf32b3",
@@ -482,7 +482,7 @@
     "installer/linux/corpusfm-proxy.sh": "050e96a1af3d0c975274fd53f35d0c6d86f44351ab314647af840e02f639c197",
     "installer/linux/corpusfm-recovery.sh": "c213caf789d255fbc6e828f6a07b7b2d39c73ec5be0981105c83abf6fa841bad",
     "installer/linux/corpusfm-update.sh": "7cb1a3d1d0355652cf38a55f94083e72573bd0eb1507a71608feee7efee02302",
-    "installer/linux/install.sh": "d73685ded925e1f693f8ac4fc3e78a3efceb47dfe98dc29b95d0acbe291fbf86",
+    "installer/linux/install.sh": "a2921edbafe4306bcd4901f4d0452fc06a270801196aac344eafea215ec11ac2",
     "installer/linux/uninstall.sh": "4ed01932b737cfd1f9581a210fb98fbb622a346509bcc2a1b90cdaa201ae7e16",
     "installer/package-installer.sh": "32a240b9435ec8ff2cca0ed574a9dfb92eda95c6e4088c282327f5168dd57b54",
     "installer/requirements-server.txt": "abea698b78e22153851894197613660f8b9258081bf5e9245a963fa6d68ab86f",
@@ -505,11 +505,11 @@
     "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
     "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
     "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
-    "release-build.txt": "b7bcd9ce2335d7616eaf34547f128e455059b0418d524b81c693b22b76eda467",
+    "release-build.txt": "235ac8cd8b3893ad5777120fff91cd4aad51323366f98d116eff8010e0c67ec2",
     "requirements.txt": "f8a942c59c3ebe3eadfaee1d09ad7601998aa50f71c1e41587cfdad57371155f",
     "scripts/_release_gate_live.py": "08e9a2319599d219abe250634cba6a1c5b0a5067c2112fd2c4e12a7fe30cdb9b",
     "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
-    "scripts/installer_release_gate.py": "4f8aa5775c0845c5ffffab2d29bd9c63cde2f403c8933af000de71948f401012",
+    "scripts/installer_release_gate.py": "4a2f542a96ef53e057fd1d2ebe0ab1c3c5842c0ef474e29f20a9cd3b3e02ba29",
     "scripts/write-doc-routes.mjs": "dc314c90797efb253ccbce0fb9bee210e7487533c409056914dea0adf408c2e7",
     "src/app.tsx": "b24e4cedbd195e9436c059becdc6a70a3ff7d5304c8d15321672a5cecda80631",
     "src/docs-page.tsx": "4bef75eefc5361e0aba177be5f02e1c074161863fcd6d0d551fd4b573a45277a",
@@ -544,14 +544,14 @@
     "tests/test_installer_logging.py": "e26459a1496cc42f0c455b7e3b2505f3ffaa16acf76fff8555848b8aa2cf00a1",
     "tests/test_installer_loopback_tls_quiet.py": "b431c79d5dfbbff35ad0b348f965437a7b056612766af37a0abb777c4269a884",
     "tests/test_installer_odata_preflight.py": "9fae9fbc696686beb692d45efeb46e77eeddf5eaf600e038a4459aea92c3119f",
-    "tests/test_installer_package_forward_only.py": "9fd1607337a11fee45cf81722393d3dcfea599900997fe94b399621c46eb7b01",
+    "tests/test_installer_package_forward_only.py": "1c3dafa59d6c1cef28ff0657e6153e2082eb691fe60e7a36f3ab5b2bf2e07812",
     "tests/test_installer_parity.py": "8c4a203b800f45c6c65bf939828d402577f5f691689a307fc97a0ed0668e5634",
     "tests/test_installer_path_robustness.py": "c341ec4438c09e6e8a84e01eb74c39e15cb3853a352ee90fad46f229547f8346",
     "tests/test_installer_places_proxy_executor.py": "36f7469baaa9cb9e1dcb63ca019b915e921d3550355beb3f8192d22992a9f63b",
     "tests/test_installer_provider_order.py": "bc5189c39536982ec2319a35124615df8efeddd70ff8f4bd54ee7ae1f2d0eda4",
     "tests/test_installer_provider_walks.py": "1a65c67e70ecaa8a575229ea4c8861936a446e183be72d43d5f361fed044e76d",
     "tests/test_installer_ps_logging.py": "e7e03100187bbd3f82f7f887dbcedccdea9ac945c082f3d419f45623a9df2693",
-    "tests/test_installer_release_gate.py": "59793cf54320510abda3b9711cfc47a91fe8736e4ceb85bb7283c86fc7e4e0d8",
+    "tests/test_installer_release_gate.py": "6aa3a47f22d5c7d09404730c3141262007328af50cd307934ab4321eea5d24ef",
     "tests/test_installer_services_proxy.py": "e4d630f9214bdd31caf8ba32e95107e562c24ea9825d27e518f3013fd215e95b",
     "tests/test_installer_sim.py": "5f619c9bc2a1243864e66145fad347d849ba4f487310f9ff8346d76263a8d1d3",
     "tests/test_installer_source_update_credentials.py": "8936b76d240f641593de89dc4a8a044b8bfd18c6e8177230bf2e9bcdcbeb9711",
@@ -2924,8 +2924,8 @@
   },
   "projection": {
     "contract_version": 2,
-    "installer_patch_authored_against": "dde966862be18f765af21eaf1761ff41245e5ffd",
-    "installer_patch_sha256": "6d19cda751086baad925749cf022a8a7976a901b92592785dce83030e21e0118",
+    "installer_patch_authored_against": "c243e8d9518e2171303ce7f400aa42c73cd33fdf",
+    "installer_patch_sha256": "5e8528681406b422940b936e5b07df7b5741321eb89d57c69f8066a21f137921",
     "path_policy": {
       "explicit_exclusions": [
         "**/__pycache__/**",
@@ -2951,15 +2951,15 @@
       "unselected_source_paths": "excluded"
     },
     "profile": "public",
-    "profile_sha256": "9781d5f9ff74f8341d50a5bc0e6a37413122bcc099cefa7280ba1d4c8a27b751",
+    "profile_sha256": "f213d9f69a2997f812e63270bf181d3478ea2913c1b57fd10fec055e116968e4",
     "profile_version": 1
   },
-  "release_build": 2655,
+  "release_build": 2656,
   "schema_version": 2,
   "source_commits": {
     "addon_assets": "f13a333d704ba51ff4bbe00e9cac1b79ba2588f9",
-    "application": "68329eea84715599a647ae2f5bf68f148ef78904",
+    "application": "5570c6a047da86144f1734320065207ce6ebf846",
     "database_assets": "853339aaadad8e80e5f36a92879ef8a33491aa35",
-    "installer": "984c50c0d0729bdad801545cb95ccfca0741d7a7"
+    "installer": "c243e8d9518e2171303ce7f400aa42c73cd33fdf"
   }
 }

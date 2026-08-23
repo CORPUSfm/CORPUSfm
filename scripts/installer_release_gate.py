@@ -161,8 +161,12 @@ def main() -> int:
     ap.add_argument("--report", default="docs/installer-release-gate-report.md")
     args = ap.parse_args()
 
-    rc, rev = sh(["git", "-C", str(ROOT), "rev-list", "--count", "HEAD"])
-    version = f"0.{rev}" if rc == 0 else "0.?"
+    try:
+        release_build = (ROOT / "release-build.txt").read_text(encoding="utf-8").strip()
+    except OSError:
+        release_build = ""
+    version = (f"0.{release_build}" if release_build.isdigit()
+               and not release_build.startswith("0") else "0.?")
 
     if not args.live:
         print(f"Installer release gate — PLAN (version {version}; no box touched)\n")

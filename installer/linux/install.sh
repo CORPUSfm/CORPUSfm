@@ -1218,6 +1218,17 @@ classify_package_source_relation() { # deployed-head package-head -> same|forwar
 }
 
 CFM_DEPLOYED_HEAD_BEFORE=""
+source_build_for_commit() { # checkout commit -> public release build, else private Git count
+    local checkout="$1" commit="$2" declared=""
+    declared="$(git -C "$checkout" -c safe.directory='*' show "$commit:release-build.txt" 2>/dev/null \
+        | tr -d ' \t\r\n' || true)"
+    if [[ "$declared" =~ ^[0-9]+$ ]]; then
+        printf '%s' "$declared"
+        return 0
+    fi
+    git -C "$checkout" -c safe.directory='*' rev-list --count "$commit" 2>/dev/null || printf '?'
+}
+
 preflight_package_source_advance() {
     local deployed_head package_head deployed_build package_build relation
     [[ -n "$CFM_INSTALLER_SERIES" && -d "$INSTALL_DIR/src/.git" \
@@ -1231,8 +1242,8 @@ preflight_package_source_advance() {
        && "$package_head" == "$CFM_PACKAGE_COMMIT" ]] \
         || die "Package source advance refused — the installed or packaged commit could not be resolved exactly. Nothing has been changed."
 
-    deployed_build="$(gitsu rev-list --count "$deployed_head" 2>/dev/null || printf '?')"
-    package_build="$(git -C "$REPO_DIR" -c safe.directory='*' rev-list --count "$package_head" 2>/dev/null || printf '?')"
+    deployed_build="$(source_build_for_commit "$INSTALL_DIR/src" "$deployed_head")"
+    package_build="$(source_build_for_commit "$REPO_DIR" "$package_head")"
     info "Installed source before package: 0.$deployed_build @ $deployed_head"
     info "Verified package source:          0.$package_build @ $package_head"
 
