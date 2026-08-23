@@ -1,0 +1,420 @@
+﻿
+<DynamicTemplateString>
+	<StringID>com.fmi.basedirectory.E10F6DD43207C32DD5B685546E60E5B0</StringID>
+	<SourceText>fmCorpus/</SourceText>
+	<TargetText>fmCorpus/</TargetText>
+	<Comment>com.fmi.basedirectory.fmCorpus/</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.basetable.7CAE13F38ECABAFF0731B56BC2E5364B</StringID>
+	<SourceText>CORPUSfm_ADDON</SourceText>
+	<TargetText>CORPUSfm_ADDON</TargetText>
+	<Comment>com.fmi.basetable.CORPUSfm_ADDON</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.basetable.field.CORPUSfm_ADDON::42EBA0BD045FD54CDEFADD55ED3C24B0</StringID>
+	<SourceText>Script.Container</SourceText>
+	<TargetText>Script.Container</TargetText>
+	<Comment>com.fmi.basetable.field.CORPUSfm_ADDON::Script.Container</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.00104ABFB976E3EDF24A11BFF709EAE6</StringID>
+	<SourceText>ok: </SourceText>
+	<TargetText>ok: </TargetText>
+	<Comment>com.fmi.calculation.text.ok:</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.0876A2060E4028A788D78C822D0CBF91</StringID>
+	<SourceText>include_details</SourceText>
+	<TargetText>include_details</TargetText>
+	<Comment>com.fmi.calculation.text.include_details</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.11981AFBF8EE5895D1C504D9F50A9B3C</StringID>
+	<SourceText>exportPath</SourceText>
+	<TargetText>exportPath</TargetText>
+	<Comment>com.fmi.calculation.text.exportPath</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.15A9517C84C8239062015A853074FEBA</StringID>
+	<SourceText>standalone_binarydata</SourceText>
+	<TargetText>standalone_binarydata</TargetText>
+	<Comment>com.fmi.calculation.text.standalone_binarydata</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.22FB870EE7AB348C700B68C887AFCC25</StringID>
+	<SourceText>{}</SourceText>
+	<TargetText>{}</TargetText>
+	<Comment>com.fmi.calculation.text.{}</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.2B7F34B4E6DDF9E3BF2005D82F2E165C</StringID>
+	<SourceText>serverURL</SourceText>
+	<TargetText>serverURL</TargetText>
+	<Comment>com.fmi.calculation.text.serverURL</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.2BF3023F1259B0C2F607E4302556BD72</StringID>
+	<SourceText>password</SourceText>
+	<TargetText>password</TargetText>
+	<Comment>com.fmi.calculation.text.password</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.2FD97E3527CE1EF47C179710C9394D2B</StringID>
+	<SourceText>\&quot;</SourceText>
+	<TargetText>\&quot;</TargetText>
+	<Comment>com.fmi.calculation.text.\&quot;</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.3E7D936545CD873A579B398BB64AB254</StringID>
+	<SourceText>catalogs_included</SourceText>
+	<TargetText>catalogs_included</TargetText>
+	<Comment>com.fmi.calculation.text.catalogs_included</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.45A3AB50BE246C89B2820A785FFA0E05</StringID>
+	<SourceText>This script step is for your protection</SourceText>
+	<TargetText>This script step is for your protection</TargetText>
+	<Comment>com.fmi.calculation.text.This script step is for your protection</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.5039C9FFD524085C7D82CF66C6D9F5EA</StringID>
+	<SourceText>split_catalogs</SourceText>
+	<TargetText>split_catalogs</TargetText>
+	<Comment>com.fmi.calculation.text.split_catalogs</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.5715FA7FD68BDA37BE45542292BC4FB6</StringID>
+	<SourceText>error: bad filename</SourceText>
+	<TargetText>error: bad filename</TargetText>
+	<Comment>com.fmi.calculation.text.error: bad filename</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.58CA92764771FD910275006E79846B2F</StringID>
+	<SourceText>.xml</SourceText>
+	<TargetText>.xml</TargetText>
+	<Comment>com.fmi.calculation.text..xml</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.5A6F8C33B9EA021522190BA65AA56B3D</StringID>
+	<SourceText>https://</SourceText>
+	<TargetText>https://</TargetText>
+	<Comment>com.fmi.calculation.text.https://</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.5FF805368BA1AE44BD99458B1FCB5220</StringID>
+	<SourceText>error: </SourceText>
+	<TargetText>error: </TargetText>
+	<Comment>com.fmi.calculation.text.error:</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.735EB140E8CCEE9759B8CC192F769598</StringID>
+	<SourceText>\&quot;ok\&quot;:true</SourceText>
+	<TargetText>\&quot;ok\&quot;:true</TargetText>
+	<Comment>com.fmi.calculation.text.\&quot;ok\&quot;:true</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.7EC95273F20FCC0212CEA450002423A8</StringID>
+	<SourceText>PersistentStoreCatalog<CR/>  BaseDirectoryCatalog<CR/>  FileAccessCatalog<CR/>  ExternalDataSourceCatalog<CR/>  BaseTableCatalog<CR/>  TableOccurrenceCatalog<CR/>  CustomFunctionsCatalog<CR/>  ValueListCatalog<CR/>  FieldCatalog<CR/>  RelationshipCatalog<CR/>  CustomMenuCatalog<CR/>  CustomMenuSetCatalog<CR/>  ScriptCatalog<CR/>  ThemeCatalog<CR/>  LayoutCatalog<CR/>  LibraryCatalog<CR/>  PrivilegeSetsCatalog<CR/>  ExtendedPrivilegesCatalog<CR/>  AccountsCatalog<CR/>  Metadata</SourceText>
+	<TargetText>PersistentStoreCatalog<CR/>  BaseDirectoryCatalog<CR/>  FileAccessCatalog<CR/>  ExternalDataSourceCatalog<CR/>  BaseTableCatalog<CR/>  TableOccurrenceCatalog<CR/>  CustomFunctionsCatalog<CR/>  ValueListCatalog<CR/>  FieldCatalog<CR/>  RelationshipCatalog<CR/>  CustomMenuCatalog<CR/>  CustomMenuSetCatalog<CR/>  ScriptCatalog<CR/>  ThemeCatalog<CR/>  LayoutCatalog<CR/>  LibraryCatalog<CR/>  PrivilegeSetsCatalog<CR/>  ExtendedPrivilegesCatalog<CR/>  AccountsCatalog<CR/>  Metadata</TargetText>
+	<Comment>com.fmi.calculation.text.PersistentStoreCatalog_CR/_  BaseDirectoryCatalog_CR/_  FileAccessCatalog_CR/_  ExternalDataSourceCatalog_CR/_  BaseTableCatalog_CR/_  TableOccurrenceCatalog_CR/_  CustomFunctionsCatalog_CR/_  ValueListCatalog_CR/_  FieldCatalog_CR/_  RelationshipCatalog_CR/_  CustomMenuCatalog_CR/_  CustomMenuSetCatalog_CR/_  ScriptCatalog_CR/_  ThemeCatalog_CR/_  LayoutCatalog_CR/_  LibraryCatalog_CR/_  PrivilegeSetsCatalog_CR/_  ExtendedPrivilegesCatalog_CR/_  AccountsCatalog_CR/_  Metadata</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.91E2F1224098AFCB1EA585D4A0FC2C53</StringID>
+	<SourceText>--request POST</SourceText>
+	<TargetText>--request POST</TargetText>
+	<Comment>com.fmi.calculation.text.--request POST</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.9286618FE0B2C104A3FBBEC4C6CD20A4</StringID>
+	<SourceText> </SourceText>
+	<TargetText> </TargetText>
+	<Comment>com.fmi.calculation.text.</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.B247BD135B174980B9E6635E6C2013DC</StringID>
+	<SourceText>Cfm_</SourceText>
+	<TargetText>Cfm_</TargetText>
+	<Comment>com.fmi.calculation.text.Cfm_</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.B28CD49511BB2A316AF4C5D2E3194FFA</StringID>
+	<SourceText>--header \&quot;Authorization: Bearer </SourceText>
+	<TargetText>--header \&quot;Authorization: Bearer </TargetText>
+	<Comment>com.fmi.calculation.text.--header \&quot;Authorization: Bearer</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.BD7D6A11A0213FD662804D302B4F0C28</StringID>
+	<SourceText>*<CR/><CR/>Test provided json for errors.<CR/>We assume that empty is also bad.<CR/><CR/></SourceText>
+	<TargetText>*<CR/><CR/>Test provided json for errors.<CR/>We assume that empty is also bad.<CR/><CR/></TargetText>
+	<Comment>com.fmi.calculation.text.*_CR/__CR/_Test provided json for errors._CR/_We assume that empty is also bad._CR/__CR/_</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.CAF925C0F6CA25D3A96F84D48240448A</StringID>
+	<SourceText>filename</SourceText>
+	<TargetText>filename</TargetText>
+	<Comment>com.fmi.calculation.text.filename</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.CC0D82E5AB948B639B9270449F4C451B</StringID>
+	<SourceText>error: bad parameter</SourceText>
+	<TargetText>error: bad parameter</TargetText>
+	<Comment>com.fmi.calculation.text.error: bad parameter</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.CC0D9FF2979CC7073E85DEF21384D083</StringID>
+	<SourceText>ok</SourceText>
+	<TargetText>ok</TargetText>
+	<Comment>com.fmi.calculation.text.ok</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.CE6637E4CA585CC6880FE0D7F7A03571</StringID>
+	<SourceText>4</SourceText>
+	<TargetText>4</TargetText>
+	<Comment>com.fmi.calculation.text.4</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.DA34942E7E65C672A2111658F735E5D2</StringID>
+	<SourceText>ThisShouldBeNothing</SourceText>
+	<TargetText>ThisShouldBeNothing</TargetText>
+	<Comment>com.fmi.calculation.text.ThisShouldBeNothing</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.E2CEFD4CB4AA75E2AEE3C14CB9806220</StringID>
+	<SourceText>--form \&quot;file=@$File;type=text/xml;filename=</SourceText>
+	<TargetText>--form \&quot;file=@$File;type=text/xml;filename=</TargetText>
+	<Comment>com.fmi.calculation.text.--form \&quot;file=@$File;type=text/xml;filename=</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.EAF6FC7C4213A999A7F94DE1C484F0C9</StringID>
+	<SourceText>/api/upload</SourceText>
+	<TargetText>/api/upload</TargetText>
+	<Comment>com.fmi.calculation.text./api/upload</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.F4F97F714ADE47EF7E1F00A8B7D89397</StringID>
+	<SourceText>Exmaple: file:/Volumes/exports/<CR/></SourceText>
+	<TargetText>Exmaple: file:/Volumes/exports/<CR/></TargetText>
+	<Comment>com.fmi.calculation.text.Exmaple: file:/Volumes/exports/_CR/_</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.calculation.text.FD5810D17EA43C678D9436FDDB2E1FBE</StringID>
+	<SourceText>file:</SourceText>
+	<TargetText>file:</TargetText>
+	<Comment>com.fmi.calculation.text.file:</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.layout.7CAE13F38ECABAFF0731B56BC2E5364B</StringID>
+	<SourceText>CORPUSfm_ADDON</SourceText>
+	<TargetText>CORPUSfm_ADDON</TargetText>
+	<Comment>com.fmi.layout.CORPUSfm_ADDON</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.layout.folder.7CAE13F38ECABAFF0731B56BC2E5364B</StringID>
+	<SourceText>CORPUSfm_ADDON</SourceText>
+	<TargetText>CORPUSfm_ADDON</TargetText>
+	<Comment>com.fmi.layout.folder.CORPUSfm_ADDON</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.script.0D6E76BD8184B894D68E266762127EDA</StringID>
+	<SourceText>CFM.DEV.SaveAsAddon</SourceText>
+	<TargetText>CFM.DEV.SaveAsAddon</TargetText>
+	<Comment>com.fmi.script.CFM.DEV.SaveAsAddon</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.script.9D84A5B928447C0FC1F2B3B144989040</StringID>
+	<SourceText>CFM.TOOLS.ExportSchemaXML.SaveToDocumentsFolder</SourceText>
+	<TargetText>CFM.TOOLS.ExportSchemaXML.SaveToDocumentsFolder</TargetText>
+	<Comment>com.fmi.script.CFM.TOOLS.ExportSchemaXML.SaveToDocumentsFolder</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.script.B7E5915E2C6CE4D3B53D6062E8B45F0A</StringID>
+	<SourceText>CFM.TOOLS.DeleteExportFileFromDocumentsFolder</SourceText>
+	<TargetText>CFM.TOOLS.DeleteExportFileFromDocumentsFolder</TargetText>
+	<Comment>com.fmi.script.CFM.TOOLS.DeleteExportFileFromDocumentsFolder</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.script.F7CE69B4067297B4A9D5C471E0CB4603</StringID>
+	<SourceText>CFM.TOOLS.ExportSchemaXML.SaveToFilePath</SourceText>
+	<TargetText>CFM.TOOLS.ExportSchemaXML.SaveToFilePath</TargetText>
+	<Comment>com.fmi.script.CFM.TOOLS.ExportSchemaXML.SaveToFilePath</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.script.FFDA68FC35C4C2F11638A923E8D6F0CB</StringID>
+	<SourceText>CFM.TOOLS.ExportSchemaXML.PostToServer</SourceText>
+	<TargetText>CFM.TOOLS.ExportSchemaXML.PostToServer</TargetText>
+	<Comment>com.fmi.script.CFM.TOOLS.ExportSchemaXML.PostToServer</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.script.folder.8720369AA97A43A46AC5E2C0DD74817D</StringID>
+	<SourceText>CORPUSfm_ADDON (CFM)</SourceText>
+	<TargetText>CORPUSfm_ADDON (CFM)</TargetText>
+	<Comment>com.fmi.script.folder.CORPUSfm_ADDON (CFM)</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.script.folder.D1769B6850B48B4B31727DE56590BDBB</StringID>
+	<SourceText>CFM.TOOLS</SourceText>
+	<TargetText>CFM.TOOLS</TargetText>
+	<Comment>com.fmi.script.folder.CFM.TOOLS</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.script.folder.D7E42D725DE4139B944F8093B44050FD</StringID>
+	<SourceText>CFM.DEVELOPER (DEV)</SourceText>
+	<TargetText>CFM.DEVELOPER (DEV)</TargetText>
+	<Comment>com.fmi.script.folder.CFM.DEVELOPER (DEV)</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.072208CCAA8D025AFA98BF3CD4142BE8</StringID>
+	<SourceText>== SECURITY, DISABLED BY DEFAUILT: disable this script step to use this script ==</SourceText>
+	<TargetText>== SECURITY, DISABLED BY DEFAUILT: disable this script step to use this script ==</TargetText>
+	<Comment>com.fmi.scriptstep.text.== SECURITY, DISABLED BY DEFAUILT: disable this script step to use this script ==</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.24E1A86FBDEBD72747FCAEF1D1839837</StringID>
+	<SourceText>Parameters: { &quot;exportPath&quot;: &quot;...&quot; }</SourceText>
+	<TargetText>Parameters: { &quot;exportPath&quot;: &quot;...&quot; }</TargetText>
+	<Comment>com.fmi.scriptstep.text.Parameters: { &quot;exportPath&quot;: &quot;...&quot; }</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.2A20F620CDB157B52C179FC4ED922C23</StringID>
+	<SourceText>Save schema XML to configured path for CORPUSfm to read directly</SourceText>
+	<TargetText>Save schema XML to configured path for CORPUSfm to read directly</TargetText>
+	<Comment>com.fmi.scriptstep.text.Save schema XML to configured path for CORPUSfm to read directly</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.391A89CCB6518551D5F153DDCBB0FDBB</StringID>
+	<SourceText>Parameters: { &quot;filename&quot;: &quot;...&quot; }</SourceText>
+	<TargetText>Parameters: { &quot;filename&quot;: &quot;...&quot; }</TargetText>
+	<Comment>com.fmi.scriptstep.text.Parameters: { &quot;filename&quot;: &quot;...&quot; }</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.5A43B623B7A65E6F3436086FE91C3BB5</StringID>
+	<SourceText>== CONFIGURE: edit defaults or pass as JSON parameter ==</SourceText>
+	<TargetText>== CONFIGURE: edit defaults or pass as JSON parameter ==</TargetText>
+	<Comment>com.fmi.scriptstep.text.== CONFIGURE: edit defaults or pass as JSON parameter ==</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.75A2F9530F6B074116424835947D1ED6</StringID>
+	<SourceText>Parameters: { &quot;serverURL&quot;: &quot;...&quot;, &quot;password&quot;: &quot;...&quot; }</SourceText>
+	<TargetText>Parameters: { &quot;serverURL&quot;: &quot;...&quot;, &quot;password&quot;: &quot;...&quot; }</TargetText>
+	<Comment>com.fmi.scriptstep.text.Parameters: { &quot;serverURL&quot;: &quot;...&quot;, &quot;password&quot;: &quot;...&quot; }</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.A19968773FAB2A536B3B1CE6B227A066</StringID>
+	<SourceText>====================</SourceText>
+	<TargetText>====================</TargetText>
+	<Comment>com.fmi.scriptstep.text.====================</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.A610106D8974A8DDCE0D5B2490B70824</StringID>
+	<SourceText>Returns: &quot;ok: path&quot; or &quot;error: {response}&quot;</SourceText>
+	<TargetText>Returns: &quot;ok: path&quot; or &quot;error: {response}&quot;</TargetText>
+	<Comment>com.fmi.scriptstep.text.Returns: &quot;ok: path&quot; or &quot;error: {response}&quot;</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.AA36B8CAB6A7A4107FA7CB8A14DD4AEE</StringID>
+	<SourceText>Delete targeted file from documents directory on demand</SourceText>
+	<TargetText>Delete targeted file from documents directory on demand</TargetText>
+	<Comment>com.fmi.scriptstep.text.Delete targeted file from documents directory on demand</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.D45640111701FCDBC23C88C89C271178</StringID>
+	<SourceText>Returns: &quot;ok: path&quot;</SourceText>
+	<TargetText>Returns: &quot;ok: path&quot;</TargetText>
+	<Comment>com.fmi.scriptstep.text.Returns: &quot;ok: path&quot;</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.E2318EA05C60113BD2953A8B38F57AC6</StringID>
+	<SourceText>Save schema XML and POST to CORPUSfm server</SourceText>
+	<TargetText>Save schema XML and POST to CORPUSfm server</TargetText>
+	<Comment>com.fmi.scriptstep.text.Save schema XML and POST to CORPUSfm server</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.E6FEAA967A2F00A0BB2C150D58249746</StringID>
+	<SourceText>Returns: &quot;ok&quot; or &quot;error: {response}&quot;</SourceText>
+	<TargetText>Returns: &quot;ok&quot; or &quot;error: {response}&quot;</TargetText>
+	<Comment>com.fmi.scriptstep.text.Returns: &quot;ok&quot; or &quot;error: {response}&quot;</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.scriptstep.text.ED8C1ED49D27C851A9245245966D8E5D</StringID>
+	<SourceText>== SECURITY, ENABLED BY DEFAUILT: for zero-admin configuration ==</SourceText>
+	<TargetText>== SECURITY, ENABLED BY DEFAUILT: for zero-admin configuration ==</TargetText>
+	<Comment>com.fmi.scriptstep.text.== SECURITY, ENABLED BY DEFAUILT: for zero-admin configuration ==</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.tableoccurrence.7CAE13F38ECABAFF0731B56BC2E5364B</StringID>
+	<SourceText>CORPUSfm_ADDON</SourceText>
+	<TargetText>CORPUSfm_ADDON</TargetText>
+	<Comment>com.fmi.tableoccurrence.CORPUSfm_ADDON</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.tableoccurrence.field.CORPUSfm_ADDON::42EBA0BD045FD54CDEFADD55ED3C24B0</StringID>
+	<SourceText>Script.Container</SourceText>
+	<TargetText>Script.Container</TargetText>
+	<Comment>com.fmi.tableoccurrence.field.CORPUSfm_ADDON::Script.Container</Comment>
+</DynamicTemplateString>
+
+<DynamicTemplateString>
+	<StringID>com.fmi.tableoccurrence.field.CORPUSfm_ADDON::8402DCEACE1FC1766927D59124BF2916</StringID>
+	<SourceText>CORPUSfm_ADDON::Script.Container</SourceText>
+	<TargetText>CORPUSfm_ADDON::Script.Container</TargetText>
+	<Comment>com.fmi.tableoccurrence.field.CORPUSfm_ADDON::CORPUSfm_ADDON::Script.Container</Comment>
+</DynamicTemplateString>

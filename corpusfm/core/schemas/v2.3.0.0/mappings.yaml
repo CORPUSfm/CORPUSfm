@@ -1,0 +1,304 @@
+# FileMaker XML schema mappings for FMSaveAsXML version 2.3.0.0
+# Corresponds to FileMaker Pro 2026 (v26, build 26.0.1).
+#
+# This file drives the YAML-driven parser. No Python changes are needed
+# when FM changes its export format — add a new version directory instead.
+#
+# FM2026 is MOSTLY additive over 2.2.3.0 (gap-clean against a real 26.0.1 export for what the
+# Gap Analyzer can see), with one measured NON-additive change (packet 1284, real 26.0.2
+# exports): the supplemental CalcsForCustomFunctions + OptionsForValueLists catalogs are GONE —
+# their content is inline in CustomFunctionsCatalog / ValueListCatalog. Both configs below are
+# `optional: true`, so the analyzer never flags the absence; the parser harvests a legacy-shaped
+# projection from the inline home instead (parser._harvest_inline_supplemental). Additive facts:
+#   • New root attributes — `locale` (export language, e.g. "English"), `binary_under_lo`
+#     (when "True", per-object binary <Stream> blobs are deduped into shared
+#     <LibraryReference>s) and `split_catalogs` (when "True", the export is split into
+#     per-catalog files + a Summary.xml manifest). All three are ROOT attributes only — they
+#     do not appear on items, so they need no fingerprint/noise handling here. The sampled
+#     26.0.1 file carries `binary_under_lo="False"` + `split_catalogs="False"` (monolith);
+#     the True variants need their own samples before deep handling is claimed.
+#   • `PersistentStoreCatalog` — a new FM2026 catalog (named-value persistent data store).
+#     Structure (sampled from a populated 26.0.1 export):
+#       <PersistentStoreCatalog membercount="N">
+#         <UUID/>                                   (catalog-level, stripped as noise)
+#         <PersistentStore name="KEY" instanceID="…" id="…">
+#           <UUID/><Value type="Text"><StyledText><Data>VALUE</Data></StyledText></Value>
+#         </PersistentStore> …
+#     Mapped as a real catalog below (item = PersistentStore, name = the key); `id` is global
+#     noise, `instanceID` is the stable store identity (kept in the fingerprint).
+#   • No new script-step IDs or reference types were observed (gap analyzer: 0 unmapped).
+#
+# Only mappings.yaml is overridden for 2.3.0.0; rendering.yaml and structure_catalog.yaml
+# are inherited unchanged from v2.2.3.0 (silent inheritance — registry._registered_versions).
+
+schema_version: "2.3.0.0"
+
+# Root element of every FM DDR export
+root_element: FMSaveAsXML
+
+# XPath used to iterate over top-level action containers within the root.
+# root.findall(structure_path) yields one element per AddAction block.
+structure_path: "./Structure/"
+
+# Attributes that change on every Save As XML and carry no semantic meaning.
+# Stripped from all element fingerprints before comparison.
+noise_attrs:
+  - modifications
+  - userName
+  - accountName
+  - timestamp
+  - id
+
+# Child elements whose entire subtree is stripped before fingerprinting.
+noise_tags:
+  - UUID
+  - TagList
+  - Image   # Theme thumbnail (base64 PNG, ~70KB) — not semantic content
+
+# Catalogs to skip by default (content is sensitive — e.g. hashed passwords).
+# Can be opted in via explicit config.
+redact_by_default:
+  - AccountsCatalog
+
+# ---------------------------------------------------------------------------
+# catalogs — one entry per section compared by the diff tool.
+#
+# Each catalog entry:
+#   key             : XML element name found as direct child of each action node
+#   item_element    : tag of items inside the catalog element
+#   item_container  : optional wrapper element between catalog and items (e.g. ObjectList)
+#   name_attr       : attribute used as the item's display name / lookup key
+#   compare_content : true  → store full noise-stripped fingerprint of item element
+#                     false → store name only (presence/absence diff only)
+# ---------------------------------------------------------------------------
+catalogs:
+  - key: BaseDirectoryCatalog
+    item_element: BaseDirectory
+    name_attr: name
+    compare_content: true
+    optional: true   # only present in files with base directory definitions (file references)
+
+  - key: BaseTableCatalog
+    item_element: BaseTable
+    name_attr: name
+    compare_content: true
+
+  - key: CustomFunctionsCatalog
+    item_element: CustomFunction
+    item_container: ObjectList
+    name_attr: name
+    compare_content: true
+    optional: true   # absent in FM files with no custom functions
+
+  - key: ValueListCatalog
+    item_element: ValueList
+    name_attr: name
+    compare_content: true
+    optional: true   # absent in FM files with no value lists
+
+  - key: ScriptCatalog
+    item_element: Script
+    name_attr: name
+    compare_content: true
+
+  - key: LayoutCatalog
+    item_element: Layout
+    name_attr: name
+    # Table-less layouts (splash screens, list views with no TO context) export as
+    # <Layout><LayoutReference name="..."/></Layout> — the name is on the child, not a
+    # name= attr on <Layout>. Without this they parse as "<unnamed>" (≈27% on real files).
+    item_name_child: LayoutReference
+    compare_content: false
+    # isFolder: folder/layout distinction tracked via rendering, not content.
+    # isSeparatorItem: layout menu divider (not a real layout), exclude from counts.
+    # width: pixel dimension, visual noise.
+    known_attrs: [isFolder, isSeparatorItem, width]
+
+  - key: PrivilegeSetsCatalog
+    item_element: PrivilegeSet
+    item_container: ObjectList
+    name_attr: name
+    compare_content: true
+
+  - key: AccountsCatalog
+    item_element: Account
+    item_container: ObjectList
+    name_attr: accountName
+    item_name_text_path: Authentication/AccountName
+    compare_content: false
+
+  - key: ExternalDataSourceCatalog
+    item_element: ExternalDataSource
+    name_attr: name
+    compare_content: true
+    optional: true   # absent in FM files with no external data sources
+
+  - key: ThemeCatalog
+    item_element: Theme
+    name_attr: name
+    compare_content: true
+    # Image child stripped via noise_tags — CSS and Metadata are semantic and ARE diffed.
+    known_attrs: [Display, Group, baseName, baseVersion, defaultTheme, locale, platform, version]
+
+  - key: CustomMenuCatalog
+    item_element: CustomMenu
+    name_attr: name
+    compare_content: false
+
+  - key: CustomMenuSetCatalog
+    item_element: CustomMenuSet
+    item_container: ObjectList
+    name_attr: name
+    compare_content: true
+    optional: true   # absent in FM files that don't define custom menu sets
+
+  - key: ExtendedPrivilegesCatalog
+    item_element: ExtendedPrivilege
+    item_container: ObjectList
+    name_attr: name
+    compare_content: true
+
+  - key: FileAccessCatalog
+    item_element: Authorization
+    item_container: ObjectList
+    # No human-readable name attr; id is the stable key.
+    name_attr: id
+    compare_content: false
+    optional: true   # absent in FM files with no cross-file authorizations
+
+  - key: LibraryCatalog
+    item_element: BinaryData
+    # Name lives in LibraryReference child; name_attr: key reads it via item_name_child fallback.
+    item_name_child: LibraryReference
+    name_attr: key
+    compare_content: false
+    optional: true   # absent in FM files with no linked libraries
+
+  - key: TableOccurrenceCatalog
+    item_element: TableOccurrence
+    name_attr: name
+    compare_content: false
+    # View/height: visual position on the relationship graph, reordered constantly.
+    # type: local vs external — not yet tracked, acknowledged.
+    known_attrs: [View, height, type]
+
+  - key: RelationshipCatalog
+    item_element: Relationship
+    # Relationship has no name attr. Use id as stable lookup key.
+    # The rendered view translates the id to a human-readable join string.
+    name_attr: id
+    compare_content: true
+    optional: true   # absent in FM files with no relationships
+
+  - key: PersistentStoreCatalog
+    item_element: PersistentStore
+    # FM2026+ named-value persistent data store. Item: <PersistentStore name="KEY" …> with a
+    # <Value type><StyledText><Data> payload. name = the key; value diffed via compare_content.
+    name_attr: name
+    compare_content: true
+    optional: true   # absent in files with no persistent data store (and in pre-2026 exports)
+
+# ---------------------------------------------------------------------------
+# fields_catalog — fields grouped by base table.
+# Real FM XML structure: FieldsForTables > FieldCatalog (no name attr) > children.
+# Each FieldCatalog's direct children: UUID, TagList, BaseTableReference[name], ObjectList.
+# We replicate compare_fm.py behavior: iterate ALL direct children of each FieldCatalog
+# without a tag filter, keyed by their name attr (BaseTableReference has a name; others
+# default to '<unnamed>'). This gives one grouping bucket '<unnamed>' with all tables
+# keyed by their BaseTableReference name, plus an '<unnamed>' catch-all for UUID/ObjectList.
+# ---------------------------------------------------------------------------
+fields_catalog:
+  catalog_element: FieldsForTables
+  table_element: FieldCatalog   # direct children of FieldsForTables; no name attr
+  table_name_attr: name         # FieldCatalog has no name attr → all map to '<unnamed>'
+  item_element: ~               # null = no tag filter (replicates compare_fm.py)
+  item_name_attr: name
+  compare_content: true
+
+# ---------------------------------------------------------------------------
+# steps_catalog — script step bodies (supplemental join for ScriptCatalog).
+# Found as a direct child of each action node.
+# Produces a flat dict: {script_name: fingerprint_of_all_steps}.
+# Joined to ScriptCatalog by script name to enable step-level diffing.
+# ---------------------------------------------------------------------------
+steps_catalog:
+  catalog_element: StepsForScripts
+  item_element: Script
+  item_name_attr: name
+  # FM XML: Script elements here have no name attr — name lives in ScriptReference child.
+  # item_name_child specifies the child element to look in when item_name_attr is absent.
+  item_name_child: ScriptReference
+  compare_content: true
+
+# ---------------------------------------------------------------------------
+# calcs_catalog — custom function formula bodies (supplemental join for
+# CustomFunctionsCatalog). Analogous to steps_catalog for scripts.
+# FM XML: CalcsForCustomFunctions > ObjectList > CustomFunctionCalc
+#           > CustomFunctionReference[name] + Calculation > Text
+# RETIRED BY FM 2026 (packet 1284): schema 2.3.0.0 exports carry NO CalcsForCustomFunctions —
+# the formula lives inline in each CustomFunctionsCatalog item. When this catalog is absent the
+# parser harvests a legacy-shaped projection from the inline home
+# (parser._harvest_inline_supplemental); `optional: true` also covers that absence.
+# ---------------------------------------------------------------------------
+calcs_catalog:
+  catalog_element: CalcsForCustomFunctions
+  item_container: ObjectList
+  item_element: CustomFunctionCalc
+  item_name_attr: name
+  item_name_child: CustomFunctionReference
+  compare_content: true
+  optional: true   # co-absent with CustomFunctionsCatalog
+
+# ---------------------------------------------------------------------------
+# options_catalog — value list source/content (supplemental join for
+# ValueListCatalog). Analogous to calcs_catalog for custom functions.
+# FM XML: OptionsForValueLists > ValueList (no name attr)
+#           > ValueListReference[name] + Source[value] + CustomValues
+# RETIRED BY FM 2026 (packet 1284): schema 2.3.0.0 exports carry NO OptionsForValueLists —
+# Source/CustomValues/Field live inline in each ValueListCatalog item; same fallback harvest.
+# ---------------------------------------------------------------------------
+options_catalog:
+  catalog_element: OptionsForValueLists
+  item_element: ValueList
+  item_name_attr: name
+  item_name_child: ValueListReference
+  compare_content: true
+  optional: true   # co-absent with ValueListCatalog
+
+# ---------------------------------------------------------------------------
+# non_mapped — known FM XML elements intentionally excluded from comparison.
+# Listed here so the Gap Analyzer can distinguish intentional omissions
+# from coverage gaps.
+# ---------------------------------------------------------------------------
+non_mapped:
+  - ScriptReferenceCatalog
+  - LayoutObjectCatalog
+  - PasteIndexList          # FM "Insert from Index" field registry; not diffable schema content
+
+# ---------------------------------------------------------------------------
+# reference_types — known FM XML element names that end in "Reference".
+# The Gap Analyzer scans all XPath components and flags any *Reference element
+# not listed here as unknown_reference_types in GapReport / CompletenessProfile.
+# ---------------------------------------------------------------------------
+reference_types:
+  - FieldReference             # field refs in steps and calculations
+  - ScriptReference            # scripts called from steps and triggers
+  - LayoutReference            # layouts referenced in Go to Layout steps
+  - TableOccurrenceReference   # TOs in relationships and layout contexts
+  - BaseTableReference         # base tables in TO definitions
+  - BaseTableSourceReference   # base table as a source in TO/relationship definitions
+  - DataSourceReference        # external data sources in TO sources
+  - ODBCDataSourceReference    # External SQL Source (ESS/ODBC) data sources in TO sources
+  - ValueListReference         # value lists in field options (options_catalog)
+  - CustomFunctionReference    # CFs referenced in other calculations (calcs_catalog)
+  - CustomMenuReference        # custom menus referenced in menu sets
+  - CustomMenuSetReference     # custom menu sets assigned to layouts or privileges
+  - FontReference              # fonts referenced in layout objects or themes
+  - LanguageReference          # language/locale references (multi-language fields)
+  - LayoutObjectReference      # layout objects referenced by name (e.g. button bars)
+  - LayoutThemeReference       # layout themes assigned to layouts
+  - LibraryReference           # FM library/add-on references
+  - PrivilegeSetReference      # privilege sets referenced in accounts or layouts
+  - WindowReference            # named window references in window-management steps
+  - BaseDirectoryReference     # base directory paths referenced in file operations
+  - CallbackScriptReference    # scripts registered as async callbacks

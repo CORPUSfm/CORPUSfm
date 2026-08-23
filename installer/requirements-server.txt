@@ -1,0 +1,27 @@
+fastapi
+python-multipart
+uvicorn[standard]
+starlette[full]
+itsdangerous
+requests
+pyyaml
+anthropic
+chromadb
+gitpython
+psutil
+croniter
+fastmcp
+cryptography
+defusedxml
+
+# In-app documentation rendering (Documentation page)
+markdown-it-py>=3.0,<5
+
+# External auth (packet 1065) — FMS-parity web-UI sign-in.
+# Authlib (OIDC/OAuth) is ALREADY box-validated in both constraints locks (Authlib==1.7.2) — promoting it
+# to a direct requirement is NOT a lock change. ldap3 (AD/LDAP, Ph3) is NEW: it is imported lazily, so a
+# box without it simply reports LDAP unavailable — but shipping it means regenerating the box-validated
+# constraints locks on each OS (REVALIDATION GATE, feedback_installer_revalidation_gate). Until then it
+# resolves unpinned.
+Authlib>=1.3,<2
+ldap3>=2.9,<3

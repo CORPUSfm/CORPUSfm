@@ -1,0 +1,17 @@
+{# Reusable documentation help affordance.
+
+   {{ doc_help('artifacts-catalog') }}            → opens that article in the drawer
+   {{ doc_help('settings#app-preferences') }}     → opens it scrolled to the heading
+   {{ doc_help('jobs', 'Jobs help') }}            → custom tooltip/aria label
+
+   Uses a plain DOM CustomEvent (not Alpine $dispatch) so it works in any scope —
+   page headers, pop-over headers, the shell. The shell listens on `window` for
+   `cfm-open-docs` (see base.html) and routes the detail string to openDocs(). #}
+{# `target` is a developer-authored constant (a doc slug, optionally #anchor) — never user
+   input and never contains a quote — so a single-quoted JS string literal inside the
+   double-quoted onclick is safe and avoids tojson's double-quotes breaking the attribute. #}
+{% macro doc_help(target, label='') -%}
+{%- set _lbl = label or 'Open documentation' -%}
+<button type="button" class="cfm-iconbtn cfm-help" title="{{ _lbl }}" aria-label="{{ _lbl }}"
+        onclick="window.dispatchEvent(new CustomEvent('cfm-open-docs', {detail: '{{ target }}'}))"><span class="cfm-help-q" aria-hidden="true">?</span></button>
+{%- endmacro %}

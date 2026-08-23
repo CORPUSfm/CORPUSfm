@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ doc_title or 'Documentation' }} — CORPUSfm{% endblock %}
+{% block content %}
+
+<div class="page-header-row">
+  <h1>Documentation</h1>
+</div>
+
+{% if not has_docs %}
+  <div class="card card-mb doc-empty">No documentation articles yet.</div>
+{% else %}
+<div class="docs-layout">
+  <nav class="docs-toc card">
+    {% for g in doc_groups %}
+      <div class="docs-toc-group">{{ g.section }}</div>
+      {% for a in g.links %}
+        <a href="{{ url_prefix }}/docs/{{ a.slug }}"
+           class="docs-toc-link {% if a.slug == doc_current %}active{% endif %}">{{ a.title }}</a>
+      {% endfor %}
+    {% endfor %}
+  </nav>
+  <article class="docs-body card">
+    {{ doc_html | safe }}
+  </article>
+</div>
+{% endif %}
+
+{% endblock %}

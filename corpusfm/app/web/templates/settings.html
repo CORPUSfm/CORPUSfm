@@ -1,0 +1,2225 @@
+{% extends "base.html" %}
+{% block title %}Settings — CORPUSfm{% endblock %}
+
+{# Settings — re-platform (bespoke kit; no Shoelace). Panels show SAVED state; multi-field
+   edits happen in pop-overs where Save is the only commit (Cancel/Close/Escape/click-away
+   discard). Single cheap booleans are switches that auto-commit; the consequential blob-
+   encryption switch routes through a confirm. Bespoke dropdowns replace every native select.
+   Transient feedback → toast. See plan surfaces 2–6, 18–20 + the commit taxonomy. #}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+
+{# Settings-scoped mobile behaviour. The shared kit (kit.css/style.css) now carries the app-wide
+   mobile rules (icon-rail shell, dialogs-as-sheets, header/tab/filter wrapping) at the same 640px
+   breakpoint, so the dialog/section-nav rules here are largely redundant — kept (harmless) as the
+   Settings-specific belt-and-suspenders. Section nav wraps; dialogs become full-screen sheets with
+   Save/Cancel reachable; wide tables scroll. #}
+<style>
+@media (max-width: 640px) {
+  .settings-page .cfm-tabs { flex-wrap: wrap; }
+  .settings-page .cfm-overlay { padding: 0; }
+  .settings-page .cfm-dialog, .settings-page .cfm-dialog--wide { max-width: none; }
+  .settings-page .cfm-dialog, .settings-page .cfm-dialog--tabbed { width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; }
+  .settings-page .cfm-table-wrap { overflow-x: auto; }
+  .settings-page .cfm-meta-grid { gap: 4px 12px; }
+}
+</style>
+
+<div x-data="settingsPage()" class="settings-page">
+
+  <div class="cfm-page-hdr"><h1>Settings</h1>
+    <div class="cfm-hdr-actions">{{ doc_help('settings', 'About Settings') }}</div>
+  </div>
+
+  {# Operator-console IA — 7 sections (packet 1196 supersedes the 2026-06 consolidation, which had
+     folded MCP service into General):
+       CORPUSfm     — the install's OWN properties, and the home for anything ambiguous. Its tab ID
+                      is still `general`: the ID is URL-addressable and #general deep links must keep
+                      resolving, so only the visible LABEL changed. Expect `tab === 'general'` under a
+                      "CORPUSfm" heading and do not "fix" it.
+       Health       — read-only capability surface
+       Access       — users + external sign-in (server only)
+       FileMaker    — connection / PKI / apply compartment (server only)
+       MCP          — the MCP service, its token, and every MCP-scoped switch
+       Storage      — archive / blobs / vector / backend activation
+       Integrations — AI / Git export / notifications / addon
+     Mobile: the row wraps (no horizontal overflow). #}
+  <div class="cfm-tabs">
+    <button type="button" class="cfm-tab" :class="tab==='general'?'cfm-tab--on':''" @click="setTab('general')">CORPUSfm</button>
+    <button type="button" class="cfm-tab" :class="tab==='health'?'cfm-tab--on':''" @click="setTab('health')">Health</button>
+    {% if mode == 'server' %}
+    <button type="button" class="cfm-tab" :class="tab==='access'?'cfm-tab--on':''" @click="setTab('access')">Access</button>
+    <button type="button" class="cfm-tab" :class="tab==='filemaker'?'cfm-tab--on':''" @click="setTab('filemaker')">FileMaker</button>
+    {% endif %}
+    <button type="button" class="cfm-tab" :class="tab==='mcp'?'cfm-tab--on':''" @click="setTab('mcp')">MCP</button>
+    <button type="button" class="cfm-tab" :class="tab==='storage'?'cfm-tab--on':''" @click="setTab('storage')">Storage</button>
+    <button type="button" class="cfm-tab" :class="tab==='integrations'?'cfm-tab--on':''" @click="setTab('integrations')">Integrations</button>
+  </div>
+
+  <div x-show="tab === 'general'">
+    {% if mode == 'server' %}
+    <h2 class="cfm-section-h">Server</h2>
+    <div class="cfm-panel">
+      <div class="cfm-island-top">
+        <p class="cfm-muted">Reload sends SIGTERM — the process manager restarts it. Change your password under <strong>Your account</strong>.</p>
+        <div class="cfm-island-act">
+          <template x-if="!confirmReload">
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="confirmReload = true">Reload server</button>
+          </template>
+          <template x-if="confirmReload">
+            <span class="cfm-confirm">
+              <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="confirmReload=false; reloadServer()">Confirm — restart?</button>
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="confirmReload=false">Cancel</button>
+            </span>
+          </template>
+        </div>
+      </div>
+      <div class="cfm-meta-grid cfm-mt-14">
+        <span class="cfm-meta-k">CORPUSfm</span><span class="cfm-meta-v" x-text="serverInfo.corpusfm_version || '—'"></span>
+        <span class="cfm-meta-k">Uptime</span><span class="cfm-meta-v" x-text="serverInfo.uptime || '—'"></span>
+      </div>
+    </div>
+    {% endif %}
+
+    <h2 class="cfm-section-h">Updates
+      {{ doc_help('settings#updates', 'About updates') }}</h2>
+    <div class="cfm-panel">
+      <div class="cfm-island-top">
+        <p class="cfm-muted">Checks the release channel, then asks the privileged updater on this server to advance to the exact commit you inspected. CORPUSfm does not update itself. Schema or installer changes are handled by re-running the installer.</p>
+        <div class="cfm-island-act">
+          <button type="button" class="cfm-btn cfm-btn--sm" @click="checkUpdate(true)" :disabled="!!update.checking">Check for updates</button>
+          <template x-if="update.done && update.available && update.source === 'git' && !(update.schema_change || update.installer_change)">
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="confirmUpdate = true" :disabled="!!update.applying">Apply update &amp; restart</button>
+          </template>
+        </div>
+      </div>
+      <div class="cfm-meta-grid cfm-mt-14">
+        <span class="cfm-meta-k">Current version</span><span class="cfm-meta-v" x-text="update.current || serverInfo.corpusfm_version || '—'"></span>
+      </div>
+      <div class="cfm-mt-14" x-show="update.done">
+        <template x-if="update.available && !(update.schema_change || update.installer_change)">
+          <p class="cfm-badge cfm-badge--ok">⬆ Update available (code-only): <span x-text="update.latest"></span><span x-show="update.behind" x-text="' (' + update.behind + ' behind)'"></span> — <a :href="update.releases" target="_blank" rel="noopener">Releases ↗</a></p>
+        </template>
+        <template x-if="!update.available && update.checked && !update.error && !update.stamp_repair">
+          <p class="cfm-badge cfm-badge--ok">✓ Up to date.</p>
+        </template>
+        <template x-if="!update.available && update.checked && !update.error && update.stamp_repair">
+          <div>
+            <p class="cfm-badge cfm-badge--warn">⟳ Runtime version stale — the checkout is current, but the running build stamp is out of date.</p>
+            <p class="cfm-muted cfm-mt-6">This checkout is at <strong x-text="update.head_build || '—'"></strong>, but the running service reports <strong x-text="update.current || '—'"></strong> — a deploy advanced the code without refreshing the build stamp. CORPUSfm reports this; it does not repair it. Re-run the installer on the server to bring the two back into agreement.</p>
+          </div>
+        </template>
+        <template x-if="update.error">
+          <div>
+            <p class="cfm-inline-error" x-text="update.error"></p>
+            <template x-if="update.error_class === 'credentials'">
+              <p class="cfm-muted cfm-mt-6">This checkout has no source-pull credential. <strong>Update by re-running the installer / release bundle</strong> — that's the supported update path (it carries the read-only PAT). The privileged updater fetches with that same credential, so it cannot run without one either.</p>
+            </template>
+          </div>
+        </template>
+        <template x-if="update.available && (update.schema_change || update.installer_change)">
+          <div>
+            <p class="cfm-badge cfm-badge--warn">⬆ Update available (<span x-text="update.behind + ' behind'"></span>) — needs the installer</p>
+            <p class="cfm-muted cfm-mt-6">This update needs the installer
+              <template x-if="update.schema_change"><span>— <strong>the database schema</strong> (data migration)</span></template>
+              <template x-if="update.schema_change && update.installer_change"><span>;</span></template>
+              <template x-if="update.installer_change"><span>— <span x-text="update.installer_reason || 'the installer (services / proxy / helpers)'"></span></span></template>.
+              These are root steps the privileged updater will not take — it advances code only. Re-run the installer on this server; an existing install is detected automatically and upgraded in place:</p>
+            <pre class="cfm-logviewer cfm-mt-6" x-text="update.upgrade_command"></pre>
+            <p class="cfm-muted cfm-mt-6">The installer needs elevated rights (Linux: sudo; Windows: an elevated PowerShell) — plus FileMaker Server admin credentials for the steps that touch FMS. It outlines the steps and lets you decline before doing anything. You can keep using CORPUSfm until you run it.</p>
+          </div>
+        </template>
+      </div>
+    </div>
+
+
+  {# ═══ CORPUSfm — the install's OWN properties (packet 1196) ═════════════════════════ #}
+  </div>
+
+  {# ═══ Health ════════════════════════════════════════════════════════════════ #}
+  <div x-show="tab === 'health'">
+    <div class="cfm-page-hdr">
+      <h2 class="cfm-section-h">Installation health</h2>
+      <div class="cfm-hdr-actions">
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="loadHealth(true)" :disabled="!!health.loading">
+          <span x-show="!health.loading">Refresh</span><span x-show="health.loading">Checking…</span>
+        </button>
+      </div>
+    </div>
+    <p class="cfm-muted cfm-mb-12">A read-only view of what this install can actually do. Capability — not configuration; configure each system on its own tab. An unhealthy row links to the tab that fixes it.</p>
+
+    <div class="cfm-panel">
+      <h3 class="cfm-panel-h">Environment</h3>
+      <div class="cfm-meta-grid">
+        <span class="cfm-meta-k">App version</span><span class="cfm-meta-v" x-text="health.environment.app_version || '—'"></span>
+        <span class="cfm-meta-k">Deployed commit</span><span class="cfm-meta-v cfm-meta-v--uuid" x-text="health.environment.deployed_commit || '—'"></span>
+        <span class="cfm-meta-k">Platform</span><span class="cfm-meta-v" x-text="health.environment.platform || '—'"></span>
+        <span class="cfm-meta-k">Python</span><span class="cfm-meta-v" x-text="(health.environment.python_version || '—') + (health.environment.python_source ? ' (' + health.environment.python_source + ')' : '')"></span>
+        <span class="cfm-meta-k">Python path</span><span class="cfm-meta-v cfm-meta-v--uuid" x-text="health.environment.python_base || '—'"></span>
+        <span class="cfm-meta-k">Mode</span><span class="cfm-meta-v" x-text="health.environment.mode || '—'"></span>
+        <span class="cfm-meta-k">FileMaker Server</span><span class="cfm-meta-v" x-text="health.environment.fms_version || 'not reported'"></span>
+      </div>
+    </div>
+
+    <div class="cfm-panel">
+      <h3 class="cfm-panel-h">Capabilities</h3>
+      <p class="cfm-muted" x-show="health.error" x-text="health.error"></p>
+      <template x-if="!health.error && health.capabilities.length">
+        <div class="cfm-health-list">
+          <template x-for="c in health.capabilities" :key="c.key">
+            <div class="cfm-health-row">
+              <span class="cfm-badge" :class="healthBadge(c.status)" x-text="healthLabel(c.status)"></span>
+              <div>
+                <div class="cfm-health-name" x-text="c.label"></div>
+                <div class="cfm-muted cfm-health-detail" x-show="c.detail" x-text="c.detail"></div>
+                <div class="cfm-health-detail" x-show="!c.ok && c.fix" x-text="c.fix"></div>
+                <button type="button" class="cfm-btn cfm-btn--text cfm-btn--sm" x-show="!c.ok && c.fix_tab"
+                        @click="setTab(c.fix_tab)" x-text="'Fix in ' + tabLabel(c.fix_tab) + ' →'"></button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  {% if mode == 'server' %}
+  {# ═══ Users (Admin) ═══════════════════════════════════════════════════════════ #}
+  <div x-show="tab === 'access'" x-data="usersTab()" x-init="load()">
+    <h2 class="cfm-section-h">Users</h2>
+    <p class="cfm-muted cfm-mb-12">Named accounts with per-user access gates. <strong>Settings</strong> access = full Admin. Each user manages their own MCP tokens at Library&nbsp;→&nbsp;MCP. Guards: you can't delete yourself or remove the last admin.</p>
+
+    <div class="cfm-panel cfm-mb-12">
+      <div class="cfm-field-label">Add user</div>
+      <div class="cfm-filterbar cfm-filterbar--tight cfm-mt-6" style="flex-wrap:wrap;gap:8px">
+        <input class="cfm-input" style="max-width:170px" placeholder="username" x-model="nu.username">
+        <input class="cfm-input" style="max-width:170px" type="password" placeholder="password (8+)" x-model="nu.password">
+      </div>
+      <div class="cfm-card-tags cfm-mt-6">
+        <template x-for="g in gates" :key="g">
+          <label class="cfm-badge" style="cursor:pointer">
+            <input type="checkbox" :value="g" x-model="nu.gates"> <span x-text="gateLabel(g)"></span>
+          </label>
+        </template>
+      </div>
+      <div class="cfm-mt-6">
+        <button class="cfm-btn cfm-btn--primary cfm-btn--sm" :disabled="!!busy" @click="create()">Create user</button>
+        <span x-show="msg" x-text="msg" :class="ok?'cfm-ok':'cfm-err'" class="cfm-ml-8"></span>
+      </div>
+    </div>
+
+    <div class="cfm-panel cfm-table-wrap">
+      <table class="cfm-table">
+        <thead><tr><th>User</th><th>Gates</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="u in users" :key="u.id">
+            <tr>
+              <td><strong x-text="u.username"></strong><template x-if="u.id===me"><span class="cfm-muted"> (you)</span></template></td>
+              <td>
+                <div class="cfm-card-tags">
+                  <template x-for="g in u.gates" :key="g">
+                    <span class="cfm-badge" x-text="gateLabel(g)"></span>
+                  </template>
+                  <span class="cfm-muted" x-show="!u.gates.length">no gates</span>
+                </div>
+              </td>
+              <td><span class="cfm-badge" :class="u.active?'cfm-badge--ok':'cfm-badge--idle'" x-text="u.active?'active':'inactive'"></span></td>
+              <td style="white-space:nowrap">
+                <button class="cfm-btn cfm-btn--sm" @click="openGateEdit(u)">Edit gates</button>
+                {# Your OWN password is changed on the account page (it verifies your current password);
+                   the admin quick-reset is only for OTHER users. #}
+                <a class="cfm-btn cfm-btn--sm" href="{{ url_prefix }}/account" x-show="u.id===me">Change password</a>
+                <button class="cfm-btn cfm-btn--sm" @click="openPwReset(u)" x-show="u.id!==me">Reset password</button>
+                {# You can't deactivate your own account (lock-out guard) — only other users. #}
+                <button class="cfm-btn cfm-btn--sm" @click="toggleActive(u)" x-text="u.active?'Deactivate':'Activate'" x-show="u.id!==me"></button>
+                <button class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="del(u)" x-show="u.id!==me">Delete</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      <div x-show="rowMsg" x-text="rowMsg" :class="rowOk?'cfm-ok':'cfm-err'" class="cfm-mt-6"></div>
+    </div>
+
+    {# Gate editor — a deliberate Save/Cancel pop-over (gate changes are an access mutation, not a
+       one-click inline toggle). Save commits via PATCH /users/{id}/gates; Cancel/Escape discards. #}
+    <div class="cfm-overlay" x-show="gateEdit" x-cloak
+         @click.self="cancelGateEdit()" @keydown.escape.window="if (gateEdit) cancelGateEdit()">
+      <div class="cfm-dialog" role="dialog" aria-modal="true">
+        <div class="cfm-dialog-hdr"><span class="cfm-dialog-title" x-text="gateEdit ? 'Gates — ' + gateEdit.username : 'Gates'"></span>
+          <button type="button" class="cfm-iconbtn" @click="cancelGateEdit()" aria-label="Cancel" title="Cancel">✕</button></div>
+        <div class="cfm-dialog-body">
+          <p class="cfm-muted cfm-mb-12"><strong>Settings</strong> = full admin. Changes apply to the web UI and all of this user's MCP tokens. A user with no gates still reaches Documentation + their own account.</p>
+          <div class="cfm-card-tags">
+            <template x-for="g in gates" :key="g">
+              <label class="cfm-badge" style="cursor:pointer" :class="gateDraft.includes(g)?'':'cfm-badge--idle'">
+                <input type="checkbox" :value="g" x-model="gateDraft"> <span x-text="gateLabel(g)"></span>
+              </label>
+            </template>
+          </div>
+          <p class="cfm-inline-error" x-show="gateMsg" x-text="gateMsg"></p>
+        </div>
+        <div class="cfm-dialog-ftr">
+          <span class="cfm-spacer"></span>
+          <button type="button" class="cfm-btn cfm-btn--sm" @click="cancelGateEdit()">Cancel</button>
+          <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="saveGates()" :disabled="!!gateBusy">Save</button>
+        </div>
+      </div>
+    </div>
+
+    {# Reset password — masked + entered twice (an admin sets another user's password); parity with the
+       self-service Change-password form on the account page. Never a native prompt() (shows plaintext). #}
+    <div class="cfm-overlay" x-show="pwEdit" x-cloak
+         @click.self="cancelPwReset()" @keydown.escape.window="if (pwEdit) cancelPwReset()">
+      <div class="cfm-dialog" role="dialog" aria-modal="true">
+        <div class="cfm-dialog-hdr"><span class="cfm-dialog-title" x-text="pwEdit ? 'Reset password — ' + pwEdit.username : 'Reset password'"></span>
+          <button type="button" class="cfm-iconbtn" @click="cancelPwReset()" aria-label="Cancel" title="Cancel">✕</button></div>
+        <div class="cfm-dialog-body">
+          <label class="cfm-field cfm-mb-12"><span class="cfm-field-label">New password</span>
+            <input type="password" class="cfm-input" x-model="pwNew" autocomplete="new-password" placeholder="At least 8 characters"></label>
+          <label class="cfm-field"><span class="cfm-field-label">Confirm new password</span>
+            <input type="password" class="cfm-input" x-model="pwCfm" autocomplete="new-password"></label>
+          <p class="cfm-inline-error" x-show="pwMsg" x-text="pwMsg"></p>
+        </div>
+        <div class="cfm-dialog-ftr">
+          <span class="cfm-spacer"></span>
+          <button type="button" class="cfm-btn cfm-btn--sm" @click="cancelPwReset()">Cancel</button>
+          <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="savePwReset()" :disabled="!!pwBusy">Set password</button>
+        </div>
+      </div>
+    </div>
+
+    {# ── External sign-in (SSO / LDAP) — packet 1065 ─────────────────────────── #}
+    <div x-data="externalAuthTab()" x-init="load()" class="cfm-mt-24">
+      <h2 class="cfm-section-h">External sign-in (SSO / LDAP)</h2>
+      <p class="cfm-muted cfm-mb-12">Sign in with your organization's identity provider — the same methods FileMaker Server supports. Local username/password always stays (per-user + break-glass). <strong>Multi-factor auth is enforced by your IdP</strong>; CORPUSfm adds no separate 2FA. New external users are created with <strong>zero access</strong> until a group mapping (below) or an admin grants gates.</p>
+
+      <template x-if="ea">
+      <div>
+        {# Three islands SUMMARIZE; the dialogs edit. These were three always-open forms — eighteen
+           fields permanently on screen for two features that are almost always off. A summary states
+           what is true; a form only asks. #}
+        <div class="cfm-panel cfm-mb-12">
+          <div class="cfm-island-hd">
+            <span class="cfm-island-hd-name">OIDC single sign-on</span>
+            <span class="cfm-badge" :class="oidcStatus().cls" x-text="oidcStatus().label"></span>
+            <span class="cfm-island-act">
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="openDlg('oidc')">Edit…</button>
+            </span>
+          </div>
+          <div class="cfm-meta-grid cfm-mt-14">
+            <span class="cfm-meta-k">Issuer</span>
+            <span class="cfm-meta-v" x-text="ea.oidc.issuer || 'Not set'"></span>
+            <span class="cfm-meta-k">Client ID</span>
+            <span class="cfm-meta-v" x-text="ea.oidc.client_id || 'Not set'"></span>
+            <span class="cfm-meta-k">Client secret</span>
+            <span class="cfm-meta-v" x-text="hasSecret ? 'Configured' : 'Not configured'"></span>
+          </div>
+        </div>
+
+        <div class="cfm-panel cfm-mb-12">
+          <div class="cfm-island-hd">
+            <span class="cfm-island-hd-name">AD / LDAP sign-in</span>
+            <span class="cfm-badge" :class="ldapStatus().cls" x-text="ldapStatus().label"></span>
+            <span class="cfm-island-act">
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="openDlg('ldap')">Edit…</button>
+            </span>
+          </div>
+          {# The dependency being absent never hides the configuration that IS there — it only
+             prevents enabling. #}
+          <p class="cfm-muted cfm-mt-6" x-show="!ldap3">The <code>ldap3</code> library is not installed on this server, so LDAP sign-in cannot be enabled here.</p>
+          <div class="cfm-meta-grid cfm-mt-14">
+            <span class="cfm-meta-k">Server</span>
+            <span class="cfm-meta-v" x-text="ea.ldap.server_uri || 'Not set'"></span>
+            <span class="cfm-meta-k">Base DN</span>
+            <span class="cfm-meta-v" x-text="ea.ldap.base_dn || 'Not set'"></span>
+            <span class="cfm-meta-k">Bind password</span>
+            <span class="cfm-meta-v" x-text="hasBind ? 'Configured' : 'Not configured'"></span>
+          </div>
+        </div>
+
+        <div class="cfm-panel cfm-mb-12">
+          <div class="cfm-island-hd">
+            <span class="cfm-island-hd-name">External group access</span>
+            <span class="cfm-badge" :class="mapRows.length ? 'cfm-badge--ok' : 'cfm-badge--idle'"
+                  x-text="mapRows.length ? (mapRows.length === 1 ? '1 group mapped' : mapRows.length + ' groups mapped') : 'No mappings'"></span>
+            <span class="cfm-island-act">
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="openDlg('map')">Edit…</button>
+            </span>
+          </div>
+          <p class="cfm-muted cfm-mt-6" x-show="!mapRows.length">Without a mapping, an external user signs in with no access until an admin grants gates.</p>
+          <div class="cfm-meta-grid cfm-mt-14" x-show="mapRows.length">
+            <template x-for="(row, i) in mapRows" :key="i">
+              <template x-if="(row.group || '').trim()">
+                <div style="display:contents">
+                  <span class="cfm-meta-k" x-text="row.group"></span>
+                  <span class="cfm-meta-v" x-text="row.gates.length ? row.gates.map(gateLabel).join(', ') : 'no gates'"></span>
+                </div>
+              </template>
+            </template>
+          </div>
+        </div>
+      </div>
+      </template>
+
+      {# ── One dialog, three slices. Each opens on a DEEP draft and merges only its own slice back
+           into the last-loaded configuration, so the combined API never carries a stale sibling.
+           Cancel/Escape/close/backdrop discard the draft without touching `ea`. ────────────── #}
+      <div class="cfm-overlay" x-show="dlg" x-cloak x-ref="eaDlgWrap"
+           @click.self="if (!dlgBusy) closeDlg()" @keydown.escape.window="if (dlg && !dlgBusy) closeDlg()"
+           x-effect="dlg ? $nextTick(() => { _eaTrap = window.cfmFocusTrap($refs.eaDlg) }) : (_eaTrap && _eaTrap())">
+        <div class="cfm-dialog" role="dialog" aria-modal="true" aria-labelledby="ea-dlg-title" x-ref="eaDlg">
+          <div class="cfm-dialog-hdr">
+            <span class="cfm-dialog-title" id="ea-dlg-title" x-text="dlgTitle()"></span>
+            <button type="button" class="cfm-iconbtn" @click="closeDlg()" :disabled="!!dlgBusy" aria-label="Cancel" title="Cancel">✕</button>
+          </div>
+          <div class="cfm-dialog-body">
+            <template x-if="dlg === 'oidc' && draft">
+              <div>
+                <label class="cfm-field-label cfm-mb-12" style="display:flex;align-items:center;gap:8px">
+                  <input type="checkbox" x-model="draft.enabled"> Enable OIDC single sign-on
+                </label>
+                <div class="cfm-form-grid">
+                  <label class="cfm-field"><span class="cfm-field-label">Issuer URL</span><input class="cfm-input" x-model="draft.issuer" placeholder="https://accounts.example.com"></label>
+                  <label class="cfm-field"><span class="cfm-field-label">Client ID</span><input class="cfm-input" x-model="draft.client_id"></label>
+                  <label class="cfm-field"><span class="cfm-field-label">Client secret <span class="cfm-muted" x-show="hasSecret">(stored — leave blank to keep)</span></span><input class="cfm-input" type="password" x-model="newSecret" autocomplete="new-password" :placeholder="hasSecret?'••••••••':'client secret'"></label>
+                  <label class="cfm-field"><span class="cfm-field-label">Redirect URI <span class="cfm-muted">(optional)</span></span><input class="cfm-input" x-model="draft.redirect_uri" placeholder="auto from this server"></label>
+                  <label class="cfm-field"><span class="cfm-field-label">Scopes</span><input class="cfm-input" x-model="draft.scopes" placeholder="openid email profile"></label>
+                  <label class="cfm-field"><span class="cfm-field-label">Groups claim</span><input class="cfm-input" x-model="draft.groups_claim" placeholder="groups"></label>
+                </div>
+              </div>
+            </template>
+
+            <template x-if="dlg === 'ldap' && draft">
+              <div>
+                <label class="cfm-field-label cfm-mb-12" style="display:flex;align-items:center;gap:8px">
+                  <input type="checkbox" x-model="draft.enabled" :disabled="!ldap3"> Enable AD / LDAP sign-in
+                </label>
+                <p class="cfm-muted cfm-mb-12" x-show="!ldap3">The <code>ldap3</code> library is not installed on this server. You can still record the configuration; install <code>ldap3</code> and restart to enable it.</p>
+                <div class="cfm-form-grid">
+                  <label class="cfm-field"><span class="cfm-field-label">Server URI</span><input class="cfm-input" x-model="draft.server_uri" placeholder="ldaps://dc.example.com"></label>
+                  <label class="cfm-field"><span class="cfm-field-label">Base DN</span><input class="cfm-input" x-model="draft.base_dn" placeholder="dc=example,dc=com"></label>
+                  <label class="cfm-field"><span class="cfm-field-label">Bind DN <span class="cfm-muted">(service account)</span></span><input class="cfm-input" x-model="draft.bind_dn"></label>
+                  <label class="cfm-field"><span class="cfm-field-label">Bind password <span class="cfm-muted" x-show="hasBind">(stored — leave blank to keep)</span></span><input class="cfm-input" type="password" x-model="newBind" autocomplete="new-password" :placeholder="hasBind?'••••••••':'bind password'"></label>
+                  <label class="cfm-field"><span class="cfm-field-label">User filter</span><input class="cfm-input" x-model="draft.user_filter" placeholder="(sAMAccountName={username})"></label>
+                  <label class="cfm-field"><span class="cfm-field-label">Group attribute</span><input class="cfm-input" x-model="draft.group_attr" placeholder="memberOf"></label>
+                </div>
+              </div>
+            </template>
+
+            <template x-if="dlg === 'map' && draft">
+              <div>
+                <p class="cfm-muted cfm-mb-12">On each SSO/LDAP login, gates are set from the user's IdP groups (added <em>and</em> removed). No matching group → no access.</p>
+                <template x-if="!draft.length">
+                  <p class="cfm-muted">No mappings yet.</p>
+                </template>
+                <template x-for="(row, i) in draft" :key="i">
+                  <div class="cfm-filterbar cfm-filterbar--tight" style="flex-wrap:wrap;gap:8px">
+                    <input class="cfm-input" style="max-width:220px" placeholder="IdP group value" x-model="row.group" :aria-label="'IdP group ' + (i + 1)">
+                    <template x-for="g in gates" :key="g">
+                      <label class="cfm-badge" style="cursor:pointer" :class="row.gates.includes(g)?'':'cfm-badge--idle'">
+                        <input type="checkbox" :value="g" x-model="row.gates"> <span x-text="gateLabel(g)"></span>
+                      </label>
+                    </template>
+                    <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="draft.splice(i, 1)">Remove</button>
+                  </div>
+                </template>
+                <div class="cfm-mt-14"><button type="button" class="cfm-btn cfm-btn--sm" @click="draft.push({ group:'', gates:[] })">Add mapping</button></div>
+              </div>
+            </template>
+
+            <p class="cfm-inline-error cfm-mt-14" x-show="dlgMsg" x-text="dlgMsg"></p>
+          </div>
+          <div class="cfm-dialog-ftr">
+            <span class="cfm-spacer"></span>
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="closeDlg()" :disabled="!!dlgBusy">Cancel</button>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="saveDlg()" :disabled="!!dlgBusy"><span x-text="dlgBusy ? 'Saving…' : 'Save'">Save</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if mode == 'server' %}
+  {# ═══ FileMaker Server ══════════════════════════════════════════════════════ #}
+  <div x-show="tab === 'filemaker'">
+    <h2 class="cfm-section-h">FileMaker Server
+      {{ doc_help('settings#filemaker-server', 'About the FileMaker Server connection') }}</h2>
+
+    <div class="cfm-panel">
+      <div class="cfm-filterbar cfm-filterbar--tight">
+        <strong>Installed backend</strong>
+        <span class="cfm-badge" :class="fm.state === 'active' ? 'cfm-badge--ok' : 'cfm-badge--warn'" x-text="fm.state"></span>
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="testAdminIdentity()" :disabled="adminIdentity.testing || !adminIdentity.available">Test Admin API identity</button>
+      </div>
+      <div class="cfm-meta-grid cfm-mt-14" x-show="fm.state === 'active'">
+        <span class="cfm-meta-k">Managed by</span><span class="cfm-meta-v">installation</span>
+        <span class="cfm-meta-k">Host</span><span class="cfm-meta-v" x-text="fm.host"></span>
+        <span class="cfm-meta-k">Storage DB</span><span class="cfm-meta-v" x-text="fm.database"></span>
+        <span class="cfm-meta-k">Account</span><span class="cfm-meta-v" x-text="fm.account + (fm.accessAvailable ? ' · access available' : '')"></span>
+        <span class="cfm-meta-k">TLS</span><span class="cfm-meta-v" x-text="fm.verify_ssl ? 'verify certificate' : 'co-located policy'"></span>
+        <span class="cfm-meta-k">Admin API</span><span class="cfm-meta-v" x-text="adminIdentity.available ? (adminIdentity.name + ' · available') : adminIdentity.state"></span>
+      </div>
+      <p class="cfm-muted cfm-mt-6" x-show="fm.reason" x-text="fm.reason"></p>
+      <p class="cfm-muted cfm-mt-6" x-show="adminIdentity.reason" x-text="adminIdentity.reason"></p>
+    </div>
+
+    {# ═══ Remote servers (packet 1015) — fmsadmin discovery targets for the Jobs page ══ #}
+    <h2 class="cfm-section-h">Remote servers
+      {{ doc_help('settings#remote-servers', 'About remote servers') }}</h2>
+    <p class="cfm-muted cfm-mb-12">Additional FileMaker servers the <strong>Jobs</strong> page can pull from. CORPUSfm will list that server's hosted files (via the Admin API) so you can add jobs against them.</p>
+    <template x-if="remoteServers.length === 0">
+      <div class="cfm-panel">
+        <p class="cfm-muted">No remote servers registered.</p>
+      </div>
+    </template>
+    {# One island per server: its name, its status, and the actions that act on IT. The actions used
+       to float in a row underneath, where — with several servers listed — they read as belonging to
+       the panel rather than to the server above them. #}
+    <template x-for="s in remoteServers" :key="s.name">
+      <div class="cfm-panel">
+        <div class="cfm-island-hd">
+          <span class="cfm-island-hd-name" x-text="s.name"></span>
+          {# "Verified when added" is the honest claim. A server is only stored if `verify_server`
+             succeeded at that moment, and nothing has asked it anything since — so a present-tense
+             "✓ verified" badge asserts a live state nobody observed. #}
+          <span class="cfm-badge cfm-badge--ok">Verified when added</span>
+          <span class="cfm-island-act">
+            <template x-if="confirmDelSrv !== s.name">
+              <span style="display:contents">
+                <button type="button" class="cfm-btn cfm-btn--sm" @click="editServer(s)">Edit…</button>
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="confirmDelSrv = s.name">Delete</button>
+              </span>
+            </template>
+            <template x-if="confirmDelSrv === s.name">
+              <span class="cfm-confirm">
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" :disabled="!!delSrvBusy" @click="deleteServer()">Confirm — remove</button>
+                <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!delSrvBusy" @click="confirmDelSrv = ''">Cancel</button>
+              </span>
+            </template>
+          </span>
+        </div>
+        <div class="cfm-meta-grid cfm-mt-14">
+          <span class="cfm-meta-k">Host</span><span class="cfm-meta-v" x-text="s.host"></span>
+          <span class="cfm-meta-k">Account</span><span class="cfm-meta-v" x-text="(s.account || 'Not set') + ' · ' + (s.password_set ? 'password set' : 'no password')"></span>
+          <span class="cfm-meta-k">TLS</span><span class="cfm-meta-v" x-text="s.verify_ssl ? 'verify certificate' : 'skip (self-signed)'"></span>
+        </div>
+      </div>
+    </template>
+    <div class="cfm-filterbar cfm-filterbar--tight cfm-mb-12">
+      <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="startAddServer()">Add server…</button>
+    </div>
+
+    <h2 class="cfm-section-h">Apply compartment
+      {{ doc_help('settings#apply-compartment', 'About the apply compartment restriction') }}</h2>
+    <div class="cfm-panel">
+      <div class="cfm-island-top">
+        <p class="cfm-muted"><span class="cfm-badge" :class="prefs.restrict_apply_to_compartment ? 'cfm-badge--ok' : 'cfm-badge--warn'" x-text="prefs.restrict_apply_to_compartment ? 'Restricted' : 'Unrestricted'"></span> This switch <strong>narrows</strong> what may be patched; it never authorizes anything. Patching and applying need a <strong>verified patch compartment</strong> on this installation, and without one every target is refused whichever way this is set. On by default: a patch/apply/dry-run may target only a file hosted from that compartment. Any file hosted from FileMaker's default database directories is refused before it is ever closed, and a target CORPUSfm can't positively locate in a patch zone fails closed. The storage database is refused in every state. Turn this off only for a <strong>dedicated patch box</strong> — that widens the eligible set to any hosted database except the storage database.</p>
+        <div class="cfm-island-act">
+          <template x-if="!confirmCompartment">
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="confirmCompartment = true" x-text="prefs.restrict_apply_to_compartment ? 'Turn off…' : 'Turn on…'"></button>
+          </template>
+          <template x-if="confirmCompartment">
+            <span class="cfm-confirm">
+              <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="confirmCompartment=false; toggleCompartment()" x-text="prefs.restrict_apply_to_compartment ? 'Confirm — allow any non-storage DB' : 'Confirm — restrict to the compartment'"></button>
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="confirmCompartment=false">Cancel</button>
+            </span>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ═══ MCP-scoped switches, moved off the FileMaker tab by packet 1196 ═══════════════════ #}
+  <div x-show="tab === 'mcp'">
+    {# ═══ MCP address (packet 1180, scoped to MCP by packet 1219) ═════════════════════════ #}
+    <h2 class="cfm-section-h">MCP address
+      {{ doc_help('settings#mcp-address', 'About the MCP address') }}</h2>
+    <p class="cfm-muted cfm-mb-12">The <code>https://</code> base another machine uses to reach this
+      CORPUSfm, <strong>including its web prefix</strong> — e.g. <code>https://this-host/corpusfm</code>
+      or <code>https://192.168.1.50/corpusfm</code>. It is the <strong>audience every OAuth connection is
+      bound to</strong>, so it has to be the address a client actually connects on. An internal/LAN IP is
+      fine; it need not be internet-public, and a self-signed or expired certificate is not rejected here
+      (client trust is client-specific). The box asserts one at startup if you have not.</p>
+    <div class="cfm-panel">
+      <div class="cfm-field">
+        <label class="cfm-field-label" for="external-address">MCP address</label>
+        <input id="external-address" type="text" class="cfm-input" x-model="externalAddress.persisted"
+               :placeholder="externalAddress.detected || 'https://your-host/corpusfm'">
+        <p class="cfm-field-hint">
+          <template x-if="externalAddress.serving">
+            <span>Serving now: <code x-text="externalAddress.serving"></code></span>
+          </template>
+          <template x-if="!externalAddress.serving">
+            <span class="cfm-muted">This process is serving no MCP address — OAuth sign-in cannot be
+              discovered until one is set and CORPUSfm restarts.</span>
+          </template>
+        </p>
+        {# SAVED BUT NOT LIVE. Without this the page shows one identity while discovery, the consent
+           screen and the connections page serve another — worse than being wrong, because nothing
+           says so (packet 1219 Half B). #}
+        <p class="cfm-field-hint" x-show="externalAddress.pending">
+          <span class="cfm-badge cfm-badge--warn">Pending restart</span>
+          Saved as <code x-text="externalAddress.value || '(none)'"></code>, which takes effect the next
+          time CORPUSfm starts. Until then this box still serves the address above.
+        </p>
+        <p class="cfm-field-hint" x-show="externalAddress.detected && externalAddress.persisted !== externalAddress.detected">
+          Detected from this page: <code x-text="externalAddress.detected"></code>
+          <button type="button" class="cfm-btn cfm-btn--text" @click="useDetected()"
+                  :disabled="!!savingExternalAddress">Use detected — save <code x-text="externalAddress.detected"></code></button>
+        </p>
+        <p class="cfm-field-hint" x-show="externalAddress.certificate && externalAddress.certificate.checked && !externalAddress.certificate.covered">
+          <span class="cfm-badge cfm-badge--warn">Certificate</span>
+          Clients verify this box's certificate, and it does not cover
+          <code x-text="externalAddress.certificate && externalAddress.certificate.host"></code> — it names
+          <code x-text="((externalAddress.certificate || {}).names || []).join(', ')"></code>. Use a name it
+          covers here, or install a certificate that covers the served host.</p>
+        <p class="cfm-field-hint" x-show="externalAddress.warning" x-text="externalAddress.warning"></p>
+        <p class="cfm-inline-error" x-show="externalAddress.error" x-text="externalAddress.error"></p>
+        <template x-if="externalAddressMsg">
+          <p class="cfm-muted" x-text="externalAddressMsg"></p>
+        </template>
+      </div>
+      {# The confirmation asks ONE question with two real answers — Yes or No, never "later" (packet
+         1219 Half B). It states what the change costs BEFORE either answer, because a changed address
+         is a changed audience: every issued grant stops matching. #}
+      <template x-if="confirmAddrChange">
+        <div class="cfm-panel cfm-mt-14">
+          <p class="cfm-muted">Changing the MCP address changes the identity CORPUSfm advertises, so
+            <strong>every connected client will have to sign in again</strong> — each grant is bound to
+            the address it was approved for. The new address is served only after CORPUSfm restarts.</p>
+          <p class="cfm-field-hint" x-show="addrWillDisableOauth()">
+            <strong>OAuth sign-in will have no address to serve</strong> — no client can discover or
+            complete it. Manual named tokens keep working. Setting an address later brings sign-in back.</p>
+          <p class="cfm-field-hint">Serving now: <code x-text="externalAddress.serving || '(none)'"></code></p>
+          <p class="cfm-field-hint">New address: <code x-text="prospectiveEffective() || '(none — no OAuth sign-in)'"></code></p>
+          <p class="cfm-field-hint"><strong>Restart CORPUSfm now?</strong></p>
+          <div class="cfm-filterbar cfm-filterbar--tight cfm-mt-14">
+            <span class="cfm-spacer"></span>
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="confirmAddrChange=false">Cancel</button>
+            <button type="button" class="cfm-btn cfm-btn--sm"
+                    @click="confirmAddrChange=false; saveExternalAddress(true, false)"
+                    :disabled="!!savingExternalAddress">No — save, apply at next restart</button>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger"
+                    @click="confirmAddrChange=false; saveExternalAddress(true, true)"
+                    :disabled="!!savingExternalAddress">Yes — save + restart now</button>
+          </div>
+        </div>
+      </template>
+      <div class="cfm-filterbar cfm-filterbar--tight cfm-mt-14" x-show="!confirmAddrChange">
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="saveExternalAddress()"
+                :disabled="!!savingExternalAddress">Save address</button>
+      </div>
+    </div>
+
+    {# ═══ MCP capabilities (packet 1241) — "FMS controls over MCP" and "Patch / apply over MCP" were
+       one concept written twice: identical badge states, identical confirm gesture, and one shared
+       sentence ("off by default; the per-user X gate is still required; every mutating op is a
+       reviewed two-step plan → execute") with only the gate name changing. CLAUDE.md's feature matrix
+       already names them together as one gating rail.
+
+       COLLECTION shape (CLAUDE-UX §6), not the standard island: §6 pins ONE primary action top-right
+       in `.cfm-island-act`, and this subject has TWO independent confirm-gated actions. Same grammar
+       as Remote servers above — external title as a group heading, one mini-island per capability.
+
+       The two confirms MUST stay separate flags. One flag driving both rows would arm the second
+       switch whenever an admin armed the first, which on a pair of security switches is the worst
+       possible defect to introduce while tidying. #}
+    <h2 class="cfm-section-h">MCP capabilities
+      {{ doc_help('settings#mcp-capabilities', 'About the MCP capability switches') }}</h2>
+    <p class="cfm-muted cfm-mb-12">Both are <strong>off by default</strong>, and while one is off its tools
+      are hidden from every assistant's tool list and refused if called. Turning one on does not grant it:
+      the per-user gate named below is still required, and every mutating operation is a reviewed two-step
+      plan → execute. Takes effect immediately — no restart.</p>
+    <div class="cfm-panel">
+      <div class="cfm-island-hd">
+        <span class="cfm-island-hd-name">FMS controls</span>
+        {{ doc_help('settings#fms-admin-tools-over-mcp', 'About FMS admin tools over MCP') }}
+        <span class="cfm-badge" :class="prefs.enable_fms_admin_mcp_tools ? 'cfm-badge--ok' : 'cfm-badge--muted'" x-text="prefs.enable_fms_admin_mcp_tools ? 'Exposed' : 'Off'"></span>
+        <span class="cfm-island-act">
+          <template x-if="!confirmFmsAdmin">
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="confirmFmsAdmin = true" x-text="prefs.enable_fms_admin_mcp_tools ? 'Disable…' : 'Enable…'"></button>
+          </template>
+          <template x-if="confirmFmsAdmin">
+            <span class="cfm-confirm">
+              <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="confirmFmsAdmin=false; toggleFmsAdminTools()" x-text="prefs.enable_fms_admin_mcp_tools ? 'Confirm — disable' : 'Confirm — expose fms_* tools'"></button>
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="confirmFmsAdmin=false">Cancel</button>
+            </span>
+          </template>
+        </span>
+      </div>
+      <p class="cfm-muted cfm-mt-6">Broad FileMaker Server controls (<code>fms_*</code>) over MCP. Gate: <strong>Full FMS API</strong>.</p>
+    </div>
+    <div class="cfm-panel cfm-mt-14">
+      <div class="cfm-island-hd">
+        <span class="cfm-island-hd-name">Patch / apply</span>
+        {{ doc_help('settings#patch-apply-tools-over-mcp', 'About patch/apply tools over MCP') }}
+        <span class="cfm-badge" :class="prefs.enable_patching_mcp_tools ? 'cfm-badge--ok' : 'cfm-badge--muted'" x-text="prefs.enable_patching_mcp_tools ? 'Exposed' : 'Off'"></span>
+        <span class="cfm-island-act">
+          <template x-if="!confirmPatching">
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="confirmPatching = true" x-text="prefs.enable_patching_mcp_tools ? 'Disable…' : 'Enable…'"></button>
+          </template>
+          <template x-if="confirmPatching">
+            <span class="cfm-confirm">
+              <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="confirmPatching=false; togglePatchingTools()" x-text="prefs.enable_patching_mcp_tools ? 'Confirm — disable' : 'Confirm — expose patch/apply tools'"></button>
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="confirmPatching=false">Cancel</button>
+            </span>
+          </template>
+        </span>
+      </div>
+      <p class="cfm-muted cfm-mt-6">Apply / materialize tools (patch apply, generate &amp; promote a database) over MCP. Gate: <strong>Patching</strong>. The storage database is never a target, and patch <em>authoring</em> plus read-only checks stay available regardless.</p>
+    </div>
+
+  {# ═══ MCP service — moved to the MCP tab by packet 1196. It had been folded into General
+     at the 2026-06 consolidation; that decision is superseded, not contradicted silently.
+
+     Packet 1241 moved it ABOVE the connection-lifetime island and absorbed the retired "OAuth
+     sign-in" island into it. That island was a husk: packet 1220 removed the switch it was built
+     around and left a titled panel rendering a computed boolean, both of whose states restated the
+     address island directly above. Its two non-redundant facts land HERE, beside the endpoint they
+     qualify — connect *here*, and your access follows your gates. The address editor stays island 1;
+     it must remain usable when the service is NOT mounted, which holds by construction now that the
+     two are separate panels. #}
+    <h2 class="cfm-section-h">MCP service
+      {{ doc_help('settings#mcp-service', 'About the MCP service') }}</h2>
+    <div class="cfm-panel">
+      <template x-if="mcp.mounted">
+        <div>
+          {# The ASSERTED address, not `mcp.endpoint` (packet 1241 C1). `mcp.endpoint` is overwritten
+             at load with the BROWSER's own origin — right for the mcp-access page's token snippets,
+             wrong here, because this tab's job is to report what the box ADVERTISES. The two differ
+             on any box reached by a name other than the one it asserts, and the tab was showing both
+             at once with nothing to explain the difference. `serving`, not `value`: `value` may be
+             saved-but-pending-restart, which island 1's Pending-restart marker already says. #}
+          <template x-if="externalAddress.serving">
+            <div>
+              <p class="cfm-meta-v"><span class="cfm-badge cfm-badge--ok">✓ Active</span> at <code x-text="externalAddress.serving + '/mcp'"></code></p>
+              <p class="cfm-muted cfm-mt-6">Anyone with a CORPUSfm account can connect an MCP client here, and their access follows their current gates.</p>
+            </div>
+          </template>
+          {# Mounted, but advertising nothing — the state a fresh install is in. Rendering
+             `serving + '/mcp'` here would print a bare "/mcp" that reads as a real endpoint. #}
+          <template x-if="!externalAddress.serving">
+            <p class="cfm-meta-v"><span class="cfm-badge cfm-badge--ok">✓ Active</span>, but this box is
+              serving no MCP address, so a client has nothing to connect to and cannot discover OAuth
+              sign-in. Manual named tokens still work. Set the address above.</p>
+          </template>
+        </div>
+      </template>
+      <template x-if="!mcp.mounted">
+        <p class="cfm-inline-error">The MCP endpoint is <strong>not active</strong> on this server. Re-run the installer — an existing install is detected automatically.</p>
+      </template>
+    </div>
+
+    <h2 class="cfm-section-h">OAuth connection lifetime
+      {{ doc_help('settings#oauth-connection-lifetime', 'About the OAuth connection lifetime') }}</h2>
+    <div class="cfm-panel">
+      <div class="cfm-island-top">
+        {# The explanation moved to the docs the ? icon already points at (packet 1220). What stays is
+           the one fact the dropdown cannot state and an admin needs before choosing: the change is
+           asymmetric. Without a left-hand line this panel also read as an empty box beside a control,
+           unlike every sibling — found by looking at the rendered page, not by a test. #}
+        <p class="cfm-muted">Tightening applies to existing connections at once; loosening applies only
+          to connections approved from then on. No restart.</p>
+        <div class="cfm-island-act">
+          {# Reads the page's reactive state directly rather than cfmDropdown's snapshot — the choices
+             arrive with the settings fetch, after this renders (same reason as the Jobs server picker). #}
+          <div class="cfm-dd cfm-dd--wide" @click.outside="lifetimeMenuOpen = false"
+               @keydown.escape.stop="lifetimeMenuOpen = false">
+            <button type="button" class="cfm-dd-trigger" @click="lifetimeMenuOpen = !lifetimeMenuOpen"
+                    aria-label="OAuth connection lifetime" :aria-expanded="!!lifetimeMenuOpen">
+              <span x-text="lifetimeLabel()"></span>
+              <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+            </button>
+            <div class="cfm-dd-menu" x-show="lifetimeMenuOpen" x-cloak>
+              <template x-for="opt in prefs.browser_connection_lifetime_choices" :key="opt.id">
+                <button type="button" class="cfm-dd-opt"
+                        :class="opt.id === prefs.browser_connection_lifetime ? 'cfm-dd-opt--on' : ''"
+                        @click="lifetimeMenuOpen = false; prefs.browser_connection_lifetime = opt.id; saveConnectionLifetime()"
+                        x-text="opt.label"></button>
+              </template>
+            </div>
+          </div>
+          <span x-show="lifetimeMsg" x-text="lifetimeMsg" class="cfm-muted cfm-ml-8"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ═══ Storage ═══════════════════════════════════════════════════════════════ #}
+  <div x-show="tab === 'storage'">
+    <h2 class="cfm-section-h">Archive
+      {{ doc_help('settings#archive-directory', 'About the archive directory') }}</h2>
+    <div class="cfm-panel">
+      <div class="cfm-island-top">
+        <p class="cfm-muted">Where CORPUSfm keeps artifact data, and how much space it uses.</p>
+        <div class="cfm-island-act">
+          <button type="button" class="cfm-btn cfm-btn--sm" @click="loadArchiveInfo()">Refresh usage</button>
+          <template x-if="storageBackend === 'unpublished'">
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="openEdit('archive')">Change directory…</button>
+          </template>
+        </div>
+      </div>
+      <template x-if="archiveInfo && archiveInfo.exists">
+        <div class="cfm-meta-grid cfm-mt-14">
+          <span class="cfm-meta-k">Storage</span><span class="cfm-meta-v" x-text="archiveInfo.total_size"></span>
+          <span class="cfm-meta-k">FM files</span><span class="cfm-meta-v" x-text="archiveInfo.fm_files"></span>
+          <span class="cfm-meta-k">Artifacts</span><span class="cfm-meta-v" x-text="archiveInfo.artifacts"></span>
+          {# Was the literal "Active". Blob encryption is off by default, so on an ordinary install
+             this panel asserted encryption was on while the switch two sections below said off. #}
+          <span class="cfm-meta-k">Encryption</span><span class="cfm-meta-v" x-text="storedEncryptBlobs ? 'On' : 'Off'"></span>
+        </div>
+      </template>
+      <template x-if="storageBackend === 'fm_odata'">
+        <p class="cfm-muted cfm-mt-6">Artifact data is stored in the FileMaker database via OData.</p>
+      </template>
+      <template x-if="storageBackend === 'unpublished'">
+        <div class="cfm-meta-grid cfm-mt-14">
+          <span class="cfm-meta-k">Directory</span><span class="cfm-meta-v" x-text="archiveDir || '—'"></span>
+        </div>
+      </template>
+      <div class="cfm-meta-grid cfm-mt-14">
+        <span class="cfm-meta-k">Maximum upload size</span><span class="cfm-meta-v">{{ max_upload_label }}</span>
+      </div>
+      <p class="cfm-muted cfm-mt-6">A fixed, app-enforced limit per file — not configurable. The web server in front of CORPUSfm may impose its own (possibly lower) limit we can't read here.</p>
+    </div>
+
+    {% if mode == 'server' %}
+    <h2 class="cfm-section-h">Storage backend
+      {{ doc_help('settings#storage-backend', 'About the storage backend') }}</h2>
+    <div class="cfm-panel">
+      <div class="cfm-island-top">
+        <p class="cfm-muted">Which FileMaker database holds CORPUSfm's own data.</p>
+      </div>
+      <div class="cfm-meta-grid cfm-mt-14">
+        <span class="cfm-meta-k">Backend</span><span class="cfm-meta-v" x-text="storageBackend === 'fm_odata' ? 'FileMaker (OData)' : storageBackend"></span>
+        <template x-if="storageBackend === 'fm_odata' && fm.database"><span class="cfm-meta-k">Storage DB</span></template>
+        <template x-if="storageBackend === 'fm_odata' && fm.database"><span class="cfm-meta-v" x-text="fm.database"></span></template>
+      </div>
+      <p class="cfm-muted cfm-mt-6" x-show="fm.reason" x-text="fm.reason"></p>
+    </div>
+    {% endif %}
+
+    <h2 class="cfm-section-h">Import options</h2>
+    <div class="cfm-panel">
+      {# Packet 059: retaining the compressed source XML is the DEFAULT; the single setting is the
+         opt-in to DELETE it. Enabled = discard on import. (Bound to the inverse of keep_source_xml.) #}
+      <div class="cfm-switch" :class="!prefs.keep_source_xml ? 'cfm-switch--on' : ''" @click="toggleKeepSource()">
+        <span class="cfm-switch-track"></span><span>Delete the source XML on import</span>
+      </div>
+      <p class="cfm-muted cfm-mt-6"><strong>Off (default):</strong> the original FM source XML is kept (gzip-compressed, ~15–30 MB for a big export) with each artifact — the archived original, deletable any time per artifact. <strong>On:</strong> the source is discarded on import (nothing to reclaim, and no original for download / re-export). Flipping saves immediately.</p>
+    </div>
+
+    <h2 class="cfm-section-h">Blob encryption
+      {{ doc_help('settings#blob-encryption', 'About blob encryption') }}</h2>
+    <div class="cfm-panel">
+      <div class="cfm-switch" :class="blobOn ? 'cfm-switch--on' : ''" @click="toggleBlobEncryption()">
+        <span class="cfm-switch-track"></span><span>Encrypt stored blobs at rest with this install's key</span>
+      </div>
+      <p class="cfm-muted cfm-mt-6">
+        <strong>Off (default):</strong> blobs stored as plaintext gzip — the DB backup is self-sufficient.
+        <strong>On:</strong> encrypted with this install's Fernet key (losing <code>corpus.key</code> loses the data).
+        Flipping locks the app for everyone while every blob is re-encoded.
+      </p>
+    </div>
+
+    <h2 class="cfm-section-h">Semantic index
+      {{ doc_help('semantic-search#turning-it-on', 'About semantic search') }}</h2>
+    <div class="cfm-panel">
+      <div class="cfm-island-top">
+        <p class="cfm-muted">The vector index that powers semantic search and MCP retrieval — a <strong>separate store</strong> from the FileMaker data (wiping the data store does not clear it).</p>
+        <div class="cfm-island-act">
+          <button type="button" class="cfm-btn cfm-btn--sm" @click="loadIndexInfo()">Refresh</button>
+        </div>
+      </div>
+      <template x-if="!indexInfo.configured">
+        <p class="cfm-muted cfm-mt-14">No embedder configured — the semantic index is inactive. Set it up under <a :href="(window.CFM_PREFIX||'') + '/settings#integrations'">Integrations → Semantic search</a>.</p>
+      </template>
+      <template x-if="indexInfo.configured">
+        <div class="cfm-mt-14">
+          <div><strong x-text="indexInfo.total"></strong> <span class="cfm-muted">vectors indexed across <span x-text="indexInfo.files"></span> file(s).</span></div>
+          <p class="cfm-muted cfm-mt-6">Reset rebuilds from scratch (after a data wipe, an embedder change, or orphaned entries). Add/refresh an artifact with <strong>Index</strong>/<strong>Reindex</strong>, or remove one with <strong>De-index</strong>, from its detail on the Artifacts page.</p>
+          <div class="cfm-filterbar cfm-filterbar--tight cfm-mt-14">
+            <span class="cfm-spacer"></span>
+            <template x-if="!confirmIndexReset">
+              <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="confirmIndexReset = true">Reset semantic index…</button>
+            </template>
+            <template x-if="confirmIndexReset">
+              <span class="cfm-confirm">
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="resetIndex()" :disabled="!!indexResetting" x-text="indexResetting ? 'Clearing…' : 'Confirm — clear all vectors?'"></button>
+                <button type="button" class="cfm-btn cfm-btn--sm" @click="confirmIndexReset = false">Cancel</button>
+              </span>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  {# ═══ Addon ═════════════════════════════════════════════════════════════════ #}
+  <div x-show="tab === 'integrations'">
+    {# packet 1188 family: the install instructions, the script table and the platform paths are a
+       MANUAL, and a manual is not a setting. They live in the docs now; this panel keeps only what
+       you came here to do — get the file — and says what it is. #}
+    <h2 class="cfm-section-h">FM Addon
+      {{ doc_help('addon', 'About the FileMaker add-on') }}</h2>
+    <p class="cfm-muted cfm-mb-12">Exports your schema XML to CORPUSfm from inside FileMaker. Install
+      it into each FM file you want to monitor; its scripts appear under <code>CORPUSfm (Cfm)</code>.
+      <a href="{{ url_prefix }}/docs/addon">How to install it, and which script to enable →</a></p>
+    <div class="cfm-panel">
+      <div class="cfm-filterbar cfm-filterbar--tight">
+        <a class="cfm-btn cfm-btn--sm cfm-btn--primary" href="{{ url_prefix }}/api/addon/download" download="CORPUSfm_ADDON.zip">Download CORPUSfm_ADDON.zip</a>
+      </div>
+    </div>
+
+  {# ═══ Export ════════════════════════════════════════════════════════════════ #}
+    <h2 class="cfm-section-h">Git Export Credentials
+      {{ doc_help('git-export#credentials', 'About Git credentials') }}</h2>
+    <p class="cfm-muted cfm-mb-12">A credential is how CORPUSfm authenticates to git. A <strong>token (PAT)</strong> reaches any repo you name on a Job or Artifact; a <strong>deploy key</strong> is bound to one repo. Jobs and Artifacts pick a credential by name. Secrets are encrypted at rest.</p>
+    <template x-if="registrations.length === 0">
+      <div class="cfm-panel">
+        <p class="cfm-muted">No credentials configured.</p>
+      </div>
+    </template>
+    {# Same grammar as Remote servers: one island per credential, its actions in its own header. #}
+    <template x-for="r in registrations" :key="r.name">
+      <div class="cfm-panel">
+        <div class="cfm-island-hd">
+          <span class="cfm-island-hd-name" x-text="r.name"></span>
+          <span class="cfm-badge" x-text="r.cred_type === 'deploy_key' ? 'Deploy key' : 'Token'"></span>
+          <span class="cfm-badge" :class="r.secret_set ? 'cfm-badge--ok' : 'cfm-badge--warn'"
+                x-text="r.secret_set ? 'Secret stored' : 'No secret stored'"></span>
+          <span class="cfm-island-act">
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="testReg(r)">Test</button>
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="pushReg(r.name)">Push</button>
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="editReg(r)">Edit…</button>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="removeReg(r.name)">Remove</button>
+          </span>
+        </div>
+        <div class="cfm-meta-grid cfm-mt-14">
+          <span class="cfm-meta-k">Repo</span>
+          <span class="cfm-meta-v" x-text="r.repo || (r.cred_type === 'deploy_key' ? 'not set' : 'any repo')"></span>
+          <span class="cfm-meta-k">Branch</span><span class="cfm-meta-v" x-text="r.branch"></span>
+          <span class="cfm-meta-k">Modes</span><span class="cfm-meta-v" x-text="r.modes.join(' + ')"></span>
+        </div>
+      </div>
+    </template>
+    <div class="cfm-filterbar cfm-filterbar--tight cfm-mb-12">
+      <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="newRegFresh()">Add credential…</button>
+    </div>
+
+  {# ═══ Notifications ═════════════════════════════════════════════════════════ #}
+    <h2 class="cfm-section-h">Notifications
+      {{ doc_help('settings#notifications', 'About notifications') }}</h2>
+    <div class="cfm-panel">
+      <div class="cfm-island-top">
+        <p class="cfm-muted">Default channel is Display (Monitoring page). Optional external channels below. Stored in <code>app_config.yaml</code>.</p>
+        <div class="cfm-island-act">
+          <button type="button" class="cfm-btn cfm-btn--sm" @click="openEdit('notifications')">Edit…</button>
+        </div>
+      </div>
+      <div class="cfm-meta-grid cfm-mt-14">
+        <span class="cfm-meta-k">Suppress</span><span class="cfm-meta-v" x-text="mon.suppress_hours + ' h'"></span>
+        <span class="cfm-meta-k">Overdue grace</span><span class="cfm-meta-v" x-text="mon.overdue_grace_minutes + ' min'"></span>
+        <span class="cfm-meta-k">Disk low</span><span class="cfm-meta-v" x-text="mon.disk_min_gb + ' GB'"></span>
+        <span class="cfm-meta-k">Webhook</span><span class="cfm-meta-v" x-text="mon.webhook_url || '—'"></span>
+        <span class="cfm-meta-k">SMTP</span><span class="cfm-meta-v" x-text="mon.smtp_host ? (mon.smtp_host + ':' + mon.smtp_port) : '—'"></span>
+        <template x-if="mon.smtp_host"><span class="cfm-meta-k">Mail to</span></template>
+        <template x-if="mon.smtp_host"><span class="cfm-meta-v" x-text="mon.smtp_to || '—'"></span></template>
+      </div>
+    </div>
+
+  {# ═══ AI ════════════════════════════════════════════════════════════════════ #}
+    <h2 class="cfm-section-h">Semantic search — embeddings
+      {{ doc_help('semantic-search#turning-it-on', 'About semantic search') }}</h2>
+    <div class="cfm-panel">
+      <div class="cfm-island-top">
+        <p class="cfm-muted">Enables semantic search and MCP retrieval — indexes each object's rendered text at ingest (no summaries required).</p>
+        <div class="cfm-island-act">
+          <button type="button" class="cfm-btn cfm-btn--sm" @click="openEdit('ai-embed')">Edit…</button>
+        </div>
+      </div>
+      <div class="cfm-meta-grid cfm-mt-14">
+        <span class="cfm-meta-k">Endpoint</span><span class="cfm-meta-v" x-text="aiSummary.embedding_base_url || '—'"></span>
+        <span class="cfm-meta-k">Model</span><span class="cfm-meta-v" x-text="aiSummary.embedding_model || '—'"></span>
+        <span class="cfm-meta-k">Status</span><span class="cfm-meta-v"><span class="cfm-badge" :class="embedVerified ? 'cfm-badge--ok' : 'cfm-badge--idle'" x-text="embedVerified ? '✓ verified' : 'untested'"></span></span>
+      </div>
+    </div>
+
+    <h2 class="cfm-section-h">Summaries — chat model
+      {{ doc_help('settings#choosing-a-summary-chat-model', 'Which model to use') }}</h2>
+    <div class="cfm-panel">
+      <div class="cfm-island-top">
+        <p class="cfm-muted">Adds optional AI-written descriptions — an extra searchable layer on top of the raw index (it doesn't enable search on its own). Keys stored encrypted, never shown back.</p>
+        <div class="cfm-island-act">
+          <button type="button" class="cfm-btn cfm-btn--sm" @click="openEdit('ai-chat')">Edit…</button>
+        </div>
+      </div>
+      <div class="cfm-meta-grid cfm-mt-14">
+        <span class="cfm-meta-k">Provider</span><span class="cfm-meta-v" x-text="providerLabel(aiSummary.provider)"></span>
+        <template x-if="aiSummary.provider"><span class="cfm-meta-k">Model</span></template>
+        <template x-if="aiSummary.provider"><span class="cfm-meta-v" x-text="aiSummary.model || '—'"></span></template>
+        <template x-if="aiSummary.provider"><span class="cfm-meta-k">API key</span></template>
+        <template x-if="aiSummary.provider"><span class="cfm-meta-v"><span class="cfm-badge" :class="aiSummary.api_key_set ? 'cfm-badge--ok' : 'cfm-badge--idle'" x-text="aiSummary.api_key_set ? 'stored' : 'none'"></span></span></template>
+        <template x-if="aiSummary.provider"><span class="cfm-meta-k">Status</span></template>
+        <template x-if="aiSummary.provider"><span class="cfm-meta-v"><span class="cfm-badge" :class="summaryVerified ? 'cfm-badge--ok' : 'cfm-badge--idle'" x-text="summaryVerified ? '✓ verified' : 'untested'"></span></span></template>
+      </div>
+    </div>
+  </div>
+
+  {# ═══════════════════════════════ POP-OVERS ═════════════════════════════════ #}
+
+  {# Remote-server add/edit (packet 1015) — pop-over; mobile-ready via the settings-page cfm-dialog CSS #}
+  <div class="cfm-overlay" x-show="serverForm" x-cloak
+       @click.self="serverForm = null" @keydown.escape.window="if (serverForm) serverForm = null"
+       x-effect="serverForm ? $nextTick(() => { _trapSrv = window.cfmFocusTrap($refs.srvDlg) }) : (_trapSrv && _trapSrv())">
+    <div class="cfm-dialog" x-ref="srvDlg" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr">
+        <span class="cfm-dialog-title" x-text="serverForm && serverForm.is_new ? 'Add remote server' : ('Edit · ' + (serverForm ? serverForm.name : ''))"></span>
+        <button type="button" class="cfm-iconbtn" @click="serverForm = null" aria-label="Cancel" title="Cancel">✕</button>
+      </div>
+      <div class="cfm-dialog-body">
+        <template x-if="serverForm">
+          <div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="srv-name">Name</label>
+              <input id="srv-name" type="text" class="cfm-input" x-model="serverForm.name" :disabled="!serverForm.is_new" placeholder="e.g. prod-fms">
+            </div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="srv-host">Host</label>
+              <input id="srv-host" type="text" class="cfm-input" x-model="serverForm.host" placeholder="fms2.example.com">
+            </div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="srv-acct">Account</label>
+              <input id="srv-acct" type="text" class="cfm-input" x-model="serverForm.account" placeholder="fmsadmin account (Admin API)">
+            </div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="srv-pw">Password</label>
+              <input id="srv-pw" type="password" class="cfm-input" x-model="serverForm.password"
+                     :placeholder="serverForm.password_set ? '•••••• (stored — enter to replace)' : 'fmsadmin password'">
+            </div>
+            <div class="cfm-field">
+              <div class="cfm-switch" :class="serverForm.verify_ssl?'cfm-switch--on':''" @click="serverForm.verify_ssl=!serverForm.verify_ssl"><span class="cfm-switch-track"></span><span>Verify TLS certificate</span></div>
+              <p class="cfm-muted cfm-mt-6">Leave off for a self-signed FMS certificate (the default). Turn on only when this server has a certificate CORPUSfm can validate.</p>
+            </div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="srv-callback">Callback URL</label>
+              <input id="srv-callback" type="text" class="cfm-input" x-model="serverForm.callback_url"
+                     placeholder="https://this-host/corpusfm">
+              <p class="cfm-field-hint">Where THIS server posts its schema back to CORPUSfm — the address
+                as that server can reach it, which need not be the one you use. Blank uses this
+                install's own address.</p>
+            </div>
+            <p class="cfm-muted cfm-mt-6">Used only to list the server's hosted files. File access (OData) is set on each job.</p>
+            <p class="cfm-muted" x-show="serverMsg" x-text="serverMsg"></p>
+          </div>
+        </template>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="serverForm = null">Cancel</button>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="saveServer()" :disabled="!!savingServer" x-text="savingServer ? 'Verifying…' : 'Save'">Save</button>
+      </div>
+    </div>
+  </div>
+
+  {# Archive directory edit (local backend) #}
+  <div class="cfm-overlay" x-show="edit === 'archive'" x-cloak
+       @click.self="closeEdit(false)" @keydown.escape.window="if (edit==='archive') closeEdit(false)"
+       x-effect="edit === 'archive' ? $nextTick(() => { _trapB = window.cfmFocusTrap($refs.archDlg) }) : (_trapB && _trapB())">
+    <div class="cfm-dialog" x-ref="archDlg" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Archive directory</span>
+        {{ doc_help('settings#archive-directory', 'About the archive directory') }}
+        <button type="button" class="cfm-iconbtn" @click="closeEdit(false)" aria-label="Cancel" title="Cancel">✕</button></div>
+      <div class="cfm-dialog-body">
+        <div class="cfm-field">
+          <label class="cfm-field-label" for="arch-dir">Directory</label>
+          <input id="arch-dir" type="text" class="cfm-input" x-model="archiveDir">
+          <p class="cfm-muted cfm-mt-6">Artifacts are stored here after each job run or manual import.</p>
+        </div>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="closeEdit(false)">Cancel</button>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="commitArchive()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  {# Blob-encryption confirm (consequential switch) #}
+  <div class="cfm-overlay" x-show="blobConfirm" x-cloak
+       @click.self="cancelBlobEncryption()" @keydown.escape.window="if (blobConfirm) cancelBlobEncryption()">
+    <div class="cfm-dialog" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Re-encode all stored blobs?</span>
+        {{ doc_help('settings#blob-encryption', 'About blob encryption') }}</div>
+      <div class="cfm-dialog-body">
+        <p>This will <strong x-text="pendingEncrypt ? 'encrypt' : 'decrypt'"></strong> every stored blob and <strong>lock CORPUSfm for everyone</strong> until it finishes. The conversion runs on the server; you'll watch its progress on the next screen.</p>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="cancelBlobEncryption()">Cancel</button>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="confirmBlobEncryption()">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  {# Apply update confirm #}
+  <div class="cfm-overlay" x-show="confirmUpdate" x-cloak
+       @click.self="confirmUpdate=false" @keydown.escape.window="if (confirmUpdate) confirmUpdate=false">
+    <div class="cfm-dialog" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Apply update &amp; restart</span>
+        {{ doc_help('settings#updates', 'About updates') }}</div>
+      <div class="cfm-dialog-body">
+        <p>Ask the privileged updater on the server to advance to the exact commit you just inspected (<strong x-text="update.target_head ? update.target_head.slice(0, 12) : (update.latest || '—')"></strong>) and restart. CORPUSfm does not update itself — this authorises that one commit, and the updater refuses if <code>origin/main</code> has moved since you looked. The app is briefly unavailable, then this page reloads automatically.</p>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="confirmUpdate=false">Cancel</button>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="confirmUpdate=false; applyUpdate()">Update &amp; restart</button>
+      </div>
+    </div>
+  </div>
+
+  {# Add git registration #}
+  <div class="cfm-overlay" x-show="edit === 'reg-add'" x-cloak
+       @click.self="closeEdit(false)" @keydown.escape.window="if (edit==='reg-add') closeEdit(false)"
+       x-effect="edit === 'reg-add' ? $nextTick(() => { _trapD = window.cfmFocusTrap($refs.regDlg) }) : (_trapD && _trapD())">
+    <div class="cfm-dialog" x-ref="regDlg" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr"><span class="cfm-dialog-title" x-text="regEditing ? 'Edit credential' : 'Add credential'"></span>
+        {{ doc_help('git-export#credentials', 'About Git credentials') }}
+        <button type="button" class="cfm-iconbtn" @click="closeEdit(false)" aria-label="Cancel" title="Cancel">✕</button></div>
+      <div class="cfm-dialog-body">
+        <div class="cfm-field"><label class="cfm-field-label" for="reg-name">Name</label>
+          <input id="reg-name" type="text" class="cfm-input" x-model="newReg.name" :disabled="regEditing" placeholder="team-archive"></div>
+
+        <div class="cfm-field">
+          <span class="cfm-field-label">Credential type</span>
+          <div class="cfm-filterbar cfm-filterbar--tight">
+            <button type="button" class="cfm-btn cfm-btn--sm" :class="newReg.cred_type==='pat'?'cfm-btn--primary':''" @click="newReg.cred_type='pat'">Token (PAT)</button>
+            <button type="button" class="cfm-btn cfm-btn--sm" :class="newReg.cred_type==='deploy_key'?'cfm-btn--primary':''" @click="newReg.cred_type='deploy_key'">Deploy key</button>
+          </div>
+          <p class="cfm-muted cfm-mt-6" x-show="newReg.cred_type==='pat'">One token → many repos. The repo below is a default; Jobs/Artifacts may override it.</p>
+          <p class="cfm-muted cfm-mt-6" x-show="newReg.cred_type==='deploy_key'">A deploy key is bound to exactly one repo. The repo below is fixed downstream.</p>
+        </div>
+
+        {# ── PAT fields ── #}
+        <template x-if="newReg.cred_type==='pat'">
+          <div>
+            <div class="cfm-field"><label class="cfm-field-label" for="reg-repo">Default repo URL (https, optional)</label>
+              <input id="reg-repo" type="text" class="cfm-input" x-model="newReg.repo" placeholder="https://github.com/you/repo.git"></div>
+            <div class="cfm-field"><label class="cfm-field-label" for="reg-user">Git username (optional)</label>
+              <input id="reg-user" type="text" class="cfm-input" x-model="newReg.username" placeholder="x-access-token (default)"></div>
+            <div class="cfm-field"><label class="cfm-field-label" for="reg-token">Personal access token</label>
+              <input id="reg-token" type="password" class="cfm-input" x-model="newReg.token" :placeholder="newReg.secret_set ? 'Leave blank to keep stored token' : 'ghp_… / github_pat_…'">
+              <p class="cfm-muted cfm-mt-6">Fine-grained PAT, scoped to your repos, <strong>Contents: read/write</strong>. Encrypted at rest.</p></div>
+          </div>
+        </template>
+
+        {# ── Deploy-key fields ── #}
+        <template x-if="newReg.cred_type==='deploy_key'">
+          <div>
+            <div class="cfm-field"><label class="cfm-field-label" for="reg-repo-ssh">Bound repo URL (ssh)</label>
+              <input id="reg-repo-ssh" type="text" class="cfm-input" x-model="newReg.repo" placeholder="git@github.com:you/repo.git"></div>
+            <div class="cfm-field">
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="generateDeployKey()" :disabled="!!regGenBusy">Generate deploy key</button>
+              <p class="cfm-muted cfm-mt-6">Generates an ed25519 keypair on the server (private key encrypted at rest, never shown) and shows the public key below. Or paste your own private key.</p></div>
+            <div class="cfm-field"><label class="cfm-field-label" for="reg-key">Private key (PEM)</label>
+              <textarea id="reg-key" class="cfm-input" rows="4" x-model="newReg.ssh_key" :placeholder="newReg.secret_set ? 'Leave blank to keep stored key' : '-----BEGIN OPENSSH PRIVATE KEY-----'"></textarea></div>
+            <div class="cfm-field"><label class="cfm-field-label" for="reg-pub">Public key</label>
+              <textarea id="reg-pub" class="cfm-input" rows="2" x-model="newReg.ssh_pubkey" placeholder="ssh-ed25519 AAAA…"></textarea>
+              <p class="cfm-muted cfm-mt-6">Add this public key as the repo's <strong>deploy key with write access</strong> (GitHub → repo → Settings → Deploy keys).</p></div>
+          </div>
+        </template>
+
+        <div class="cfm-field"><label class="cfm-field-label" for="reg-branch">Branch</label>
+          <input id="reg-branch" type="text" class="cfm-input" x-model="newReg.branch"></div>
+        <div class="cfm-field"><label class="cfm-field-label" for="reg-group">Group (optional)</label>
+          <input id="reg-group" type="text" class="cfm-input" x-model="newReg.group" placeholder="team-a"></div>
+        <div class="cfm-field">
+          <span class="cfm-field-label">Modes</span>
+          <div class="cfm-filterbar cfm-filterbar--tight">
+            <div class="cfm-switch" :class="newReg.modes.includes('structured')?'cfm-switch--on':''" @click="toggleMode('structured')"><span class="cfm-switch-track"></span><span>Structured</span></div>
+            <div class="cfm-switch" :class="newReg.modes.includes('rendered')?'cfm-switch--on':''" @click="toggleMode('rendered')"><span class="cfm-switch-track"></span><span>Rendered</span></div>
+            <div class="cfm-switch" :class="newReg.show_hidden?'cfm-switch--on':''" @click="newReg.show_hidden=!newReg.show_hidden"><span class="cfm-switch-track"></span><span>Mark hidden chars</span></div>
+          </div>
+        </div>
+        <p class="cfm-inline-error" x-show="regErr && regMsg" x-text="regMsg"></p>
+        <p class="cfm-muted" x-show="regTestMsg" x-text="regTestMsg"></p>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="testNewReg()">Test</button>
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="closeEdit(false)">Cancel</button>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="commitReg()" aria-label="Save credential" title="Save credential" x-text="regEditing ? 'Save' : 'Add credential'"></button>
+      </div>
+    </div>
+  </div>
+
+  {# Notifications edit #}
+  <div class="cfm-overlay" x-show="edit === 'notifications'" x-cloak
+       @click.self="closeEdit(false)" @keydown.escape.window="if (edit==='notifications') closeEdit(false)"
+       x-effect="edit === 'notifications' ? $nextTick(() => { _trapE = window.cfmFocusTrap($refs.notifDlg) }) : (_trapE && _trapE())">
+    <div class="cfm-dialog" x-ref="notifDlg" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Notification settings</span>
+        {{ doc_help('settings#notifications', 'About notifications') }}
+        <button type="button" class="cfm-iconbtn" @click="closeEdit(false)" aria-label="Cancel" title="Cancel">✕</button></div>
+      <div class="cfm-dialog-body">
+        <div class="cfm-field"><label class="cfm-field-label" for="mon-sup">Suppress hours</label>
+          <input id="mon-sup" type="number" class="cfm-input" x-model.number="mon.suppress_hours" min="1" max="168"></div>
+        <div class="cfm-field"><label class="cfm-field-label" for="mon-grace">Overdue grace (min)</label>
+          <input id="mon-grace" type="number" class="cfm-input" x-model.number="mon.overdue_grace_minutes" min="1" max="120"></div>
+        <div class="cfm-field"><label class="cfm-field-label" for="mon-disk">Disk low threshold (GB)</label>
+          <input id="mon-disk" type="number" class="cfm-input" x-model.number="mon.disk_min_gb" min="0.1" max="100" step="0.5"></div>
+        <div class="cfm-field"><label class="cfm-field-label" for="mon-wh">Webhook URL (blank to disable)</label>
+          <input id="mon-wh" type="text" class="cfm-input" x-model="mon.webhook_url" placeholder="https://hooks.slack.com/services/…"></div>
+        <p class="cfm-field-label">Email (SMTP)</p>
+        <div class="cfm-field"><label class="cfm-field-label" for="mon-host">SMTP host</label>
+          <input id="mon-host" type="text" class="cfm-input" x-model="mon.smtp_host" placeholder="smtp.gmail.com"></div>
+        <div class="cfm-field"><label class="cfm-field-label" for="mon-port">Port</label>
+          <input id="mon-port" type="number" class="cfm-input" x-model.number="mon.smtp_port" min="1" max="65535"></div>
+        <div class="cfm-field"><label class="cfm-field-label" for="mon-user">Username</label>
+          <input id="mon-user" type="text" class="cfm-input" x-model="mon.smtp_user"></div>
+        <div class="cfm-field"><label class="cfm-field-label" for="mon-pass">Password</label>
+          <input id="mon-pass" type="password" class="cfm-input" x-model="mon.smtp_pass" :placeholder="mon.smtp_pass_set ? '•••••••• (leave blank to keep)' : ''">
+          <p class="cfm-muted cfm-mt-6" x-show="mon.smtp_pass_set && !mon.smtp_pass">A password is saved — leave blank to keep it, or type a new one to replace it.</p></div>
+        <div class="cfm-field"><label class="cfm-field-label" for="mon-from">From address</label>
+          <input id="mon-from" type="text" class="cfm-input" x-model="mon.smtp_from"></div>
+        <div class="cfm-field"><label class="cfm-field-label" for="mon-to">To (comma-separated)</label>
+          <input id="mon-to" type="text" class="cfm-input" x-model="mon.smtp_to"></div>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="closeEdit(false)">Cancel</button>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="commitNotifications()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  {# AI — Summaries edit #}
+  <div class="cfm-overlay" x-show="edit === 'ai-chat'" x-cloak
+       @click.self="closeEdit(false)" @keydown.escape.window="if (edit==='ai-chat') closeEdit(false)"
+       x-effect="edit === 'ai-chat' ? $nextTick(() => { _trapF = window.cfmFocusTrap($refs.aiChatDlg) }) : (_trapF && _trapF())">
+    <div class="cfm-dialog" x-ref="aiChatDlg" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Summaries — chat model</span>
+        {{ doc_help('settings#choosing-a-summary-chat-model', 'Which model to use') }}
+        <button type="button" class="cfm-iconbtn" @click="closeEdit(false)" aria-label="Cancel" title="Cancel">✕</button></div>
+      <div class="cfm-dialog-body">
+        <div class="cfm-field">
+          <span class="cfm-field-label">Provider</span>
+          <div class="cfm-dd" x-data="{ open:false }" @click.outside="open=false">
+            <button type="button" class="cfm-dd-trigger" @click="open=!open" aria-label="Choose an option" aria-haspopup="listbox"><span x-text="providerLabel(aiSummary.provider)"></span>
+              <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>
+            <div class="cfm-dd-menu" x-show="open" x-cloak>
+              <button type="button" class="cfm-dd-opt" :class="aiSummary.provider===''?'cfm-dd-opt--on':''" @click="aiSummary.provider=''; open=false">Disabled</button>
+              <button type="button" class="cfm-dd-opt" :class="aiSummary.provider==='anthropic'?'cfm-dd-opt--on':''" @click="aiSummary.provider='anthropic'; open=false">Anthropic (Claude) — API key</button>
+              <button type="button" class="cfm-dd-opt" :class="aiSummary.provider==='openai_compat'?'cfm-dd-opt--on':''" @click="aiSummary.provider='openai_compat'; open=false">OpenAI-compatible / local (Ollama, LM Studio)</button>
+              <button type="button" class="cfm-dd-opt" :class="aiSummary.provider==='azure_openai'?'cfm-dd-opt--on':''" @click="aiSummary.provider='azure_openai'; open=false">Azure OpenAI</button>
+            </div>
+          </div>
+        </div>
+        <template x-if="aiSummary.provider === 'openai_compat'">
+          <div>
+            <div class="cfm-filterbar cfm-filterbar--tight cfm-mb-12">
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="aiSummary.base_url='http://localhost:11434/v1'; aiSummary.model=''; chatModels=[]">Preset: Ollama</button>
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="aiSummary.base_url='http://localhost:1234/v1'; aiSummary.model=''; chatModels=[]">Preset: LM Studio</button>
+            </div>
+            <div class="cfm-field"><label class="cfm-field-label" for="ai-base">Base URL</label>
+              <input id="ai-base" type="text" class="cfm-input" x-model="aiSummary.base_url" placeholder="https://api.openai.com/v1"></div>
+          </div>
+        </template>
+        <template x-if="aiSummary.provider === 'azure_openai'">
+          <div>
+            <div class="cfm-field"><label class="cfm-field-label" for="ai-az-base">Azure resource URL</label>
+              <input id="ai-az-base" type="text" class="cfm-input" x-model="aiSummary.base_url" placeholder="https://<resource>.openai.azure.com">
+              <p class="cfm-muted cfm-mt-6">Your Azure OpenAI resource root — no path. The chat <strong>deployment</strong> goes in Model below.</p></div>
+            <div class="cfm-field"><label class="cfm-field-label" for="ai-az-ver">API version</label>
+              <input id="ai-az-ver" type="text" class="cfm-input" x-model="aiSummary.api_version" placeholder="2024-10-21"></div>
+          </div>
+        </template>
+        <template x-if="aiSummary.provider">
+          <div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="ai-model" x-text="aiSummary.provider === 'azure_openai' ? 'Chat deployment' : 'Model'">Model</label>
+              <input id="ai-model" type="text" class="cfm-input" title="Chat model or Azure deployment" x-model="aiSummary.model"
+                     :placeholder="aiSummary.provider === 'anthropic' ? 'claude-haiku-4-5-20251001 (default)' : (aiSummary.provider === 'azure_openai' ? 'your chat deployment name' : 'set the URL, then List models →')">
+              <template x-if="aiSummary.provider === 'openai_compat'">
+                <div class="cfm-filterbar cfm-filterbar--tight">
+                  <button type="button" class="cfm-btn cfm-btn--sm" @click="listChatModels()" :disabled="!!chatListing">List models</button>
+                  <div class="cfm-dd" x-data="{ open:false }" @click.outside="open=false" x-show="chatModels.length">
+                    <button type="button" class="cfm-dd-trigger" @click="open=!open" aria-label="Choose an option" aria-haspopup="listbox"><span x-text="aiSummary.model || 'Pick a listed model…'"></span>
+                      <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>
+                    <div class="cfm-dd-menu" x-show="open" x-cloak>
+                      <template x-for="m in chatModels" :key="m">
+                        <button type="button" class="cfm-dd-opt" :class="aiSummary.model===m?'cfm-dd-opt--on':''" @click="aiSummary.model=m; open=false" x-text="m"></button>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <p class="cfm-muted cfm-mt-6">Pick a small, fast <strong>non-thinking</strong> model (e.g. <code>llama3.1:8b</code>, <code>gpt-4o-mini</code>, <code>claude-haiku</code>). Reasoning models (<code>qwen3</code>, <code>deepseek-r1</code>, o-series) are slow per object and can run out of budget mid-reasoning and return nothing.</p>
+            </div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="ai-budget">Content budget (characters)</label>
+              <input id="ai-budget" type="number" min="0" step="1000" class="cfm-input" x-model.number="aiSummary.max_content_chars" placeholder="12000">
+              <p class="cfm-muted cfm-mt-6"><strong>0</strong> = send each object whole in one call. Otherwise an object larger than this is chunked (a terse extract per chunk, then one synthesis) so the totality informs the summary — never truncated. A calc's gist is rarely in the first chunk.</p>
+            </div>
+            <div class="cfm-field">
+              <div class="cfm-switch" :class="aiSummary.include_xref ? 'cfm-switch--on' : ''" @click="aiSummary.include_xref = !aiSummary.include_xref">
+                <span class="cfm-switch-track"></span><span>Include cross-references in the prompt</span>
+              </div>
+              <p class="cfm-muted cfm-mt-6">Append each object's <em>Used by / Uses</em> so summaries reflect how it's used, not just its body. Costs more tokens per object — off by default.</p>
+            </div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="ai-key">API key</label>
+              <input id="ai-key" type="password" class="cfm-input" x-model="aiSummary.api_key" autocomplete="off"
+                     :placeholder="aiSummary.api_key_set ? '•••••••• stored — leave blank to keep' : 'Paste your API key (stored encrypted)'">
+              <p class="cfm-muted cfm-mt-6" x-show="aiSummary.api_key_set">A key is stored. Leave blank to keep it, type a new one to replace, or <button type="button" class="cfm-btn cfm-btn--text" @click="aiSummary.api_key=''; aiSummary.clear_key=true; commitAi()">clear it</button>.</p>
+              <p class="cfm-muted cfm-mt-6" x-show="!aiSummary.api_key_set">Leave blank for a local model (no key needed).</p>
+            </div>
+            <div class="cfm-filterbar cfm-filterbar--tight">
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="testSummary()" :disabled="!!summaryTesting">Test chat model</button>
+              <span class="cfm-badge cfm-badge--ok" x-show="summaryVerified">✓ Replied</span>
+            </div>
+            <p class="cfm-muted cfm-mt-6">Sends one tiny prompt to confirm the chat model answers — uses the values above (a typed key need not be saved first).</p>
+          </div>
+        </template>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="closeEdit(false)">Cancel</button>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="commitAi()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  {# AI — Semantic search edit #}
+  <div class="cfm-overlay" x-show="edit === 'ai-embed'" x-cloak
+       @click.self="closeEdit(false)" @keydown.escape.window="if (edit==='ai-embed') closeEdit(false)"
+       x-effect="edit === 'ai-embed' ? $nextTick(() => { _trapG = window.cfmFocusTrap($refs.aiEmbedDlg) }) : (_trapG && _trapG())">
+    <div class="cfm-dialog" x-ref="aiEmbedDlg" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Semantic search — embeddings</span>
+        {{ doc_help('semantic-search#turning-it-on', 'About semantic search') }}
+        <button type="button" class="cfm-iconbtn" @click="closeEdit(false)" aria-label="Cancel" title="Cancel">✕</button></div>
+      <div class="cfm-dialog-body">
+        <p class="cfm-muted cfm-mb-12">A separate, independent embeddings endpoint (its own provider + key). <strong>OpenAI:</strong> <code>https://api.openai.com/v1</code> · <code>text-embedding-3-small</code>. <strong>Local, free:</strong> Ollama <code>http://localhost:11434/v1</code> · <code>nomic-embed-text</code>.{% if mode == 'server' %} Indexing runs on this box, so the URL must be reachable from here.{% endif %}</p>
+        <div class="cfm-field">
+          <span class="cfm-field-label">Provider</span>
+          <div class="cfm-dd" x-data="{ open:false }" @click.outside="open=false">
+            <button type="button" class="cfm-dd-trigger" @click="open=!open" aria-label="Choose an option" aria-haspopup="listbox"><span x-text="embedProviderLabel(aiSummary.embedding_provider)"></span>
+              <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>
+            <div class="cfm-dd-menu" x-show="open" x-cloak>
+              <button type="button" class="cfm-dd-opt" :class="(aiSummary.embedding_provider===''||aiSummary.embedding_provider==='openai_compat')?'cfm-dd-opt--on':''" @click="aiSummary.embedding_provider='openai_compat'; embedModels=[]; open=false">OpenAI-compatible / local (Ollama, LM Studio)</button>
+              <button type="button" class="cfm-dd-opt" :class="aiSummary.embedding_provider==='azure_openai'?'cfm-dd-opt--on':''" @click="aiSummary.embedding_provider='azure_openai'; embedModels=[]; open=false">Azure OpenAI</button>
+            </div>
+          </div>
+        </div>
+        <template x-if="aiSummary.embedding_provider !== 'azure_openai'">
+          <div>
+            <div class="cfm-filterbar cfm-filterbar--tight cfm-mb-12">
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="aiSummary.embedding_base_url='http://localhost:11434/v1'; aiSummary.embedding_model=''; embedModels=[]">Preset: Ollama</button>
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="aiSummary.embedding_base_url='http://localhost:1234/v1'; aiSummary.embedding_model=''; embedModels=[]">Preset: LM Studio</button>
+            </div>
+            <div class="cfm-field"><label class="cfm-field-label" for="ai-eurl">Embedding base URL</label>
+              <input id="ai-eurl" type="text" class="cfm-input" x-model="aiSummary.embedding_base_url" placeholder="e.g. https://api.openai.com/v1"></div>
+          </div>
+        </template>
+        <template x-if="aiSummary.embedding_provider === 'azure_openai'">
+          <div>
+            <div class="cfm-field"><label class="cfm-field-label" for="ai-eaz-base">Azure resource URL</label>
+              <input id="ai-eaz-base" type="text" class="cfm-input" x-model="aiSummary.embedding_base_url" placeholder="https://<resource>.openai.azure.com">
+              <p class="cfm-muted cfm-mt-6">The embedding <strong>deployment</strong> goes in the field below.</p></div>
+            <div class="cfm-field"><label class="cfm-field-label" for="ai-eaz-ver">API version</label>
+              <input id="ai-eaz-ver" type="text" class="cfm-input" x-model="aiSummary.embedding_api_version" placeholder="2024-10-21"></div>
+          </div>
+        </template>
+        <div class="cfm-field">
+          <label class="cfm-field-label" for="ai-emodel" x-text="aiSummary.embedding_provider === 'azure_openai' ? 'Embedding deployment' : 'Embedding model'">Embedding model</label>
+          <input id="ai-emodel" type="text" class="cfm-input" title="Embedding model or Azure deployment" x-model="aiSummary.embedding_model" :placeholder="aiSummary.embedding_provider === 'azure_openai' ? 'your embedding deployment name' : 'set the URL, then List models →'">
+          <template x-if="aiSummary.embedding_provider !== 'azure_openai'">
+            <div class="cfm-filterbar cfm-filterbar--tight">
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="listEmbeddingModels()" :disabled="!!embedListing">List models</button>
+              <div class="cfm-dd" x-data="{ open:false }" @click.outside="open=false" x-show="embedModels.length">
+                <button type="button" class="cfm-dd-trigger" @click="open=!open" aria-label="Choose an option" aria-haspopup="listbox"><span x-text="aiSummary.embedding_model || 'Pick a listed model…'"></span>
+                  <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>
+                <div class="cfm-dd-menu" x-show="open" x-cloak>
+                  <template x-for="m in embedModels" :key="m">
+                    <button type="button" class="cfm-dd-opt" :class="aiSummary.embedding_model===m?'cfm-dd-opt--on':''" @click="aiSummary.embedding_model=m; open=false" x-text="m"></button>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </template>
+          <p class="cfm-muted cfm-mt-6" x-show="aiSummary.embedding_provider !== 'azure_openai'">The endpoint lists chat + embedding models with no reliable flag — Test below proves the one you chose embeds.</p>
+        </div>
+        <div class="cfm-field">
+          <label class="cfm-field-label" for="ai-ekey">API key</label>
+          <input id="ai-ekey" type="password" class="cfm-input" x-model="aiSummary.embedding_api_key" autocomplete="off"
+                 :placeholder="aiSummary.embedding_api_key_set ? '•••••••• stored — leave blank to keep' : 'Paste the embedding endpoint key (stored encrypted)'">
+          <p class="cfm-muted cfm-mt-6" x-show="aiSummary.embedding_api_key_set">A key is stored. Leave blank to keep it, type a new one to replace, or <button type="button" class="cfm-btn cfm-btn--text" @click="aiSummary.embedding_api_key=''; aiSummary.embedding_clear_key=true; commitAi()">clear it</button>.</p>
+          <p class="cfm-muted cfm-mt-6" x-show="!aiSummary.embedding_api_key_set">Leave blank for a local endpoint (no key needed). This key is independent of the chat key.</p>
+        </div>
+        <div class="cfm-field">
+          {# A <label for=…> cannot point at a div, so the label is associated by id instead. The stored
+             value stays an INTEGER: the native control had `x-model.number` doing that coercion, and a
+             dropdown that quietly starts storing "128" would look identical and be wrong. #}
+          <span class="cfm-field-label" id="ai-ebatch-label">Embedding batch size</span>
+          <div class="cfm-dd" @click.outside="ebatchMenuOpen = false"
+               @keydown.escape.stop="ebatchMenuOpen = false" title="Objects per /embeddings request">
+            <button type="button" class="cfm-dd-trigger" id="ai-ebatch"
+                    aria-labelledby="ai-ebatch-label" :aria-expanded="!!ebatchMenuOpen"
+                    @click="ebatchMenuOpen = !ebatchMenuOpen">
+              <span x-text="aiSummary.embedding_batch_size ? String(aiSummary.embedding_batch_size) : 'Auto (recommended)'"></span>
+              <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+            </button>
+            <div class="cfm-dd-menu" x-show="ebatchMenuOpen" x-cloak>
+              <template x-for="n in [0, 16, 32, 64, 128, 256, 512, 1024, 2048]" :key="n">
+                <button type="button" class="cfm-dd-opt"
+                        :class="n === aiSummary.embedding_batch_size ? 'cfm-dd-opt--on' : ''"
+                        @click="ebatchMenuOpen = false; aiSummary.embedding_batch_size = n"
+                        x-text="n ? String(n) : 'Auto (recommended)'"></button>
+              </template>
+            </div>
+          </div>
+          <p class="cfm-muted cfm-mt-6">Objects sent per request. Auto = 16 for a local endpoint, 128 for a
+            remote one. Larger means far fewer round-trips on a hosted endpoint (Azure allows up to 2048);
+            it never changes the index, so no re-index is needed.</p>
+        </div>
+        <div class="cfm-filterbar cfm-filterbar--tight">
+          <button type="button" class="cfm-btn cfm-btn--sm" @click="testEmbedding()" :disabled="!!embedTesting">Test embedding endpoint</button>
+          <span class="cfm-badge cfm-badge--ok" x-show="embedVerified">✓ Verified</span>
+        </div>
+        <p class="cfm-muted cfm-mt-6">Changing the embedder changes the vector space — the semantic index must be rebuilt (re-index your artifacts) after switching.</p>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="closeEdit(false)">Cancel</button>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="commitAi()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  {% if mode == 'server' %}
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SETTINGS_TABS = ['general', 'health', 'access', 'filemaker', 'mcp', 'storage', 'integrations'];
+// 'general' keeps its ID (URL-addressable; #general links must keep working) but reads "CORPUSfm".
+const _TAB_LABELS = { general:'CORPUSfm', health:'Health', access:'Access', filemaker:'FileMaker', mcp:'MCP', storage:'Storage', integrations:'Integrations' };
+// Back-compat: the pre-2026-06 IA had separate tabs — remap old bookmarks/#hashes + the health
+// fix_tab hints onto the consolidated sections.
+// `mcp` is NOT aliased any more (packet 1196): it is a real tab again, and leaving the old
+// mcp->general entry here would swallow every #mcp deep link and the readiness fix_tab hint,
+// making the new tab unreachable by URL. Removing the alias RESTORES the pre-2026-06 meaning of
+// #mcp rather than breaking it.
+const _TAB_ALIAS = { servers:'filemaker', fms:'filemaker', users:'access',
+                     addon:'integrations', export:'integrations', notifications:'integrations', ai:'integrations' };
+function _settingsInitialTab() {
+  let h = location.hash.slice(1);
+  h = _TAB_ALIAS[h] || h;
+  return SETTINGS_TABS.includes(h) ? h : 'general';
+}
+
+const _GATE_LABELS = { automation:'Automation', library_mcp:'Library + MCP', patching:'Patching', fms_api:'Full FMS API', settings:'Settings (Admin)' };
+function usersTab() {
+  return {
+    users: [], gates: [], me: null,
+    nu: { username:'', password:'', gates: [] },
+    busy:false, ok:false, msg:'', rowOk:false, rowMsg:'',
+    gateEdit:null, gateDraft:[], gateBusy:false, gateMsg:'',
+    pwEdit:null, pwNew:'', pwCfm:'', pwBusy:false, pwMsg:'',
+    gateLabel(g){ return _GATE_LABELS[g] || g; },
+    async load(){
+      try { const r = await fetch('/api/users'); const d = await r.json();
+            this.users = d.users || []; this.gates = d.gates || []; this.me = d.me; } catch(e) {}
+    },
+    async create(){
+      this.msg=''; this.busy=true;
+      try { const r = await fetch('/api/users', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(this.nu)});
+            const d = await r.json(); this.ok = !!d.ok; this.msg = d.ok ? 'Created.' : (d.error || 'Failed.');
+            if (d.ok) { this.nu = {username:'', password:'', gates:[]}; await this.load(); } }
+      catch(e){ this.ok=false; this.msg='Failed.'; }
+      this.busy=false;
+    },
+    // Gate editing is a deliberate Save/Cancel mutation (not a one-click inline toggle): open an
+    // editor on a DRAFT copy, commit only on Save. Last-admin protection is enforced server-side.
+    openGateEdit(u){ this.gateEdit = u; this.gateDraft = (u.gates || []).slice(); this.gateMsg=''; this.gateBusy=false; },
+    cancelGateEdit(){ this.gateEdit = null; this.gateDraft = []; this.gateMsg=''; },
+    async saveGates(){
+      if (!this.gateEdit) return;
+      this.gateBusy = true; this.gateMsg='';
+      try { const r = await fetch('/api/users/'+this.gateEdit.id+'/gates', {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({gates: this.gateDraft})});
+            const d = await r.json();
+            if (d.ok) { this.rowOk = true; this.rowMsg = 'Gates updated for '+this.gateEdit.username+'.'; this.cancelGateEdit(); await this.load(); }
+            else { this.gateMsg = d.error || 'Failed.'; } }
+      catch(e){ this.gateMsg = 'Failed.'; }
+      this.gateBusy = false;
+    },
+    openPwReset(u){ this.pwEdit = u; this.pwNew=''; this.pwCfm=''; this.pwMsg=''; this.pwBusy=false; },
+    cancelPwReset(){ this.pwEdit = null; this.pwNew=''; this.pwCfm=''; this.pwMsg=''; },
+    async savePwReset(){
+      if (!this.pwEdit) return;
+      this.pwMsg='';
+      if (this.pwNew.length < 8) { this.pwMsg = 'Password must be at least 8 characters.'; return; }
+      if (this.pwNew !== this.pwCfm) { this.pwMsg = 'Passwords do not match.'; return; }
+      this.pwBusy = true;
+      try { const r = await fetch('/api/users/'+this.pwEdit.id+'/password', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password:this.pwNew})});
+            const d = await r.json();
+            if (d.ok) { this.rowOk = true; this.rowMsg = 'Password reset for '+this.pwEdit.username+'.'; this.cancelPwReset(); }
+            else { this.pwMsg = d.error || 'Failed.'; } }
+      catch(e){ this.pwMsg = 'Failed.'; }
+      this.pwBusy = false;
+    },
+    async toggleActive(u){
+      const r = await fetch('/api/users/'+u.id+'/active', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({active: !u.active})});
+      const d = await r.json(); this.rowOk = !!d.ok; this.rowMsg = d.ok ? 'Updated.' : (d.error || 'Failed.'); await this.load();
+    },
+    async del(u){
+      if (!confirm('Delete '+u.username+'? This cannot be undone.')) return;
+      const r = await fetch('/api/users/'+u.id, {method:'DELETE'});
+      const d = await r.json(); this.rowOk = !!d.ok; this.rowMsg = d.ok ? 'Deleted '+u.username+'.' : (d.error || 'Failed.'); await this.load();
+    },
+  };
+}
+
+// External sign-in (OIDC / LDAP) config — packet 1065. Secrets are write-only (never round-tripped).
+function externalAuthTab() {
+  return {
+    ea:null, gates:[], mapRows:[],
+    hasSecret:false, hasBind:false, ldap3:false, newSecret:'', newBind:'',
+    gateLabel(g){ return _GATE_LABELS[g] || g; },
+    async load(){
+      try {
+        const r = await fetch('/api/settings/external-auth'); const d = await r.json();
+        this.gates = d.gates || [];
+        this.ea = { oidc: d.oidc || {}, ldap: d.ldap || {} };
+        this.hasSecret = !!d.has_client_secret; this.hasBind = !!d.has_ldap_bind_password;
+        this.ldap3 = !!d.ldap3_available;
+        this.mapRows = Object.entries(d.group_gate_map || {}).map(([g, gs]) => ({ group:g, gates:[...gs] }));
+      } catch(e) {}
+    },
+
+    // ── Truthful status. Derived only from loaded configuration — never from an unobserved
+    //    outcome. "On" says the feature is switched on and complete; it does NOT claim the IdP
+    //    answered, because nothing here has asked it.
+    oidcStatus(){
+      const o = (this.ea && this.ea.oidc) || {};
+      const complete = !!(o.issuer && o.client_id && this.hasSecret);
+      if (o.enabled) return complete ? { label:'On', cls:'cfm-badge--ok' }
+                                     : { label:'Needs attention', cls:'cfm-badge--warn' };
+      return (o.issuer || o.client_id) ? { label:'Off', cls:'cfm-badge--idle' }
+                                       : { label:'Not configured', cls:'cfm-badge--idle' };
+    },
+    ldapStatus(){
+      const l = (this.ea && this.ea.ldap) || {};
+      if (!this.ldap3) return { label:'Unavailable', cls:'cfm-badge--broken' };
+      const complete = !!(l.server_uri && l.base_dn && l.user_filter);
+      if (l.enabled) return complete ? { label:'On', cls:'cfm-badge--ok' }
+                                     : { label:'Needs attention', cls:'cfm-badge--warn' };
+      return (l.server_uri || l.base_dn) ? { label:'Off', cls:'cfm-badge--idle' }
+                                         : { label:'Not configured', cls:'cfm-badge--idle' };
+    },
+
+    // ── Dialogs. One overlay, three slices.
+    dlg:'', draft:null, dlgBusy:false, dlgMsg:'', _eaTrap:null,
+    dlgTitle(){ return { oidc:'OIDC single sign-on', ldap:'AD / LDAP sign-in',
+                         map:'External group access' }[this.dlg] || ''; },
+    openDlg(which){
+      this.dlgMsg = ''; this.newSecret = ''; this.newBind = '';
+      // A DEEP copy: a shallow one would hand the dialog the live object, and Cancel would keep
+      // every keystroke it was supposed to throw away.
+      if (which === 'map') this.draft = this.mapRows.map(r => ({ group:r.group, gates:[...r.gates] }));
+      else this.draft = JSON.parse(JSON.stringify(this.ea[which] || {}));
+      this.dlg = which;
+    },
+    closeDlg(){ if (this.dlgBusy) return; this.dlg = ''; this.draft = null; this.dlgMsg = ''; this.newSecret = ''; this.newBind = ''; },
+    async saveDlg(){
+      if (this.dlgBusy) return;                     // one request per deliberate click
+      this.dlgBusy = true; this.dlgMsg = '';
+      // The API is combined by design (packet 1065): it always carries all three slices. So the
+      // draft is merged over the LAST LOADED state and the untouched siblings ride along unchanged
+      // — sending the edited slice alone would erase the other two.
+      const oidc = this.dlg === 'oidc' ? this.draft : this.ea.oidc;
+      const ldap = this.dlg === 'ldap' ? this.draft : this.ea.ldap;
+      const rows = this.dlg === 'map'  ? this.draft : this.mapRows;
+      const map = {};
+      rows.forEach(r => { const g = (r.group||'').trim(); if (g) map[g] = r.gates; });
+      const body = { oidc, ldap, group_gate_map: map };
+      if (this.dlg === 'oidc' && this.newSecret !== '') body.client_secret = this.newSecret;
+      if (this.dlg === 'ldap' && this.newBind !== '')   body.ldap_bind_password = this.newBind;
+      try {
+        const r = await fetch('/api/settings/external-auth', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        const d = await r.json();
+        if (!r.ok || !d.ok) { this.dlgMsg = d.error || 'Save failed.'; return; }   // dialog stays open, draft intact
+        await this.load();                          // authoritative state, not the draft
+        this.dlg = ''; this.draft = null; this.newSecret = ''; this.newBind = '';
+        window.cfmNotify.success('External sign-in saved.');
+      } catch(e){ this.dlgMsg = String(e); }
+      finally { this.dlgBusy = false; }
+    },
+  };
+}
+
+function settingsPage() {
+  return {
+    tab: _settingsInitialTab(),
+
+    edit: '', _editBackup: null,
+    _trapA: null, _trapB: null, _trapC: null, _trapD: null, _trapE: null,
+    _trapF: null, _trapG: null, _trapH: null, _trapI: null, _trapJ: null,
+
+    archiveDir: '', archiveInfo: null, storageBackend: 'local',
+
+    fm: { state: 'unpublished', host: '', database: '', account: '', verify_ssl: false, accessAvailable: false, reason: '' },
+    fmMsg: '', fmErr: false,
+    adminIdentity: { state: '', available: false, name: '', host: '', reason: '', remedy: '', testing: false },
+
+    registrations: [],
+    remoteServers: [], serverForm: null, serverMsg: '', savingServer: false,
+    confirmDelSrv: '', delSrvBusy: false,
+    _trapSrv: null,   // focus-trap handle for the server-form dialog (was referenced undeclared → ReferenceError)
+    externalAddress: { value: '', source: 'none', error: '', warning: '', env_managed: false, persisted: '', serving: '', pending: false, detected: '' },   // packet 1180 / 1219
+    externalAddressMsg: '', savingExternalAddress: false, confirmAddrChange: false,
+    indexInfo: { configured: false, total: 0, files: 0, loaded: false }, confirmIndexReset: false, indexResetting: false,
+    regMsg: '', regErr: false, regEditing: false, regTestMsg: '', regGenBusy: false,
+    newReg: { name: '', cred_type: 'pat', repo: '', username: '', token: '', ssh_key: '', ssh_pubkey: '', branch: 'main', modes: ['structured', 'rendered'], show_hidden: true, group: '', secret_set: false },
+
+    mon: { suppress_hours: 4, overdue_grace_minutes: 15, disk_min_gb: 1.0,
+           webhook_url: '', smtp_host: '', smtp_port: 587, smtp_user: '', smtp_pass: '', smtp_pass_set: false, smtp_from: '', smtp_to: '' },
+
+    prefs: { keep_source_xml: true, encrypt_blobs: false, enable_fms_admin_mcp_tools: false, enable_patching_mcp_tools: false, browser_connection_lifetime: 'standard', browser_connection_lifetime_choices: [], restrict_apply_to_compartment: true },   // keep_source_xml + restrict_apply_to_compartment default True (pkt 059/1066) so the toggles don't flash the wrong state before load
+    // packet 1183 — the ladder comes from the server so the labels can never drift from the enforced
+    // durations; the stored value backs out an unaccepted selection.
+    _storedConnectionLifetime: 'standard', lifetimeMsg: '',
+    lifetimeMenuOpen: false, ebatchMenuOpen: false,
+    // The trigger shows the CHOICE's label, and falls back to the raw stored id rather than to a
+    // placeholder: the choices arrive with the settings fetch, so before it lands the id is the only
+    // truthful thing we have — "Select…" would claim nothing is set when something is.
+    lifetimeLabel() {
+      const c = (this.prefs.browser_connection_lifetime_choices || [])
+        .find(o => o.id === this.prefs.browser_connection_lifetime);
+      return c ? c.label : (this.prefs.browser_connection_lifetime || '');
+    },
+
+    blobOn: false, blobConfirm: false, pendingEncrypt: false, storedEncryptBlobs: false,
+
+    aiSummary: { provider: '', model: '', base_url: '', api_version: '', embedding_provider: '', embedding_model: '', embedding_base_url: '', embedding_api_version: '', embedding_batch_size: 0, api_key: '', api_key_set: false, clear_key: false, embedding_api_key: '', embedding_api_key_set: false, embedding_clear_key: false, max_content_chars: 12000, include_xref: false },
+    embedTesting: false, embedVerified: false, embedMsg: '', embedErr: false,
+    embedModels: [], embedListing: false,
+    chatModels: [], chatListing: false,
+    summaryTesting: false, summaryVerified: false,
+
+    mcp: { server_mode: false, transport: 'http', mounted: false, endpoint: '' },
+    mcpBusy: false, confirmFmsAdmin: false, confirmPatching: false, confirmCompartment: false,
+
+    update: { checking: false, done: false, available: false, checked: false, latest: '', current: '', releases: '', error: '', error_class: '', source: '', behind: 0, applying: false, schema_change: false, installer_change: false, installer_reason: '', upgrade_command: '', stamp_repair: false, current_head: '', target_head: '', head_build: '' },
+    confirmUpdate: false,
+
+    serverInfo: {}, confirmReload: false,
+
+    health: { loading: false, loaded: false, error: '', environment: {}, capabilities: [] },
+
+    // ── Display label helpers (panels + bespoke dropdowns) ────────────────────
+    providerLabel(v) { return ({ '': 'Disabled', anthropic: 'Anthropic (Claude)', openai_compat: 'OpenAI-compatible / local', azure_openai: 'Azure OpenAI' })[v] || 'Disabled'; },
+    embedProviderLabel(v) { return ({ '': 'OpenAI-compatible / local', openai_compat: 'OpenAI-compatible / local', azure_openai: 'Azure OpenAI' })[v] || 'OpenAI-compatible / local'; },
+
+    setTab(name) { name = _TAB_ALIAS[name] || name; this.tab = name; location.hash = name; if (name === 'health' && !this.health.loaded) this.loadHealth(false); if (name === 'integrations' && !this.indexInfo.loaded) this.loadIndexInfo(); },
+
+    // ── Health (read-only install capability surface) ─────────────────────────
+    tabLabel(t) { t = _TAB_ALIAS[t] || t; return _TAB_LABELS[t] || t; },
+    healthLabel(status) {
+      return ({ ok:'OK', not_configured:'Unavailable', error:'Error', unknown:'Unverified', degraded:'Degraded' })[status] || status;
+    },
+    healthBadge(status) {
+      return ({ ok:'cfm-badge--ok', not_configured:'cfm-badge--idle', error:'cfm-badge--broken', unknown:'cfm-badge--warn', degraded:'cfm-badge--warn' })[status] || 'cfm-badge--muted';
+    },
+    async loadHealth(force) {
+      this.health.loading = true; this.health.error = '';
+      try {
+        const r = await fetch('/api/settings/health' + (force ? '?force=1' : ''));
+        const d = await r.json();
+        if (d.error) { this.health.error = d.error; }
+        else { this.health.environment = d.environment || {}; this.health.capabilities = d.capabilities || []; }
+        this.health.loaded = true;
+      } catch (e) { this.health.error = String(e); }
+      finally { this.health.loading = false; }
+    },
+
+    // ── Buffered-edit pop-overs (Save commits; leaving discards) ──────────────
+    openEdit(which) { this._editBackup = this._snapshot(which); this.edit = which; },
+    closeEdit(commit) { if (!commit && this._editBackup) this._restore(this.edit, this._editBackup); this.edit = ''; this._editBackup = null; },
+    _snapshot(which) {
+      if (which === 'prefs') return { ...this.prefs };
+      if (which === 'ai-chat' || which === 'ai-embed') return { ...this.aiSummary };
+      if (which === 'notifications') return { ...this.mon };
+      if (which === 'reg-add') return { ...this.newReg, modes: [...this.newReg.modes] };
+      if (which === 'archive') return { archiveDir: this.archiveDir };
+      return null;
+    },
+    _restore(which, b) {
+      if (which === 'prefs') Object.assign(this.prefs, b);
+      else if (which === 'ai-chat' || which === 'ai-embed') Object.assign(this.aiSummary, b);
+      else if (which === 'notifications') Object.assign(this.mon, b);
+      else if (which === 'reg-add') this.newReg = { ...b };
+      else if (which === 'archive') this.archiveDir = b.archiveDir;
+    },
+
+    async init() {
+      // loadIndexInfo() is deliberately NOT in this eager set: it triggers a full Chroma scan +
+      // disk walk (~1.2s on a large corpus) and is only shown on the Integrations tab — so it is
+      // lazy-loaded when that tab first opens (mirrors the Health-tab lazy-load). packet 013 fix #6.
+      await Promise.all([this.loadData(), this.loadArchiveInfo(), this.loadServerInfo(), this.loadAdminIdentity(), this.loadMcpInfo()]);
+      this.checkUpdate();
+      if (this.tab === 'health') this.loadHealth(false);
+      if (this.tab === 'integrations') this.loadIndexInfo();
+    },
+
+    async loadMcpInfo() {
+      try { const r = await fetch('/api/settings/mcp-info'); Object.assign(this.mcp, await r.json()); } catch(_) {}
+      // Display the BROWSER-FACING URL: window.location.origin is, by definition, the URL the user
+      // reached this page at — correct even when a reverse proxy (IIS ARR) rewrites the upstream Host
+      // to loopback. The server value (X-Forwarded-* aware) stays as the fallback.
+      try { this.mcp.endpoint = window.location.origin + (window.CFM_PREFIX || '') + '/mcp'; } catch(_) {}
+    },
+    async _mcpAction(url, body) {
+      this.mcpBusy = true;
+      try {
+        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+        const d = await r.json();
+        window.cfmNotify[(d.ok) ? 'success' : 'error'](d.ok ? (d.message || 'Done.') : (d.error || 'Failed.'));
+        if (d.ok) await this.loadMcpInfo();
+      } catch(e) { window.cfmNotify.error(String(e)); } finally { this.mcpBusy = false; }
+    },
+    async copyText(text, msgKey) { const ok = await copyToClipboard(text); window.cfmNotify[(ok) ? 'success' : 'error'](ok ? 'Copied' : 'Copy failed — select and copy manually'); },
+
+    // `refresh` is the explicit action (packet 1251, D2): only a deliberate "Check for updates"
+    // asks the privileged updater to observe. Opening this page classifies the refs already on
+    // disk, so visiting Settings never starts a root one-shot.
+    async checkUpdate(refresh = false) {
+      this.update.checking = true; this.update.error = '';
+      try {
+        // cache:'no-store' disables BROWSER HTTP caching only — it is not refresh=true and does
+        // not cross D2; every call to this method must read current server state (packet 1290).
+        const r = await fetch('/api/settings/check-update' + (refresh ? '?refresh=true' : ''),
+                              { cache: 'no-store' });
+        const d = await r.json();
+        this.update = { ...this.update, checking: false, done: true,
+          available: !!d.update_available, checked: !!d.checked,
+          latest: d.latest_version || '', current: d.current_version || '',
+          releases: d.releases_url || '', error: d.error || '', error_class: d.error_class || '',
+          source: d.source || '', behind: d.behind || 0,
+          schema_change: !!d.schema_change, installer_change: !!d.installer_change,
+          installer_reason: d.installer_reason || '', upgrade_command: d.upgrade_command || '',
+          stamp_repair: !!d.stamp_repair, current_head: d.current_head || '', target_head: d.target_head || '',
+          head_build: d.head_build_version || '', observation: d.observation || '',
+          diverged: !!d.diverged };
+      } catch (e) { this.update = { ...this.update, checking: false, done: true, error: String(e) }; }
+    },
+
+    async applyUpdate() {
+      if ('{{ mode }}' !== 'server') { cfmGo('/reload'); return; }
+      // The EXACT inspected target goes back as expected_head. The privileged updater treats it as
+      // consent to one specific commit and refuses without it, so a POST that omits it cannot apply
+      // anything -- which is what this button did until 1246-03-03 round 5.
+      if (!this.update.target_head) { window.cfmNotify.error('Check for updates first — the updater needs the exact commit you inspected.'); return; }
+      this.update.applying = true;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 90000);
+      try {
+        const url = '/api/settings/apply-update?expected_head=' + encodeURIComponent(this.update.target_head);
+        const r = await fetch(url, { method: 'POST', signal: ctrl.signal });
+        clearTimeout(timer);
+        const d = await r.json();
+        if (!d.ok) {
+          window.cfmNotify.error(d.error || 'Update failed.');
+          // target_changed is a POST-FETCH refusal: the privileged attempt fetched, THEN refused,
+          // so the refs on disk are fresh as of the refusal. Re-run the PASSIVE check (no
+          // refresh=true — ruling D2 stands: no page action starts a privileged observation) so
+          // the island reclassifies against the new tip and retry is one click on Apply — which
+          // stays disabled until the reclassification paints, so a stale duplicate consent cannot
+          // fire. The new tip's OWN eligibility governs what shows (an installer handoff replaces
+          // Apply). Other refusals get no follow-up: they refuse before the fetch, or their
+          // remedy is the installer, not a retry. (Packet 1290.)
+          if (d.reason_code === 'target_changed') { await this.checkUpdate(); }
+          this.update.applying = false; return;
+        }
+        window.cfmNotify.success('Updated — server is restarting, reconnecting…');
+        this._awaitRestartReload();
+      } catch (e) {
+        clearTimeout(timer);
+        if (e.name === 'AbortError') { window.cfmNotify.error('Update timed out — reload and try again.'); this.update.applying = false; }
+        else { window.cfmNotify.info('Server is restarting, reconnecting…'); this._awaitRestartReload(); }
+      }
+    },
+    async _awaitRestartReload() {
+      const deadline = Date.now() + 120000;
+      await new Promise(res => setTimeout(res, 2500));
+      while (Date.now() < deadline) {
+        try { const r = await fetch('/api/settings/check-update', { cache: 'no-store' }); if (r.ok) { location.reload(); return; } }
+        catch (_) {}
+        await new Promise(res => setTimeout(res, 1500));
+      }
+      window.cfmNotify.error('Server did not come back — reload manually.'); this.update.applying = false;
+    },
+
+    async loadData() {
+      try {
+        const r = await fetch('/api/settings/data');
+        const d = await r.json();
+        this.archiveDir = d.archive_dir || '';
+        this.storageBackend = d.storage_backend || 'local';
+        this.registrations = d.registrations || [];
+        this.remoteServers = d.remote_servers || [];
+        this.externalAddress = Object.assign(
+          { value: '', source: 'none', error: '', warning: '', env_managed: false, persisted: '', fallback: '', detected: '' },
+          d.external_address || {});
+        if (d.monitor) Object.assign(this.mon, d.monitor);
+        if (d.prefs) {
+          Object.assign(this.prefs, d.prefs);
+          this.storedEncryptBlobs = !!this.prefs.encrypt_blobs;
+          this.blobOn = this.storedEncryptBlobs;
+          this._storedConnectionLifetime = this.prefs.browser_connection_lifetime;
+          this.aiSummary.provider = d.prefs.ai_summary_provider || '';
+          this.aiSummary.model = d.prefs.ai_summary_model || '';
+          this.aiSummary.base_url = d.prefs.ai_summary_base_url || '';
+          this.aiSummary.api_version = d.prefs.ai_summary_api_version || '';
+          this.aiSummary.max_content_chars = (d.prefs.ai_summary_max_content_chars ?? 12000);
+          this.aiSummary.include_xref = !!d.prefs.ai_summary_include_xref;
+          this.aiSummary.embedding_provider = d.prefs.ai_embedding_provider || '';
+          this.aiSummary.embedding_model = d.prefs.ai_embedding_model || '';
+          this.aiSummary.embedding_base_url = d.prefs.ai_embedding_base_url || '';
+          this.aiSummary.embedding_api_version = d.prefs.ai_embedding_api_version || '';
+          this.aiSummary.embedding_batch_size = Number(d.prefs.ai_embedding_batch_size || 0);
+          this.aiSummary.api_key_set = !!d.prefs.ai_summary_api_key_set;
+          this.aiSummary.api_key = '';
+          this.aiSummary.clear_key = false;
+          this.aiSummary.embedding_api_key_set = !!d.prefs.ai_embedding_api_key_set;
+          this.aiSummary.embedding_api_key = '';
+          this.aiSummary.embedding_clear_key = false;
+          this.embedVerified = !!d.prefs.ai_embedding_verified;
+          this.summaryVerified = !!d.prefs.ai_summary_verified;
+        }
+        if (d.fm_config) {
+          this.fm = { state: d.fm_config.state || 'unavailable', host: d.fm_config.host || '',
+            database: d.fm_config.database || '', account: d.fm_config.account || '',
+            verify_ssl: !!d.fm_config.verify_ssl, accessAvailable: !!d.fm_config.access_available,
+            reason: d.fm_config.reason || '' };
+        }
+      } catch(_) {}
+    },
+
+    async loadArchiveInfo() { try { const r = await fetch('/api/settings/archive-info'); this.archiveInfo = await r.json(); } catch(_) {} },
+    async loadIndexInfo() {
+      // Count-only surface (packet 1010): the per-file De-index list was removed — de-index is a
+      // per-artifact action on the Artifacts detail. Settings keeps the count + Reset + Refresh.
+      try { const r = await fetch('/api/indexed/list'); const d = await r.json();
+        const rows = d.rows || [];
+        const files = new Set(rows.map(x => x.file_name).filter(Boolean)).size;
+        this.indexInfo = { configured: !!d.configured, total: d.total || 0, files, loaded: true };
+      } catch(_) { this.indexInfo = { configured: false, total: 0, files: 0, loaded: true }; }
+    },
+    async resetIndex() {
+      this.indexResetting = true;
+      try { const r = await fetch('/api/indexed/reset', { method: 'POST' }); const d = await r.json();
+        if (d.ok) { window.cfmNotify.success(`Semantic index reset — cleared ${d.cleared} vector(s).`); this.confirmIndexReset = false; await this.loadIndexInfo(); }
+        else window.cfmNotify.error(d.error || 'Reset failed.');
+      } catch(e) { window.cfmNotify.error(String(e)); }
+      finally { this.indexResetting = false; }
+    },
+    async loadServerInfo() { try { const r = await fetch('/api/settings/server-info'); this.serverInfo = await r.json(); } catch(_) {} },
+    async loadAdminIdentity() {
+      try { const r = await fetch('/api/admin-identity/status'); Object.assign(this.adminIdentity, await r.json()); } catch(_) {}
+    },
+    async testAdminIdentity() {
+      this.adminIdentity.testing = true;
+      try { const r = await fetch('/api/admin-identity/test', { method: 'POST' }); const d = await r.json();
+        window.cfmNotify[d.ok ? 'success' : 'error'](d.ok ? `Authenticated · ${d.database_count} databases visible.` : (d.error || d.reason || 'Test failed.'));
+      } catch(e) { window.cfmNotify.error(String(e)); }
+      finally { this.adminIdentity.testing = false; }
+    },
+
+    async commitArchive() {
+      try {
+        const r = await fetch('/api/settings/archive', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archive_dir: this.archiveDir }) });
+        const d = await r.json();
+        if (d.ok) { window.cfmNotify.success('Archive directory saved.'); this.closeEdit(true); await this.loadArchiveInfo(); }
+        else window.cfmNotify.error(d.error || 'Error saving.');
+      } catch(e) { window.cfmNotify.error(String(e)); }
+    },
+
+    toggleMode(m) { const i = this.newReg.modes.indexOf(m); if (i >= 0) this.newReg.modes.splice(i, 1); else this.newReg.modes.push(m); },
+    _blankReg() { return { name: '', cred_type: 'pat', repo: '', username: '', token: '', ssh_key: '', ssh_pubkey: '', branch: 'main', modes: ['structured', 'rendered'], show_hidden: true, group: '', secret_set: false }; },
+    newRegFresh() { this.newReg = this._blankReg(); this.regEditing = false; this.regMsg = ''; this.regErr = false; this.regTestMsg = ''; this.openEdit('reg-add'); },
+    editReg(r) {
+      this.newReg = { name: r.name, cred_type: r.cred_type || 'pat', repo: r.repo || '', username: r.username || '',
+                      token: '', ssh_key: '', ssh_pubkey: r.ssh_pubkey || '', branch: r.branch || 'main',
+                      modes: (r.modes && r.modes.slice()) || ['structured', 'rendered'], show_hidden: r.show_hidden !== false,
+                      group: r.group || '', secret_set: !!r.secret_set };
+      this.regEditing = true; this.regMsg = ''; this.regErr = false; this.regTestMsg = '';
+      this.openEdit('reg-add');
+    },
+    async commitReg() {
+      this.regMsg = ''; this.regErr = false;
+      if (!this.newReg.name.trim()) { this.regErr = true; this.regMsg = 'Name is required.'; return; }
+      if (/[^\w.\-]/.test(this.newReg.name.trim())) { this.regErr = true; this.regMsg = 'Name may only contain letters, digits, dot, dash, and underscore (no slashes or spaces) — name it for the credential, not the repo.'; return; }
+      if (this.newReg.cred_type === 'deploy_key' && !this.newReg.repo.trim()) { this.regErr = true; this.regMsg = 'A deploy key needs its bound repo URL.'; return; }
+      try {
+        const r = await fetch('/api/settings/git/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.newReg) });
+        const d = await r.json();
+        if (d.ok) {
+          window.cfmNotify.success(`Credential '${this.newReg.name}' ${this.regEditing ? 'saved' : 'added'}.`);
+          this.newReg = this._blankReg(); this.regEditing = false;
+          this.edit = ''; this._editBackup = null;
+          await this.loadData();
+        } else { this.regErr = true; this.regMsg = d.error || 'Error.'; }
+      } catch(e) { this.regErr = true; this.regMsg = String(e); }
+    },
+    async testNewReg() {
+      this.regTestMsg = 'Testing…';
+      // Save first when there's an unsaved secret to test against (the route reads stored creds).
+      try {
+        if (this.newReg.token || this.newReg.ssh_key) {
+          const a = await fetch('/api/settings/git/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.newReg) });
+          const ad = await a.json();
+          if (!ad.ok) { this.regTestMsg = ad.error || 'Could not save before testing.'; return; }
+          this.newReg.token = ''; this.newReg.ssh_key = ''; this.newReg.secret_set = true; this.regEditing = true;
+          await this.loadData();
+        }
+        const r = await fetch(`/api/settings/git/${encodeURIComponent(this.newReg.name)}/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo: this.newReg.repo }) });
+        const d = await r.json();
+        this.regTestMsg = (d.ok ? '✓ ' : '✗ ') + (d.msg || d.error || '');
+      } catch(e) { this.regTestMsg = String(e); }
+    },
+    async generateDeployKey() {
+      this.regErr = false; this.regMsg = '';
+      if (!this.newReg.name.trim()) { this.regErr = true; this.regMsg = 'Name the credential first.'; return; }
+      if (/[^\w.\-]/.test(this.newReg.name.trim())) { this.regErr = true; this.regMsg = 'Name may only contain letters, digits, dot, dash, and underscore.'; return; }
+      if (!this.newReg.repo.trim()) { this.regErr = true; this.regMsg = 'Enter the bound repo URL (ssh) first.'; return; }
+      this.regGenBusy = true;
+      try {
+        const r = await fetch('/api/settings/git/generate-deploy-key', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: this.newReg.name, repo: this.newReg.repo }) });
+        const d = await r.json();
+        if (!d.ok) { this.regErr = true; this.regMsg = d.error || 'Could not generate key.'; return; }
+        // Private key is stored server-side; reflect the saved state and show the pubkey to paste.
+        this.newReg.ssh_pubkey = d.ssh_pubkey; this.newReg.ssh_key = ''; this.newReg.secret_set = true; this.regEditing = true;
+        this.regTestMsg = 'Deploy key generated + saved. Add the public key below to the repo (Allow write access), then Test.';
+        await this.loadData();
+      } catch(e) { this.regErr = true; this.regMsg = String(e); }
+      finally { this.regGenBusy = false; }
+    },
+    async testReg(r) {
+      window.cfmNotify.info('Testing credential…');
+      try { const resp = await fetch(`/api/settings/git/${encodeURIComponent(r.name)}/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo: r.repo }) });
+        const d = await resp.json(); window.cfmNotify[d.ok ? 'success' : 'error']((d.ok ? '✓ ' : '✗ ') + (d.msg || d.error || ''));
+      } catch(e) { window.cfmNotify.error(String(e)); }
+    },
+    async removeReg(name) {
+      try { const r = await fetch(`/api/settings/git/${encodeURIComponent(name)}`, { method: 'DELETE' }); const d = await r.json();
+        window.cfmNotify[(d.ok) ? 'success' : 'error'](d.ok ? `'${name}' removed.` : (d.error || 'Error.')); if (d.ok) await this.loadData();
+      } catch(e) { window.cfmNotify.error(String(e)); }
+    },
+    async pushReg(name) {
+      try { const r = await fetch(`/api/settings/git/${encodeURIComponent(name)}/push`, { method: 'POST' }); const d = await r.json();
+        window.cfmNotify[(d.ok) ? 'success' : 'error'](d.ok ? (d.msg || 'Pushed.') : (d.error || 'Push failed.'));
+      } catch(e) { window.cfmNotify.error(String(e)); }
+    },
+
+    async commitNotifications() {
+      try { const r = await fetch('/api/settings/notifications', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.mon) }); const d = await r.json();
+        if (d.ok) { window.cfmNotify.success('Notification settings saved.'); this.closeEdit(true); } else window.cfmNotify.error(d.error || 'Error.');
+      } catch(e) { window.cfmNotify.error(String(e)); }
+    },
+
+    async _savePrefs() {
+      const d = await this._savePrefsResp();
+      return !!(d && d.ok);
+    },
+    // Same POST, but returns the full response body (so a caller can read e.g. the browser-OAuth
+    // restart signal). Notifies exactly like _savePrefs.
+    async _savePrefsResp(extra) {
+      try {
+        const r = await fetch('/api/settings/preferences', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({}, this.prefs, extra || {})) });
+        const d = await r.json();
+        if (d.ok) {
+          window.cfmNotify.success('Saved.');
+          // F1 (packet 1180): a successful save may carry a post-commit warning (e.g. the automatic
+          // restart could not be scheduled). Surface it through the existing informational notification
+          // rather than dropping it — the settings persisted, but the follow-up needs the user's action.
+          if (d.warning) window.cfmNotify.info(d.warning);
+          return d;
+        }
+        window.cfmNotify.error(d.error || 'Error.'); return d;
+      } catch(e) { window.cfmNotify.error(String(e)); return null; }
+    },
+
+    // Import Options switch — single cheap boolean, auto-commits on flip (no Save button).
+    // encrypt_blobs is pinned to its stored value here so this save can never desync it.
+    async toggleKeepSource() {
+      this.prefs.keep_source_xml = !this.prefs.keep_source_xml;
+      this.prefs.encrypt_blobs = this.storedEncryptBlobs;
+      const ok = await this._savePrefs();
+      if (!ok) this.prefs.keep_source_xml = !this.prefs.keep_source_xml;   // revert on failure
+    },
+
+    // FMS-admin MCP exposure — server-wide kill switch for the broad fms_* tools. Off by default;
+    // when off they are hidden from every agent's tool list and refused at call time.
+    async toggleFmsAdminTools() {
+      this.prefs.enable_fms_admin_mcp_tools = !this.prefs.enable_fms_admin_mcp_tools;
+      this.prefs.encrypt_blobs = this.storedEncryptBlobs;
+      const ok = await this._savePrefs();
+      if (!ok) this.prefs.enable_fms_admin_mcp_tools = !this.prefs.enable_fms_admin_mcp_tools;
+    },
+
+    async togglePatchingTools() {
+      this.prefs.enable_patching_mcp_tools = !this.prefs.enable_patching_mcp_tools;
+      this.prefs.encrypt_blobs = this.storedEncryptBlobs;
+      const ok = await this._savePrefs();
+      if (!ok) this.prefs.enable_patching_mcp_tools = !this.prefs.enable_patching_mcp_tools;
+    },
+
+    // OAuth connection lifetime (packet 1183) — one of three policies, read dynamically by the server,
+    // so this save never claims a restart. On failure the selector snaps back to the stored value rather
+    // than showing a policy the server did not accept.
+    async saveConnectionLifetime() {
+      const previous = this._storedConnectionLifetime;
+      this.prefs.encrypt_blobs = this.storedEncryptBlobs;
+      const resp = await this._savePrefsResp();
+      if (!resp || !resp.ok) { this.prefs.browser_connection_lifetime = previous; this.lifetimeMsg = ''; return; }
+      this._storedConnectionLifetime = this.prefs.browser_connection_lifetime;
+      const chosen = (this.prefs.browser_connection_lifetime_choices || [])
+        .find(o => o.id === this.prefs.browser_connection_lifetime);
+      this.lifetimeMsg = chosen ? ('In effect now — ' + chosen.label) : '';
+    },
+
+    // Apply compartment restriction (packet 1066) — the shared apply-target gate. ON (default) confines
+    // every patch/apply/dry-run to CORPUSfm's own file compartment; OFF allows any non-storage DB.
+    async toggleCompartment() {
+      this.prefs.restrict_apply_to_compartment = !this.prefs.restrict_apply_to_compartment;
+      this.prefs.encrypt_blobs = this.storedEncryptBlobs;
+      const ok = await this._savePrefs();
+      if (!ok) this.prefs.restrict_apply_to_compartment = !this.prefs.restrict_apply_to_compartment;
+    },
+
+    // Blob encryption — consequential switch → confirm → conversion. blobOn is the UI toggle;
+    // prefs.encrypt_blobs stays equal to storedEncryptBlobs until the server-side re-encode runs.
+    toggleBlobEncryption() {
+      this.blobOn = !this.blobOn;
+      if (this.blobOn === this.storedEncryptBlobs) return;   // back to stored — nothing to do
+      this.pendingEncrypt = this.blobOn;
+      this.blobConfirm = true;
+    },
+    cancelBlobEncryption() { this.blobOn = this.storedEncryptBlobs; this.blobConfirm = false; },
+    async confirmBlobEncryption() {
+      this.blobConfirm = false;
+      try {
+        const r = await fetch('/api/settings/storage/blob-encryption', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: this.pendingEncrypt }) });
+        const d = await r.json();
+        if (d.ok) { window.cfmGo ? window.cfmGo('/converting') : (window.location.href = '/converting'); }
+        else { window.cfmNotify.error(d.error || 'Could not start conversion.'); this.blobOn = this.storedEncryptBlobs; }
+      } catch(e) { window.cfmNotify.error(String(e)); this.blobOn = this.storedEncryptBlobs; }
+    },
+
+    async commitAi() {
+      try {
+        const r = await fetch('/api/settings/ai-summary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+          ai_summary_provider: this.aiSummary.provider, ai_summary_model: this.aiSummary.model, ai_summary_base_url: this.aiSummary.base_url,
+          ai_summary_api_version: this.aiSummary.api_version || '',
+          ai_summary_api_key: this.aiSummary.api_key || '', ai_summary_api_key_clear: !!this.aiSummary.clear_key,
+          ai_embedding_provider: this.aiSummary.embedding_provider || '', ai_embedding_model: this.aiSummary.embedding_model, ai_embedding_base_url: this.aiSummary.embedding_base_url,
+          ai_embedding_api_version: this.aiSummary.embedding_api_version || '',
+          ai_embedding_batch_size: Number(this.aiSummary.embedding_batch_size || 0),
+          ai_embedding_api_key: this.aiSummary.embedding_api_key || '', ai_embedding_api_key_clear: !!this.aiSummary.embedding_clear_key,
+          ai_summary_max_content_chars: this.aiSummary.max_content_chars, ai_summary_include_xref: this.aiSummary.include_xref,
+        }) });
+        const d = await r.json();
+        if (d.ok) {
+          this.embedVerified = !!d.embedding_verified;
+          this.summaryVerified = !!d.summary_verified;
+          this.aiSummary.api_key_set = !!d.api_key_set; this.aiSummary.api_key = ''; this.aiSummary.clear_key = false;
+          this.aiSummary.embedding_api_key_set = !!d.embedding_api_key_set; this.aiSummary.embedding_api_key = ''; this.aiSummary.embedding_clear_key = false;
+          window.cfmNotify.success('AI settings saved.');
+          this.edit = ''; this._editBackup = null;
+        } else window.cfmNotify.error(d.error || 'Error saving.');
+      } catch(e) { window.cfmNotify.error(String(e)); }
+    },
+
+    async testEmbedding() {
+      this.embedTesting = true;
+      try {
+        const r = await fetch('/api/settings/test-embedding', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_embedding_provider: this.aiSummary.embedding_provider || '', ai_embedding_model: this.aiSummary.embedding_model, ai_embedding_base_url: this.aiSummary.embedding_base_url, ai_embedding_api_version: this.aiSummary.embedding_api_version || '', ai_embedding_api_key: this.aiSummary.embedding_api_key || '' }) });
+        const d = await r.json();
+        this.embedVerified = !!d.ok;
+        window.cfmNotify[(d.ok) ? 'success' : 'error'](d.ok ? `Working — ${d.dims}-dim vectors from ${d.model}.` : (d.error || 'Test failed.'));
+      } catch(e) { this.embedVerified = false; window.cfmNotify.error(String(e)); } finally { this.embedTesting = false; }
+    },
+    async listEmbeddingModels() {
+      this.embedListing = true;
+      try {
+        const r = await fetch('/api/settings/list-embedding-models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_embedding_base_url: this.aiSummary.embedding_base_url, ai_embedding_provider: this.aiSummary.embedding_provider || '' }) });
+        const d = await r.json();
+        if (d.ok) { this.embedModels = d.models || []; window.cfmNotify[(this.embedModels.length) ? 'success' : 'error'](this.embedModels.length ? `${this.embedModels.length} model(s) — pick one above.` : 'Endpoint reachable but reports no models.'); }
+        else { this.embedModels = []; window.cfmNotify.error(d.error || 'Could not list models.'); }
+      } catch(e) { this.embedModels = []; window.cfmNotify.error(String(e)); } finally { this.embedListing = false; }
+    },
+    async testSummary() {
+      this.summaryTesting = true;
+      try {
+        const r = await fetch('/api/settings/test-summary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_summary_provider: this.aiSummary.provider, ai_summary_model: this.aiSummary.model, ai_summary_base_url: this.aiSummary.base_url, ai_summary_api_version: this.aiSummary.api_version || '', ai_summary_api_key: this.aiSummary.api_key || '' }) });
+        const d = await r.json();
+        this.summaryVerified = !!d.ok;
+        window.cfmNotify[(d.ok) ? 'success' : 'error'](d.ok ? `Working — ${d.model} replied “${d.reply}”.` : (d.error || 'Test failed.'));
+      } catch(e) { this.summaryVerified = false; window.cfmNotify.error(String(e)); } finally { this.summaryTesting = false; }
+    },
+    async listChatModels() {
+      this.chatListing = true;
+      try {
+        const r = await fetch('/api/settings/list-embedding-models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_url: this.aiSummary.base_url, provider: this.aiSummary.provider }) });
+        const d = await r.json();
+        if (d.ok) { this.chatModels = d.models || []; window.cfmNotify[(this.chatModels.length) ? 'success' : 'error'](this.chatModels.length ? `${this.chatModels.length} model(s) — pick one above.` : 'Endpoint reachable but reports no models.'); }
+        else { this.chatModels = []; window.cfmNotify.error(d.error || 'Could not list models.'); }
+      } catch(e) { this.chatModels = []; window.cfmNotify.error(String(e)); } finally { this.chatListing = false; }
+    },
+
+    async reloadServer() {
+      try { await fetch('/api/settings/reload', { method: 'POST' }); } catch(_) {}
+      window.cfmNotify.success('Reload triggered. Reconnect in a few seconds.');
+    },
+
+    // ── Remote servers (packet 1015) ───────────────────────────────────────────
+    startAddServer() {
+      this.serverMsg = '';
+      this.serverForm = { is_new: true, name: '', host: '', account: '', password: '', password_set: false, verify_ssl: false, callback_url: '' };
+    },
+    editServer(s) {
+      this.serverMsg = '';
+      this.serverForm = { is_new: false, name: s.name, host: s.host, account: s.account || '',
+                          password: '', password_set: !!s.password_set, verify_ssl: !!s.verify_ssl,
+                          callback_url: s.callback_url || '' };
+    },
+    async saveServer() {
+      if (!this.serverForm.name.trim() || !this.serverForm.host.trim()) { this.serverMsg = 'Name and Host are required.'; return; }
+      this.savingServer = true; this.serverMsg = '';
+      try {
+        const r = await fetch('/api/settings/servers/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.serverForm) });
+        const d = await r.json();
+        if (d.ok) { window.cfmNotify.success(`Server '${this.serverForm.name}' saved.`); this.serverForm = null; await this.loadData(); }
+        else { this.serverMsg = d.error || 'Save failed.'; }
+      } catch(e) { this.serverMsg = String(e); }
+      finally { this.savingServer = false; }
+    },
+    // Removing a server was a single unguarded click that took effect immediately — and the rebuild
+    // moves Delete up beside Edit, where a mis-click is likelier, not less. Confirm + in-flight
+    // guard follow the packet-1186 contract (own flag, early return, set before the await, cleared
+    // in finally, bound to BOTH Confirm and Cancel).
+    async deleteServer() {
+      if (this.delSrvBusy) return;
+      const name = this.confirmDelSrv;
+      if (!name) return;
+      this.delSrvBusy = true;
+      try {
+        const r = await fetch('/api/settings/servers/' + encodeURIComponent(name), { method: 'DELETE' });
+        if (!r.ok) { window.cfmNotify.error(`Could not remove '${name}'.`); return; }
+        this.confirmDelSrv = '';
+        window.cfmNotify.success(`Server '${name}' removed.`); await this.loadData();
+      } catch(e) { window.cfmNotify.error(String(e)); }
+      finally { this.delSrvBusy = false; }
+    },
+    // One-action adopt: fill the field with the detected address AND save it in a single click.
+    async useDetected() {
+      if (!this.externalAddress.detected) return;
+      this.externalAddress.persisted = this.externalAddress.detected;
+      await this.saveExternalAddress();
+    },
+    // Effective-state consequence prediction (packet 1180 F3). The consequence of an edit depends on the
+    // EFFECTIVE identity it produces — not the raw field text. Normalize one trailing slash (matching the
+    // server validator) and fall back to the server-computed derived/env identity when the field is blank.
+    _normAddr(s) { s = (s || '').trim(); return s.endsWith('/') ? s.slice(0, -1) : s; },
+    prospectiveEffective() {
+      // One authority now (packet 1219 Half C): the persisted value, or nothing. The env override and
+      // the fm_host derivation that used to survive a cleared field are both gone, so clearing the
+      // field genuinely leaves the box with no address.
+      return this._normAddr(this.externalAddress.persisted);
+    },
+    addrIdentityChanges() {
+      return this.prospectiveEffective() !== this._normAddr(this.externalAddress.value);
+    },
+    addrWillDisableOauth() {
+      // OAuth sign-in has nowhere to serve only when NO identity remains after the edit. Derived from
+      // the address alone (packet 1220) — there is no stored flag that could disagree with it.
+      return !this.prospectiveEffective();
+    },
+    // Poll until the restarted process serves the saved address (pending false), then refresh the
+    // page's data so "Serving now" and uptime describe the process that is actually running.
+    // Bounded: ~60 s, then say plainly that the restart is still under way.
+    async awaitRestartedAddress(warning, attempts = 30, delayMs = 2000) {
+      this.externalAddressMsg = 'Restarting CORPUSfm to serve the new address…';
+      for (let i = 0; i < attempts; i++) {
+        await new Promise(r => setTimeout(r, delayMs));
+        try {
+          const r = await fetch('/api/settings/data');
+          if (!r.ok) continue;
+          const d = await r.json();
+          const ea = d.external_address || {};
+          if (ea.serving && ea.pending === false) {
+            this.externalAddress = Object.assign({ detected: this.externalAddress.detected }, ea);
+            this.externalAddressMsg = 'Restarted — now serving ' + ea.serving + '. ' + (warning || '');
+            if (this.loadData) await this.loadData();
+            if (this.loadServerInfo) await this.loadServerInfo();
+            return true;
+          }
+        } catch (e) { /* mid-restart: the process is not answering yet */ }
+      }
+      this.externalAddressMsg = 'Saved; CORPUSfm is still restarting — reload this page in a moment to see what it serves. ' + (warning || '');
+      return false;
+    },
+    // `restartNow` is the answer to the confirmation's ONE question, and it is only meaningful once
+    // confirmed. Undefined (a save that changes nothing effective) never reaches the restart branch
+    // server-side anyway, because restart_required is false. Packet 1219 Half B.
+    async saveExternalAddress(confirmed, restartNow) {   // packet 1180 / 1219
+      // Require confirmation only when the EFFECTIVE identity actually changes — never for a
+      // normalized no-op, which costs nobody their connection.
+      if (!confirmed && this.addrIdentityChanges()) {
+        this.confirmAddrChange = true;
+        return;
+      }
+      const next = (this.externalAddress.persisted || '').trim();
+      this.confirmAddrChange = false;
+      this.externalAddressMsg = '';
+      this.savingExternalAddress = true;
+      try {
+        const r = await fetch('/api/settings/external-address', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ public_base_url: next, restart_now: restartNow !== false }) });
+        const d = await r.json();
+        if (d.ok) {
+          this.externalAddress = Object.assign({ detected: this.externalAddress.detected }, d.external_address || {});
+          window.cfmNotify.success(this.externalAddress.value ? 'MCP address saved.' : 'MCP address cleared.');
+          if (d.reauthorize_warning) this.externalAddressMsg = d.reauthorize_warning;
+          if (d.restart_required && restartNow === false) {
+            this.externalAddressMsg = 'Saved. It takes effect the next time CORPUSfm starts; until then this box serves the previous address. ' + (d.reauthorize_warning || '');
+          } else if (d.restart_required && !d.restart_scheduled) {
+            this.externalAddressMsg = 'Saved, but the automatic restart could not be scheduled — restart the CORPUSfm service to apply the new address. ' + (d.reauthorize_warning || '');
+          }
+          if (d.restart_required && d.restart_scheduled) {
+            // R4c (packet 1325): the restart IS scheduled, and it takes a few seconds. Reloading
+            // immediately read the OLD process (or failed mid-restart), so the page kept showing the
+            // previous "Serving now" and uptime and an administrator restarted again by hand
+            // (fms-dev, 2026-08-23). Wait for the new process, then show what it serves.
+            await this.awaitRestartedAddress(d.reauthorize_warning || '');
+          } else if (d.restart_required) { this.loadData && this.loadData(); }
+        } else { window.cfmNotify.error(d.error || 'Save failed.'); }
+      } catch(e) { window.cfmNotify.error(String(e)); }
+      finally { this.savingExternalAddress = false; }
+    },
+  };
+}
+</script>
+{% endblock %}

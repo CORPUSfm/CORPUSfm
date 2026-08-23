@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Finish the upgrade — CORPUSfm</title>
+  <style>
+    :root { --bg:#111315; --surface:#191b1d; --border:#30353a; --text:#eceef0; --dim:#9ea4aa; --primary:#b3bac1; --code:#0e1012; }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+    .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:32px;box-sizing:border-box;}
+    .card{box-sizing:border-box;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:30px 34px;max-width:700px;width:100%;}
+    h1{font-size:21px;margin:0 0 6px;}
+    p{color:var(--dim);line-height:1.55;margin:8px 0;}
+    .hl{color:var(--primary);font-weight:600;}
+    ol{color:var(--text);line-height:1.5;padding-left:20px;margin:18px 0 6px;}
+    ol li{margin:14px 0;}
+    pre{background:var(--code);border:1px solid var(--border);border-radius:8px;padding:12px 14px;overflow:auto;
+        font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:#d6d6d6;margin:8px 0 0;}
+    .muted{font-size:12.5px;color:var(--dim);margin-top:18px;border-top:1px solid var(--border);padding-top:14px;}
+    code{background:var(--code);padding:1px 5px;border-radius:4px;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>⚠ Finish the upgrade — run the installer</h1>
+      <p>CORPUSfm now runs <span class="hl">co-located behind FileMaker Server's web server</span>, served at
+         <span class="hl">https://&lt;your-fms-host&gt;/corpusfm/</span> with FMS's own TLS certificate. This install
+         hasn't been moved behind the proxy yet.</p>
+      <p>The in-app update button <span class="hl">can't finish this step</span> — it runs as the unprivileged
+         service user, and adding the reverse-proxy rule + rebinding the service need elevated rights. Acquire
+         and run the current verified Series 2 package on the server:</p>
+      <ol>
+        <li>Run the incoming installer package. It inspects the published installation, adds the web-server proxy for
+            <code>/corpusfm</code>, rebinds CORPUSfm to loopback, and keeps all your data:
+<pre>{{ upgrade_command }}</pre></li>
+        <li>Open <span class="hl">https://&lt;your-fms-host&gt;/corpusfm/</span> — real cert, no port, secure.</li>
+      </ol>
+      <p class="muted">This is the only supported deployment now: one co-located instance behind the FMS web
+         server (nginx on FMS&nbsp;2026, Apache on older FMS). The direct <code>:port</code> access is retired.
+         This page clears itself automatically once the upgrade is applied.</p>
+    </div>
+  </div>
+</body>
+</html>

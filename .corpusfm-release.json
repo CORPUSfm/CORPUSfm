@@ -1,0 +1,2965 @@
+{
+  "files": {
+    ".github/workflows/pages.yml": "8d3e7c10e11c811dc96848c7e94870bb1d920439d6a8b034bb305a697fcdfa6a",
+    ".github/workflows/verify.yml": "8c0d7fde6eac9390c4efea40f92b81540f96ebe811be2b4de7c95739df5abb8f",
+    ".gitignore": "1a09416e550bde1139054ee0d34da80c75c6478bfb3c97e922834c50e2bd6a19",
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "NOTICE": "abd25e06633e1070c3b9b49ed0c2caaa7def3ded7977f4d189b0c84ac8df3489",
+    "README.md": "ba3c5fbeec2d6f4041e183523df49cd810cb4656e43aaa9633b314fea6c3707b",
+    "application_checkout.py": "1d7fad8e281fb0cd090d79809887bef9c3ce92bc58807ac8005cc68bd93344da",
+    "conftest.py": "73686abb7bb0945ad73318055c245de794a5a413fcbdb3a19091a6b2a8264668",
+    "corpusfm/__init__.py": "8abcd44155fa7406a125f037f96cf33b2565cc080fe119ab5e426d0f5fc4e50c",
+    "corpusfm/app/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "corpusfm/app/app_config.py": "b08e21123ed30f460abc02012e295385286abbe13787bc4606e0b03adb719ec2",
+    "corpusfm/app/diff_history.py": "abe907cba0ce10660bfab975099fba7d4adccb9028c59a30f67cc8c91f9e95e7",
+    "corpusfm/app/explore_history.py": "eed114b9790b1a88bdf346124de8401353c325116f463e494bb70d56465efaf2",
+    "corpusfm/app/sections.py": "2a408d298b3593e6d192d4e7c597396ffdb05bf4b9b10ff436a67c8a0d2ff965",
+    "corpusfm/app/web/__init__.py": "ede0ac24449c29c8c8adb761034549b4193c70c9c4bf0b82d9221284f9469c5c",
+    "corpusfm/app/web/__main__.py": "db7be8c63e26c79ec8156fd0c86dd50b0ea67edd6604541bdf307123c014293a",
+    "corpusfm/app/web/_import_ingest.py": "1808d5ee4b1ca800f537de134fb176003f1ef25b6533359a15e3ffbf389af2a7",
+    "corpusfm/app/web/_reabsorb_staging.py": "8abcec061fe78d7752afb8c9dafaceafc03f33ab373a4f897ae679413b159a60",
+    "corpusfm/app/web/_staging_guard.py": "2a9c9699557d77f0306b8adda1f313a1b756cbdd21220d7fd352daa3a1ad1d40",
+    "corpusfm/app/web/_temp_cleanup.py": "19d149e02c54515a9225ca64e5241306b0fa6863b1906b53c7a178905d5d1171",
+    "corpusfm/app/web/app.py": "24c5d91bac713509c13703452c1f4341339b904b99b427f09134dc9c4595531d",
+    "corpusfm/app/web/appearance_preferences.py": "39cef8babed36cedb04a4d92d2796deb520907934f5b5e29753f22e2bc4a6291",
+    "corpusfm/app/web/artifact_ref.py": "6142b6beeba38cce35780a2b0f91879f3db79bbef5407405030058f12bbf9684",
+    "corpusfm/app/web/auth.py": "fff0423378b5cc30f912836c0501f8a9536cf3beacf30e11426fd517376922ff",
+    "corpusfm/app/web/blob_conversion.py": "1489e665ca629f8d3f2509a04e00f223741f2ba1c311f2376b58fa314e0812ce",
+    "corpusfm/app/web/container_download.py": "fe01b2e6a59ba9b8983f3e12bbd56d4f6cd298e6f69aa9e13867c593ca8b3de0",
+    "corpusfm/app/web/deployment.py": "c930525c4ef2d2b54e8c3066788c820d619b4886501cc517bc1b9bb70a66d25d",
+    "corpusfm/app/web/deps.py": "c8e1e31dbdb5a6ef4891dd20fe68d1733877fcb4621908ea10b78e0e6d339811",
+    "corpusfm/app/web/docs/addon.md": "a8d67a7fe789d87374d3e92b5671ae3804afc0eb8defc16c8ca5f7fa3497e91e",
+    "corpusfm/app/web/docs/ai-build-loop.md": "c037ae1c7c32c9d714c6d4a491268036a7e0c29674ab3754b8baf0ab914f4ae0",
+    "corpusfm/app/web/docs/applying-patches.md": "46e982798af6d9b3763cb8f0de5f490ddae661c80cdf5f6072497fa53d75db1c",
+    "corpusfm/app/web/docs/artifacts-catalog.md": "f15450d4e67f97ccd09ade220dab1857fee1c9a96b8f250115b0b86d48d25a9d",
+    "corpusfm/app/web/docs/choose-schema-import-path.md": "af677bdf60b97f8316370ea3883563f3b390ea6072ea4a91bfcd0d46516f54d9",
+    "corpusfm/app/web/docs/diff.md": "319d0f9d6ebd057e3e893aa49ad8a97714ea41b6ce43f107e29bf7f22c68f914",
+    "corpusfm/app/web/docs/explorer.md": "1fd540ec1fd31d14664d371bbdb2d910b8f2ef33bd2d5bbaf0a39755ea74a3d3",
+    "corpusfm/app/web/docs/file-materialization.md": "4c8fc39d1c1ac4cfe5eca3b6b9fdbd15eaccebc12147db600b0a81f486f0382a",
+    "corpusfm/app/web/docs/git-export.md": "6d6cb318389c6cddfd95b359ef14eb121c311ede5ef84549203cd34ebdfdc6a5",
+    "corpusfm/app/web/docs/importing.md": "a1e953fb7b036646e62c8cb9357bfada558d981e4938482a9d20d00e0d9c328c",
+    "corpusfm/app/web/docs/isv-workflow.md": "3a5eb1cc9dcf52da31b06b3feaa0db78473679cf2209361d7e635e44f5018930",
+    "corpusfm/app/web/docs/jobs.md": "dfda96d9d534be3d274fa6510792441ed93c1edb84fcd555f649a60d046d33a9",
+    "corpusfm/app/web/docs/logs.md": "b0ee166a61d368503655a24a1901127c9c995028cecedd1c634f20eea71bc61f",
+    "corpusfm/app/web/docs/mcp-client-cannot-connect.md": "b2e4f13feed7b9579e98dfd7544dc75d8db0b07099de3ee8e13fb219a2295455",
+    "corpusfm/app/web/docs/mcp.md": "0b1c8fe1f176c0a16966c863c35f6ffc81db749d247a4d484eaa6f4ac9c7700a",
+    "corpusfm/app/web/docs/merge.md": "be074bdc1eaaa6734cfc421c3ec450095f1e77918140f3318384bf3b95d3c0ff",
+    "corpusfm/app/web/docs/monitoring.md": "6838f382782ab49c05912b6e6e041911cc46704676eab5d2612d5402fbd0ff23",
+    "corpusfm/app/web/docs/ollama.md": "45f98bbb445cc3bd0cd4996f23c84bc0c3b7c526adbb353a0ae9ee4ca91560b8",
+    "corpusfm/app/web/docs/overview.md": "e54185cf20e0062d4ed52ce7e620cb7aba13b5d583eeba614bd9f33ffffb678f",
+    "corpusfm/app/web/docs/patch-authoring.md": "319d1f9a89b95f460ca91519fd039331ba2d4067206c6811fbd8ccc03ba82b94",
+    "corpusfm/app/web/docs/queue.md": "b3434cfe33dc2bc5368e86f5afb1d2c720bd7989a196e35fdbcac923096f17d0",
+    "corpusfm/app/web/docs/semantic-search.md": "114825d2e8f587aecc48004f752a0ef5956f8be5c724dc688f6f3dfbc8344b0f",
+    "corpusfm/app/web/docs/settings.md": "95c8e5368ff8b61b24bde33384466fc9df57f353d9f63329a3151bb22b0308c0",
+    "corpusfm/app/web/docs/tags.md": "b5e93a663f194fc61c954b4b5bec67b1f14d8e27358fd2b08df773b4b6283d13",
+    "corpusfm/app/web/docs/update-not-appearing-or-applying.md": "4ccd515d720d4c6d395afa737d44e3663d59208bc6760af87a87ae33dc710b89",
+    "corpusfm/app/web/docs_render.py": "1092ae6cf168d2afa68de73c04db9f1b3a39c93206e4bbd1e6acfb4f8c0c8395",
+    "corpusfm/app/web/external_auth.py": "3dd5607e7a8fee5018be11bc51dafe01608a19494fa172fedf1d925a6c61655d",
+    "corpusfm/app/web/landing.py": "c718772ec2eb3936f400341c8c9b6c3ccb2b240a673460a17357b3a08a591a67",
+    "corpusfm/app/web/ldap_auth.py": "9be77c95b643a06f6c67ff24188abea7708d291611d41f8a899f78ea4ee8475b",
+    "corpusfm/app/web/login_throttle.py": "188ea8f1125d63264aad3f126d137474bef7666755a1a3fd5e8328923e5b0669",
+    "corpusfm/app/web/mcp_address_prompt.py": "79cb27df24fc35f6dfba04c2c98c9e1211795ed91c7af3755a74952823007e71",
+    "corpusfm/app/web/mcp_connections.py": "620678a732e8bacccc992feae2dc9bdb16d3625c91ca9386b7fb27cc25b48b28",
+    "corpusfm/app/web/mcp_tokens.py": "c0f3d19da1ab47c47116f2068475195ffc018166a9fd964bcfee7ba4e2aae6d8",
+    "corpusfm/app/web/oauth_policy.py": "f35e990efbfbb0cf295235025cbb67f2a06d4a4f54cbdeace018bf212fc89e4a",
+    "corpusfm/app/web/oauth_registration_guard.py": "4ffa491cfe55a0a92ebc62397bdb9c1b9825b1e5869b6b63820fc0a286593ad2",
+    "corpusfm/app/web/oauth_store.py": "ffc3ad06564d16c453e5bb14b302faff0f7ed05551439488d00548761c639e4e",
+    "corpusfm/app/web/oidc.py": "75370745087b02ab18cb32fec968f67a5310fc25ddc077e83d857b1a5dfe2902",
+    "corpusfm/app/web/routes/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "corpusfm/app/web/routes/api/__init__.py": "9dd9ef386f7fa4b4eb35a7f6de64c317f8e2a732c094f070617d0b86791b410d",
+    "corpusfm/app/web/routes/api/access.py": "619d162002c3ab51a66d8c198798b88428212c3e3f631f380a02b960644d5ff7",
+    "corpusfm/app/web/routes/api/addons.py": "932738aaf235d89d9e6377184d29e28491ca8fca1661f6310fd00eecc10efb53",
+    "corpusfm/app/web/routes/api/admin_pki.py": "72c387f66e66975dea496c65d86be856dcc753356fdf4f0939b33185fd38111d",
+    "corpusfm/app/web/routes/api/alerts.py": "3db63994cbe1b0aff0fb3289d0eeb1fd6bb7f5c48e7a0d906d448b1a8d334563",
+    "corpusfm/app/web/routes/api/clip.py": "928160d19dda4b7feb4c9f911a70585e101c0e5b397b2c64d1200b9a96cf2378",
+    "corpusfm/app/web/routes/api/diff_history.py": "ec7eb7dbb4258696397ce221dc403f0adf76bd347a918c80d839cfb9b8008f98",
+    "corpusfm/app/web/routes/api/explore_history.py": "13885ed00e4f9f13fe916f68c1ccdb7bc95caa2550f4b77ad3c5865e8cec2dac",
+    "corpusfm/app/web/routes/api/files.py": "4e54495133685e611a654cacf96b8675d63d428a5bde2a92cf9d24fbfa67bc5a",
+    "corpusfm/app/web/routes/api/generate.py": "fdbc12d136332da00bfb74db99730bd49c218881ceb2232c5b5d1dce9c15d380",
+    "corpusfm/app/web/routes/api/import_queue.py": "16827dd747a6b2f2d5e0e47f97c86de85390476323687545e20fce79d7314494",
+    "corpusfm/app/web/routes/api/indexed.py": "0a794f92453aeb48ee6ff6eeb0199516b10b38c1b6a8425cbe6d9917cbbd6027",
+    "corpusfm/app/web/routes/api/jobs.py": "9e5a15453c7ec0a3784c177ce0581e01b1efb0bd7db6ea960a1c46a5920966a8",
+    "corpusfm/app/web/routes/api/library.py": "06ba09157d477c0d80bcff0ca7c339eeb6cc143b3176cc9091970904bf9d4249",
+    "corpusfm/app/web/routes/api/logs.py": "cb660c61fccb857d7912b1d07f5e82b4cd82c89e8eeb51e16c78194678e1bb5c",
+    "corpusfm/app/web/routes/api/merged.py": "2d41af51314b6fb752036304f7152b3b097ee24b71100ee3c9b2e468abe5f0fa",
+    "corpusfm/app/web/routes/api/notifications.py": "3c93230a0b0806e85caf1f31fadff2c470a25b20d8fa8a45c61a62275d468490",
+    "corpusfm/app/web/routes/api/patch_ops.py": "632e508e0593c61e8445da392ccdf5a8048af3160c1c6b6dcc066f6311dc1d4f",
+    "corpusfm/app/web/routes/api/queue.py": "38db2b07a669618b6379148a8b5566eb18c20c28416f44c5568b60d0a559eff8",
+    "corpusfm/app/web/routes/api/server.py": "35a75fbe3f8b2bd2f68770d3b9f31d381b79a7caafcaccc237bd48300d13be1a",
+    "corpusfm/app/web/routes/api/settings.py": "864f4664b571c037466638d51ea86408f2f84f634116e6d99d27b9634d219b79",
+    "corpusfm/app/web/routes/api/tags.py": "e7be1badf00b1f4c039580b004176adad4ef84647166ac612d464ae0a041afeb",
+    "corpusfm/app/web/routes/api/upload.py": "0b399c7f1a860c3695d065ab6a66840bbe6e3cbdfc89be463518d237ae2a24ae",
+    "corpusfm/app/web/routes/api/users.py": "431a31aba00c41b5e707e71e9dd4e33c138f037c8501088f0ed322101a80a3dd",
+    "corpusfm/app/web/routes/oauth.py": "e11a9d650d008942880969491c43b15fac932e4f0209fe1feb9dbb3648278ddf",
+    "corpusfm/app/web/routes/pages.py": "7c69638302be186de12605181c2104fe668fb4396962d41584a041fdca0a8a8f",
+    "corpusfm/app/web/service_restart.py": "4969e1982713c89f2528acca7dd298be1f64b8db9a40fc40c34feee379d373fa",
+    "corpusfm/app/web/static/alpine.min.js": "689f513978d11d69f4d33794f7296c9a586a2e55de79bb447cddbc3f474f9f07",
+    "corpusfm/app/web/static/corpusfm-node-icon.svg": "9f4a87d8fa668b26b5e5fcc5146a198321ddcb3b30c9a7207e029aa0e44cb810",
+    "corpusfm/app/web/static/corpusfm-wordmark-darkmode.svg": "d8e9ee16faf3dd78a7c97be517a23fc648df62100e00c13b2204542134f11270",
+    "corpusfm/app/web/static/corpusfm-wordmark-lightmode.svg": "e83507c40717a91bbb6f9b1b266f8d707465e5933d1f87531673dd6a8e26e99d",
+    "corpusfm/app/web/static/corpusfm-wordmark.svg": "79c1e8ce5e922db1bc9741f0780a1d86299a3f11197e0b90800d6c3d30414afa",
+    "corpusfm/app/web/static/kit.css": "2eed4edcc09e7431d5901daf6a145193e001b71c991c71b04ccd896e5af5482e",
+    "corpusfm/app/web/static/kit.js": "9cf24268fd0ad23cf988bffdc2493ce2a8ee1cf24eb640816759383616422594",
+    "corpusfm/app/web/static/style.css": "863f9f26cb5fd86d8d0016a627fc94327854d601293486f97e88099c2e3986a3",
+    "corpusfm/app/web/static/vendor/lucide/activity.svg": "46f992216bb6e3b101eea128091ea273941f351221fe3207bcd1f6c246260482",
+    "corpusfm/app/web/static/vendor/lucide/alert-triangle.svg": "3ba7bae5679853040bbcc7fc974d3fc5a9afeee7380adbc9abede979dd24afb7",
+    "corpusfm/app/web/static/vendor/lucide/check-circle.svg": "edbb1f3ad672cc6f368eb7f4780640befd955c100714edc85e0befc0fbe02490",
+    "corpusfm/app/web/static/vendor/lucide/chevron-left.svg": "9fcea767f6b148f346e2d43d7b4bc191eb2bdebfca957ea72166bc4a59ff21b1",
+    "corpusfm/app/web/static/vendor/lucide/chevron-right.svg": "87073556b3da17e0f14b13f3f391929ad47f635025564d9a061acc5748fde10b",
+    "corpusfm/app/web/static/vendor/lucide/download.svg": "f1ef044333abc756013d23f1fe8efe8dbcdff2b3fc8d900d8b6dd0f9c79fab85",
+    "corpusfm/app/web/static/vendor/lucide/eye.svg": "754fb616e5b598927d8d0d1881494601e342fc39959892b409ab998a92987450",
+    "corpusfm/app/web/static/vendor/lucide/file-text.svg": "287f38f1d953a122db63312a576c9a6a52e861de986bc7d25aa4dc524d265d63",
+    "corpusfm/app/web/static/vendor/lucide/folder.svg": "bd1e66f6d4bb5819fc078848b965bae582b13a19c3cd01d9d4acd9b85cc016cf",
+    "corpusfm/app/web/static/vendor/lucide/git-merge.svg": "7933bf8be2e482952c81554f2525e1ba511270c18a067a76765451c2a2c3f683",
+    "corpusfm/app/web/static/vendor/lucide/house.svg": "5bf67d3f454baf5e05e9cd59a0ecfa770df054bf276cfc49694767becc838684",
+    "corpusfm/app/web/static/vendor/lucide/info.svg": "d2484551dd98593fcb3ed961c8854bcc3b88ca4b3d186c341b72f37a15523c11",
+    "corpusfm/app/web/static/vendor/lucide/library.svg": "4d558f698da67096fca4d2099e66419ff1f87a13e062051fc5122a6c570f191f",
+    "corpusfm/app/web/static/vendor/lucide/log-out.svg": "84c0a42cedff0578e71f70b50d6d28500a511e876b769799768eb3b027c6834f",
+    "corpusfm/app/web/static/vendor/lucide/moon.svg": "e85c2f009f9623e1d35f251699c5af133dfe07fc0ba3e7ec55789dc6e1d0f88a",
+    "corpusfm/app/web/static/vendor/lucide/pencil.svg": "f5f68585d7c351c0174bdf4e4083342f5c5b2ce04cc8f484f5a7867555d36686",
+    "corpusfm/app/web/static/vendor/lucide/plus.svg": "10e35a39bf5a9404ef3b080da588fb49243d83aa881be41057c1a3adbaf8da61",
+    "corpusfm/app/web/static/vendor/lucide/refresh-cw.svg": "008abc71bcf788402ba8ddad49d3dc7dfa204a45417989f44622ab2e51e83533",
+    "corpusfm/app/web/static/vendor/lucide/save.svg": "dede25e9d34262856183bbed3945e1bc41fd8146bb8f633316261c7766995a4f",
+    "corpusfm/app/web/static/vendor/lucide/scroll-text.svg": "83c0d67eebbb614dd9a4e1876089153b6dbfd764e5a45b14c2c0f33a8e863195",
+    "corpusfm/app/web/static/vendor/lucide/settings.svg": "a2b964cce4e0ad6ec6a9f391ccc1f2da8c12a9281198feed6cdaefb023acf8e2",
+    "corpusfm/app/web/static/vendor/lucide/sparkles.svg": "b231910c59994bb43cd254d8644b10143e8aacb691d8d3406c4dbe4d55f3f97e",
+    "corpusfm/app/web/static/vendor/lucide/sun.svg": "5c34737da2bf6d68138897848e08847cfe2e40183d1efd4e90003922becc02d7",
+    "corpusfm/app/web/static/vendor/lucide/trash-2.svg": "b773520d25639283db48d1a4523e936c67717cb3ae6211e005b1bf0eedc05d9f",
+    "corpusfm/app/web/static/vendor/lucide/upload.svg": "e8c1ba1a8ba857551047af385f082c670a85efed2a8020c405366cad694a8385",
+    "corpusfm/app/web/static/vendor/lucide/wrench.svg": "eb175ff7812d1c4aae5bf5b66fa2817ca425446cb7c01f41d62bf20fd2917bc3",
+    "corpusfm/app/web/static/vendor/lucide/x-circle.svg": "26e061069945284d912498337afefdb972112860a0aee5cdd56ea0ac19e5b5a5",
+    "corpusfm/app/web/templates/_help.html": "2704491b9ed3b7ec80cad0010e8db7f6878f0a37f34bc691dd42f9da85a43078",
+    "corpusfm/app/web/templates/about.html": "c2bed1de80296ffe32aa9962f83b77f76d6fc06f5d94643f3a7df05543490e5f",
+    "corpusfm/app/web/templates/account.html": "4c532095832343a65d51db244a7083b9463d2a5a586ac5aa8f8cecbf30d673ae",
+    "corpusfm/app/web/templates/artifacts.html": "9bb5078b67df101ca75dbb97638fc2045e81579a6710b4b08d0586b26c83d362",
+    "corpusfm/app/web/templates/base.html": "50256522eb13eb62c015d418cf947bdf78abe7cef7ab1250b91cc35e04de2cfd",
+    "corpusfm/app/web/templates/build_mismatch.html": "7bd9dc0eb0259dbed9be11e073c197a24dbff7176466bab795dc1e6796ee5411",
+    "corpusfm/app/web/templates/converting.html": "3eb6d1e2afa25b508099c13c10fbd807f691fb2793ac21aa0a9dccb0fce3fe87",
+    "corpusfm/app/web/templates/docs.html": "7ed604676df505d0f2a2e00ddc5d6a9a37f28fdd6b9301d46026c0b76c8ad006",
+    "corpusfm/app/web/templates/jobs.html": "fb64547977851082720917dfba781679490219882fc9d95ab2f9d0ad667d2083",
+    "corpusfm/app/web/templates/login.html": "28a2bbc1988f8bb50179ee16e4c7a1007a5fe275122612bab005c70631bcd7a0",
+    "corpusfm/app/web/templates/logs.html": "84cb8ac41604e35a11df54795ece67782e42090a90c95318dd5c7022a691a758",
+    "corpusfm/app/web/templates/mcp_access.html": "56ed4182f97db4cf56c3ae1c9eb97938371d721abb218f56cb4d446df7bedf8c",
+    "corpusfm/app/web/templates/monitoring.html": "d575072c446f2709449ac8bf76c29d9bc98914624e7ac158da06ca89a617df64",
+    "corpusfm/app/web/templates/needs_upgrade.html": "87dfed8d51d9fd08457945f1a39d9dc9df4ad84f226203414d50416b678cdeee",
+    "corpusfm/app/web/templates/oauth_consent.html": "9c496b434674c9c79c7b909e3bc963de17fb55b7bafd1a957aff9c667bcdd84f",
+    "corpusfm/app/web/templates/oauth_error.html": "cf6e12fe073deb1f947df55a722f9f072c5b99c614cb0e835d38dbff4386de1f",
+    "corpusfm/app/web/templates/patch_isv.html": "b100b859a360666bb7b805d0378b7c12559f974493ebcf153e3b142de2bbe545",
+    "corpusfm/app/web/templates/queue.html": "b36dd75183a2cc0592bc0f0a40ae5797fe83bf45e8c0789a88fb8cae1b34db38",
+    "corpusfm/app/web/templates/reload.html": "b88b2106cf3ba573d06c096463ecef4db84d5bc9c43010451f7933e95cf066b3",
+    "corpusfm/app/web/templates/runs.html": "9054d3d46f23fb185a8535487b05888a4bae6f89180dbb9310c726e820c3b130",
+    "corpusfm/app/web/templates/settings.html": "b4f7f13576a67998dc61c3c621b26e7bb23560690edbfdcb510a462eeca268dd",
+    "corpusfm/app/web/templates/tags.html": "f098fe6d5c72b5017380a6864144239307ac207328726d66f9bc36093768017a",
+    "corpusfm/app/web/users.py": "b204395964573b49fd35cace70da9ec8034c1d557f27ad9805333b24d3d53596",
+    "corpusfm/artifact/__init__.py": "b39472986702e334d7a1ec2747d9a650d4ed4083bf253503ba10fc4eb97f1059",
+    "corpusfm/artifact/capabilities.py": "7730b2b20950fd16a73dbda418c20fbf31a4d0dea4cd2d28f86888ff686ad124",
+    "corpusfm/artifact/document.py": "be41911dce7e7584418c485f2e85cb4f7671544ec736c8e7b242d4c80a9fe4e9",
+    "corpusfm/artifact/merge.py": "dd7edaee3c5dad69dd0c183438914c4638804ad76da8d89998b6f3890de43011",
+    "corpusfm/artifact/readme.py": "18a5c5c70a50aefb230bc5eb75195e184341cbf2a917fba8fa2c960e28899e5a",
+    "corpusfm/artifact/types.py": "f9b3388c0d7ef0dd7ba3bd1f32785edc50e8e8d44b19c2956107e803e20b6f86",
+    "corpusfm/buildstamp.py": "6440af21b7ecb5a21cd07ee61e57fbc864f2d9a3652caac4bf04a0d4a85818f1",
+    "corpusfm/config.py": "16c5e15159639fee4d7e54175d607db504fdd1943d31296be7e213b899661236",
+    "corpusfm/core/__init__.py": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+    "corpusfm/core/acceptance.py": "cbbf452176b48bf834ccde2f84bc7fca8e850c13e285812d9768eff17663737b",
+    "corpusfm/core/addon/NOTES.md": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "corpusfm/core/addon/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "corpusfm/core/addon/package.py": "7e7da2f4bee834887b8afbcbc439bdc9a2ce7ed126360eb09d97fda852a00873",
+    "corpusfm/core/addon/scripts.py": "6b5ad3da1b3546364df5e9954a590368c76015fd6533122715bb824d93ff7b15",
+    "corpusfm/core/ai_usage.py": "146a7495d7b4ea44b16e391b8bf2a92005be75fa142f1b846a70a8b49a806fb5",
+    "corpusfm/core/clip_catalog.py": "6e365faf072e4b9f14378fb090864780eb54180bb561de00b8b253793b1a29ab",
+    "corpusfm/core/clip_catalog.yaml": "4d8df10e63aff8114ccfb8fcb5c55bc66f9de0dfa476cd1b495301fb49d95cfc",
+    "corpusfm/core/clip_compile.py": "8a91418ceb4d5b732af4f61eebebc60fe007bc007817b110cacf57b86b6cd5b1",
+    "corpusfm/core/clip_emit.py": "c6f6050ede1a584008396551ad367a94d65434560336b7062f6acfda21d583d2",
+    "corpusfm/core/clip_gap.py": "9ddc4b0ad5cc3def3c5ae307154d3c7192a4ce2d9c32c9d0fa790025d88a2a1c",
+    "corpusfm/core/clip_patch.py": "486f52ad1ad3967fcbcf80cd3365327052fe3bd0e7c857573a52b7f588b30282",
+    "corpusfm/core/clip_validate.py": "f186a1285d9d0f3fd0c23a9c6b7fd05777f61c05c3b8c55e92e522b528426dc5",
+    "corpusfm/core/comparator.py": "37765c6f0d093edece5925f714009722c46e5adf3b6fd2854b3d932985d184e7",
+    "corpusfm/core/crossfile/__init__.py": "f6c3f46a24e279218156aaf11d858c8b5990e923bbac6f390616d67196bc5be5",
+    "corpusfm/core/crossfile/_emit.py": "a48e168e7e19eebca497a64f62882d44754ada82fe65fe6b372e0719a4b2b94c",
+    "corpusfm/core/crossfile/_extract.py": "ced500b79480efad95874f30e9b765cfdfe0caf3c8bdd49900439f80030dc065",
+    "corpusfm/core/crossfile/_reconstruct.py": "8dc4bb00c25776bb6202a2fc1400ef1e2c8e10acfd83cadd188b2c09172f3e7b",
+    "corpusfm/core/crossfile/_render.py": "5ba229e292a25dc3add629b7ec0114cdfe2aa03d1bddffd59c6eb3273d367a1d",
+    "corpusfm/core/crossfile/_types.py": "668ea676e4d7c0b77c0fa46ca0369ac8c933bf214c586cd8083b26a7b0be8822",
+    "corpusfm/core/crypto.py": "fbee1eb988872cc92451d525c161e7b766b67493043304e47a6602c0bb706e79",
+    "corpusfm/core/evidence.py": "2ec4d07393ed07f84eb7e269b007139b742b712252b811b0a49b92e7c3fe3257",
+    "corpusfm/core/field_emit.py": "ab3330b0769e91709453fafa5cef58fd61a4b5f15f8c3e868ee5e9e907a56101",
+    "corpusfm/core/filenames.py": "3f51ad17985742ebd1808cf74d8947abf6c06e0472d8eca994aac755e2b85159",
+    "corpusfm/core/git_formatter/__init__.py": "4a091e25ae402e267cddda17d37745bbc96e1d2b91b8223bf63d844df0cf48df",
+    "corpusfm/core/git_formatter/_exporter.py": "3870bf8bb687ec4be3884edd269835ca4d027d861920df4315a4233b9c4a4411",
+    "corpusfm/core/git_formatter/_renderer.py": "ebe72271a68b03ddd389811d35e980da6e1c9efdca770b88d102e93be5071d69",
+    "corpusfm/core/git_formatter/registrations.py": "54184495beb7e9fda75508d8a83c25be1b3bf2932243429cbfebee161bffa548",
+    "corpusfm/core/layout_objects.py": "eaa3537243cd739030cc89f58a929d89f71e6ed2703d947d833aa55de8d44289",
+    "corpusfm/core/parser.py": "a05b17d2133ffed747db5bb32c949325a24bf99412894fa34d792caaedbb2639",
+    "corpusfm/core/proc_lock.py": "28638af9b0fdbd16a397b7366b6a6f0ab9bf1d1f9724b5bcf32409543b9e3938",
+    "corpusfm/core/render_diagnostics.py": "1fdc01f5f3f871ffba87c3a97a65a6c6e2294d23f92a595768d24db6017e0ef2",
+    "corpusfm/core/renderer.py": "8dd7aef95805844cfcd6f10268ada5750f83c4a9aeb4655495d9f2d8cf5530cf",
+    "corpusfm/core/rendering/__init__.py": "c2051fac094744d7a9ee6d8d8cd25199b0ee733c4a61f6ed6420b809f169b659",
+    "corpusfm/core/rendering/catalog.py": "4137218b2e85a19c5cf5d6d03826aed76d5d33cd78f1a60e570855cc27db2b4a",
+    "corpusfm/core/rendering/hidden_chars.py": "ab7bfcea089e8aea38c5974205405f449b5bbb09a2957bc1640e6d80b2a457b5",
+    "corpusfm/core/rendering/section_renderer.py": "ddaa8ccf2036752d3c33055ccf3d5d7f521a469e5feb9d4e9138401f81f897a8",
+    "corpusfm/core/rendering/step_renderer.py": "fbc90b5e233d3c35855057806e60f0eeb0da2e61c9dfdca8aa0e4df07271f0e9",
+    "corpusfm/core/safe_xml.py": "14fb374b8c0511ed206b6c55f70e89a1d2bd60fe1a254c39f2fda04fb0fe4db7",
+    "corpusfm/core/schemas/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "corpusfm/core/schemas/registry.py": "96e41975add86d2a2a3b6570f6cd1e9484a666fef79ebc2fa0f8f5c47e9ab575",
+    "corpusfm/core/schemas/v2.2.3.0/mappings.yaml": "b1355cdcb357a72e1d2c0e244437518bcabe3483ee8165e16f94edf878f57aec",
+    "corpusfm/core/schemas/v2.2.3.0/rendering.yaml": "801e35146f115534e441aeb40d3b7c74a4608b95526592037ac0dd9bfcd13681",
+    "corpusfm/core/schemas/v2.2.3.0/structure_catalog.yaml": "913766699e3dc98ba0c6dcf1ec332078ba17d6cd2648d620642fd43ee1010553",
+    "corpusfm/core/schemas/v2.3.0.0/mappings.yaml": "e8df6c4a91564597f04c9853cb7145cb8d5ea70bd0ac186b5bd7f662e03def3e",
+    "corpusfm/core/schemas/v2.3.0.0/rendering.yaml": "d077847237e090b3694b8609ea078e27969d485dc007d10a5ca7041596e1922c",
+    "corpusfm/core/schemas/v2.3.0.0/structure_catalog.yaml": "2d695cbc7c56636942546c9aab6c567c30cae33ea36ea155bf1d085699fbbe07",
+    "corpusfm/core/secure_fs.py": "5bbc308f9ade870cb86814d649c40e4ca9b5632e971b9d8dfefe1dc8e4a5177e",
+    "corpusfm/core/servertime.py": "cfa0aa10a27fee57d62d8124ed3e9a46fce316fb307eea7a63c7a637cdd7ad53",
+    "corpusfm/core/structure_catalog/__init__.py": "c6b418b5b570bc796dc7fca72bf0ec2b452cb0e3315a16f3fcfd869375a6930a",
+    "corpusfm/core/structure_catalog/miner.py": "bb03584fb33330365a5300193caba10e26724493a3666535884b5e173b186819",
+    "corpusfm/core/structure_catalog/sanitizer.py": "75b28d6da9ea3cca5f9ff41c92f43f87a83fe88701931a137b5af0ce5d4c248c",
+    "corpusfm/core/structure_catalog/types.py": "9ab8e48cc8610bab8ab89d65f907ba4be0a1379c4c46b9052d30f56b41ef75d4",
+    "corpusfm/core/structure_intent.py": "c6eccaf3208f8e8f68a911c6f5cc637c51fa46b365ddfb55dea11607ea6554be",
+    "corpusfm/core/workflows.py": "02b236650331be561f253f17eacc0fe482255c364feb206faf23543fce23c1da",
+    "corpusfm/core/xref/__init__.py": "9e14167a83a42acf629dd71653c58bafd365e57a1b71b96a022dac6f4e0c586c",
+    "corpusfm/core/xref/dead_ends.py": "1c772ee648ccec3da5f06f6600faa0bf1920c0d4b0e9dbbfc41a4982a01d68ac",
+    "corpusfm/core/xref/graph.py": "7df23a583525b4e05c192d96f58d760d25efdf08bf6979cdec092a3baee38e79",
+    "corpusfm/extensions/__init__.py": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+    "corpusfm/extensions/export/__init__.py": "a9d98715670ee605d7e722545c8e547d286d82909332c6021b061162183fa63c",
+    "corpusfm/extensions/export/assets/corpusfm-wordmark-darkmode.svg": "d8e9ee16faf3dd78a7c97be517a23fc648df62100e00c13b2204542134f11270",
+    "corpusfm/extensions/export/assets/corpusfm-wordmark-lightmode.svg": "e83507c40717a91bbb6f9b1b266f8d707465e5933d1f87531673dd6a8e26e99d",
+    "corpusfm/extensions/export/assets/node-icon.svg": "9f4a87d8fa668b26b5e5fcc5146a198321ddcb3b30c9a7207e029aa0e44cb810",
+    "corpusfm/extensions/export/assets/wordmark.svg": "2ae6f45c9b513dc8b196f4a7e25ac23d75ec989c846f4d4e0bb7ce4511543bb7",
+    "corpusfm/extensions/export/capabilities.py": "d2c0f95e6e666ad775def4a16a30515ba4e772e9c012a2cdf94cfa925b452ac6",
+    "corpusfm/extensions/export/construction.py": "1389af36c853b5f8ac9e2381e6be5e7a06c6229a0a8d79b3df648912d8dd0a75",
+    "corpusfm/extensions/export/contracts.py": "bd3458aa7e4e0d5b0d09a630184df7cd66a70aaffc1c6e0a44ff7c1ee1d6cf25",
+    "corpusfm/extensions/export/coverage_gate.py": "d5e628d0f7d9ed554d3251d08055fed98ee3c18eb3a1ea7c3240b534720c61ba",
+    "corpusfm/extensions/export/diff.py": "17ce383b6bb8ea3c8fa517be9e89edac979478660ffe94823f21f8be84265f7e",
+    "corpusfm/extensions/export/explorer.py": "236dcd27fc372ea24317ffb539e03c6b270ae75fcdcb32441df96c8f1bdad9b5",
+    "corpusfm/extensions/export/patch_build.py": "e1de4dd80044d688346d81b7a84623948e34ec541a66131fb1bbc348d77f0f59",
+    "corpusfm/extensions/export/patch_capabilities.yaml": "55557275c694bb47a74844b401312d9f7be4d0a73cc41628e30e4790dc510539",
+    "corpusfm/extensions/export/patch_coherence.py": "16122822f897fefafd3e9fcc13b82e2a67afd4b1643194fc5f0a2398b1ba1637",
+    "corpusfm/extensions/export/patch_simulate.py": "1ec9030687cf72cb02b3e692d49d3b568785f967df009efba1646bdbe83ff98d",
+    "corpusfm/extensions/export/patch_verify.py": "9642a6cd23801ad9f9e1cc1229da689ad7c5f4530abc66fa560337d6f72b2df7",
+    "corpusfm/extensions/export/resources/cfm_delete_from_documents.xml": "be2ea725a750f9ae2b889249c58e72c44d4a90310887e690549d33655a2a4a9b",
+    "corpusfm/extensions/export/resources/cfm_save_to_documents.xml": "50dda13d06c4f677e06582b249b5db313fa12079be5e5df19335ad04deb7a65e",
+    "corpusfm/extensions/export/syntax_palettes.py": "d0109a0eee6c32a9720da40929a6c89c9501a059c93f9d1c475859cf8f58032b",
+    "corpusfm/extensions/export/templates/explorer.css": "24996962aaf0759e91f5017d989fce27f2e16d3a3ee9418c41893264acde76b2",
+    "corpusfm/extensions/export/templates/explorer.html": "77626218853e4a03fcc2e044ca8d1f3d75a968d77f94b921d06a3b0ccd79c997",
+    "corpusfm/extensions/export/templates/explorer_graph.js": "b6ba16235725c6d6c7dab4994fa99a4d0614eea2d4e61b709a985e4baf80eda5",
+    "corpusfm/extensions/export/templates/explorer_highlight.js": "8121d8b9bee1790e6e519ea594f622480f5cdf4fe9b81fe4a73c0b0eae0c992f",
+    "corpusfm/extensions/export/vendor/alpine.min.js": "689f513978d11d69f4d33794f7296c9a586a2e55de79bb447cddbc3f474f9f07",
+    "corpusfm/extensions/export/vendor/fuse.min.js": "e3621b53cb77b4ec306dec41ed95511e6dd80d17fae5a04f3e346d214b9f8f92",
+    "corpusfm/formula/__init__.py": "7a390c9e0ff669095fdc67655648a63ddf1fd482d5fe680cfbb97b1b3b4788a3",
+    "corpusfm/formula/_analyze.py": "e2d9ca8ca995acf9eb9c5706ecc65fb5e5b5be2edd24b04e26d5c317d7520db8",
+    "corpusfm/formula/_ast.py": "b722d8420462ab6f7cbd2926dc20f92d8f0c6aaae7a2c2c81796d63c2706caae",
+    "corpusfm/formula/_formatter.py": "1b2ad5ab9d69c28bb0ee85a449f667cbe1944d481d2abeea8238d5724f90b5dc",
+    "corpusfm/formula/_lexer.py": "843f7ef970695c3285055d64e89073b9ee583aa53e0968bd3fb03a4a516c3257",
+    "corpusfm/formula/_parser.py": "fa5481f834d2659ab82c9ba1b904f4094cf0a4027af1de88eca022f5fcb0a368",
+    "corpusfm/generation_jobs.py": "0937dd44abdcd1e1f5ccbceaf8893cdf3558be60212e291f39bd809ffc1381f2",
+    "corpusfm/ingestion/__init__.py": "94782b40689ea6c43623ea28e2ffc7234670d7996e8de90ae128eb0266941c6c",
+    "corpusfm/ingestion/clip.py": "49c43be5f4b495d84a27306f17d2e98118b2e465531d37d83f66501cdd912193",
+    "corpusfm/ingestion/pipeline.py": "5e0bc37fcf3aa0dc9b0d3e22d19ede2c449ffc23eb729fa1344da08534b5f877",
+    "corpusfm/ingestion/reabsorb.py": "65a9b42234570b6bea35d3c01b0793e9b60f6b61772666e4625d7a1e7b699f75",
+    "corpusfm/install.py": "4595573600cab60305f5cdb87ab65c494bf0f71ce2b18fffd9fc7d01d9cb0689",
+    "corpusfm/lifecycle/__init__.py": "26ab965c00041c0e8492d8a633b08261e3fd4384bed5bcfc5cf64f528ab90767",
+    "corpusfm/lifecycle/__main__.py": "e34737246c4338a78411d7cac39a3a03c13fae12bd7c5bfc01896677e9e0b5c2",
+    "corpusfm/lifecycle/admin_identity.py": "a8b9e2a84a44571b10c297093ce6f6c89e2e1f5a03c9cbbb2589443a5f45f9a6",
+    "corpusfm/lifecycle/admin_identity_adapter.py": "3af694a866e32c51d3aa4e5b4d947cf6e86806e37d3af8c2181a2caa2c6a0170",
+    "corpusfm/lifecycle/admin_identity_ops.py": "9e7f1b56f63cb145b14ceba5e0e6ea3d97c16ca642462be5bdab14533996d444",
+    "corpusfm/lifecycle/admin_identity_recovery.py": "c868806d6345c23df17e603885d911bb5e8b1243a78bdcbb118339967db299d6",
+    "corpusfm/lifecycle/admin_identity_runtime.py": "16e75910f3258a67323cfd62a1493d7357577d7afda73a3e0e73f1d8f0d4ca62",
+    "corpusfm/lifecycle/admin_identity_store.py": "5426ff88fa3f01ce17a5ca8d0ad0c5faac63c47c11172a468fe0445a65d46909",
+    "corpusfm/lifecycle/app_paths.py": "cef0fadf28d3978d6886d99db90f25472e1e2efee7b943a73a05ba131e7c8007",
+    "corpusfm/lifecycle/artifact_ownership.py": "1364aeb654e59abadb836c7cec1de01379db02e5d0997e9df9a0b51bb6d31a6a",
+    "corpusfm/lifecycle/atomic.py": "492bd437af87b9321e4d2dd8b7c8561128de3741ec5084918207726b814dbbdc",
+    "corpusfm/lifecycle/bridge.py": "bca8a15cb246dc052fe69721a53442270b312a33ddb101a342b366d5cc7c226d",
+    "corpusfm/lifecycle/bytecode_cleanup.py": "008bf10a5f831bc0ae7e40d39247238da4187b011a4e8d255905036a14e13a18",
+    "corpusfm/lifecycle/cli.py": "fceea4772fc2ef710c45cab62a4287f6b7aacb13bfe5a61ae461c3e61d802c60",
+    "corpusfm/lifecycle/composition.py": "514e1139b4cc02f5d7942ee76d255109ea1b9dd122345985d91453df342936a3",
+    "corpusfm/lifecycle/consent.py": "ba8d7d1c801afa560a11ecba35c7ddaceeeba0394479e8308deb2fe9fd2a3e19",
+    "corpusfm/lifecycle/corpus_identity.py": "2f9c16e4a084dbf8e355d4dacde63764296e2565cea5f35687a0e521e81e1e68",
+    "corpusfm/lifecycle/errors.py": "94c383e684427175475795fca5a244c211125f83532d5797b6296ea66e693ff7",
+    "corpusfm/lifecycle/fms_folders.py": "ae7877f1937b06fe214cd60bbb1ee8807cd8542984cdade67d494c4849a386b0",
+    "corpusfm/lifecycle/installer_disposition.py": "2722917ceadc880278ca22399f11f7d341985a47b77f9e2b7ba3d4b9ae9fec08",
+    "corpusfm/lifecycle/journal.py": "a0c921c6b94c11a90ee031bcee3956ef91ea3c8f99a6275a6ee31de53fb5e63b",
+    "corpusfm/lifecycle/key_migration.py": "f1841cefe44940acd9733cda52b7df1c883d3c7bd438b2c21fb1873e9f7c8550",
+    "corpusfm/lifecycle/key_provisioning.py": "c454ec2a273b517b87d04d1b45aa47fd559d85990143d189be29d2527268f831",
+    "corpusfm/lifecycle/layout.py": "f4e2b769e3ddab3eef5318000ce49d5d609c9056eab6e4b7f44925b8d2980e15",
+    "corpusfm/lifecycle/locator.py": "fdbd12f941e5a9013d1941fe80ed375d1e8d141376ade52e308c40319f7b4234",
+    "corpusfm/lifecycle/lock.py": "17411a7c7365d7ee47facb01b2f6c5434a5953dffaa56afe031d9dfb08686be7",
+    "corpusfm/lifecycle/manifest.py": "b5438a899a007f56af4fb491ec91901fb0accf3a3a32a087d5f4db17ca3fe2b1",
+    "corpusfm/lifecycle/os_layout.py": "e88ff7ef72583ed6a1224e7069b9d764b8e618e04a9e69e85a2dcc0fe1125d7f",
+    "corpusfm/lifecycle/outcome_publisher.py": "3b368dbec41a41c97bf0607a925ea98fdcce757abcc339483d8667f9578830e3",
+    "corpusfm/lifecycle/output.py": "d4ee672eb20e1a77b2f7535c81d07b2939142e3a81a0ebb34b68b7bd9607b405",
+    "corpusfm/lifecycle/patch_compartment.py": "61ea9340471841e289d0d1e839bb8f248cfa097b5e3d61c728598afee233ca83",
+    "corpusfm/lifecycle/privilege.py": "c9ba805254268d6191dc3540c3c1db46efe42d5b7c7d0eb14a93fc0285ba89d6",
+    "corpusfm/lifecycle/protection.py": "d1c278bc5781f2ff977b24c65fe850c1291752a14394ca27ea628110f64e50ad",
+    "corpusfm/lifecycle/proxy_inventory.py": "ddda49a8df9d78eea22e39021f2d57d6c9f002a4f7fb065c91f104c4c79aa0ed",
+    "corpusfm/lifecycle/proxy_policy.py": "278e42701752c68bc92ce250fe21dff80a17591c4f99aa8f23c397e8008f7d46",
+    "corpusfm/lifecycle/proxy_render.py": "5a8d2e63d694153e1185014edd46796770bec01006e38a20cff0ca15d13dd552",
+    "corpusfm/lifecycle/proxy_transaction.py": "599ed469f7bf1ae553668a4257c4b3cb62e49809404c8e11e0d44754da25c7e3",
+    "corpusfm/lifecycle/published.py": "97bf38882b7dcbbb36871618a3dab9906f34459e4b891d76ed2a8af0c19e811c",
+    "corpusfm/lifecycle/recovery_cli.py": "d24fb0286bcf611ea13800d9ff4f49274fe992d2c1c3bef2235f7d5d0347bfc9",
+    "corpusfm/lifecycle/recovery_format.py": "3753de099ff38d3c97d7bd960cd2181f3e291cfa70766abb1222f68f361b1f83",
+    "corpusfm/lifecycle/recovery_ops.py": "56308b04a68e80c30c6f238fe40931da179ddfc4ca801b465feeb62b4928ecd8",
+    "corpusfm/lifecycle/result.py": "abb8c62bf64d3c96588b9fa30830273d19eb18993a5569e17f540f7539efd9a1",
+    "corpusfm/lifecycle/runtime_storage.py": "e2374738922e45e83b6049a8e7fcbcc1f0921034c66434ebffdeae7f061dcea0",
+    "corpusfm/lifecycle/schema.py": "139dc87ae2c670301d80fbcffa15b5811b70fc3c02914b141f809d5496b56ab3",
+    "corpusfm/lifecycle/secret_guard.py": "e34048c678af07cd661292159750133cf4da204e294a098033e24aab1c0e7fb4",
+    "corpusfm/lifecycle/service_binding.py": "b17e18b60f1d140af416089d06b687a2a9a8152d192dedf7e5faca61e785ff56",
+    "corpusfm/lifecycle/service_control.py": "05bf53d7c28da95c761edee71d647051f7efee26a4e0d95bef00f354e31cff6c",
+    "corpusfm/lifecycle/service_identity.py": "60c3daef8957bbbe6fea84089b4422e1ef94d68c73a025f96c892073aaf16e31",
+    "corpusfm/lifecycle/session.py": "5cdd9be83464d8e3546db1edc21b5585f5dc4211df64579ed16a9431e6fdc4ae",
+    "corpusfm/lifecycle/storage_identity.py": "cf4d5337dee06effb961d7e958e6ce52034beb8e10f6bfdbfe23759bbe859b88",
+    "corpusfm/lifecycle/storage_identity_adapter.py": "bd1a57b5f03bf81a0de7eb7fd0517273efc421f69a1c8d0f403444d827f54c58",
+    "corpusfm/lifecycle/storage_identity_ops.py": "477562af06cc46a7c843925107815dbf4edc4b07ff6548859740853a13b64a1e",
+    "corpusfm/lifecycle/storage_identity_recovery.py": "23db664cce86dfdbff5d31a2649335e74880970874e74e19273a38cf5d31c53a",
+    "corpusfm/lifecycle/storage_identity_store.py": "706c2095e0c16c05c87344471101746961b1addde82752b0fc1cec15dbce6c7b",
+    "corpusfm/lifecycle/tree_inspection.py": "1e09950d8b359906f3556d4a579f47ee17fc342fdd9fb36d7daff93b5a9bc55a",
+    "corpusfm/lifecycle/uninstall_exec_posix.py": "23105997fee979c0793c8b1de8352ff6a3a1a14af01e567ec09190e0385e3206",
+    "corpusfm/lifecycle/uninstall_exec_windows.py": "2b92524fe0e87cf9c3bbf678e8cf06bf8b3d84649a8dec97687b06a224f16c6d",
+    "corpusfm/lifecycle/uninstall_inventory.py": "e44854c3968c19073e65a0791aa7304c7c6f5ae57aa25b4030c4b3fc9ca89889",
+    "corpusfm/lifecycle/uninstall_pending.py": "3907020849046b45b8da7c4c5efaa626db35232e66a3f4b86269b07993f1d50f",
+    "corpusfm/lifecycle/uninstall_plan.py": "3dd5ea4ca3ca349fc1c3bae171ec107f8f3ef54be4d7a45c7346596f2cfc250d",
+    "corpusfm/lifecycle/uninstall_resume.py": "9444200d9f65e67e2af75575e4113b5f2e4bf368c949defef93ae3f3f69aeabe",
+    "corpusfm/lifecycle/uninstall_runtime.py": "dafa7b2c6a7d6a32b4ed1f0fd27f02ab534a5ba52d49c101231301f04416b140",
+    "corpusfm/lifecycle/uninstall_terminal.py": "0f84878dc511c5cf52fa9903cc65ca398d69175cd2e7f331a6bccff56536e58b",
+    "corpusfm/lifecycle/update_boundary.py": "e09a344eefc02a4a4cc0d02d81beb63ae2b634169774c568a8150073bedf32b3",
+    "corpusfm/logging_config.py": "3f46027f9105e0b2a19c69b36515747cfa70cbe28748ebcc474287c03a823077",
+    "corpusfm/mcp/__init__.py": "f50a8bd59b3cdee31aaaa8984b5fe75a7f0df1c757c001a84691a46887872131",
+    "corpusfm/mcp/__main__.py": "ae126d789c035a402ceba0d3ca14ab4d134ae5a261d94cc63a37274c6d822620",
+    "corpusfm/mcp/oauth_provider.py": "57464736c91d9e8798dd4d5fb263dad8638e21db5e22f0d1db03a9a759280084",
+    "corpusfm/mcp/perspectives.py": "9e61506dc599288a471ae3618dc7f2b0c5acab04df34078884e860db8270bc96",
+    "corpusfm/mcp/server.py": "cff6cf9aaca3dcdfcd0502cb1aaf7ca25fc3fbd85085a240d6795cf8ed971e90",
+    "corpusfm/runtime/__init__.py": "784a4844bb15a4559b49addd60f584fca7d9fa94f57633d38bc0969f161e8dcf",
+    "corpusfm/runtime/compose.py": "06d8f8d235316e076d2c93f12370399a00eb589710b6f82e5481c3c570f521ba",
+    "corpusfm/runtime/context.py": "dcf81ee5d73ce02d9eb0b696f034a625de283677f5d3c5e216000019c42f7fe9",
+    "corpusfm/server/__init__.py": "7619da5925cf46bd1d32d06db1cdbf42715ace30e2547622fd7fc353f2ad946d",
+    "corpusfm/server/acceptance_ops.py": "1e718406d37f33abb23af937ac3dbb2dc5b8457f56c0c469b3b4d43d9edff54f",
+    "corpusfm/server/activity_contract.py": "328856e0db7343b078b4ee5cf67caea490fc4e582f7fc8792e5bd10721d2b6e1",
+    "corpusfm/server/activity_feed.py": "4180309527e062d5575976ae33db0021a2c99d59de3162520931fcae6d44ea1c",
+    "corpusfm/server/admin_api_identity.py": "5eaa695f2c30e0dd4c569b91007f90ff02fd7349dfe51cee0d9f6062710402cb",
+    "corpusfm/server/ai/__init__.py": "73eb7a20560a7a455cf52302c5aeb40356447f52a1577328fdf47965a3b979de",
+    "corpusfm/server/ai/_endpoints.py": "236437d4c15c3f51021d313aaad6f05f1ff99763df66d0c441faba57e36e799f",
+    "corpusfm/server/ai/_watchdog.py": "85b5ccb9a6c1c8e26ccc0982f5b3de1fa48c8a0d180ca1740a3cf8a22003f623",
+    "corpusfm/server/ai/exemplars.py": "f9312c5dd8e666e062f7cf29cbec570f729551e3059c7836cf5e8fc07638a15b",
+    "corpusfm/server/ai/patch_ai.py": "d5ffdfd59bdc94919e5be95cea894a8a89a72c480c34cb8289ffcca056c57361",
+    "corpusfm/server/ai/providers.py": "e62b49b750ee7385d1aee0eb2d296edf984044b736579b505553b682e26cc346",
+    "corpusfm/server/ai/schema_context.py": "238b7a2b5f16cdee987bab8c4f438bdf103d6ed40fa367ce3343273f64a542dd",
+    "corpusfm/server/ai/summarize.py": "a405268fce615154be9e4ce8abc2df1f2a01c3065450da34d32b2a78130477e4",
+    "corpusfm/server/ai/vector_index.py": "c5051e34b97111cdeb4728fea5278372649e7387f9baeea3167fbe2a18f18b1c",
+    "corpusfm/server/ai_env.py": "c846d4d20af472b8640a9b1093298604fbd87eb8dac1743827e34b634fa8ab9b",
+    "corpusfm/server/apply_metrics.py": "d3312dc4a13c87851bad1c347db0b2f6f25eb8e5076cb6be1ae4d52568918e5e",
+    "corpusfm/server/artifact_delete.py": "86f54cebe3958d1f07e98f37705e0f8aacaf28111f30212178ebfc4bd0a9c84e",
+    "corpusfm/server/audit.py": "1ba34cc7369d3919af02d6d0292c2b05512cfb80d2515998c2633b5025acae09",
+    "corpusfm/server/cli/__init__.py": "3ee565149bededb82545ff2dd24fb571f966110474d09229d411f5990ef91949",
+    "corpusfm/server/cli/__main__.py": "0d6b0133a04b28f511f023e7c9104e471436c2d91e25450bdcfa909536a3ef06",
+    "corpusfm/server/cli/cmd_archive.py": "1dc906072f818d53985de0d94a15ab0f7d0b29ffe0ed24f51995b3a5cad5bc32",
+    "corpusfm/server/cli/cmd_compare.py": "3df79b04f4c4aea4ba08f9505514aca6ad7591b9e15f196f72e4f9bf7ef78729",
+    "corpusfm/server/cli/cmd_diff_companion.py": "d8570d952e41f8413e6b15cd436e1e91182ca09a58ea5be2cf48965bd6484da6",
+    "corpusfm/server/cli/cmd_export.py": "a2fd49f52745f9cdd6f2a4d95e5c26e8aae654f2dc8ee325b41ef178fcb40e60",
+    "corpusfm/server/cli/cmd_gap_analyze.py": "79553cdb48e24cdede06e7a311af1eb12e12105bc6e9ed9bb4a39a7c0ed8bb19",
+    "corpusfm/server/cli/cmd_ingest.py": "5809c574433ae30150410253d513144cdc6056e1d0188079b9e5586dccba0c75",
+    "corpusfm/server/cli/cmd_jobs.py": "c3d4f0f636000fb039bd6b7d514d4664dd8fb559d0a121b6fbd747ee9d1dca7b",
+    "corpusfm/server/cli/cmd_migrate.py": "3cbb62791dcce7cb4b8caaf96a6cb4986fc358e0f0c19c4398986f5ac02d1950",
+    "corpusfm/server/cli/cmd_patch.py": "2ef76bddba40fcc607f8e89b65510f9f29ae51e41a06bc15867d4abf12a140bb",
+    "corpusfm/server/cli/cmd_reencode.py": "c0f5e61cf71e7cf5e1549dc0e50d76fb1c191fee994047a198cb20517980bdc4",
+    "corpusfm/server/cli/cmd_registrations.py": "125278d8ac9f3d8df24a7ecc1bb4a94509363f1fc28d5b60d55a697cb788d158",
+    "corpusfm/server/cli/cmd_scheduler.py": "7ffd185e99fbcec9356a4487eb1c3379fbe4c85b53c20b14b06720a3ba85de6c",
+    "corpusfm/server/cli/cmd_setup_embeddings.py": "d5d8968260a65f1099d76a208d933fdae2fc4c6e2c59629e2ce9dc21e2bfb219",
+    "corpusfm/server/cli/cmd_status.py": "9d3d248a2fc66d56db4f7d6b6a1c00b29b8eb7c431f00ca585f597157a8ac65f",
+    "corpusfm/server/cli/cmd_update_notice.py": "6682dc75125467941dc6f8d09c741a8ab03027972afc2d1166969801fc8d626f",
+    "corpusfm/server/cli/cmd_users.py": "6084330ab76089a17e792c3ec4faddd646b2f5466b27fe329150d5fd41b79d2a",
+    "corpusfm/server/cli/main.py": "987e2a4984e91ee517a166c1037fb311d490b7473622ab3f011552e75f238cb8",
+    "corpusfm/server/db_helper.py": "920cc138b4b6f2b5b57925b4ccfbbd7c0922ea3ba49bade1b6a757263d244d62",
+    "corpusfm/server/dry_run.py": "f683830a93d9a6be7cacf8ac66c0b0cd56e92ac30a45ee31d8e8446fae3aa81c",
+    "corpusfm/server/enrichment.py": "ca98598df734ebcd48b01cde1d23c175d7f3d4234277d0fe35244e9525ef151b",
+    "corpusfm/server/file_discovery.py": "13bb7add0920e8cb4f315069c3e5da89067deada6f907d1524c2f3b8b18e511c",
+    "corpusfm/server/file_readiness.py": "9514c5b8510cd2a958129228c34696e6126e4fffa402a72e6db4bd1837a418e5",
+    "corpusfm/server/fm_bootstrap.py": "42be0c461f442aa9a36eec8585b18192282e1567936ed8d5d8e33973e7a15033",
+    "corpusfm/server/fms_admin_pki.py": "509305dd07792f8ea76cb6e392e2cd1b7d1011546649e148623c8213b92d262d",
+    "corpusfm/server/fms_client.py": "eab236c5918766874501c0b8bff8be40576375990e10eb03030a1b0ea27130e8",
+    "corpusfm/server/fms_transport.py": "93d0b12b223fb3b4acb95677f823623295e2d65be4c2769374dee1666727b318",
+    "corpusfm/server/git_targets.py": "db216cfbde1427879b3ace2494c9c34e522516acaa3d0dac00c1f2cbbf2fe0f3",
+    "corpusfm/server/health.py": "f86448977ab7c9e2224847432d0ac796bb38af1950b2afe65cf781ba415595b4",
+    "corpusfm/server/history.py": "86d01e5276120bcb1ffa4854dc71e1573f93255c49b9643fc10710899a391e05",
+    "corpusfm/server/jobs/__init__.py": "959e26177507bf176ee0e79cd5b36031d986a4c64fedc6400b3094cc9fa55f5e",
+    "corpusfm/server/jobs/config.py": "002755a88ae0d65204612e69d70d2e26c608434b5ffa601385b1596978d1f18c",
+    "corpusfm/server/jobs/history.py": "25349a986cfb8907fdefba294b050f2e58fc843f0cbb7c3aa406a65098e07b5e",
+    "corpusfm/server/jobs/run_queue.py": "2a73143b6bb46ee66d5e81c65e87c667205b221e1ebb834153f02d64060b61b3",
+    "corpusfm/server/jobs/runner.py": "f0a813441768afd9c2657778090060200a1f67e7a136af6cfd78c75d60001d53",
+    "corpusfm/server/jobs/schedule.py": "68095fc91082eca483acdca9a66d99a46471ddb8b560ea1e88e9ad82d29fedde",
+    "corpusfm/server/jobs/sources.py": "0a0cc86b564fb2fb58ddee7faa7158ec669ec6475ebfd894113e1c0743a7b424",
+    "corpusfm/server/jobs/state.py": "937ce4c92f0b3be3901aa523ec0206e76dd3f087c84a4aaa0b65457309f6972b",
+    "corpusfm/server/jobs/store.py": "9ec250dcf52b1dd5ba93f8be619b03cf2f4ae0ecd661b1f8436af17159f86717",
+    "corpusfm/server/jobs/validator.py": "10129059d1ae8d32480c33942cde934644619f9bd098f8ac771a07a07486adaa",
+    "corpusfm/server/jobs/webhook.py": "747a1664b684d4f921cb01ec74b757c6d6e4540cbaf29f5755fab992802c66b1",
+    "corpusfm/server/latest.py": "d7c6b3ab79d5554f18602f34f056e62f05985f6960784fb4158839d2b0fa32ee",
+    "corpusfm/server/mcp_status.py": "f27b3f37ca69c018363988c59d27e253b2ca672ffdc796acca9dd0c3d108d165",
+    "corpusfm/server/monitor/__init__.py": "adf7e2fcfab3873cf1f56efb526231ee05b6dd4416c902b7646d445f909faadb",
+    "corpusfm/server/monitor/alerts.py": "fc48434d770eeba8379d388b83eaf4e88f93b692dd2bfff969884c6efa55af9b",
+    "corpusfm/server/monitor/config.py": "e6e6eba0a9b54a815be69418a06d26d56990a2b8cc9b369446f3bc0a4e527d06",
+    "corpusfm/server/monitor/history.py": "20476bdc8c34d6e090ec156ceb693da731e98b963153f0d2e04cb0804f089542",
+    "corpusfm/server/monitor/notify.py": "1ef6f359d849f6a59b15db08c061dccf7440751bcf313546ac0fb73c5bfb80f7",
+    "corpusfm/server/oidc_secrets.py": "aa3df0891e54fe0e2fc24e138dd8956cd367f75337c07dd2d5d48a0f33198dc2",
+    "corpusfm/server/patch_apply.py": "fb10d6ae55862c2bafee42514b11d9f9fdbb3e9f7a3fdfca0fac6e2e5532e0df",
+    "corpusfm/server/push_tokens.py": "ce65d3be1164ccf07ea1906efa2d76860e61096600b992691b36c3b0572ac0eb",
+    "corpusfm/server/queue_handlers.py": "4909d0b808f0200984ce608f6ab3c3a37c55d4bba695978a012a92da28ddb3aa",
+    "corpusfm/server/queue_workers.py": "f4caec4acf14ecbd81a9b3c5d6e4817a052291d069d7b871b9ecf45652bc677b",
+    "corpusfm/server/readiness.py": "d6ff9140e049deb8b76b58fb7185a170652724c34efd8de4b81d165c306df756",
+    "corpusfm/server/remote_servers.py": "650b0e13794bef36e13b7b7727c7b170f30f4779aa643d8b71802384821ea203",
+    "corpusfm/server/scheduler.py": "8f4238071f66a37b92d31abf136628a04b3d51567900f1ece014e79376403c79",
+    "corpusfm/server/seed_artifact.py": "81e1180af303b2e90d60fc70f1a0327491812f73a34e567e1db5ffd20b45c7a1",
+    "corpusfm/server/tags.py": "05218953f490d7395f4e4942bd66bb6cbe532b8e982dbaec8d23e6ce113d09c7",
+    "corpusfm/server/tags_store.py": "34c346df825eb63625766bdb80ed3e5ab746c8833b02be006bfa5749d00f4cbe",
+    "corpusfm/server/update_notice.py": "b031fbd801a789de7c88e3cd837704dcfe0453599b25d38c44283b3a746b9041",
+    "corpusfm/server/update_observer.py": "8ffd81af24ab4a071d3fe78f49c673f63bfd9738a9a8d39542b4788c34a8f2be",
+    "corpusfm/server/update_service.py": "15ca83ff6eb350b11fb5851fcb153eb4af1b76063cb3f2bf9a685c6db90e126e",
+    "corpusfm/server/win_db_ops.py": "e45e092dca905e49a9a891938c0c2708b64bb7d480c5290b5d9f8c116c0f70e1",
+    "corpusfm/storage/__init__.py": "9251284ee65787074228b98b94d2a0abc7abb9c4823c4981dc792b0143d22dd8",
+    "corpusfm/storage/artifact_record.py": "709f0bf4b4e4d775680a165ce93243fd183e97cfaea9c73fa911df30a6492b0f",
+    "corpusfm/storage/artifact_store.py": "01f4eb9d578f3e8dd0c1f1d1ddb87b5d54af447f6309604bcc5acbeec19be837",
+    "corpusfm/storage/backend.py": "2d69e68e5a3112dd02e5dcf7e1eab6169669de59989c751e5360df30be8ad555",
+    "corpusfm/storage/db_schema_build.txt": "d0ff5974b6aa52cf562bea5921840c032a860a91a3512f7fe8f768f6bbe005f6",
+    "corpusfm/storage/engine.py": "6d5de32fb319962181af278c6ec9981544efee89aaf8f82bc58676507b84eb1a",
+    "corpusfm/storage/fm_odata.py": "c616b593295bd87ba346ee7c7b41a8738892aa9785c359cf29d3f38c07205e00",
+    "corpusfm/storage/fm_registry.py": "04796149a7e84205d04cadd0cc863a88f7d41963c3aa6705f2afb7d3f1faa9c7",
+    "corpusfm/storage/git_backend.py": "5dac257f110abab25f16560adce473078ea4b889b677b2ff2a3382a4f2413fa0",
+    "corpusfm/storage/local.py": "e207241163cffaa011f7a125b02b78be2949c6e8bac039514aa577e8c115ac25",
+    "corpusfm/storage/projections.py": "282e7712746b1a1fcdcac4eecc4bcccfdb49bd387b70cdab2c0e736fb478dba5",
+    "corpusfm/storage/queue_record.py": "203c0ebead948ce6d53ce60e1d0a8066398faf8e2c58492a73ebba98e29e9309",
+    "corpusfm/storage/repos.py": "0aa6d7f0cac3a645e46259bfdb43b6d07f78878dca0430e7b9529bb936c25302",
+    "corpusfm/storage/resolve.py": "4f1a56a7f2f4458b149118b18652e3823f10aee8f82f7fefc0cd568efe0370ae",
+    "corpusfm/storage/storage_migration.py": "03cedb8d07cf768250d206f046f26bb816031b8a7301c65a16194a831a1a03d8",
+    "corpusfm/tools/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "corpusfm/tools/discovery_log.py": "5926d64b2921be4595c6616d1470336ce244b8e540430e1d627e5d76baa5e5e8",
+    "corpusfm/tools/gap_analyzer.py": "a21e472ed3c60667b4873b4ec9d9e96cd1cb66c5d0b3ad0564e0a3f7c468ec88",
+    "corpusfm/tools/xml_inspector.py": "66b2cf8e2970c74bc56ef6bf8ba50efde97c9825564813287181c4b3e09f87d8",
+    "corpusfm/tools/yaml_tryout.py": "596627f25205d2377712f5b79f79a57c81120fbbca21696168c5df65f10bf3c9",
+    "corpusfm/updater.py": "9672964775d4b9badaa4b39c16927e1356319483388785d08ab30fb22f03e89e",
+    "eslint.config.mjs": "306c98cfe14e33421b924a041584afd062309c040cbce90cb429311b0eb2aa03",
+    "index.html": "f12bbbf2f30f19eaf5cd77d6771334e42bafd57c00bc5a0bcf3267c44f158966",
+    "installer/SPEC.md": "69f634c6a8c1dd2270f01c7ce460cec08ef7017c7d2211293f0ddf737ee8760f",
+    "installer/assets/addon/CORPUSfm_ADDON.fmaddon": "690293afb9f6b44d4144bfdb6213002dc1be3b3b1618c5bebecca64e2140f38e",
+    "installer/assets/addon/CORPUSfm_ADDON/de.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
+    "installer/assets/addon/CORPUSfm_ADDON/en.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
+    "installer/assets/addon/CORPUSfm_ADDON/es.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
+    "installer/assets/addon/CORPUSfm_ADDON/fr.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
+    "installer/assets/addon/CORPUSfm_ADDON/icon.png": "0a4a56391e361db81f087557be6136aeb8c9262da8d58e98203b8dc2dbf8f1c6",
+    "installer/assets/addon/CORPUSfm_ADDON/icon@2x.png": "cd7378655390ff6143a070ad117a17b9cceec6d5eacc5b65e77427592d9b4a6b",
+    "installer/assets/addon/CORPUSfm_ADDON/info.json": "8d88e36b298f0d07edb86cc15de87c13f3d6da2297f6259fefa43eb4c3513344",
+    "installer/assets/addon/CORPUSfm_ADDON/info_de.json": "472f36554fb21bc938aac6144ee496e19d30b3694cc9bf4c6b500d4996dabb18",
+    "installer/assets/addon/CORPUSfm_ADDON/info_en.json": "472f36554fb21bc938aac6144ee496e19d30b3694cc9bf4c6b500d4996dabb18",
+    "installer/assets/addon/CORPUSfm_ADDON/info_es.json": "472f36554fb21bc938aac6144ee496e19d30b3694cc9bf4c6b500d4996dabb18",
+    "installer/assets/addon/CORPUSfm_ADDON/info_fr.json": "472f36554fb21bc938aac6144ee496e19d30b3694cc9bf4c6b500d4996dabb18",
+    "installer/assets/addon/CORPUSfm_ADDON/info_it.json": "472f36554fb21bc938aac6144ee496e19d30b3694cc9bf4c6b500d4996dabb18",
+    "installer/assets/addon/CORPUSfm_ADDON/info_ja.json": "472f36554fb21bc938aac6144ee496e19d30b3694cc9bf4c6b500d4996dabb18",
+    "installer/assets/addon/CORPUSfm_ADDON/info_ko.json": "472f36554fb21bc938aac6144ee496e19d30b3694cc9bf4c6b500d4996dabb18",
+    "installer/assets/addon/CORPUSfm_ADDON/info_nl.json": "472f36554fb21bc938aac6144ee496e19d30b3694cc9bf4c6b500d4996dabb18",
+    "installer/assets/addon/CORPUSfm_ADDON/info_pt.json": "472f36554fb21bc938aac6144ee496e19d30b3694cc9bf4c6b500d4996dabb18",
+    "installer/assets/addon/CORPUSfm_ADDON/info_sv.json": "472f36554fb21bc938aac6144ee496e19d30b3694cc9bf4c6b500d4996dabb18",
+    "installer/assets/addon/CORPUSfm_ADDON/info_zh.json": "472f36554fb21bc938aac6144ee496e19d30b3694cc9bf4c6b500d4996dabb18",
+    "installer/assets/addon/CORPUSfm_ADDON/it.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
+    "installer/assets/addon/CORPUSfm_ADDON/ja.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
+    "installer/assets/addon/CORPUSfm_ADDON/ko.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
+    "installer/assets/addon/CORPUSfm_ADDON/nl.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
+    "installer/assets/addon/CORPUSfm_ADDON/preview.png": "149ddc231b664ebfc81a10a21d3dbf8059888cf8ecd2b5212a6a87d94403427b",
+    "installer/assets/addon/CORPUSfm_ADDON/pt.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
+    "installer/assets/addon/CORPUSfm_ADDON/sv.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
+    "installer/assets/addon/CORPUSfm_ADDON/template.xml": "99a00a600d3a6fae7f365f4cec28d8e140f9851f1842cb2b1172db77e4e45fce",
+    "installer/assets/addon/CORPUSfm_ADDON/zh.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
+    "installer/assets/addon/CORPUSfm_ADDON_AddonXML.artifact": "3c49b8047d5090bc46640cfe13d1a36ad2db88cd329ad4f15ad29aa8bfa0072a",
+    "installer/assets/addon/CORPUSfm_ADDON_MergedXML.artifact": "8d5cd7523af831303782636db2982c7245e6a6d31fecab1976967faa5be7f216",
+    "installer/assets/addon/CORPUSfm_ADDON_SaveAsXML.artifact": "c41160a36185972a830005490e276505b82ff351f1eb2af0ba327c615fa1318c",
+    "installer/assets/db/CORPUSfm_DB.artifact": "3349850244e18d5e42ec83b4da8cb6aee96144dcab04d742e1fdd8d5e6aecc86",
+    "installer/assets/db/CORPUSfm_DB.fmp12": "c8de49533e8799846ae2a53af97d435d6f69d4eb786d06c2a01cfe2b60c9b907",
+    "installer/bootstrap/linux/bootstrap.sh": "e170318989e91936ba49491cf5b51dfbe1434aef7fe0684525621692efc74bea",
+    "installer/bootstrap/windows/bootstrap.ps1": "ffc65eead41006fac17370e2e70747a626f36e5a5fe1fb067279fc876ac04fe0",
+    "installer/build-asset-payload.py": "efb441ea790bcc0480a197544de8b745a9cd6bee5d4fb4adf10200939ab03d16",
+    "installer/constraints-server-py313.txt": "2beaec5824e19792badf311bfa566665ee201d3431095c274828e309caa60474",
+    "installer/constraints-server-win-py313.txt": "972558cd450950c694906b7e04496f7625b3d0f29b109ccb0d4b229c10a284c8",
+    "installer/linux/_cfm_lib.sh": "315f00c0514cb4cc7ad9832ecee653e8327100ae3d0138832a1e749d1f0486bb",
+    "installer/linux/cfm-db-helper.sh": "20c05f7dfd029376da58227d4f703ddbf63f6d2f11aae813b3a6880ff09d829a",
+    "installer/linux/cfm-proxy-exec.sh": "45c91e6da06b060c116fb5c6aee180aa6d041970f718f1618ef89dcd9c300346",
+    "installer/linux/cfm-verify-bootstrap-handoff.sh": "1b26ba45b5dca1667b9d311037b8f85124353b306e8691652d6eb57aba2b3d8a",
+    "installer/linux/cfm-verify-installer-bundle.sh": "a31f1a7cea95bfa759c0c67393351c3f59a2a444d5def9c58ad33ec4e8f15ca4",
+    "installer/linux/cfm-web-proxy.sh": "f8bc1e15ed9886faeb341f4a676340cb44c21ea3ad0b7b0ccbd75f76c711b06e",
+    "installer/linux/corpusfm-proxy.sh": "050e96a1af3d0c975274fd53f35d0c6d86f44351ab314647af840e02f639c197",
+    "installer/linux/corpusfm-recovery.sh": "c213caf789d255fbc6e828f6a07b7b2d39c73ec5be0981105c83abf6fa841bad",
+    "installer/linux/corpusfm-update.sh": "7cb1a3d1d0355652cf38a55f94083e72573bd0eb1507a71608feee7efee02302",
+    "installer/linux/install.sh": "d73685ded925e1f693f8ac4fc3e78a3efceb47dfe98dc29b95d0acbe291fbf86",
+    "installer/linux/uninstall.sh": "4ed01932b737cfd1f9581a210fb98fbb622a346509bcc2a1b90cdaa201ae7e16",
+    "installer/package-installer.sh": "32a240b9435ec8ff2cca0ed574a9dfb92eda95c6e4088c282327f5168dd57b54",
+    "installer/requirements-server.txt": "abea698b78e22153851894197613660f8b9258081bf5e9245a963fa6d68ab86f",
+    "installer/windows/_cfm_lib.ps1": "a34e55033968d8a05c91692aa26baeb2b01180bcbb1515562389dceda870ead9",
+    "installer/windows/cfm-proxy-exec.ps1": "e7e84f7e45cdc29725bdf881284e632d19c23914d2c511b9d9deb8b9e5dbfee9",
+    "installer/windows/cfm-verify-bootstrap-handoff.ps1": "b7edc31aec45e623def0a4f3967507648a67143cddb599da20f627d9bec05bb0",
+    "installer/windows/cfm-verify-installer-bundle.ps1": "39ded2457d21a955d3c685fec77cb45a8e7f8c4c641cbb23f27a0e73af144cdb",
+    "installer/windows/corpusfm-proxy.ps1": "d9b97664083043ec7a13b90820908e8a7cab95ee1d8e67b72f49c203bc3f4ffb",
+    "installer/windows/corpusfm-recovery.ps1": "929e4aa6a885e9bc8e488e32ec52dae084aa553d7bf55f144fed4793fe585ec4",
+    "installer/windows/corpusfm-update.ps1": "62b88b78205300c1d2c17f200b73a08e800a416089f9e833b1d6d6957eadea90",
+    "installer/windows/install.ps1": "4e91b1071af06a0947478f0885bea14ba67d1c4a8b05a4822e1e0a65f90b27e6",
+    "installer/windows/uninstall.ps1": "ae563eb1a6bd08dcd6217b75d5c1f099476139b3a6356595a0e6c2e7c13bae3f",
+    "package-lock.json": "ec7b4220cd66d98184ec8483c395f8f82de772e01d78c7e0efd1fbe1f63cf486",
+    "package.json": "b8472221be42e04c90804c25df3148f2a5babe1659aa1573e4512e5be15aa036",
+    "public/brand/corpusfm-node-icon.png": "210cdd330eea500ccfdc9281aaf930576506085342e13aafede0da02830d21c0",
+    "public/brand/corpusfm-wordmark-dark.png": "638fff0fb49dfeed3985633c1f20d3ce8737a7ff807516d5dd77d6d2322ecb45",
+    "public/brand/corpusfm-wordmark-light.png": "daf007084ad56030331fc223c554a06fb30faccb198501d532ed37dfc716328f",
+    "public/favicon.svg": "9f4a87d8fa668b26b5e5fcc5146a198321ddcb3b30c9a7207e029aa0e44cb810",
+    "public/og.png": "126ec7520db6de61f89f2794ac55af38cd24afa01282dd9c5c25e1c188f8586a",
+    "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
+    "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
+    "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
+    "release-build.txt": "b7bcd9ce2335d7616eaf34547f128e455059b0418d524b81c693b22b76eda467",
+    "requirements.txt": "f8a942c59c3ebe3eadfaee1d09ad7601998aa50f71c1e41587cfdad57371155f",
+    "scripts/_release_gate_live.py": "08e9a2319599d219abe250634cba6a1c5b0a5067c2112fd2c4e12a7fe30cdb9b",
+    "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
+    "scripts/installer_release_gate.py": "4f8aa5775c0845c5ffffab2d29bd9c63cde2f403c8933af000de71948f401012",
+    "scripts/write-doc-routes.mjs": "dc314c90797efb253ccbce0fb9bee210e7487533c409056914dea0adf408c2e7",
+    "src/app.tsx": "b24e4cedbd195e9436c059becdc6a70a3ff7d5304c8d15321672a5cecda80631",
+    "src/docs-page.tsx": "4bef75eefc5361e0aba177be5f02e1c074161863fcd6d0d551fd4b573a45277a",
+    "src/globals.css": "5a92c77194a41102e79fc05ab33d57ddecb34cb8f6222c0bfe77c58753492406",
+    "src/main.tsx": "35a4dd9b4ee54a7ab0ebeb17fca45dfac4bb5aae8fb106a2e6771693860c2cc7",
+    "src/page.tsx": "1eeedcbc2ea8dca3f4da2cd26cd71992c3a0ab15d822bc1d735a630449c24040",
+    "src/theme-toggle.tsx": "e94ece26297334e37dbfd09e32e9dc13cf4f20f332a3b3a46a17c3be7ca60d6e",
+    "tests/__init__.py": "69e3f111cc073350abe14451f0687bcb909ad32e5600dd2abaa31ed6ea8fd84f",
+    "tests/fixtures/minimal.xml": "6ff9aa87b7d1eb24c857e710fce2057514754438943056a5def53573b36ffd38",
+    "tests/installer_sim/__init__.py": "ff7c0decbcf617b950f90ffcb7aa812dc0156b7fb7b1a10752b95dae3bc7db3b",
+    "tests/installer_sim/fake_fms.py": "5c0cb6a47b7780ddf7b3b4ca65ea9860c13c0da480e244d003e7e78b60a0a9e3",
+    "tests/installer_sim/harness.py": "8cf90fd251befb0fc1e1ae8e4ad075e02beaafb953d2838cd5f563d4996ac64c",
+    "tests/proxy_exec_materialize.py": "6d00e1bf8a09be8a69d815fce0e6edf5a936478d31e78d6ec79d13d723c9d1a2",
+    "tests/ps/cfm-proxy-exec.tests.ps1": "0c1932d242c9a6498befa56b3c84fd5992cf3df057761cf38c226d0a63e392d0",
+    "tests/rendered-html.test.mjs": "2af9aabe10d6cf0c13472a7e75338e03d0db8c6895d7378e7e7e5369dff52d1e",
+    "tests/test_apache_append_boundary.py": "593aec784cea6a8d0e422bd69ecca6915cdcf0ee8d1e2cfce29bf6a44043b32e",
+    "tests/test_apply_update.py": "3cb6902cae7d876eda8a2b09d21fdc1ec2ad017f1a954e8c94cfa18505fdbf93",
+    "tests/test_buildstamp.py": "6aaf7d893ce149386269db5e77bc4f9a5073779ec9fd7eb6f6ad121b492023b7",
+    "tests/test_git_credentials.py": "2a8392920ff60334adc72e05ee4b5e0d858869c0b5c47e0b484d7f8a39713e46",
+    "tests/test_installer_asks_only_when_needed.py": "3749d5fb2d2530c49bfd7cc84cdfe21893acd8226a6db89f96d08f781ffe4aea",
+    "tests/test_installer_bootstrap.py": "5cd15397b607c40e996ad28a37f155bd636d560e56362c815fba29cca3e856a3",
+    "tests/test_installer_conformance.py": "91c649515b9f7712d5d224d4ed5943cc5a440ba83b50f74fb99dbe60033b6750",
+    "tests/test_installer_deploy_never_overwrites.py": "9d0cfafe87a9cf5a12de1e7cec593c01965027982913404ced782ad3c2d7f0bc",
+    "tests/test_installer_entrypoint_parity.py": "308528bf3c4ad11861503a8aae8d4b18384dcfe731d530204f922e7ff55682b6",
+    "tests/test_installer_fake_fms.py": "7be0e4180ba5460dea43201dd3e31ca168324d8a60d5851559d5de0c75a8b4c2",
+    "tests/test_installer_first_admin.py": "932a107d88b14235dbd36e5043c344d79cf4a3b0b0e39294b44716dc964398b6",
+    "tests/test_installer_fms_admin_user.py": "eeccee08bce2cfce1c6f79452417e66fb7de7e395cf915d5d13e53c70baf4807",
+    "tests/test_installer_fmsadmin_group.py": "7965b061e8607103c38e24ae5e46f7f74fc6d4229cc18a7b8a1081e92db89066",
+    "tests/test_installer_hardening.py": "b00d65422de1e6a0249a753739a9bb0d1c9e0a2787090d64aff210324950d723",
+    "tests/test_installer_layout_and_identity.py": "e4fd0c7a9ad241522112c80127bc9962da03f0d0551713310bba92b07d1da7e8",
+    "tests/test_installer_lifecycle_pythonpath.py": "5f39f0f60fde673821e14dc8fa90c1e1a4320ecc8e7e776badfb3193f769c803",
+    "tests/test_installer_logging.py": "e26459a1496cc42f0c455b7e3b2505f3ffaa16acf76fff8555848b8aa2cf00a1",
+    "tests/test_installer_loopback_tls_quiet.py": "b431c79d5dfbbff35ad0b348f965437a7b056612766af37a0abb777c4269a884",
+    "tests/test_installer_odata_preflight.py": "9fae9fbc696686beb692d45efeb46e77eeddf5eaf600e038a4459aea92c3119f",
+    "tests/test_installer_package_forward_only.py": "9fd1607337a11fee45cf81722393d3dcfea599900997fe94b399621c46eb7b01",
+    "tests/test_installer_parity.py": "8c4a203b800f45c6c65bf939828d402577f5f691689a307fc97a0ed0668e5634",
+    "tests/test_installer_path_robustness.py": "c341ec4438c09e6e8a84e01eb74c39e15cb3853a352ee90fad46f229547f8346",
+    "tests/test_installer_places_proxy_executor.py": "36f7469baaa9cb9e1dcb63ca019b915e921d3550355beb3f8192d22992a9f63b",
+    "tests/test_installer_provider_order.py": "bc5189c39536982ec2319a35124615df8efeddd70ff8f4bd54ee7ae1f2d0eda4",
+    "tests/test_installer_provider_walks.py": "1a65c67e70ecaa8a575229ea4c8861936a446e183be72d43d5f361fed044e76d",
+    "tests/test_installer_ps_logging.py": "e7e03100187bbd3f82f7f887dbcedccdea9ac945c082f3d419f45623a9df2693",
+    "tests/test_installer_release_gate.py": "59793cf54320510abda3b9711cfc47a91fe8736e4ceb85bb7283c86fc7e4e0d8",
+    "tests/test_installer_services_proxy.py": "e4d630f9214bdd31caf8ba32e95107e562c24ea9825d27e518f3013fd215e95b",
+    "tests/test_installer_sim.py": "5f619c9bc2a1243864e66145fad347d849ba4f487310f9ff8346d76263a8d1d3",
+    "tests/test_installer_source_update_credentials.py": "8936b76d240f641593de89dc4a8a044b8bfd18c6e8177230bf2e9bcdcbeb9711",
+    "tests/test_installer_storage_tail.py": "1c36e63c9aea423f747d6a28187a21b4c50250c5b6dfee57a82591fe0df8af02",
+    "tests/test_installer_warning_contract.py": "29954edf80408f62e1c57a2138289b980fb6bdc2da30c951fe70c7320711e203",
+    "tests/test_linux_installer_orchestration.py": "74e0493ca741894adc74c5fa26864f97923c3f57b73acf0e3663b280f79c6cfc",
+    "tests/test_linux_installer_package_boundary.py": "c21afc409c1b9872bc351b46a4719dba07df8783eb1e1949af996ff2bf777936",
+    "tests/test_linux_installer_surface.py": "3d2f08e03eabd096fe65a34700ab7c55ce39b65e75871f807796f84651f7fac4",
+    "tests/test_linux_proxy_exec.py": "3576199b9059a580d141f53d279bf39dbc803987aad52f6dccfe57febd52e2e2",
+    "tests/test_linux_proxy_validators.py": "8112014a8a4b08fa11c541c39be0b950f8d938bd85022ef0993ee9d1e9cf62c1",
+    "tests/test_nginx_mixed_marker_generations.py": "20acd378fe53183b2a8f13a409e50be2250ded642837f47f574ed37911368937",
+    "tests/test_privileged_update_artifacts.py": "75b4eb064b98e354b580580110055a736654ab9da580dc3c1159b1705365b32c",
+    "tests/test_privileged_update_build_stamp.py": "5cb7f43263a82ac322cc69a31daf0ef703264b43b31e4a9ca3ec51af0456cb10",
+    "tests/test_privileged_updater_behaviour.py": "9e913156eb59b03cec8c80bb497ab5b905137c5f7f0784c9b0bba4719ee492d9",
+    "tests/test_proxy_executor_contract.py": "a116bc61f4e2d69c1a186d0ea2ee23a3d3fdac72fa72a9e1d5dfcdc33faa59aa",
+    "tests/test_proxy_gate.py": "7291236c656632e27452bce86d2ac70517dbc866356fb6ae57ffefe618f2b9c6",
+    "tests/test_proxy_walk.py": "514056120f96a11e9156cd14a68755755ba75e5a6c5558a754797b1392c33607",
+    "tests/test_script_conformance.py": "cd2b8a87bdb64cbda9a353e1a3aac285a312a8f337ff47c96a35b3c7a75232a7",
+    "tests/test_series2_package_boundary.py": "e67e3bc98967895bc211e1ed1a95b8bda6175b7fe47243f183742df0bbf283ca",
+    "tests/test_storage_observe_layout_regression.py": "7459e49d9ad43f81df3fc7e2a6cefbb95c3e815877c2ba744f06b4f728e34b55",
+    "tests/test_uninstall_close_verdict.py": "c809be2e93fa4587b054f2ca20ef4f4da823a26344a11397d381fb68674da467",
+    "tests/test_uninstall_launchers.py": "716c86302662443799f919a41636050f1401e87d1754b5b85b57a781a337135b",
+    "tests/test_uninstall_stage_fence.py": "24f4fd164411a112666bf8a2aa3b4e57dc413a03e821b909d023026100584cfa",
+    "tests/test_update_service.py": "01fe8603258ae3afa83c9cb1a8cd45aab9d43f2d3c72cabc728a1b92b57808e7",
+    "tests/test_updater.py": "16d40b241405fd32b52a90506cdf787aff1e0e9a58ce4f519d07978ca71e3005",
+    "tests/test_upgrade_trust.py": "f7e585bd58903eb04527b1104133b7a2d2b037976c8593f78aef03214b2acd9e",
+    "tests/test_windows_installer_semantics.py": "a7dca57d75df8fc6d5349a82514d341df37e0c2d171ff968193bdee4e014d34b",
+    "tests/test_windows_installer_source_clone.py": "d726eab21b517ced2ab9f6fae6d13bc681e594d19899e5d3b9c80efaef72293f",
+    "tests/updater_installation.py": "416625b39d16187d5f07dae7cdc902e84076083899ad66dfee9acc0269099b48",
+    "tsconfig.json": "6f0117be506500be13abc84e9f8279ee1c09775711221477c993a814e3173a17",
+    "vite.config.ts": "b8e39d6ac6a6affff11f2414d96b24bf8c22e8be17131db4863c74743e34eed7"
+  },
+  "path_classes": {
+    ".corpusfm-release.json": {
+      "class": "generated",
+      "owner": "projection-manifest"
+    },
+    ".github/workflows/pages.yml": {
+      "class": "public-output-source",
+      "owner": "application:site/.github/workflows/pages.yml"
+    },
+    ".github/workflows/verify.yml": {
+      "class": "public-output-source",
+      "owner": "application:site/.github/workflows/verify.yml"
+    },
+    ".gitignore": {
+      "class": "public-output-source",
+      "owner": "application:site/.gitignore"
+    },
+    "LICENSE": {
+      "class": "exact-copy",
+      "owner": "application:LICENSE"
+    },
+    "NOTICE": {
+      "class": "exact-copy",
+      "owner": "application:NOTICE"
+    },
+    "README.md": {
+      "class": "public-output-source",
+      "owner": "application:site/README.md"
+    },
+    "application_checkout.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "conftest.py": {
+      "class": "exact-copy",
+      "owner": "installer:conftest.py"
+    },
+    "corpusfm/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/__init__.py"
+    },
+    "corpusfm/app/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/__init__.py"
+    },
+    "corpusfm/app/app_config.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/app_config.py"
+    },
+    "corpusfm/app/diff_history.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/diff_history.py"
+    },
+    "corpusfm/app/explore_history.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/explore_history.py"
+    },
+    "corpusfm/app/sections.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/sections.py"
+    },
+    "corpusfm/app/web/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/__init__.py"
+    },
+    "corpusfm/app/web/__main__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/__main__.py"
+    },
+    "corpusfm/app/web/_import_ingest.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/_import_ingest.py"
+    },
+    "corpusfm/app/web/_reabsorb_staging.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/_reabsorb_staging.py"
+    },
+    "corpusfm/app/web/_staging_guard.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/_staging_guard.py"
+    },
+    "corpusfm/app/web/_temp_cleanup.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/_temp_cleanup.py"
+    },
+    "corpusfm/app/web/app.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/app.py"
+    },
+    "corpusfm/app/web/appearance_preferences.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/appearance_preferences.py"
+    },
+    "corpusfm/app/web/artifact_ref.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/artifact_ref.py"
+    },
+    "corpusfm/app/web/auth.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/auth.py"
+    },
+    "corpusfm/app/web/blob_conversion.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/blob_conversion.py"
+    },
+    "corpusfm/app/web/container_download.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/container_download.py"
+    },
+    "corpusfm/app/web/deployment.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/deployment.py"
+    },
+    "corpusfm/app/web/deps.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/deps.py"
+    },
+    "corpusfm/app/web/docs/addon.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/addon.md"
+    },
+    "corpusfm/app/web/docs/ai-build-loop.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/ai-build-loop.md"
+    },
+    "corpusfm/app/web/docs/applying-patches.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/applying-patches.md"
+    },
+    "corpusfm/app/web/docs/artifacts-catalog.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/artifacts-catalog.md"
+    },
+    "corpusfm/app/web/docs/choose-schema-import-path.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/choose-schema-import-path.md"
+    },
+    "corpusfm/app/web/docs/diff.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/diff.md"
+    },
+    "corpusfm/app/web/docs/explorer.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/explorer.md"
+    },
+    "corpusfm/app/web/docs/file-materialization.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/file-materialization.md"
+    },
+    "corpusfm/app/web/docs/git-export.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/git-export.md"
+    },
+    "corpusfm/app/web/docs/importing.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/importing.md"
+    },
+    "corpusfm/app/web/docs/isv-workflow.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/isv-workflow.md"
+    },
+    "corpusfm/app/web/docs/jobs.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/jobs.md"
+    },
+    "corpusfm/app/web/docs/logs.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/logs.md"
+    },
+    "corpusfm/app/web/docs/mcp-client-cannot-connect.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/mcp-client-cannot-connect.md"
+    },
+    "corpusfm/app/web/docs/mcp.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/mcp.md"
+    },
+    "corpusfm/app/web/docs/merge.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/merge.md"
+    },
+    "corpusfm/app/web/docs/monitoring.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/monitoring.md"
+    },
+    "corpusfm/app/web/docs/ollama.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/ollama.md"
+    },
+    "corpusfm/app/web/docs/overview.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/overview.md"
+    },
+    "corpusfm/app/web/docs/patch-authoring.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/patch-authoring.md"
+    },
+    "corpusfm/app/web/docs/queue.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/queue.md"
+    },
+    "corpusfm/app/web/docs/semantic-search.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/semantic-search.md"
+    },
+    "corpusfm/app/web/docs/settings.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/settings.md"
+    },
+    "corpusfm/app/web/docs/tags.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/tags.md"
+    },
+    "corpusfm/app/web/docs/update-not-appearing-or-applying.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs/update-not-appearing-or-applying.md"
+    },
+    "corpusfm/app/web/docs_render.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/docs_render.py"
+    },
+    "corpusfm/app/web/external_auth.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/external_auth.py"
+    },
+    "corpusfm/app/web/landing.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/landing.py"
+    },
+    "corpusfm/app/web/ldap_auth.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/ldap_auth.py"
+    },
+    "corpusfm/app/web/login_throttle.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/login_throttle.py"
+    },
+    "corpusfm/app/web/mcp_address_prompt.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/mcp_address_prompt.py"
+    },
+    "corpusfm/app/web/mcp_connections.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/mcp_connections.py"
+    },
+    "corpusfm/app/web/mcp_tokens.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/mcp_tokens.py"
+    },
+    "corpusfm/app/web/oauth_policy.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/oauth_policy.py"
+    },
+    "corpusfm/app/web/oauth_registration_guard.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/oauth_registration_guard.py"
+    },
+    "corpusfm/app/web/oauth_store.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/oauth_store.py"
+    },
+    "corpusfm/app/web/oidc.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/oidc.py"
+    },
+    "corpusfm/app/web/routes/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/__init__.py"
+    },
+    "corpusfm/app/web/routes/api/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/__init__.py"
+    },
+    "corpusfm/app/web/routes/api/access.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/access.py"
+    },
+    "corpusfm/app/web/routes/api/addons.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/addons.py"
+    },
+    "corpusfm/app/web/routes/api/admin_pki.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/admin_pki.py"
+    },
+    "corpusfm/app/web/routes/api/alerts.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/alerts.py"
+    },
+    "corpusfm/app/web/routes/api/clip.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/clip.py"
+    },
+    "corpusfm/app/web/routes/api/diff_history.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/diff_history.py"
+    },
+    "corpusfm/app/web/routes/api/explore_history.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/explore_history.py"
+    },
+    "corpusfm/app/web/routes/api/files.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/files.py"
+    },
+    "corpusfm/app/web/routes/api/generate.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/generate.py"
+    },
+    "corpusfm/app/web/routes/api/import_queue.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/import_queue.py"
+    },
+    "corpusfm/app/web/routes/api/indexed.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/indexed.py"
+    },
+    "corpusfm/app/web/routes/api/jobs.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/jobs.py"
+    },
+    "corpusfm/app/web/routes/api/library.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/library.py"
+    },
+    "corpusfm/app/web/routes/api/logs.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/logs.py"
+    },
+    "corpusfm/app/web/routes/api/merged.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/merged.py"
+    },
+    "corpusfm/app/web/routes/api/notifications.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/notifications.py"
+    },
+    "corpusfm/app/web/routes/api/patch_ops.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/patch_ops.py"
+    },
+    "corpusfm/app/web/routes/api/queue.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/queue.py"
+    },
+    "corpusfm/app/web/routes/api/server.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/server.py"
+    },
+    "corpusfm/app/web/routes/api/settings.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/settings.py"
+    },
+    "corpusfm/app/web/routes/api/tags.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/tags.py"
+    },
+    "corpusfm/app/web/routes/api/upload.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/upload.py"
+    },
+    "corpusfm/app/web/routes/api/users.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/api/users.py"
+    },
+    "corpusfm/app/web/routes/oauth.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/oauth.py"
+    },
+    "corpusfm/app/web/routes/pages.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/routes/pages.py"
+    },
+    "corpusfm/app/web/service_restart.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/service_restart.py"
+    },
+    "corpusfm/app/web/static/alpine.min.js": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/alpine.min.js"
+    },
+    "corpusfm/app/web/static/corpusfm-node-icon.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/corpusfm-node-icon.svg"
+    },
+    "corpusfm/app/web/static/corpusfm-wordmark-darkmode.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/corpusfm-wordmark-darkmode.svg"
+    },
+    "corpusfm/app/web/static/corpusfm-wordmark-lightmode.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/corpusfm-wordmark-lightmode.svg"
+    },
+    "corpusfm/app/web/static/corpusfm-wordmark.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/corpusfm-wordmark.svg"
+    },
+    "corpusfm/app/web/static/kit.css": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/kit.css"
+    },
+    "corpusfm/app/web/static/kit.js": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/kit.js"
+    },
+    "corpusfm/app/web/static/style.css": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/style.css"
+    },
+    "corpusfm/app/web/static/vendor/lucide/activity.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/activity.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/alert-triangle.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/alert-triangle.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/check-circle.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/check-circle.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/chevron-left.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/chevron-left.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/chevron-right.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/chevron-right.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/download.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/download.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/eye.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/eye.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/file-text.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/file-text.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/folder.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/folder.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/git-merge.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/git-merge.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/house.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/house.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/info.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/info.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/library.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/library.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/log-out.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/log-out.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/moon.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/moon.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/pencil.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/pencil.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/plus.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/plus.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/refresh-cw.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/refresh-cw.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/save.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/save.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/scroll-text.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/scroll-text.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/settings.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/settings.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/sparkles.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/sparkles.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/sun.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/sun.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/trash-2.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/trash-2.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/upload.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/upload.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/wrench.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/wrench.svg"
+    },
+    "corpusfm/app/web/static/vendor/lucide/x-circle.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/static/vendor/lucide/x-circle.svg"
+    },
+    "corpusfm/app/web/templates/_help.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/_help.html"
+    },
+    "corpusfm/app/web/templates/about.html": {
+      "class": "generated",
+      "owner": "public-profile:public:application"
+    },
+    "corpusfm/app/web/templates/account.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/account.html"
+    },
+    "corpusfm/app/web/templates/artifacts.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/artifacts.html"
+    },
+    "corpusfm/app/web/templates/base.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/base.html"
+    },
+    "corpusfm/app/web/templates/build_mismatch.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/build_mismatch.html"
+    },
+    "corpusfm/app/web/templates/converting.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/converting.html"
+    },
+    "corpusfm/app/web/templates/docs.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/docs.html"
+    },
+    "corpusfm/app/web/templates/jobs.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/jobs.html"
+    },
+    "corpusfm/app/web/templates/login.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/login.html"
+    },
+    "corpusfm/app/web/templates/logs.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/logs.html"
+    },
+    "corpusfm/app/web/templates/mcp_access.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/mcp_access.html"
+    },
+    "corpusfm/app/web/templates/monitoring.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/monitoring.html"
+    },
+    "corpusfm/app/web/templates/needs_upgrade.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/needs_upgrade.html"
+    },
+    "corpusfm/app/web/templates/oauth_consent.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/oauth_consent.html"
+    },
+    "corpusfm/app/web/templates/oauth_error.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/oauth_error.html"
+    },
+    "corpusfm/app/web/templates/patch_isv.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/patch_isv.html"
+    },
+    "corpusfm/app/web/templates/queue.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/queue.html"
+    },
+    "corpusfm/app/web/templates/reload.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/reload.html"
+    },
+    "corpusfm/app/web/templates/runs.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/runs.html"
+    },
+    "corpusfm/app/web/templates/settings.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/settings.html"
+    },
+    "corpusfm/app/web/templates/tags.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/templates/tags.html"
+    },
+    "corpusfm/app/web/users.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/app/web/users.py"
+    },
+    "corpusfm/artifact/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/artifact/__init__.py"
+    },
+    "corpusfm/artifact/capabilities.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/artifact/capabilities.py"
+    },
+    "corpusfm/artifact/document.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/artifact/document.py"
+    },
+    "corpusfm/artifact/merge.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/artifact/merge.py"
+    },
+    "corpusfm/artifact/readme.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/artifact/readme.py"
+    },
+    "corpusfm/artifact/types.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/artifact/types.py"
+    },
+    "corpusfm/buildstamp.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/buildstamp.py"
+    },
+    "corpusfm/config.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/config.py"
+    },
+    "corpusfm/core/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/__init__.py"
+    },
+    "corpusfm/core/acceptance.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/acceptance.py"
+    },
+    "corpusfm/core/addon/NOTES.md": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/addon/NOTES.md"
+    },
+    "corpusfm/core/addon/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/addon/__init__.py"
+    },
+    "corpusfm/core/addon/package.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/addon/package.py"
+    },
+    "corpusfm/core/addon/scripts.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/addon/scripts.py"
+    },
+    "corpusfm/core/ai_usage.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/ai_usage.py"
+    },
+    "corpusfm/core/clip_catalog.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/clip_catalog.py"
+    },
+    "corpusfm/core/clip_catalog.yaml": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/clip_catalog.yaml"
+    },
+    "corpusfm/core/clip_compile.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/clip_compile.py"
+    },
+    "corpusfm/core/clip_emit.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/clip_emit.py"
+    },
+    "corpusfm/core/clip_gap.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/clip_gap.py"
+    },
+    "corpusfm/core/clip_patch.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/clip_patch.py"
+    },
+    "corpusfm/core/clip_validate.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/clip_validate.py"
+    },
+    "corpusfm/core/comparator.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/comparator.py"
+    },
+    "corpusfm/core/crossfile/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/crossfile/__init__.py"
+    },
+    "corpusfm/core/crossfile/_emit.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/crossfile/_emit.py"
+    },
+    "corpusfm/core/crossfile/_extract.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/crossfile/_extract.py"
+    },
+    "corpusfm/core/crossfile/_reconstruct.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/crossfile/_reconstruct.py"
+    },
+    "corpusfm/core/crossfile/_render.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/crossfile/_render.py"
+    },
+    "corpusfm/core/crossfile/_types.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/crossfile/_types.py"
+    },
+    "corpusfm/core/crypto.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/crypto.py"
+    },
+    "corpusfm/core/evidence.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/evidence.py"
+    },
+    "corpusfm/core/field_emit.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/field_emit.py"
+    },
+    "corpusfm/core/filenames.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/filenames.py"
+    },
+    "corpusfm/core/git_formatter/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/git_formatter/__init__.py"
+    },
+    "corpusfm/core/git_formatter/_exporter.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/git_formatter/_exporter.py"
+    },
+    "corpusfm/core/git_formatter/_renderer.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/git_formatter/_renderer.py"
+    },
+    "corpusfm/core/git_formatter/registrations.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/git_formatter/registrations.py"
+    },
+    "corpusfm/core/layout_objects.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/layout_objects.py"
+    },
+    "corpusfm/core/parser.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/parser.py"
+    },
+    "corpusfm/core/proc_lock.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/proc_lock.py"
+    },
+    "corpusfm/core/render_diagnostics.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/render_diagnostics.py"
+    },
+    "corpusfm/core/renderer.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/renderer.py"
+    },
+    "corpusfm/core/rendering/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/rendering/__init__.py"
+    },
+    "corpusfm/core/rendering/catalog.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/rendering/catalog.py"
+    },
+    "corpusfm/core/rendering/hidden_chars.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/rendering/hidden_chars.py"
+    },
+    "corpusfm/core/rendering/section_renderer.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/rendering/section_renderer.py"
+    },
+    "corpusfm/core/rendering/step_renderer.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/rendering/step_renderer.py"
+    },
+    "corpusfm/core/safe_xml.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/safe_xml.py"
+    },
+    "corpusfm/core/schemas/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/schemas/__init__.py"
+    },
+    "corpusfm/core/schemas/registry.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/schemas/registry.py"
+    },
+    "corpusfm/core/schemas/v2.2.3.0/mappings.yaml": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/schemas/v2.2.3.0/mappings.yaml"
+    },
+    "corpusfm/core/schemas/v2.2.3.0/rendering.yaml": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/schemas/v2.2.3.0/rendering.yaml"
+    },
+    "corpusfm/core/schemas/v2.2.3.0/structure_catalog.yaml": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/schemas/v2.2.3.0/structure_catalog.yaml"
+    },
+    "corpusfm/core/schemas/v2.3.0.0/mappings.yaml": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/schemas/v2.3.0.0/mappings.yaml"
+    },
+    "corpusfm/core/schemas/v2.3.0.0/rendering.yaml": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/schemas/v2.3.0.0/rendering.yaml"
+    },
+    "corpusfm/core/schemas/v2.3.0.0/structure_catalog.yaml": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/schemas/v2.3.0.0/structure_catalog.yaml"
+    },
+    "corpusfm/core/secure_fs.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/secure_fs.py"
+    },
+    "corpusfm/core/servertime.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/servertime.py"
+    },
+    "corpusfm/core/structure_catalog/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/structure_catalog/__init__.py"
+    },
+    "corpusfm/core/structure_catalog/miner.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/structure_catalog/miner.py"
+    },
+    "corpusfm/core/structure_catalog/sanitizer.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/structure_catalog/sanitizer.py"
+    },
+    "corpusfm/core/structure_catalog/types.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/structure_catalog/types.py"
+    },
+    "corpusfm/core/structure_intent.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/structure_intent.py"
+    },
+    "corpusfm/core/workflows.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/workflows.py"
+    },
+    "corpusfm/core/xref/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/xref/__init__.py"
+    },
+    "corpusfm/core/xref/dead_ends.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/xref/dead_ends.py"
+    },
+    "corpusfm/core/xref/graph.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/core/xref/graph.py"
+    },
+    "corpusfm/extensions/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/__init__.py"
+    },
+    "corpusfm/extensions/export/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/__init__.py"
+    },
+    "corpusfm/extensions/export/assets/corpusfm-wordmark-darkmode.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/assets/corpusfm-wordmark-darkmode.svg"
+    },
+    "corpusfm/extensions/export/assets/corpusfm-wordmark-lightmode.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/assets/corpusfm-wordmark-lightmode.svg"
+    },
+    "corpusfm/extensions/export/assets/node-icon.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/assets/node-icon.svg"
+    },
+    "corpusfm/extensions/export/assets/wordmark.svg": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/assets/wordmark.svg"
+    },
+    "corpusfm/extensions/export/capabilities.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/capabilities.py"
+    },
+    "corpusfm/extensions/export/construction.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/construction.py"
+    },
+    "corpusfm/extensions/export/contracts.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/contracts.py"
+    },
+    "corpusfm/extensions/export/coverage_gate.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/coverage_gate.py"
+    },
+    "corpusfm/extensions/export/diff.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/diff.py"
+    },
+    "corpusfm/extensions/export/explorer.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/explorer.py"
+    },
+    "corpusfm/extensions/export/patch_build.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/patch_build.py"
+    },
+    "corpusfm/extensions/export/patch_capabilities.yaml": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/patch_capabilities.yaml"
+    },
+    "corpusfm/extensions/export/patch_coherence.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/patch_coherence.py"
+    },
+    "corpusfm/extensions/export/patch_simulate.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/patch_simulate.py"
+    },
+    "corpusfm/extensions/export/patch_verify.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/patch_verify.py"
+    },
+    "corpusfm/extensions/export/resources/cfm_delete_from_documents.xml": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/resources/cfm_delete_from_documents.xml"
+    },
+    "corpusfm/extensions/export/resources/cfm_save_to_documents.xml": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/resources/cfm_save_to_documents.xml"
+    },
+    "corpusfm/extensions/export/syntax_palettes.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/syntax_palettes.py"
+    },
+    "corpusfm/extensions/export/templates/explorer.css": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/templates/explorer.css"
+    },
+    "corpusfm/extensions/export/templates/explorer.html": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/templates/explorer.html"
+    },
+    "corpusfm/extensions/export/templates/explorer_graph.js": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/templates/explorer_graph.js"
+    },
+    "corpusfm/extensions/export/templates/explorer_highlight.js": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/templates/explorer_highlight.js"
+    },
+    "corpusfm/extensions/export/vendor/alpine.min.js": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/vendor/alpine.min.js"
+    },
+    "corpusfm/extensions/export/vendor/fuse.min.js": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/vendor/fuse.min.js"
+    },
+    "corpusfm/formula/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/formula/__init__.py"
+    },
+    "corpusfm/formula/_analyze.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/formula/_analyze.py"
+    },
+    "corpusfm/formula/_ast.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/formula/_ast.py"
+    },
+    "corpusfm/formula/_formatter.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/formula/_formatter.py"
+    },
+    "corpusfm/formula/_lexer.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/formula/_lexer.py"
+    },
+    "corpusfm/formula/_parser.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/formula/_parser.py"
+    },
+    "corpusfm/generation_jobs.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/generation_jobs.py"
+    },
+    "corpusfm/ingestion/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/ingestion/__init__.py"
+    },
+    "corpusfm/ingestion/clip.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/ingestion/clip.py"
+    },
+    "corpusfm/ingestion/pipeline.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/ingestion/pipeline.py"
+    },
+    "corpusfm/ingestion/reabsorb.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/ingestion/reabsorb.py"
+    },
+    "corpusfm/install.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/install.py"
+    },
+    "corpusfm/lifecycle/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/__init__.py"
+    },
+    "corpusfm/lifecycle/__main__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/__main__.py"
+    },
+    "corpusfm/lifecycle/admin_identity.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/admin_identity.py"
+    },
+    "corpusfm/lifecycle/admin_identity_adapter.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/admin_identity_adapter.py"
+    },
+    "corpusfm/lifecycle/admin_identity_ops.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/admin_identity_ops.py"
+    },
+    "corpusfm/lifecycle/admin_identity_recovery.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/admin_identity_recovery.py"
+    },
+    "corpusfm/lifecycle/admin_identity_runtime.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/admin_identity_runtime.py"
+    },
+    "corpusfm/lifecycle/admin_identity_store.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/admin_identity_store.py"
+    },
+    "corpusfm/lifecycle/app_paths.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/app_paths.py"
+    },
+    "corpusfm/lifecycle/artifact_ownership.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/artifact_ownership.py"
+    },
+    "corpusfm/lifecycle/atomic.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/atomic.py"
+    },
+    "corpusfm/lifecycle/bridge.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/bridge.py"
+    },
+    "corpusfm/lifecycle/bytecode_cleanup.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/bytecode_cleanup.py"
+    },
+    "corpusfm/lifecycle/cli.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/cli.py"
+    },
+    "corpusfm/lifecycle/composition.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/composition.py"
+    },
+    "corpusfm/lifecycle/consent.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/consent.py"
+    },
+    "corpusfm/lifecycle/corpus_identity.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/corpus_identity.py"
+    },
+    "corpusfm/lifecycle/errors.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/errors.py"
+    },
+    "corpusfm/lifecycle/fms_folders.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/fms_folders.py"
+    },
+    "corpusfm/lifecycle/installer_disposition.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/installer_disposition.py"
+    },
+    "corpusfm/lifecycle/journal.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/journal.py"
+    },
+    "corpusfm/lifecycle/key_migration.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/key_migration.py"
+    },
+    "corpusfm/lifecycle/key_provisioning.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/key_provisioning.py"
+    },
+    "corpusfm/lifecycle/layout.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/layout.py"
+    },
+    "corpusfm/lifecycle/locator.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/locator.py"
+    },
+    "corpusfm/lifecycle/lock.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/lock.py"
+    },
+    "corpusfm/lifecycle/manifest.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/manifest.py"
+    },
+    "corpusfm/lifecycle/os_layout.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/os_layout.py"
+    },
+    "corpusfm/lifecycle/outcome_publisher.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/outcome_publisher.py"
+    },
+    "corpusfm/lifecycle/output.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/output.py"
+    },
+    "corpusfm/lifecycle/patch_compartment.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/patch_compartment.py"
+    },
+    "corpusfm/lifecycle/privilege.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/privilege.py"
+    },
+    "corpusfm/lifecycle/protection.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/protection.py"
+    },
+    "corpusfm/lifecycle/proxy_inventory.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/proxy_inventory.py"
+    },
+    "corpusfm/lifecycle/proxy_policy.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/proxy_policy.py"
+    },
+    "corpusfm/lifecycle/proxy_render.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/proxy_render.py"
+    },
+    "corpusfm/lifecycle/proxy_transaction.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/proxy_transaction.py"
+    },
+    "corpusfm/lifecycle/published.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/published.py"
+    },
+    "corpusfm/lifecycle/recovery_cli.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/recovery_cli.py"
+    },
+    "corpusfm/lifecycle/recovery_format.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/recovery_format.py"
+    },
+    "corpusfm/lifecycle/recovery_ops.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/recovery_ops.py"
+    },
+    "corpusfm/lifecycle/result.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/result.py"
+    },
+    "corpusfm/lifecycle/runtime_storage.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/runtime_storage.py"
+    },
+    "corpusfm/lifecycle/schema.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/schema.py"
+    },
+    "corpusfm/lifecycle/secret_guard.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/secret_guard.py"
+    },
+    "corpusfm/lifecycle/service_binding.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/service_binding.py"
+    },
+    "corpusfm/lifecycle/service_control.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/service_control.py"
+    },
+    "corpusfm/lifecycle/service_identity.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/service_identity.py"
+    },
+    "corpusfm/lifecycle/session.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/session.py"
+    },
+    "corpusfm/lifecycle/storage_identity.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/storage_identity.py"
+    },
+    "corpusfm/lifecycle/storage_identity_adapter.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/storage_identity_adapter.py"
+    },
+    "corpusfm/lifecycle/storage_identity_ops.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/storage_identity_ops.py"
+    },
+    "corpusfm/lifecycle/storage_identity_recovery.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/storage_identity_recovery.py"
+    },
+    "corpusfm/lifecycle/storage_identity_store.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/storage_identity_store.py"
+    },
+    "corpusfm/lifecycle/tree_inspection.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/tree_inspection.py"
+    },
+    "corpusfm/lifecycle/uninstall_exec_posix.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/uninstall_exec_posix.py"
+    },
+    "corpusfm/lifecycle/uninstall_exec_windows.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/uninstall_exec_windows.py"
+    },
+    "corpusfm/lifecycle/uninstall_inventory.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/uninstall_inventory.py"
+    },
+    "corpusfm/lifecycle/uninstall_pending.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/uninstall_pending.py"
+    },
+    "corpusfm/lifecycle/uninstall_plan.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/uninstall_plan.py"
+    },
+    "corpusfm/lifecycle/uninstall_resume.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/uninstall_resume.py"
+    },
+    "corpusfm/lifecycle/uninstall_runtime.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/uninstall_runtime.py"
+    },
+    "corpusfm/lifecycle/uninstall_terminal.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/uninstall_terminal.py"
+    },
+    "corpusfm/lifecycle/update_boundary.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/update_boundary.py"
+    },
+    "corpusfm/logging_config.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/logging_config.py"
+    },
+    "corpusfm/mcp/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/mcp/__init__.py"
+    },
+    "corpusfm/mcp/__main__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/mcp/__main__.py"
+    },
+    "corpusfm/mcp/oauth_provider.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/mcp/oauth_provider.py"
+    },
+    "corpusfm/mcp/perspectives.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/mcp/perspectives.py"
+    },
+    "corpusfm/mcp/server.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/mcp/server.py"
+    },
+    "corpusfm/runtime/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/runtime/__init__.py"
+    },
+    "corpusfm/runtime/compose.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/runtime/compose.py"
+    },
+    "corpusfm/runtime/context.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/runtime/context.py"
+    },
+    "corpusfm/server/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/__init__.py"
+    },
+    "corpusfm/server/acceptance_ops.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/acceptance_ops.py"
+    },
+    "corpusfm/server/activity_contract.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/activity_contract.py"
+    },
+    "corpusfm/server/activity_feed.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/activity_feed.py"
+    },
+    "corpusfm/server/admin_api_identity.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/admin_api_identity.py"
+    },
+    "corpusfm/server/ai/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/ai/__init__.py"
+    },
+    "corpusfm/server/ai/_endpoints.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/ai/_endpoints.py"
+    },
+    "corpusfm/server/ai/_watchdog.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/ai/_watchdog.py"
+    },
+    "corpusfm/server/ai/exemplars.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/ai/exemplars.py"
+    },
+    "corpusfm/server/ai/patch_ai.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/ai/patch_ai.py"
+    },
+    "corpusfm/server/ai/providers.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/ai/providers.py"
+    },
+    "corpusfm/server/ai/schema_context.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/ai/schema_context.py"
+    },
+    "corpusfm/server/ai/summarize.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/ai/summarize.py"
+    },
+    "corpusfm/server/ai/vector_index.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/ai/vector_index.py"
+    },
+    "corpusfm/server/ai_env.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/ai_env.py"
+    },
+    "corpusfm/server/apply_metrics.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/apply_metrics.py"
+    },
+    "corpusfm/server/artifact_delete.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/artifact_delete.py"
+    },
+    "corpusfm/server/audit.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/audit.py"
+    },
+    "corpusfm/server/cli/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/__init__.py"
+    },
+    "corpusfm/server/cli/__main__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/__main__.py"
+    },
+    "corpusfm/server/cli/cmd_archive.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_archive.py"
+    },
+    "corpusfm/server/cli/cmd_compare.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_compare.py"
+    },
+    "corpusfm/server/cli/cmd_diff_companion.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_diff_companion.py"
+    },
+    "corpusfm/server/cli/cmd_export.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_export.py"
+    },
+    "corpusfm/server/cli/cmd_gap_analyze.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_gap_analyze.py"
+    },
+    "corpusfm/server/cli/cmd_ingest.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_ingest.py"
+    },
+    "corpusfm/server/cli/cmd_jobs.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_jobs.py"
+    },
+    "corpusfm/server/cli/cmd_migrate.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_migrate.py"
+    },
+    "corpusfm/server/cli/cmd_patch.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_patch.py"
+    },
+    "corpusfm/server/cli/cmd_reencode.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_reencode.py"
+    },
+    "corpusfm/server/cli/cmd_registrations.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_registrations.py"
+    },
+    "corpusfm/server/cli/cmd_scheduler.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_scheduler.py"
+    },
+    "corpusfm/server/cli/cmd_setup_embeddings.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_setup_embeddings.py"
+    },
+    "corpusfm/server/cli/cmd_status.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_status.py"
+    },
+    "corpusfm/server/cli/cmd_update_notice.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_update_notice.py"
+    },
+    "corpusfm/server/cli/cmd_users.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/cmd_users.py"
+    },
+    "corpusfm/server/cli/main.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/cli/main.py"
+    },
+    "corpusfm/server/db_helper.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/db_helper.py"
+    },
+    "corpusfm/server/dry_run.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/dry_run.py"
+    },
+    "corpusfm/server/enrichment.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/enrichment.py"
+    },
+    "corpusfm/server/file_discovery.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/file_discovery.py"
+    },
+    "corpusfm/server/file_readiness.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/file_readiness.py"
+    },
+    "corpusfm/server/fm_bootstrap.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/fm_bootstrap.py"
+    },
+    "corpusfm/server/fms_admin_pki.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/fms_admin_pki.py"
+    },
+    "corpusfm/server/fms_client.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/fms_client.py"
+    },
+    "corpusfm/server/fms_transport.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/fms_transport.py"
+    },
+    "corpusfm/server/git_targets.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/git_targets.py"
+    },
+    "corpusfm/server/health.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/health.py"
+    },
+    "corpusfm/server/history.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/history.py"
+    },
+    "corpusfm/server/jobs/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/jobs/__init__.py"
+    },
+    "corpusfm/server/jobs/config.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/jobs/config.py"
+    },
+    "corpusfm/server/jobs/history.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/jobs/history.py"
+    },
+    "corpusfm/server/jobs/run_queue.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/jobs/run_queue.py"
+    },
+    "corpusfm/server/jobs/runner.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/jobs/runner.py"
+    },
+    "corpusfm/server/jobs/schedule.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/jobs/schedule.py"
+    },
+    "corpusfm/server/jobs/sources.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/jobs/sources.py"
+    },
+    "corpusfm/server/jobs/state.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/jobs/state.py"
+    },
+    "corpusfm/server/jobs/store.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/jobs/store.py"
+    },
+    "corpusfm/server/jobs/validator.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/jobs/validator.py"
+    },
+    "corpusfm/server/jobs/webhook.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/jobs/webhook.py"
+    },
+    "corpusfm/server/latest.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/latest.py"
+    },
+    "corpusfm/server/mcp_status.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/mcp_status.py"
+    },
+    "corpusfm/server/monitor/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/monitor/__init__.py"
+    },
+    "corpusfm/server/monitor/alerts.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/monitor/alerts.py"
+    },
+    "corpusfm/server/monitor/config.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/monitor/config.py"
+    },
+    "corpusfm/server/monitor/history.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/monitor/history.py"
+    },
+    "corpusfm/server/monitor/notify.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/monitor/notify.py"
+    },
+    "corpusfm/server/oidc_secrets.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/oidc_secrets.py"
+    },
+    "corpusfm/server/patch_apply.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/patch_apply.py"
+    },
+    "corpusfm/server/push_tokens.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/push_tokens.py"
+    },
+    "corpusfm/server/queue_handlers.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/queue_handlers.py"
+    },
+    "corpusfm/server/queue_workers.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/queue_workers.py"
+    },
+    "corpusfm/server/readiness.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/readiness.py"
+    },
+    "corpusfm/server/remote_servers.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/remote_servers.py"
+    },
+    "corpusfm/server/scheduler.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/scheduler.py"
+    },
+    "corpusfm/server/seed_artifact.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/seed_artifact.py"
+    },
+    "corpusfm/server/tags.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/tags.py"
+    },
+    "corpusfm/server/tags_store.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/tags_store.py"
+    },
+    "corpusfm/server/update_notice.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/update_notice.py"
+    },
+    "corpusfm/server/update_observer.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/update_observer.py"
+    },
+    "corpusfm/server/update_service.py": {
+      "class": "generated",
+      "owner": "public-profile:public:application"
+    },
+    "corpusfm/server/win_db_ops.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/win_db_ops.py"
+    },
+    "corpusfm/storage/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/__init__.py"
+    },
+    "corpusfm/storage/artifact_record.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/artifact_record.py"
+    },
+    "corpusfm/storage/artifact_store.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/artifact_store.py"
+    },
+    "corpusfm/storage/backend.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/backend.py"
+    },
+    "corpusfm/storage/db_schema_build.txt": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/db_schema_build.txt"
+    },
+    "corpusfm/storage/engine.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/engine.py"
+    },
+    "corpusfm/storage/fm_odata.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/fm_odata.py"
+    },
+    "corpusfm/storage/fm_registry.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/fm_registry.py"
+    },
+    "corpusfm/storage/git_backend.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/git_backend.py"
+    },
+    "corpusfm/storage/local.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/local.py"
+    },
+    "corpusfm/storage/projections.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/projections.py"
+    },
+    "corpusfm/storage/queue_record.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/queue_record.py"
+    },
+    "corpusfm/storage/repos.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/repos.py"
+    },
+    "corpusfm/storage/resolve.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/resolve.py"
+    },
+    "corpusfm/storage/storage_migration.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/storage/storage_migration.py"
+    },
+    "corpusfm/tools/__init__.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/tools/__init__.py"
+    },
+    "corpusfm/tools/discovery_log.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/tools/discovery_log.py"
+    },
+    "corpusfm/tools/gap_analyzer.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/tools/gap_analyzer.py"
+    },
+    "corpusfm/tools/xml_inspector.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/tools/xml_inspector.py"
+    },
+    "corpusfm/tools/yaml_tryout.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/tools/yaml_tryout.py"
+    },
+    "corpusfm/updater.py": {
+      "class": "generated",
+      "owner": "public-profile:public:application"
+    },
+    "eslint.config.mjs": {
+      "class": "public-output-source",
+      "owner": "application:site/eslint.config.mjs"
+    },
+    "index.html": {
+      "class": "public-output-source",
+      "owner": "application:site/index.html"
+    },
+    "installer/SPEC.md": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON.fmaddon": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON.fmaddon"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/de.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/de.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/en.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/en.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/es.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/es.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/fr.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/fr.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/icon.png": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/icon.png"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/icon@2x.png": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/icon@2x.png"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info_de.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info_de.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info_en.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info_en.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info_es.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info_es.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info_fr.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info_fr.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info_it.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info_it.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info_ja.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info_ja.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info_ko.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info_ko.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info_nl.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info_nl.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info_pt.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info_pt.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info_sv.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info_sv.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/info_zh.json": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/info_zh.json"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/it.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/it.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/ja.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/ja.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/ko.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/ko.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/nl.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/nl.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/preview.png": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/preview.png"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/pt.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/pt.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/sv.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/sv.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/template.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/template.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON/zh.xml": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON/zh.xml"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON_AddonXML.artifact": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON_AddonXML.artifact"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON_MergedXML.artifact": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON_MergedXML.artifact"
+    },
+    "installer/assets/addon/CORPUSfm_ADDON_SaveAsXML.artifact": {
+      "class": "exact-copy",
+      "owner": "addon-assets:CORPUSfm_ADDON_SaveAsXML.artifact"
+    },
+    "installer/assets/db/CORPUSfm_DB.artifact": {
+      "class": "exact-copy",
+      "owner": "database-assets:CORPUSfm_DB.artifact"
+    },
+    "installer/assets/db/CORPUSfm_DB.fmp12": {
+      "class": "exact-copy",
+      "owner": "database-assets:CORPUSfm_DB.fmp12"
+    },
+    "installer/bootstrap/linux/bootstrap.sh": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "installer/bootstrap/windows/bootstrap.ps1": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "installer/build-asset-payload.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "installer/constraints-server-py313.txt": {
+      "class": "exact-copy",
+      "owner": "installer:installer/constraints-server-py313.txt"
+    },
+    "installer/constraints-server-win-py313.txt": {
+      "class": "exact-copy",
+      "owner": "installer:installer/constraints-server-win-py313.txt"
+    },
+    "installer/linux/_cfm_lib.sh": {
+      "class": "exact-copy",
+      "owner": "installer:installer/linux/_cfm_lib.sh"
+    },
+    "installer/linux/cfm-db-helper.sh": {
+      "class": "exact-copy",
+      "owner": "installer:installer/linux/cfm-db-helper.sh"
+    },
+    "installer/linux/cfm-proxy-exec.sh": {
+      "class": "exact-copy",
+      "owner": "installer:installer/linux/cfm-proxy-exec.sh"
+    },
+    "installer/linux/cfm-verify-bootstrap-handoff.sh": {
+      "class": "exact-copy",
+      "owner": "installer:installer/linux/cfm-verify-bootstrap-handoff.sh"
+    },
+    "installer/linux/cfm-verify-installer-bundle.sh": {
+      "class": "exact-copy",
+      "owner": "installer:installer/linux/cfm-verify-installer-bundle.sh"
+    },
+    "installer/linux/cfm-web-proxy.sh": {
+      "class": "exact-copy",
+      "owner": "installer:installer/linux/cfm-web-proxy.sh"
+    },
+    "installer/linux/corpusfm-proxy.sh": {
+      "class": "exact-copy",
+      "owner": "installer:installer/linux/corpusfm-proxy.sh"
+    },
+    "installer/linux/corpusfm-recovery.sh": {
+      "class": "exact-copy",
+      "owner": "installer:installer/linux/corpusfm-recovery.sh"
+    },
+    "installer/linux/corpusfm-update.sh": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "installer/linux/install.sh": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "installer/linux/uninstall.sh": {
+      "class": "exact-copy",
+      "owner": "installer:installer/linux/uninstall.sh"
+    },
+    "installer/package-installer.sh": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "installer/requirements-server.txt": {
+      "class": "exact-copy",
+      "owner": "installer:installer/requirements-server.txt"
+    },
+    "installer/windows/_cfm_lib.ps1": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "installer/windows/cfm-proxy-exec.ps1": {
+      "class": "exact-copy",
+      "owner": "installer:installer/windows/cfm-proxy-exec.ps1"
+    },
+    "installer/windows/cfm-verify-bootstrap-handoff.ps1": {
+      "class": "exact-copy",
+      "owner": "installer:installer/windows/cfm-verify-bootstrap-handoff.ps1"
+    },
+    "installer/windows/cfm-verify-installer-bundle.ps1": {
+      "class": "exact-copy",
+      "owner": "installer:installer/windows/cfm-verify-installer-bundle.ps1"
+    },
+    "installer/windows/corpusfm-proxy.ps1": {
+      "class": "exact-copy",
+      "owner": "installer:installer/windows/corpusfm-proxy.ps1"
+    },
+    "installer/windows/corpusfm-recovery.ps1": {
+      "class": "exact-copy",
+      "owner": "installer:installer/windows/corpusfm-recovery.ps1"
+    },
+    "installer/windows/corpusfm-update.ps1": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "installer/windows/install.ps1": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "installer/windows/uninstall.ps1": {
+      "class": "exact-copy",
+      "owner": "installer:installer/windows/uninstall.ps1"
+    },
+    "package-lock.json": {
+      "class": "public-output-source",
+      "owner": "application:site/package-lock.json"
+    },
+    "package.json": {
+      "class": "public-output-source",
+      "owner": "application:site/package.json"
+    },
+    "public/brand/corpusfm-node-icon.png": {
+      "class": "public-output-source",
+      "owner": "application:site/public/brand/corpusfm-node-icon.png"
+    },
+    "public/brand/corpusfm-wordmark-dark.png": {
+      "class": "public-output-source",
+      "owner": "application:site/public/brand/corpusfm-wordmark-dark.png"
+    },
+    "public/brand/corpusfm-wordmark-light.png": {
+      "class": "public-output-source",
+      "owner": "application:site/public/brand/corpusfm-wordmark-light.png"
+    },
+    "public/favicon.svg": {
+      "class": "public-output-source",
+      "owner": "application:site/public/favicon.svg"
+    },
+    "public/og.png": {
+      "class": "public-output-source",
+      "owner": "application:site/public/og.png"
+    },
+    "public/screenshots/artifacts.png": {
+      "class": "public-output-source",
+      "owner": "application:site/public/screenshots/artifacts.png"
+    },
+    "public/screenshots/diff.png": {
+      "class": "public-output-source",
+      "owner": "application:site/public/screenshots/diff.png"
+    },
+    "public/screenshots/explorer.png": {
+      "class": "public-output-source",
+      "owner": "application:site/public/screenshots/explorer.png"
+    },
+    "release-build.txt": {
+      "class": "generated",
+      "owner": "release-build-argument"
+    },
+    "requirements.txt": {
+      "class": "exact-copy",
+      "owner": "application:requirements.txt"
+    },
+    "scripts/_release_gate_live.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "scripts/generate-docs.mjs": {
+      "class": "public-output-source",
+      "owner": "application:site/scripts/generate-docs.mjs"
+    },
+    "scripts/installer_release_gate.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "scripts/write-doc-routes.mjs": {
+      "class": "public-output-source",
+      "owner": "application:site/scripts/write-doc-routes.mjs"
+    },
+    "src/app.tsx": {
+      "class": "public-output-source",
+      "owner": "application:site/src/app.tsx"
+    },
+    "src/docs-page.tsx": {
+      "class": "public-output-source",
+      "owner": "application:site/src/docs-page.tsx"
+    },
+    "src/globals.css": {
+      "class": "public-output-source",
+      "owner": "application:site/src/globals.css"
+    },
+    "src/main.tsx": {
+      "class": "public-output-source",
+      "owner": "application:site/src/main.tsx"
+    },
+    "src/page.tsx": {
+      "class": "public-output-source",
+      "owner": "application:site/src/page.tsx"
+    },
+    "src/theme-toggle.tsx": {
+      "class": "public-output-source",
+      "owner": "application:site/src/theme-toggle.tsx"
+    },
+    "tests/__init__.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/__init__.py"
+    },
+    "tests/fixtures/minimal.xml": {
+      "class": "exact-copy",
+      "owner": "application:tests/fixtures/minimal.xml"
+    },
+    "tests/installer_sim/__init__.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/installer_sim/__init__.py"
+    },
+    "tests/installer_sim/fake_fms.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/installer_sim/fake_fms.py"
+    },
+    "tests/installer_sim/harness.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/installer_sim/harness.py"
+    },
+    "tests/proxy_exec_materialize.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/proxy_exec_materialize.py"
+    },
+    "tests/ps/cfm-proxy-exec.tests.ps1": {
+      "class": "exact-copy",
+      "owner": "installer:tests/ps/cfm-proxy-exec.tests.ps1"
+    },
+    "tests/rendered-html.test.mjs": {
+      "class": "public-output-source",
+      "owner": "application:site/tests/rendered-html.test.mjs"
+    },
+    "tests/test_apache_append_boundary.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_apache_append_boundary.py"
+    },
+    "tests/test_apply_update.py": {
+      "class": "generated",
+      "owner": "public-profile:public:application"
+    },
+    "tests/test_buildstamp.py": {
+      "class": "exact-copy",
+      "owner": "application:tests/test_buildstamp.py"
+    },
+    "tests/test_git_credentials.py": {
+      "class": "exact-copy",
+      "owner": "application:tests/test_git_credentials.py"
+    },
+    "tests/test_installer_asks_only_when_needed.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_asks_only_when_needed.py"
+    },
+    "tests/test_installer_bootstrap.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_installer_conformance.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_conformance.py"
+    },
+    "tests/test_installer_deploy_never_overwrites.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_deploy_never_overwrites.py"
+    },
+    "tests/test_installer_entrypoint_parity.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_entrypoint_parity.py"
+    },
+    "tests/test_installer_fake_fms.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_fake_fms.py"
+    },
+    "tests/test_installer_first_admin.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_first_admin.py"
+    },
+    "tests/test_installer_fms_admin_user.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_fms_admin_user.py"
+    },
+    "tests/test_installer_fmsadmin_group.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_fmsadmin_group.py"
+    },
+    "tests/test_installer_hardening.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_hardening.py"
+    },
+    "tests/test_installer_layout_and_identity.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_layout_and_identity.py"
+    },
+    "tests/test_installer_lifecycle_pythonpath.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_lifecycle_pythonpath.py"
+    },
+    "tests/test_installer_logging.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_installer_loopback_tls_quiet.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_loopback_tls_quiet.py"
+    },
+    "tests/test_installer_odata_preflight.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_odata_preflight.py"
+    },
+    "tests/test_installer_package_forward_only.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_installer_parity.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_parity.py"
+    },
+    "tests/test_installer_path_robustness.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_path_robustness.py"
+    },
+    "tests/test_installer_places_proxy_executor.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_places_proxy_executor.py"
+    },
+    "tests/test_installer_provider_order.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_provider_order.py"
+    },
+    "tests/test_installer_provider_walks.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_provider_walks.py"
+    },
+    "tests/test_installer_ps_logging.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_ps_logging.py"
+    },
+    "tests/test_installer_release_gate.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_installer_services_proxy.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_services_proxy.py"
+    },
+    "tests/test_installer_sim.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_installer_source_update_credentials.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_installer_storage_tail.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_storage_tail.py"
+    },
+    "tests/test_installer_warning_contract.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_warning_contract.py"
+    },
+    "tests/test_linux_installer_orchestration.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_linux_installer_orchestration.py"
+    },
+    "tests/test_linux_installer_package_boundary.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_linux_installer_package_boundary.py"
+    },
+    "tests/test_linux_installer_surface.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_linux_proxy_exec.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_linux_proxy_exec.py"
+    },
+    "tests/test_linux_proxy_validators.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_linux_proxy_validators.py"
+    },
+    "tests/test_nginx_mixed_marker_generations.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_nginx_mixed_marker_generations.py"
+    },
+    "tests/test_privileged_update_artifacts.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_privileged_update_build_stamp.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_privileged_updater_behaviour.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_proxy_executor_contract.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_proxy_executor_contract.py"
+    },
+    "tests/test_proxy_gate.py": {
+      "class": "generated",
+      "owner": "public-profile:public:application"
+    },
+    "tests/test_proxy_walk.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_proxy_walk.py"
+    },
+    "tests/test_script_conformance.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_script_conformance.py"
+    },
+    "tests/test_series2_package_boundary.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_storage_observe_layout_regression.py": {
+      "class": "exact-copy",
+      "owner": "application:tests/test_storage_observe_layout_regression.py"
+    },
+    "tests/test_uninstall_close_verdict.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_uninstall_close_verdict.py"
+    },
+    "tests/test_uninstall_launchers.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_uninstall_launchers.py"
+    },
+    "tests/test_uninstall_stage_fence.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_uninstall_stage_fence.py"
+    },
+    "tests/test_update_service.py": {
+      "class": "generated",
+      "owner": "public-profile:public:application"
+    },
+    "tests/test_updater.py": {
+      "class": "generated",
+      "owner": "public-profile:public:application"
+    },
+    "tests/test_upgrade_trust.py": {
+      "class": "generated",
+      "owner": "public-profile:public:application"
+    },
+    "tests/test_windows_installer_semantics.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_windows_installer_semantics.py"
+    },
+    "tests/test_windows_installer_source_clone.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_windows_installer_source_clone.py"
+    },
+    "tests/updater_installation.py": {
+      "class": "generated",
+      "owner": "public-profile:public:installer-patch"
+    },
+    "tsconfig.json": {
+      "class": "public-output-source",
+      "owner": "application:site/tsconfig.json"
+    },
+    "vite.config.ts": {
+      "class": "public-output-source",
+      "owner": "application:site/vite.config.ts"
+    }
+  },
+  "projection": {
+    "contract_version": 2,
+    "installer_patch_authored_against": "dde966862be18f765af21eaf1761ff41245e5ffd",
+    "installer_patch_sha256": "6d19cda751086baad925749cf022a8a7976a901b92592785dce83030e21e0118",
+    "path_policy": {
+      "explicit_exclusions": [
+        "**/__pycache__/**",
+        "**/_build.txt",
+        "corpusfm/app/web/docs/changelog.md",
+        "installer/bridge-exercise/**",
+        "symlinks"
+      ],
+      "forbidden": [
+        "private repository identity",
+        "GitHub credential shapes",
+        ".git-pat",
+        ".git-pat-helper",
+        ".git-credentials",
+        "copyright-holder identity outside NOTICE",
+        "PINAX copyright claims"
+      ],
+      "output_classes": [
+        "exact-copy",
+        "generated",
+        "public-output-source"
+      ],
+      "unselected_source_paths": "excluded"
+    },
+    "profile": "public",
+    "profile_sha256": "9781d5f9ff74f8341d50a5bc0e6a37413122bcc099cefa7280ba1d4c8a27b751",
+    "profile_version": 1
+  },
+  "release_build": 2655,
+  "schema_version": 2,
+  "source_commits": {
+    "addon_assets": "f13a333d704ba51ff4bbe00e9cac1b79ba2588f9",
+    "application": "68329eea84715599a647ae2f5bf68f148ef78904",
+    "database_assets": "853339aaadad8e80e5f36a92879ef8a33491aa35",
+    "installer": "984c50c0d0729bdad801545cb95ccfca0741d7a7"
+  }
+}

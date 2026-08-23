@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Queue — CORPUSfm{% endblock %}
+
+{# Queue (packet 1018) — the ONE QUEUE workspace, record-centric. Each row is a single job walking its
+   linear pipeline of steps (upload · pull · ingest · summarize · index · …); the highlighted chip is the
+   step it's on now. Any authenticated user can view; cancel/restart/delete are owner-or-admin. #}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+<div x-data="queuePage()">
+  <div class="cfm-page-hdr">
+    <h1>Queue</h1>
+    <div class="cfm-hdr-actions">
+      {{ doc_help('queue', 'About the queue') }}
+      <button type="button" class="cfm-btn cfm-btn--sm" @click="load()">Refresh</button>
+    </div>
+  </div>
+
+  <p class="cfm-muted cfm-mb-12">Each row is a job walking its pipeline of steps, oldest first — the
+    highlighted step is where it is now.</p>
+
+  <template x-if="!records.length">
+    <p class="cfm-list-empty">The queue is empty.</p>
+  </template>
+
+  <div class="cfm-panel" x-show="records.length" x-cloak>
+    <template x-for="r in records" :key="r.id">
+      <div class="cfm-qrow">
+        <div class="cfm-qrow-main">
+          <div class="cfm-qrow-hd">
+            <span class="cfm-badge" :class="badgeClass(r.status)" x-text="statusLabel(r.status)"></span>
+            <strong x-show="r.target" x-text="r.target"></strong>
+            <span class="cfm-spacer"></span>
+            <span class="cfm-muted" x-text="r.owner"></span>
+          </div>
+          {# The step trail IS the record's action, in the same tag format as the artifact system tags: the
+             steps read as the work (upload · ingest · summarize · index · …) with the active step highlighted.
+             A single-step record shows its one action; a multi-step record shows its progress. #}
+          <div class="cfm-steptrail cfm-mt-6">
+            <template x-for="(s, i) in r.steps" :key="i">
+              <span class="cfm-badge" :class="stepClass(r, s)" x-text="stepLabel(r, s)"></span>
+            </template>
+          </div>
+          <div class="cfm-inline-error cfm-mt-6" x-show="r.status === 'failed' && r.error" x-text="r.error"></div>
+        </div>
+        <div class="cfm-qrow-act">
+          <button type="button" class="cfm-btn cfm-btn--sm" x-show="canMutate(r) && (r.status === 'queued' || (r.status === 'running' && r.cancelable))" @click="cancel(r)" x-text="r.status === 'running' ? 'Cancel run' : 'Cancel'"></button>
+          <button type="button" class="cfm-btn cfm-btn--sm" x-show="canMutate(r) && r.status === 'failed'" @click="restart(r)">Restart</button>
+          <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" x-show="canMutate(r) && r.status === 'failed'" @click="del(r)">Delete</button>
+        </div>
+      </div>
+    </template>
+
+    <div class="cfm-filterbar cfm-filterbar--tight cfm-mt-14" x-show="failedCount">
+      <span class="cfm-spacer"></span>
+      <button type="button" class="cfm-btn cfm-btn--sm" @click="clearFailed()">Clear failed</button>
+    </div>
+  </div>
+
+  <p class="cfm-muted cfm-mt-14">Uploading a file's bytes to the server is the only browser-side step of an
+    import — it shows in the <strong>Import</strong> pop-over while it runs, then becomes a server job here
+    that survives navigating away.</p>
+</div>
+
+<script>
+function queuePage() {
+  // Display labels for the internal step keys. The `land` step is SHOWN as "ingest" (packet 1040) —
+  // it parses+stores the file (calls ingest()); the internal step string / LAND state stays `land`
+  // (storage/queue_record.py). Do NOT "fix" the apparent key/label mismatch.
+  const STEP = { upload: 'upload', pull: 'pull', land: 'ingest', summarize: 'summarize',
+                 index: 'index', git_export: 'git export', verify: 'verify' };
+  return {
+    // Binds to the app-wide $store.queue payload (ONE /api/queue poll loop app-wide) — no second poller.
+    get _d() { return (this.$store.queue && this.$store.queue.data) || {}; },
+    get records() { return this._d.records || []; },
+    get failedCount() { return this._d.failed_count || 0; },
+    get me() { return this._d.me || ''; },
+    get isAdmin() { return !!this._d.is_admin; },
+    init() { this.load(); },
+    async load() { try { await this.$store.queue.refresh(); } catch (_) {} },
+    canMutate(r) { return !!r && (this.isAdmin || r.owner === this.me); },
+    statusLabel(s) { return ({ running: 'Running', queued: 'Queued', failed: 'Failed' })[s] || s; },
+    badgeClass(s) { return s === 'failed' ? 'cfm-badge--broken' : (s === 'running' ? 'cfm-badge--ok' : 'cfm-badge--muted'); },
+    // The step reads as the action. One relabel: a de-index record's step is `index` with an op flag —
+    // show it as `deindex` so the trail isn't misleading (kinds carries 'Deindex').
+    stepLabel(r, s) {
+      // packet 1158: an `index` record's action depends on its op — distinguish a summary-layer index
+      // from a raw index (both are the `index` step), so two "index" rows aren't ambiguous.
+      if (s === 'index') {
+        if (r.index_op === 'deindex' || (r.kinds || []).includes('Deindex')) return 'deindex';
+        if (r.index_op === 'index_summaries') return 'index (summaries)';
+      }
+      return STEP[s] || s;
+    },
+    // Step chips render in the artifact system-tag format (cfm-badge). Only the ACTIVE step (the cursor,
+    // r.current) is highlighted; done/pending steps are muted, a parked step is red, a running one pulses.
+    stepClass(r, s) {
+      if (s !== r.current) return 'cfm-badge--muted';
+      if (r.status === 'failed')  return 'cfm-badge--broken';
+      if (r.status === 'running') return 'cfm-badge--pending';
+      return 'cfm-step-on';
+    },
+    async cancel(r) { await this._post('/api/queue/' + encodeURIComponent(r.id) + '/cancel'); this.load(); },
+    async del(r)    { await this._post('/api/queue/' + encodeURIComponent(r.id) + '/cancel'); this.load(); },
+    async restart(r){ await this._post('/api/queue/' + encodeURIComponent(r.id) + '/restart'); this.load(); },
+    async clearFailed() { await this._post('/api/queue/clear-failed'); this.load(); },
+    async _post(url) {
+      try {
+        const r = await fetch(url, { method: 'POST' });
+        const d = await r.json();
+        if (!d.ok && d.message) window.cfmNotify.error(d.message);
+      } catch (_) {}
+    },
+  };
+}
+</script>
+{% endblock %}

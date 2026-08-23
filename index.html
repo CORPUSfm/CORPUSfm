@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CORPUSfm — Take your FileMaker work further</title>
+    <meta name="description" content="Schema exploration, structured comparison, automation, team knowledge, and AI-assisted development for FileMaker." />
+    <meta property="og:title" content="CORPUSfm — Take your FileMaker work further" />
+    <meta property="og:description" content="Schema exploration, structured comparison, automation, team knowledge, and AI-assisted development for FileMaker." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://corpusfm.github.io/CORPUSfm/" />
+    <meta property="og:image" content="https://corpusfm.github.io/CORPUSfm/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="CORPUSfm — Take your FileMaker work further" />
+    <meta name="twitter:description" content="Schema exploration, structured comparison, automation, team knowledge, and AI-assisted development for FileMaker." />
+    <meta name="twitter:image" content="https://corpusfm.github.io/CORPUSfm/og.png" />
+    <link rel="icon" href="/CORPUSfm/brand/corpusfm-node-icon.png" />
+    <script>
+      try {
+        const saved = localStorage.getItem("corpusfm-site-theme");
+        const theme = saved === "light" || saved === "dark"
+          ? saved
+          : (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.dataset.theme = theme;
+      } catch (_) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

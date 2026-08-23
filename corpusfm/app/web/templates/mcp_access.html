@@ -1,0 +1,626 @@
+{% extends "base.html" %}
+{% block title %}MCP — CORPUSfm{% endblock %}
+
+{# MCP access (Library group) — the ONE user-facing home for every way this user has authorized MCP
+   access (packet 1182). OAuth connections (clients approved through OAuth sign-in) are
+   primary and disconnectable; named manual tokens (packet 1029) remain for clients and
+   development setups that cannot complete a browser flow. Both halves come from the single unified
+   read /api/account/mcp-connections; mutations stay explicit per credential type. Admin service
+   mechanics live in Settings → MCP.
+
+   TABULATED (developer, 2026-08-21), superseding packet 1240's three stacked islands with two
+   disclosures. Access is the landing tab — state before instructions survives as "the default tab is
+   your credential list" — and each setup path is one tab away. The ranking the closed-by-default
+   island used to state (OAuth first, tokens second) is now stated by tab ORDER; nothing is folded
+   away behind a chevron and the page is never longer than one pane. The tab model is lifted from
+   account.html: hash deep-links (#access / #oauth / #tokens), arrow-key roving focus, replaceState
+   so the back button is not filled with tab clicks. #}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+<div class="cfm-page-hdr"><h1>MCP access</h1>
+  <div class="cfm-hdr-actions">{{ doc_help('mcp', 'About MCP') }}</div>
+</div>
+
+<p class="cfm-about-lede">
+  Connect an MCP client with <strong>your own</strong> access and work with your schema directly —
+  reading, searching, comparing, and authoring changes — instead of copying XML back and forth.
+</p>
+
+<div style="max-width:820px" x-data="mcpAccess()" @hashchange.window="fromHash()">
+
+  {# ── Service — STATUS ONLY, no address (packet 1240 D4) ───────────────────────
+     The address used to be stated here AND in the OAuth steps, and on a box where the configured MCP
+     address differs from the browser's origin the two disagreed in plain sight. They are BOTH correct
+     for their own purpose (see the `oauthSnippets` comment below) — so rather than explain the
+     difference, each setup tab states the address that is right for it and this line states no
+     address at all. #}
+  <template x-if="!statusLoaded">
+    <p class="cfm-muted cfm-mb-16">Checking the MCP service…</p>
+  </template>
+  <template x-if="statusLoaded && mounted">
+    <p class="cfm-muted cfm-mb-16"><span class="cfm-badge cfm-badge--ok">✓ Active</span></p>
+  </template>
+  <template x-if="statusLoaded && !mounted">
+    <p class="cfm-inline-error cfm-mb-16">The MCP endpoint is <strong>not active</strong> yet — an admin
+      needs to finish setup (Settings → MCP). Once it's serving, connect a client here.</p>
+  </template>
+
+  {# ── The page strip: the ONLY underlined `cfm-tabs` on this page. The per-client pickers inside the
+     setup panes are `cfm-tabs--sub` (kit, 2026-08-21) — a second strip at a second altitude must not
+     look like the first. #}
+  <div class="cfm-tabs" role="tablist" aria-label="MCP access sections"
+       @keydown.right.prevent="moveTab(1)" @keydown.left.prevent="moveTab(-1)"
+       @keydown.home.prevent="selectEdge(0)" @keydown.end.prevent="selectEdge(-1)">
+    <button id="mcp-tab-access" type="button" class="cfm-tab" role="tab"
+            :class="tab==='access'?'cfm-tab--on':''" :aria-selected="tab==='access'"
+            aria-controls="mcp-panel-access" @click="setTab('access')">Access</button>
+    <button id="mcp-tab-oauth" type="button" class="cfm-tab" role="tab"
+            :class="tab==='oauth'?'cfm-tab--on':''" :aria-selected="tab==='oauth'"
+            aria-controls="mcp-panel-oauth" @click="setTab('oauth')">OAuth setup</button>
+    <button id="mcp-tab-tokens" type="button" class="cfm-tab" role="tab"
+            :class="tab==='tokens'?'cfm-tab--on':''" :aria-selected="tab==='tokens'"
+            aria-controls="mcp-panel-tokens" @click="setTab('tokens')">Manual tokens</button>
+  </div>
+
+  {# ══ TAB 1 — ACCESS: what can act as you. STATE, not instructions. ═════════════
+     The landing tab. A returning user lands on their own credential list, not on a setup guide. #}
+  <section id="mcp-panel-access" role="tabpanel" aria-labelledby="mcp-tab-access"
+           x-show="tab==='access'" x-cloak>
+  <div class="cfm-panel">
+    {# The tab label names the pane, so there is no internal title to duplicate it; the help link
+       takes the island's action slot. #}
+    <div class="cfm-island-top">
+      <p class="cfm-muted">Clients and tokens that can act as you.</p>
+      <div class="cfm-island-act">{{ doc_help('mcp#how-long-a-connection-lasts', 'How long a connection lasts') }}</div>
+    </div>
+
+    {# Two SEPARATE error channels. `connErr` is a READ failure — the list is unknown, so it is suppressed
+       rather than shown stale. `disconnectErr` is a MUTATION failure — the list is still valid and the
+       connection is still there, so it keeps rendering underneath the error. #}
+    <template x-if="connErr">
+      <p class="cfm-inline-error cfm-mb-12" x-text="connErr"></p>
+    </template>
+    <template x-if="disconnectErr">
+      <p class="cfm-inline-error cfm-mb-12" x-text="disconnectErr"></p>
+    </template>
+
+    {# TWO tables, not one merged table with a Kind column (packet 1240 D3). The rows carry different
+       destructive verbs — Disconnect revokes an OAuth grant, Delete revokes a token — and different
+       columns (Resource / "Sign in again by" exist only for connections; ID only for tokens). Merging
+       them would either blur the verb or carry a column blank on half the rows, and a mis-click on a
+       revoke is worse than a slightly taller pane. #}
+    <div class="cfm-panel-h cfm-mt-12">OAuth connections</div>
+    <template x-if="connLoaded && !connErr && connections.length">
+      {# Resource is a COLUMN, not decoration: a connection is (you × client × resource), so the same
+         client approved for two MCP addresses is two separate rows — without the resource they would be
+         indistinguishable and Disconnect would look like it removed the wrong one. #}
+      {# Six columns in an 820px island is tight, and the resource is one unbreakable URL token — left
+         alone it widened the row until Disconnect hung past the island's edge (developer, 2026-08-22).
+         The kit wrap contains the worst case; letting the resource break keeps it from arising. #}
+      <div class="cfm-table-wrap">
+      <table class="cfm-table">
+        <thead><tr><th>Client</th><th>Resource</th><th>Access</th><th>Connected</th><th>Sign in again by</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="c in connections" :key="c.connection_id">
+            <tr>
+              {# The Client cell carries the client's NAME and nothing else. The registration suffix a
+                 client appends ("Claude Code (corpusfm-devservice-microk12)") is the server name this
+                 page told the user to register under — derived from the resource, so it restates the
+                 next column. The client-id prefix is kept on hover: it tells two registrations of the
+                 same client apart and earns no column of its own. #}
+              <td :title="'client id ' + c.client_id_prefix + '…'" x-text="clientLabel(c)"></td>
+              <td style="overflow-wrap:anywhere"><code class="cfm-mono cfm-muted" x-text="c.resource"></code></td>
+              <td class="cfm-muted" x-text="gateLabels(c.scopes)"></td>
+              <td class="cfm-muted" x-text="fmtDate(c.granted_at)"></td>
+              {# The date this connection needs OAuth sign-in again. Derived from the family's last
+                 successful issuance (authorization or silent renewal) plus the inactivity limit, capped by
+                 the absolute maximum — each successful renewal pushes it out. There is no per-request usage
+                 record behind it. Blank when there is no active refresh family; never a guessed date. #}
+              <td class="cfm-muted" x-text="c.reauthorization_due_at ? fmtDate(c.reauthorization_due_at) : '—'"></td>
+              <td><button class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="disconnect(c)">Disconnect</button></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      </div>
+    </template>
+    {# The empty state points at a TAB, not "above"/"below" — packet 1240 had to repair two such
+       positional claims, and a tab link cannot go stale the way a direction can. #}
+    <template x-if="connLoaded && !connErr && !connections.length">
+      <p class="cfm-muted">No OAuth connections yet — see
+        <a href="#oauth" @click.prevent="setTab('oauth', true)">OAuth setup</a>.</p>
+    </template>
+
+    <div class="cfm-panel-split">
+      <div class="cfm-panel-h">Manual tokens</div>
+      <template x-if="tokenErr">
+        <p class="cfm-inline-error" x-text="tokenErr"></p>
+      </template>
+      <template x-if="loaded && !tokenErr && tokens.length">
+        <table class="cfm-table">
+          <thead><tr><th>Name</th><th>ID</th><th>Created</th><th></th></tr></thead>
+          <tbody>
+            <template x-for="t in tokens" :key="t.id">
+              <tr>
+                <td x-text="t.name"></td>
+                <td><code class="cfm-mono cfm-muted" x-text="t.token_id_prefix + '…'"></code></td>
+                <td class="cfm-muted" x-text="fmtDate(t.created_at)"></td>
+                <td><button class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="del(t)">Delete</button></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </template>
+      <template x-if="loaded && !tokenErr && !tokens.length">
+        <p class="cfm-muted">No manual tokens — see
+          <a href="#tokens" @click.prevent="setTab('tokens', true)">Manual tokens</a>.</p>
+      </template>
+    </div>
+
+    <p class="cfm-muted cfm-mt-12">What the agent can do once connected is covered in
+      <a href="#" @click.prevent="$dispatch('cfm-open-docs', 'mcp')">the MCP guide</a>.</p>
+  </div>
+  </section>
+
+  {# ══ TAB 2 — OAUTH SETUP. ════════════════════════════════════════════════════ #}
+  <section id="mcp-panel-oauth" role="tabpanel" aria-labelledby="mcp-tab-oauth"
+           x-show="tab==='oauth'" x-cloak>
+  <div class="cfm-panel">
+    <div class="cfm-island-top">
+      <p class="cfm-muted">Add CORPUSfm to your client and approve it in the browser.</p>
+      <div class="cfm-island-act">{{ doc_help('mcp#oauth-sign-in-the-usual-way', 'About OAuth sign-in') }}</div>
+    </div>
+
+    <div class="cfm-mt-12">
+      {# The ONLY condition (packet 1220): a usable MCP address. There is no switch, so there is no
+         "enabled but not serving" state to explain — an address either exists or it does not. #}
+      <template x-if="statusLoaded && !servedAddress">
+        <p class="cfm-muted cfm-mb-12"><span class="cfm-badge">No MCP address</span>
+          — this server has no address for a client to reach it on, so OAuth sign-in cannot complete. An
+          admin sets one in Settings.</p>
+      </template>
+
+      {# STEPS, not prose. This block used to be one paragraph that named the address, the act of approving
+         and the consequences all at once, and left the reader to work out what to actually DO first — the
+         page is the first thing an administrator meets and it has to be followable, not merely accurate.
+         The detail it used to carry lives in the guide linked from the help icon. #}
+      {# The client picker SCOPES the instructions to one client, so the reader is never asked to work out
+         which of six config formats is theirs. It is the kit's NESTED tab variant: the page strip above
+         is the underlined one, this one is chips. #}
+      <div class="cfm-tabs cfm-tabs--sub" role="tablist" aria-label="MCP client"
+           x-show="statusLoaded && servedAddress">
+        <template x-for="s in oauthSnippets" :key="s.id">
+          <button type="button" class="cfm-tab" role="tab" :aria-selected="oauthClient === s.id"
+                  :class="oauthClient === s.id ? 'cfm-tab--on' : ''"
+                  @click="oauthClient = s.id" x-text="s.label"></button>
+        </template>
+      </div>
+
+      {# The steps exist only where there is a served address to put in them (packet 1250).
+         Without this the no-address badge above and the instructions below contradicted each
+         other. `oauth.address` is the served value from `canonical_mcp_address()`; it is not
+         derived from this request. #}
+      <template x-if="statusLoaded && servedAddress && currentOauthSnippet">
+        <ol class="cfm-muted cfm-mb-12" style="max-width:72ch; padding-left:1.25rem; line-height:1.7">
+          {# Only where the client needs the address on its own (a JSON config). For a client whose add
+             is one command, the command already carries the address and a separate copy step is a
+             third thing to copy (packet 1325 R3 — the developer's "this version seems very confusing"). #}
+          <template x-if="currentOauthSnippet.needsAddress">
+          <li><strong>Copy the MCP address.</strong>
+            <code class="cfm-mono" x-text="servedAddress"></code>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-ml-8"
+                    @click="copyText({id: 'addr', text: servedAddress})">Copy</button>
+            <span x-show="copiedId === 'addr'" class="cfm-ok cfm-ml-8">Copied</span>
+          </li>
+          </template>
+          <li class="cfm-mt-6"><strong>Add it to your client — with no token.</strong>
+            <code class="cfm-mono cfm-mt-6" style="white-space:pre-wrap; display:block; word-break:break-all"
+                  x-text="currentOauthSnippet.text"></code>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-mt-6"
+                    @click="copyText(currentOauthSnippet)">Copy</button>
+            <span x-show="copiedId === oauthClient" class="cfm-ok cfm-ml-8">Copied</span>
+            <p class="cfm-muted cfm-mt-6" x-text="currentOauthSnippet.hint"></p>
+          </li>
+          {# Step 3 is per-client because the clients genuinely differ — Codex signs in with a second
+             command rather than a prompt, and a single "approve in your browser" would be wrong for it. #}
+          <li class="cfm-mt-6"><strong>Sign in and approve.</strong>
+            <span x-text="currentOauthSnippet.approve"></span>
+          </li>
+        </ol>
+      </template>
+
+      {# R4b (packet 1325): when the box's own certificate does not cover the served host, a verifying
+         client refuses the address at transport before any OAuth step — measured on fms-dev 2026-08-23.
+         Say what the administrator must improve; decide nothing about trust. Silent when unchecked. #}
+      <p class="cfm-muted cfm-mt-6" x-show="certMismatch">
+        <span class="cfm-badge cfm-badge--warn">Certificate</span>
+        Clients verify this box's certificate, and it does not cover <code x-text="certHost"></code>
+        — it names <code x-text="certNames"></code>. Use a name it covers as the MCP address
+        (Settings → MCP), or install a certificate that covers <code x-text="certHost"></code>.</p>
+      {# Hosted connectors (R1, packet 1325): Claude.ai / Claude Desktop custom connectors and ChatGPT's
+         web connectors connect FROM the vendor's cloud — to a public address, with a non-loopback
+         callback — and this server refuses that by design. Named precisely: the LOCAL ChatGPT desktop
+         app / Codex host is supported and is the Codex tab. #}
+      <p class="cfm-muted cfm-mt-6">Not supported: hosted connectors — Claude.ai and Claude Desktop
+        <em>custom connectors</em>, and ChatGPT's web connectors — which connect from the vendor's cloud
+        and cannot complete sign-in here. Use Claude Code, or the Codex CLI / ChatGPT desktop app, instead.</p>
+      {# The fact that matters for consent: an approved client acts AS YOU. #}
+      <p class="cfm-muted">Each client you approve acts as <strong>you</strong>, with your gates, and
+        <strong>no token is copied</strong> anywhere.</p>
+    </div>
+  </div>
+  </section>
+
+  {# ══ TAB 3 — MANUAL TOKENS. ══════════════════════════════════════════════════
+     "New token" lives here with the snippets (packet 1240 D2): the order becomes open → see what the
+     config looks like → mint if you still want one, and nobody mints a credential without passing the
+     framing. Second in tab order after OAuth, which is the ranking between the two paths. #}
+  <section id="mcp-panel-tokens" role="tabpanel" aria-labelledby="mcp-tab-tokens"
+           x-show="tab==='tokens'" x-cloak>
+  <div class="cfm-panel">
+    <div class="cfm-island-top">
+      <p class="cfm-muted">For clients that can't complete a browser sign-in.</p>
+      <div class="cfm-island-act">{{ doc_help('mcp#advanced-manual-tokens', 'About manual tokens') }}</div>
+    </div>
+
+    <div class="cfm-mt-12">
+      {# The four facts `test_mcp_access_template.py` defends — authenticates as you, carries your
+         gates, keep it secret, deleting revokes — live here, in the token pane itself rather
+         than only inside the mint pop-over. #}
+      <p class="cfm-muted cfm-mb-12">A token authenticates as <strong>you</strong> and carries your
+        gates — keep it <strong>secret</strong>. Each is shown once; deleting one
+        <strong>revokes</strong> it immediately and leaves your other access untouched.</p>
+
+      {# The snippets are reachable WITHOUT minting. They used to exist only inside the pop-over, so
+         the only way to see what a token config looks like was to create a credential first. The
+         placeholder makes the shape readable; the pop-over still shows the one real value, once. #}
+      <div class="cfm-tabs cfm-tabs--sub" role="tablist" aria-label="MCP client (token)">
+        <template x-for="s in tokenSnippets" :key="s.id">
+          <button type="button" class="cfm-tab" role="tab" :aria-selected="tokenClient === s.id"
+                  :class="tokenClient === s.id ? 'cfm-tab--on' : ''"
+                  @click="tokenClient = s.id" x-text="s.label"></button>
+        </template>
+      </div>
+      <template x-if="currentTokenSnippet">
+        <div class="cfm-mb-12">
+          <code class="cfm-mono" style="white-space:pre-wrap; display:block; word-break:break-all"
+                x-text="currentTokenSnippet.text"></code>
+          <button type="button" class="cfm-btn cfm-btn--sm cfm-mt-6"
+                  @click="copyText(currentTokenSnippet)">Copy</button>
+          <span x-show="copiedId === tokenClient" class="cfm-ok cfm-ml-8">Copied</span>
+          <p class="cfm-muted cfm-mt-6" x-text="currentTokenSnippet.hint"></p>
+        </div>
+      </template>
+
+      <button class="cfm-btn" :disabled="!!(statusLoaded && !mounted)" @click="openNew()">New token</button>
+      <span x-show="err && !showNew" x-text="err" class="cfm-err cfm-ml-8"></span>
+    </div>
+  </div>
+  </section>
+
+  {# ── New-token pop-over: name → mint → per-client snippets across tabs ────── #}
+  <div class="cfm-overlay" x-show="showNew" x-cloak
+       @click.self="closeNew()" @keydown.escape.window="if (showNew) closeNew()">
+    <div class="cfm-dialog" role="dialog" aria-modal="true" style="max-width:640px">
+      <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">New MCP token</span>
+        <button type="button" class="cfm-iconbtn" @click="closeNew()" aria-label="Close" title="Close">✕</button></div>
+      <div class="cfm-dialog-body">
+
+        {# step 1 — name #}
+        <template x-if="!minted">
+          <div>
+            <div class="cfm-field-label">Name this token (which app it's for)</div>
+            <input class="cfm-input" type="text" x-model="newName" maxlength="60" placeholder="e.g. laptop-claude"
+                   @keydown.enter="mint()" style="max-width:24rem">
+            <p class="cfm-muted cfm-mt-6">A name lets you tell which app a token powers, so you can delete the right one.</p>
+            <div class="cfm-mt-12">
+              <button class="cfm-btn cfm-btn--primary" :disabled="!!busy || !newName.trim()" @click="mint()">Mint token</button>
+              <button class="cfm-btn cfm-ml-8" @click="closeNew()">Cancel</button>
+              <span x-show="err" x-text="err" class="cfm-err cfm-ml-8"></span>
+            </div>
+          </div>
+        </template>
+
+        {# step 2 — reveal once + per-client connect snippets #}
+        <template x-if="minted">
+          <div>
+            <div class="cfm-field-label">Token — copy now (shown once)</div>
+            <code class="cfm-mono" x-text="minted" style="word-break:break-all"></code>
+            <p class="cfm-muted cfm-mt-6" style="max-width:60ch">This token authenticates as
+              <strong>you</strong> and carries your gates — treat it like a password and keep it
+              <strong>secret</strong>. It is shown once. Deleting it later <strong>revokes</strong> it.</p>
+
+            <div class="cfm-field-label cfm-mt-12">Connect your client</div>
+            {# The same nested picker as the panes — one look for "which client" everywhere on the page. #}
+            <div class="cfm-tabs cfm-tabs--sub" role="tablist" aria-label="MCP client (new token)">
+              <template x-for="s in snippets" :key="s.id">
+                <button type="button" class="cfm-tab" role="tab" :aria-selected="client === s.id"
+                        :class="client === s.id ? 'cfm-tab--on' : ''"
+                        @click="client = s.id" x-text="s.label"></button>
+              </template>
+            </div>
+            <template x-if="currentSnippet">
+              <div>
+                <code class="cfm-mono" style="white-space:pre-wrap; display:block; word-break:break-all"
+                      x-text="currentSnippet.text"></code>
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-mt-6" @click="copyText(currentSnippet)">Copy</button>
+                <span x-show="copiedId === client" class="cfm-ok cfm-ml-8">Copied</span>
+                <p class="cfm-muted cfm-mt-6" x-text="currentSnippet.hint"></p>
+              </div>
+            </template>
+            <p class="cfm-muted cfm-mt-6">Restart your client after adding it.</p>
+            <div class="cfm-mt-12"><button class="cfm-btn cfm-btn--primary" @click="closeNew()">Done</button></div>
+          </div>
+        </template>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function mcpAccess() {
+  return {
+    tokens: [], loaded: false, tokenErr: '',
+    connections: [], connLoaded: false, connErr: '', disconnectErr: '',
+    oauth: { address: '' },
+    certificate: { checked: false },
+    statusLoaded: false, mounted: false, endpoint: '',
+    showNew: false, newName: '', minted: '', busy: false, err: '', client: 'cli', copiedId: '',
+    // Separate from `client` on purpose: the OAuth pane, the token pane and the token pop-over
+    // each carry their own client picker, and sharing one selection would make picking a client in
+    // one silently move the others. Their snippet ids are distinct too (`o-` / `t-` / unprefixed), so
+    // `copiedId` cannot light up "Copied" in more than one at a time.
+    oauthClient: 'o-cli',
+    tokenClient: 't-cli',
+
+    // ── Page tabs (the account.html model). ONE variable drives the strip and all three panes; the
+    // hash is the deep-link and is written with replaceState so tab clicks do not pile up in history.
+    // `access` is the landing tab — state before instructions — and an unknown hash falls back to it.
+    allowed: ['access', 'oauth', 'tokens'],
+    tab: 'access',
+    init() { this.fromHash(); this.loadStatus(); },
+    fromHash() {
+      const requested = (window.location.hash || '').slice(1);
+      this.tab = this.allowed.includes(requested) ? requested : 'access';
+    },
+    setTab(next, focus = false) {
+      if (!this.allowed.includes(next)) return;
+      this.tab = next;
+      history.replaceState(null, '', '#' + next);
+      if (focus) this.$nextTick(() => document.getElementById('mcp-tab-' + next)?.focus());
+    },
+    moveTab(delta) {
+      const at = this.allowed.indexOf(this.tab);
+      this.setTab(this.allowed[(at + delta + this.allowed.length) % this.allowed.length], true);
+    },
+    selectEdge(edge) { this.setTab(edge === 0 ? this.allowed[0] : this.allowed[this.allowed.length - 1], true); },
+
+    async loadStatus() {
+      try {
+        const r = await fetch('/api/settings/mcp-info');
+        const d = await r.json();
+        this.mounted = !!d.mounted;
+        // Prefer the browser-facing origin (always the user's real URL); a reverse proxy can report
+        // the server value as loopback. Server endpoint is the fallback.
+        this.endpoint = (window.location.origin ? window.location.origin + (window.CFM_PREFIX || '') + '/mcp' : '') || d.endpoint;
+      } catch (e) {
+        this.endpoint = window.location.origin + (window.CFM_PREFIX || '') + '/mcp';
+      }
+      this.statusLoaded = true;
+      await this.loadAccess();
+    },
+    // ONE read for both halves — OAuth connections and manual tokens (packet 1182). Each half
+    // reports its own failure, so a storage outage never renders as "you have none".
+    async loadAccess() {
+      try {
+        const r = await fetch('/api/account/mcp-connections');
+        const d = await r.json();
+        if (!d.ok) throw new Error(d.error || 'failed');
+        this.oauth = d.oauth || this.oauth;
+        this.certificate = d.certificate || { checked: false };
+        const bc = d.oauth_connections || {};
+        this.connections = bc.ok ? (bc.items || []) : [];
+        this.connErr = bc.ok ? '' : (bc.error || 'Your OAuth connections could not be read.');
+        const mt = d.manual_tokens || {};
+        this.tokens = mt.ok ? (mt.items || []) : [];
+        this.tokenErr = mt.ok ? '' : (mt.error || 'Your manual tokens could not be read.');
+      } catch (e) {
+        this.connections = []; this.tokens = [];
+        this.connErr = 'Your MCP access could not be read right now. This is not a list of none.';
+        this.tokenErr = this.connErr;
+      }
+      this.connLoaded = true; this.loaded = true;
+    },
+    // The SERVED address, and nothing else (packet 1250). This used to fall back to `endpoint`,
+    // which is the BROWSER ORIGIN — so a box with no served address rendered the honest
+    // "No MCP address … OAuth sign-in cannot complete" badge and, directly beneath it, three
+    // steps telling the reader to copy a request-derived address and sign in. The two
+    // contradicted each other in the same pane, and the address shown was one the server
+    // does not advertise: the OAuth `resource` is the CONFIGURED address, so a client
+    // configured from the browser origin fails the resource check before any sign-in. An
+    // empty value here is a real state, and the steps below are hidden for it.
+    get servedAddress() { return this.oauth.address || ''; },
+    get certMismatch() { const c = this.certificate; return !!(c && c.checked && !c.covered && this.servedAddress); },
+    get certHost() { return (this.certificate || {}).host || ''; },
+    get certNames() { return ((this.certificate || {}).names || []).join(', '); },
+    gateLabels(scopes) { return (scopes && scopes.length) ? scopes.join(', ') : 'no tools'; },
+    // The client's name without the registration suffix WHEN that suffix is exactly the server name
+    // derived from the connection's own resource — i.e. the name this page's setup steps handed out.
+    // Any other parenthetical is the client's own wording and stays.
+    clientLabel(c) {
+      const name = c.client_name || '';
+      const m = /^(.*\S)\s*\(([^()]+)\)$/.exec(name);
+      if (m && m[2].trim().toLowerCase() === this._serverName(c.resource)) return m[1];
+      return name;
+    },
+    async disconnect(c) {
+      // Name the resource as well as the client: two rows can differ ONLY by resource, and the
+      // confirmation is the last chance to see which of them is about to be revoked.
+      if (!confirm('Disconnect "' + c.client_name + '" from ' + c.resource + '?\n\nThis revokes only '
+                   + 'this OAuth connection — that client stops working immediately and has to sign '
+                   + 'in and approve again to reconnect. Your other connections and manual tokens are '
+                   + 'unaffected.')) return;
+      this.disconnectErr = '';
+      let ok = false;
+      try {
+        const r = await fetch('/api/account/mcp-connections/' + encodeURIComponent(c.connection_id),
+                              { method: 'DELETE' });
+        const d = await r.json();
+        ok = !!d.ok;
+        if (!ok) this.disconnectErr = d.error || 'Could not disconnect "' + c.client_name + '".';
+      } catch (e) { this.disconnectErr = 'Could not disconnect "' + c.client_name + '" — the request failed.'; }
+      // ONLY a successful disconnect refreshes the list. Reloading after a failed mutation would
+      // overwrite the error with the (successful) read's empty one — the failure would vanish within a
+      // frame and the still-present connection would read as "nothing happened".
+      if (ok) await this.loadAccess();
+    },
+    openNew() { this.showNew = true; this.newName = ''; this.minted = ''; this.err = ''; this.client = 'cli'; this.copiedId = ''; },
+    closeNew() { this.showNew = false; this.minted = ''; this.newName = ''; this.err = ''; },
+    async mint() {
+      if (!this.newName.trim()) return;
+      this.err = ''; this.busy = true;
+      try {
+        const r = await fetch('/api/account/mcp-tokens', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: this.newName.trim() }) });
+        const d = await r.json();
+        if (d.ok) { this.minted = d.token; await this.loadAccess(); }
+        else { this.err = d.error || 'Failed.'; }
+      } catch (e) { this.err = 'Request failed.'; }
+      this.busy = false;
+    },
+    async del(t) {
+      if (!confirm('Delete token "' + t.name + '"? Any app using it stops working immediately.')) return;
+      try {
+        await fetch('/api/account/mcp-tokens/' + encodeURIComponent(t.id), { method: 'DELETE' });
+        await this.loadAccess();
+      } catch (e) {}
+    },
+    // The client-side registration name (also the tool-namespace prefix, unique-per-server in the
+    // client). Derived from the SAME host the command connects to, so name and URL always agree and
+    // two boxes never collide. Host → safe identifier; drop the TLD label for a domain, keep every IP octet.
+    _serverName(base) {
+      let host = '';
+      try { host = new URL(base).hostname; } catch (e) { host = ''; }
+      host = host.replace(/^www\./, '');
+      const isIp = /^[0-9.]+$/.test(host);
+      let labels = host.split('.').filter(Boolean);
+      if (!isIp && labels.length >= 3) labels = labels.slice(0, -1);
+      const slug = labels.join('-').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      return slug ? `corpusfm-${slug}` : 'corpusfm';
+    },
+    // `tok` FALSY means the OAuth form: the same client config with NO Authorization header, which is
+    // exactly what makes a client discover the OAuth flow instead of presenting a bearer. Deriving both
+    // from one function is deliberate — the URL, its canonical (no-slash) form and the server name are the parts
+    // that must not drift between the two paths, and they cannot if there is one source for them.
+    // `idPrefix` exists so the SAME token snippets can be rendered in two places at once — the token
+    // pane (with a placeholder) and the mint pop-over (with the real value) — without their pickers or
+    // their "Copied" flashes colliding. `copiedId` holds one id for the whole page, so two pickers
+    // sharing ids would light up together.
+    _snippets(tok, baseOverride, idPrefix) {
+      const base = baseOverride || this.endpoint
+        || (window.location.origin + (window.CFM_PREFIX || '') + '/mcp');
+      const name = this._serverName(base);
+      const q = (id) => (idPrefix || '') + id;
+      const j = (root) => JSON.stringify(root, null, 2);
+      if (!tok) {
+        // Each entry carries its OWN step 3, because the clients genuinely differ and a single
+        // "approve in your browser" would be wrong for one of them: Codex signs in as a SEPARATE
+        // command (`codex mcp login`), verified against codex-cli 0.146.0 — `codex mcp add --help`
+        // and `codex mcp login --help`. Do not collapse these back into one instruction.
+        // Packet 1325 (R1/R3, 2026-08-23): the Claude Desktop entry is GONE — Desktop does not read
+        // remote servers from its config file; its remote path is a hosted connector that connects
+        // from Anthropic's cloud with a non-loopback callback, which this server refuses by design.
+        // `needsAddress` false = the command IS the whole config, so the separate address-copy step
+        // is not shown for it (Claude Code, Codex). The JSON clients keep it.
+        const p = (id) => 'o-' + id;
+        const jsonHint = 'Restart the client after adding it.';
+        const stale = `If the browser shows "Client ID … not found", the client reused a sign-in it `
+                    + `saved for this server before the server was reinstalled — clear it and sign in again.`;
+        return [
+          { id: p('cli'), label: 'Claude Code', needsAddress: false, hint: 'Run this in your terminal.',
+            text: `claude mcp add --transport http ${name} ${base}`,
+            approve: `Run /mcp, pick ${name}, and choose Authenticate — or, in a terminal, `
+                   + `claude mcp login ${name}. Your browser opens. ${stale} `
+                   + `(Claude Code: claude mcp logout ${name}, then sign in again.)` },
+          { id: p('codex'), label: 'Codex', needsAddress: false,
+            hint: `Run this in your terminal. It writes [mcp_servers.${name}] url = "${base}" to `
+                + `~/.codex/config.toml, which the Codex CLI, the IDE extension and the ChatGPT desktop app share.`,
+            text: `codex mcp add ${name} --url ${base}`,
+            approve: `Run codex mcp login ${name} and approve in your browser. In the ChatGPT desktop app or `
+                   + `the IDE extension choose Restart / Restart extension so CORPUSfm's tools appear. ${stale}` },
+          { id: p('cursor'), label: 'Cursor', needsAddress: true,
+            hint: `Add to ~/.cursor/mcp.json, or the project’s .cursor/mcp.json.`,
+            text: j({ mcpServers: { [name]: { url: base } } }),
+            approve: `Open Cursor Settings → MCP; the server shows Needs login — click it and approve in your browser. ${stale}` },
+          // VS Code's OWN MCP support, which is not the same thing as running Codex inside VS Code —
+          // that reads ~/.codex/config.toml and belongs on the Codex tab. Said in the hint because
+          // picking the wrong one of these two is the obvious mistake.
+          { id: p('vscode'), label: 'VS Code', needsAddress: true,
+            hint: `Add to .vscode/mcp.json (servers) — VS Code's own MCP support. ${jsonHint} `
+                + 'Running Codex inside VS Code is the Codex tab instead.',
+            text: j({ servers: { [name]: { type: 'http', url: base } } }),
+            approve: `Start the server in the MCP view; your browser opens for the sign-in. ${stale}` },
+          { id: p('raw'), label: 'Universal', needsAddress: true,
+            hint: 'Any client that takes an HTTP MCP endpoint and can do OAuth — or an agent configuring itself.',
+            text: `URL:        ${base}\nTransport:  HTTP (streamable)\n`
+                + `Auth:       OAuth 2.1, discovered from the 401 (WWW-Authenticate → resource_metadata); configure no token\n`
+                + `Client:     public, PKCE S256, registered at ${base}register (Dynamic Client Registration)\n`
+                + `Redirect:   a loopback URI only — http://127.0.0.1, [::1] or localhost, any port; no hosted callback\n`
+                + `Grants:     authorization_code + refresh_token; scopes = your CORPUSfm gates\n`
+                + `Re-connect: clear any sign-in this client saved for this server earlier, then connect again`,
+            approve: 'However your client starts an OAuth sign-in — approve it in the browser.' },
+        ];
+      }
+      const bearer = 'Bearer ' + tok;
+      return [
+        { id: q('cli'), label: 'Claude Code', hint: 'Run this in your terminal.',
+          text: `claude mcp add --transport http ${name} ${base} --header "Authorization: ${bearer}"` },
+        { id: q('json'), label: 'Cursor', hint: 'Add to ~/.cursor/mcp.json, or the project’s .cursor/mcp.json (mcpServers).',
+          text: j({ mcpServers: { [name]: { type: 'http', url: base, headers: { Authorization: bearer } } } }) },
+        { id: q('vscode'), label: 'VS Code', hint: 'Add to .vscode/mcp.json (servers).',
+          text: j({ servers: { [name]: { type: 'http', url: base, headers: { Authorization: bearer } } } }) },
+        { id: q('raw'), label: 'Other', hint: 'Any client that takes an HTTP MCP endpoint with a bearer header.',
+          text: `URL:       ${base}\nTransport: HTTP (streamable)\nHeader:    Authorization: ${bearer}` },
+      ];
+    },
+    get snippets() { return this._snippets(this.minted || '<your token>'); },
+    // The token pane. ALWAYS the placeholder, never `minted` — the real token is revealed exactly once,
+    // in the pop-over (packet 1240 C4), and this pane is visible to anyone who opens it at any time.
+    get tokenSnippets() { return this._snippets('<your token>', '', 't-'); },
+    get currentTokenSnippet() {
+      return this.tokenSnippets.find(s => s.id === this.tokenClient) || this.tokenSnippets[0];
+    },
+    // The OAuth snippet MUST use the same value step 1 shows, and this is not cosmetic consistency.
+    // The advertised OAuth `resource` IS the configured MCP address, and the reference client compares
+    // it against the origin it connected on by scheme and netloc EXACTLY — so a command pointing at the
+    // browser's own origin (what `endpoint` holds) produces a client that fails the resource check
+    // before any sign-in, on every box where the two differ. Caught by LOOKING at the rendered page:
+    // step 1 read `https://192.168.1.150/corpusfm/mcp/` while step 2 read `http://127.0.0.1:8765/mcp/`.
+    // The token snippets deliberately keep `endpoint` — a bearer works on whatever origin you reached,
+    // and the origin you are browsing is the one most likely to be reachable from where you are.
+    // Empty without a served address, so `_snippets`' browser-origin fallback cannot be reached
+    // from the OAuth half at all — hiding the steps was not enough on its own, because the
+    // getter still computed a command nobody should copy. The TOKEN half keeps that fallback
+    // deliberately: a bearer works on whatever origin you reached.
+    get oauthSnippets() { return this.servedAddress ? this._snippets('', this.servedAddress) : []; },
+    get currentOauthSnippet() {
+      return this.oauthSnippets.find(s => s.id === this.oauthClient) || this.oauthSnippets[0];
+    },
+    get currentSnippet() { return this.snippets.find(s => s.id === this.client) || this.snippets[0]; },
+    async copyText(s) {
+      try { await navigator.clipboard.writeText(s.text); this.copiedId = s.id;
+        setTimeout(() => { if (this.copiedId === s.id) this.copiedId = ''; }, 1500); } catch (e) {}
+    },
+    // Minute precision: these are grant dates and deadlines read in a narrow column, and seconds only
+    // cost width (the screenshot that prompted it wrapped "PM" onto a line of its own).
+    fmtDate(iso) {
+      try { return iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : ''; }
+      catch (e) { return iso || ''; }
+    },
+  };
+}
+</script>
+{% endblock %}

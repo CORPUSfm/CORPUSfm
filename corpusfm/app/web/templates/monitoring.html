@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Monitoring — CORPUSfm{% endblock %}
+
+{# Monitoring — re-platform review surface (bespoke kit; no Shoelace). A glanceable
+   health view: current alerts, job health, alert history. See plan surface 15. #}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+<div x-data="monitorPage()">
+
+  <div class="cfm-page-hdr">
+    <h1>Monitoring</h1>
+    <div class="cfm-hdr-actions">
+      {{ doc_help('monitoring', 'About monitoring') }}
+      <button type="button" class="cfm-btn cfm-btn--sm" @click="init()">Refresh</button>
+    </div>
+  </div>
+
+  {# ── Scheduler status (packet 1019) ──────────────────────────────────────── #}
+  <p class="cfm-mb-12" x-show="schedulerStatus" x-cloak>
+    <span class="cfm-badge" :class="schedulerStatus.includes('not running') ? 'cfm-badge--warn' : 'cfm-badge--ok'"
+          x-text="schedulerStatus"></span>
+  </p>
+
+  {# ── Current Alerts ──────────────────────────────────────────────────────── #}
+  <h2 class="cfm-section-h">Current Alerts</h2>
+  <div class="cfm-panel">
+    <template x-if="activeAlerts.length === 0">
+      <p class="cfm-badge cfm-badge--ok">All clear — no active alerts.</p>
+    </template>
+    <template x-for="a in activeAlerts" :key="a.condition + a.job_name">
+      <div class="cfm-alert-row">
+        <span class="cfm-badge" :class="a.severity === 'error' ? 'cfm-badge--broken' : 'cfm-badge--warn'">●</span>
+        <span class="cfm-spacer">
+          <strong x-text="a.condition"></strong>
+          <span class="cfm-muted" x-show="a.job_name" x-text="' ' + a.job_name"></span>
+          <span class="cfm-muted" x-text="' — ' + a.message"></span>
+        </span>
+        <button type="button" class="cfm-iconbtn" @click="suppress(a)"
+                :title="`Acknowledge (suppress for ${suppressHours}h)`" aria-label="Acknowledge">✓</button>
+      </div>
+    </template>
+  </div>
+
+  {# ── Job Health ──────────────────────────────────────────────────────────── #}
+  <h2 class="cfm-section-h">Job Health</h2>
+  <template x-if="jobHealth.length === 0">
+    <p class="cfm-list-empty">No jobs configured.</p>
+  </template>
+  <template x-if="jobHealth.length > 0">
+    <div class="cfm-panel cfm-table-wrap">
+      <table class="cfm-table">
+        <thead><tr><th>Job</th><th>Source</th><th>Schedule</th><th>Last Run</th><th>Status</th></tr></thead>
+        <tbody>
+          <template x-for="r in jobHealth" :key="r.name">
+            <tr>
+              <td x-text="r.name"></td>
+              <td x-text="r.source_type"></td>
+              <td x-text="r.schedule"></td>
+              <td x-text="r.last_run"></td>
+              <td><span class="cfm-badge"
+                        :class="r.status.includes('overdue') ? 'cfm-badge--warn' : (r.status.includes('ok') ? 'cfm-badge--ok' : 'cfm-badge--muted')"
+                        x-text="r.status"></span></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </template>
+
+  {# ── Alert History ───────────────────────────────────────────────────────── #}
+  <h2 class="cfm-section-h">Alert History</h2>
+  <template x-if="alertHistory.length === 0">
+    <p class="cfm-muted">No alerts recorded yet.</p>
+  </template>
+  <template x-if="alertHistory.length > 0">
+    <div class="cfm-panel cfm-table-wrap">
+      <table class="cfm-table">
+        <thead><tr><th>Time</th><th>Severity</th><th>Condition</th><th>Job</th><th>Message</th></tr></thead>
+        <tbody>
+          <template x-for="(a, i) in alertHistory" :key="i">
+            <tr>
+              <td x-text="a.ts"></td>
+              <td><span class="cfm-badge" :class="a.severity === 'error' ? 'cfm-badge--broken' : 'cfm-badge--warn'" x-text="a.severity"></span></td>
+              <td x-text="a.condition"></td>
+              <td x-text="a.job_name"></td>
+              <td x-text="a.message"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </template>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function monitorPage() {
+  return {
+    activeAlerts: [], jobHealth: [], alertHistory: [], suppressHours: 24, schedulerStatus: '',
+    async init() { await Promise.all([this.loadStatus(), this.loadHealth(), this.loadHistory()]); },
+    async loadStatus()  { try { const r = await fetch('/api/monitor/status');     const d = await r.json(); this.activeAlerts = d.active_alerts || []; this.schedulerStatus = d.scheduler_status || ''; } catch (_) {} },
+    async loadHealth()  { try { const r = await fetch('/api/monitor/job-health'); const d = await r.json(); this.jobHealth    = d.rows || []; } catch (_) {} },
+    async loadHistory() { try { const r = await fetch('/api/monitor/alerts');     const d = await r.json(); this.alertHistory = d.alerts || []; } catch (_) {} },
+    async suppress(alert) {
+      try {
+        await fetch('/api/monitor/suppress', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ condition: alert.condition, job_name: alert.job_name }),
+        });
+        await this.loadStatus();
+      } catch (_) {}
+    },
+  };
+}
+</script>
+{% endblock %}

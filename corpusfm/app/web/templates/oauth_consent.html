@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CORPUSfm — Connect an MCP client</title>
+  <link rel="stylesheet" href="{{ url_prefix }}/static/style.css">
+  <link rel="stylesheet" href="{{ url_prefix }}/static/kit.css">
+  <script>
+    (function () {
+      if (localStorage.getItem('fmc_theme') === 'light') document.documentElement.dataset.theme = 'light';
+    })();
+  </script>
+</head>
+<body class="login-body">
+  <img class="login-wordmark wm-dark"  src="{{ url_prefix }}/static/corpusfm-wordmark-darkmode.svg"  alt="CORPUSfm">
+  <img class="login-wordmark wm-light" src="{{ url_prefix }}/static/corpusfm-wordmark-lightmode.svg" alt="CORPUSfm">
+
+  <div class="login-form">
+    <h1 class="login-label" style="font-size:1.15rem;margin-bottom:.5rem;">Connect an MCP client</h1>
+    <p class="caption">
+      An MCP client{% if client_name %} (&ldquo;{{ client_name }}&rdquo;){% endif %}
+      is asking to connect to
+      {% if box_address %}the CORPUSfm at <code>{{ box_address }}</code>{% else %}CORPUSfm{% endif %}
+      as <strong>{{ username }}</strong>.
+    </p>
+    {# Only when a saved address has not taken effect yet. Naming the served one and staying silent about
+       the other would hide a real discrepancy from the one person who is about to act on it. #}
+    {% if box_address_pending %}
+    {# Spaced away from the claim above it: unspaced, the caveat read as a continuation of the sentence
+       that names the box, and the two facts ran together for the one person who has to act on both. #}
+    <p class="caption" style="margin-top:.6rem;"><em>A new address (<code>{{ box_address_pending }}</code>) is saved but not yet
+      in use — it takes effect when CORPUSfm restarts, and this connection will need approving again
+      then.</em></p>
+    {% endif %}
+
+    <p class="caption" style="margin-top:1rem;">If you approve, this client can use the MCP tools your
+      account is allowed to use:</p>
+    {% if gates %}
+    <ul class="caption" style="margin:.25rem 0 0 1.1rem;">
+      {% for g in gates %}<li><code>{{ g }}</code></li>{% endfor %}
+    </ul>
+    {% else %}
+    <p class="caption"><em>Your account currently has no MCP tool access. Approving grants nothing until
+      an administrator assigns gates.</em></p>
+    {% endif %}
+    <p class="caption" style="margin-top:.75rem;">Access always follows your account's current
+      permissions — if they change, so does this client's access.</p>
+
+    <form method="post" action="{{ url_prefix }}/oauth/consent" style="margin-top:1.25rem;">
+      <input type="hidden" name="txn" value="{{ txn }}">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div style="display:flex;gap:.6rem;">
+        <button type="submit" name="decision" value="approve"
+                class="cfm-btn cfm-btn--primary cfm-btn--lg login-btn" style="flex:1;">Approve</button>
+        <button type="submit" name="decision" value="deny"
+                class="cfm-btn cfm-btn--lg login-btn" style="flex:1;">Deny</button>
+      </div>
+    </form>
+  </div>
+</body>
+</html>

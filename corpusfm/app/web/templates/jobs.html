@@ -1,0 +1,1039 @@
+{% extends "base.html" %}
+{% block title %}Jobs — CORPUSfm{% endblock %}
+
+{# Jobs — re-platform (bespoke kit; no Shoelace). The page models itself on FILES:
+   every hosted file is a health-coded identity card (icon color = aggregate health),
+   click → a tabbed parent file pop-over (File · Jobs), and Add/Edit a job opens a
+   STACKED child job-editor pop-over (leaving the child returns to the parent — the
+   allowed parent/child pattern). Packet 085 U3b: credentials, verification and artifact
+   tags are per-JOB (set in the job editor) — the file card shows only a summary across
+   its jobs; there is no per-file credential/verify/tags model any more. #}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+<div x-data="jobsPage()">
+
+  <div class="cfm-page-hdr">
+    <h1>Jobs</h1>
+    <div class="cfm-hdr-actions">
+      {# Server context (packet 1015): Local (co-located) + each registered remote server. Selecting
+         one repopulates the file gallery with that server's hosted files. Reads the page's reactive
+         state directly (the server list loads async, after this renders) — not the snapshot cfmDropdown. #}
+      <div class="cfm-dd" @click.outside="serverMenuOpen = false" title="Which FileMaker server to show files from">
+        <button type="button" class="cfm-dd-trigger" @click="serverMenuOpen = !serverMenuOpen" aria-label="Server">
+          <span x-text="serverLabel"></span>
+          <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        <div class="cfm-dd-menu" x-show="serverMenuOpen" x-cloak>
+          <template x-for="o in serverHeaderOpts" :key="o.value">
+            <button type="button" class="cfm-dd-opt" :class="o.value === serverRef ? 'cfm-dd-opt--on' : ''" @click="serverMenuOpen = false; pickServer(o.value)" x-text="o.label"></button>
+          </template>
+        </div>
+      </div>
+      {{ doc_help('jobs', 'About Jobs & automation') }}
+      <button type="button" class="cfm-btn cfm-btn--sm" @click="refresh()" :disabled="!!loading">Refresh</button>
+    </div>
+  </div>
+
+  <p class="cfm-muted cfm-mb-12">
+    <span x-show="!isRemote">Every file hosted on this FileMaker Server.</span><span x-show="isRemote" x-text="'Files hosted on ' + serverLabel + ' (remote).'"></span>
+    To automate one: add a <strong>job</strong> and
+    give it a FileMaker account credential (each job carries its own). The icon color is the file's health —
+    <span class="cfm-badge cfm-badge--ok">automated</span> ·
+    <span class="cfm-badge cfm-badge--warn">automatable</span> ·
+    <span class="cfm-badge cfm-badge--broken">broken</span> ·
+    <span class="cfm-badge cfm-badge--idle">missing</span>.
+  </p>
+
+  <template x-if="files.length > 0">
+    <div class="cfm-filterbar">
+      <input type="text" class="cfm-input cfm-spacer" data-kbd-search x-model="fileSearch" placeholder="Search files…">
+    </div>
+  </template>
+
+  <template x-if="files.length === 0 && !loading">
+    <p class="cfm-list-empty" x-text="emptyMessage"></p>
+  </template>
+  <template x-if="files.length > 0 && visibleFiles.length === 0">
+    <p class="cfm-list-empty">No files match the filter.</p>
+  </template>
+
+  <template x-if="visibleFiles.length > 0">
+    <div class="cfm-grid" data-kbd-grid>
+      <template x-for="f in visibleFiles" :key="f.name">
+        <div class="cfm-card" @click="openDetail(f)" :title="'Open ' + f.name">
+          <div class="cfm-card-icon" :class="'cfm-card-icon--' + health(f)">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <ellipse cx="10" cy="5" rx="6.5" ry="2.4"/>
+              <path d="M3.5 5v10c0 1.33 2.91 2.4 6.5 2.4s6.5-1.07 6.5-2.4V5"/>
+              <path d="M3.5 10c0 1.33 2.91 2.4 6.5 2.4s6.5-1.07 6.5-2.4"/>
+            </svg>
+          </div>
+          <div class="cfm-card-name" x-text="f.name" :title="f.name"></div>
+          {# Automated → aggregate job-feature tags (deduped union across the file's jobs,
+             passive/non-linking); not automated → readiness text. #}
+          <template x-if="f.job_count">
+            <div class="cfm-card-tags">
+              <template x-for="tg in (f.job_tags || [])" :key="tg.label">
+                <span class="cfm-badge" :class="'cfm-badge--' + tg.kind" x-text="tg.label"></span>
+              </template>
+            </div>
+          </template>
+          <template x-if="!f.job_count">
+            <div class="cfm-card-sub" x-text="f.missing ? 'Missing' : 'Not automated'"></div>
+          </template>
+          <div class="cfm-card-sub" x-show="f.job_count && (f.last_run || f.next_run)">
+            <span x-show="f.last_run" x-text="'last ' + f.last_run + (f.last_status ? (f.last_status === 'ok' ? ' ✓' : ' ✗') : '')"></span>
+            <span x-show="f.next_run" x-text="(f.last_run ? ' · ' : '') + 'next ' + f.next_run"></span>
+          </div>
+          <div class="cfm-card-foot">
+            <template x-if="fileRunning(f)"><span class="cfm-badge cfm-badge--ok">● Running</span></template>
+            <span class="cfm-badge" :class="'cfm-badge--' + health(f)" x-text="healthWord(f)"></span>
+            <template x-if="f.job_count && f.has_credential"><span class="cfm-badge cfm-badge--muted">cred ✓</span></template>
+            <template x-if="f.needs_credential"><span class="cfm-badge cfm-badge--warn">needs cred</span></template>
+            <template x-if="f.is_self"><span class="cfm-badge cfm-badge--muted">storage DB</span></template>
+          </div>
+        </div>
+      </template>
+    </div>
+  </template>
+
+  {# ── Parent file pop-over (overlay primitive; tabbed) ─────────────────────── #}
+  <div class="cfm-overlay" x-show="detail" x-cloak
+       @click.self="if (!jobForm) closeDetail()"
+       @keydown.escape.window="if (!jobForm) closeDetail()"
+       x-effect="detail ? $nextTick(() => { _trap = window.cfmFocusTrap($refs.fileDlg) }) : (_trap && _trap())">
+    <div class="cfm-dialog cfm-dialog--wide cfm-dialog--tabbed" x-ref="fileDlg" role="dialog" aria-modal="true">
+      <template x-if="detail">
+        <div class="cfm-dialog-contents">
+          <div class="cfm-dialog-hdr">
+            <span class="cfm-dialog-title" x-text="detail.name"></span>
+            {{ doc_help('jobs#the-file-centric-model', 'About files & automation') }}
+            <button type="button" class="cfm-iconbtn" @click="closeDetail()" aria-label="Close" title="Close">✕</button>
+          </div>
+
+          <div class="cfm-dialog-body">
+            <div class="cfm-tabs">
+              <button type="button" class="cfm-tab" :class="detailTab === 'jobs' ? 'cfm-tab--on' : ''" @click="detailTab = 'jobs'">
+                Jobs<span class="cfm-tab-badge" x-show="jobs.length" x-text="jobs.length"></span>
+              </button>
+              <button type="button" class="cfm-tab" :class="detailTab === 'file' ? 'cfm-tab--on' : ''" @click="detailTab = 'file'">File</button>
+            </div>
+
+            {# ── Jobs tab ──────────────────────────────────────────────────── #}
+            <div x-show="detailTab === 'jobs'">
+              <template x-if="jobs.length === 0">
+                <p class="cfm-list-empty">No jobs yet. Add one to pull this file's schema on a schedule, a webhook, or on demand.</p>
+              </template>
+
+              {# Each job is its own world (packet 1143): every action here scopes to THIS job's
+                 uuid. The card is not a click target — Edit is the only way into the record. #}
+              <template x-for="j in jobs" :key="j.name">
+                <div class="cfm-listcard cfm-listcard--acts cfm-listcard--stack"
+                     :class="'cfm-listcard--' + (j.last_status === 'error' ? 'broken' : (j.last_run ? 'ok' : 'idle'))">
+                  <span class="cfm-lc-ident">
+                    <span class="cfm-lc-name" x-text="j.name"></span>
+                    <span class="cfm-lc-meta">
+                      <span x-text="j.trigger_summary"></span>
+                      {# packet 1185: an old schedule the current model cannot express has stopped
+                         running, so the card has to say so — an inert job with no explanation is a
+                         silent failure. #}
+                      <template x-if="j.schedule_needs_update">
+                        <span class="cfm-badge cfm-badge--warn">Schedule needs updating</span>
+                      </template>
+                      <template x-if="j.has_credential"><span class="cfm-badge cfm-badge--muted">cred ✓</span></template>
+                      <template x-if="!j.has_credential"><span class="cfm-badge cfm-badge--warn">needs cred</span></template>
+                      <template x-if="j.verified"><span class="cfm-badge cfm-badge--ok">verified</span></template>
+                      <template x-if="j.running"><span class="cfm-badge cfm-badge--ok">● Running</span></template>
+                      <template x-if="!j.running && j.last_run">
+                        <span class="cfm-badge" :class="j.last_status === 'error' ? 'cfm-badge--broken' : 'cfm-badge--ok'"
+                              x-text="(j.last_status || '') + ' · ' + j.last_run"></span>
+                      </template>
+                    </span>
+                  </span>
+                  <span class="cfm-lc-actions">
+                    <button type="button" class="cfm-btn cfm-btn--sm" title="Edit this job"
+                            @click="editJob(j)">Edit</button>
+                    <button type="button" class="cfm-btn cfm-btn--sm"
+                            :disabled="!!(j.running || runningJob[j.name] || $store.ready.blocked(2))"
+                            :title="$store.ready.blocked(2) ? 'Running a job needs FileMaker Server apply prerequisites (PKI / tool / helper)' : 'Run this job now'"
+                            @click="runNow(j)">Now</button>
+                    <button type="button" class="cfm-btn cfm-btn--sm" title="This job's run history"
+                            @click="goRuns(j)">Runs</button>
+                    <button type="button" class="cfm-btn cfm-btn--sm" title="Artifacts produced by this job"
+                            @click="goArtifacts(j)">A-facts</button>
+                  </span>
+                </div>
+              </template>
+
+              <div class="cfm-filterbar cfm-filterbar--tight">
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary"
+                        @click="startAddJob()" title="Add a job">＋ Add job</button>
+              </div>
+            </div>
+
+            {# ── File tab ──────────────────────────────────────────────────── #}
+            <div x-show="detailTab === 'file'">
+              <p class="cfm-muted cfm-mb-12">
+                Credentials and verification are now set <strong>per job</strong> — open a job in the
+                <button type="button" class="cfm-btn cfm-btn--text" @click="detailTab = 'jobs'">Jobs tab</button>
+                to give it a FileMaker account and Verify it. Artifact tags are set on the job too.
+              </p>
+              <div class="cfm-field">
+                <span class="cfm-field-label">Summary</span>
+                <div class="cfm-filterbar cfm-filterbar--tight">
+                  <span class="cfm-badge cfm-badge--muted" x-text="(detail.job_count || 0) + ' job' + ((detail.job_count === 1) ? '' : 's')"></span>
+                  <template x-if="detail.needs_credential"><span class="cfm-badge cfm-badge--warn">needs credentials</span></template>
+                  <template x-if="detail.all_verified"><span class="cfm-badge cfm-badge--ok">all verified</span></template>
+                  <template x-if="detail.is_self">
+                    <span class="cfm-badge cfm-badge--muted">storage DB — pulls allowed, patch tools won't touch it</span>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="cfm-dialog-ftr">
+            {# No file-scoped controls here (packet 1143). A file is not a world: many jobs can
+               target one file, and artifacts that merely share its NAME belong to no job at all.
+               Job-scoped actions live on each job row; job-less artifacts are the Artifacts
+               page's business. Do not relocate these — that rebuilds the wrong model. #}
+            {# Orphaned-job cleanup — a missing file keeps its (gray) card + jobs; offer a manual wipe. #}
+            <template x-if="detail.missing && jobs.length && !confirmOrphanWipe">
+              <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="confirmOrphanWipe = true">Remove jobs</button>
+            </template>
+            <template x-if="confirmOrphanWipe">
+              <span class="cfm-confirm">
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger"
+                        :disabled="!!orphanWipeBusy" @click="wipeOrphanJobs()">Delete all jobs?</button>
+                <button type="button" class="cfm-btn cfm-btn--sm"
+                        :disabled="!!orphanWipeBusy" @click="confirmOrphanWipe = false">Cancel</button>
+              </span>
+            </template>
+            <span class="cfm-spacer"></span>
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="closeDetail()">Close</button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  {# ── Child job-editor pop-over (stacks above the file pop-over) ───────────── #}
+  <div class="cfm-overlay cfm-overlay--stack" x-show="jobForm" x-cloak
+       @click.self="closeJobForm()" @keydown.escape.window="if (jobForm) closeJobForm()"
+       x-effect="jobForm ? $nextTick(() => { _jobTrap = window.cfmFocusTrap($refs.jobDlg) }) : (_jobTrap && _jobTrap())">
+    <div class="cfm-dialog" x-ref="jobDlg" role="dialog" aria-modal="true">
+      <template x-if="jobForm">
+        <div class="cfm-dialog-contents">
+          <div class="cfm-dialog-hdr">
+            <span class="cfm-dialog-title" x-text="jobForm.is_new ? 'New job' : ('Edit · ' + jobForm.name)"></span>
+            {{ doc_help('jobs#what-a-job-carries', 'About job settings') }}
+            <button type="button" class="cfm-iconbtn" @click="closeJobForm()" aria-label="Cancel" title="Cancel">✕</button>
+          </div>
+
+          <div class="cfm-dialog-body">
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="job-name">Job name</label>
+              <input id="job-name" type="text" class="cfm-input" x-model="jobForm.name" :disabled="!jobForm.is_new"
+                     placeholder="e.g. nightly-index">
+            </div>
+
+            <div class="cfm-field">
+              <span class="cfm-field-label">Method</span>
+              <div class="cfm-dd" x-data="cfmDropdown({ value: jobForm.script, options: methodOpts, onChange(v){ jobForm.script = v } })"
+                   @click.outside="close()">
+                <button type="button" class="cfm-dd-trigger" @click="toggle()" aria-label="Export method">
+                  <span x-text="label"></span>
+                  <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+                </button>
+                <div class="cfm-dd-menu" x-show="open" x-cloak>
+                  <template x-for="o in options" :key="o.value">
+                    <button type="button" class="cfm-dd-opt" :class="isOn(o.value) ? 'cfm-dd-opt--on' : ''" @click="pick(o.value)" x-text="o.label"></button>
+                  </template>
+                </div>
+              </div>
+              {# Remote only. A local job has no From/To — it is one machine, so there is nothing to
+                 state, and where it runs is already answered by the selection above. #}
+              <p class="cfm-field-hint" x-show="serverRef !== 'local'">
+                <strong>From</strong> <span x-text="serverLabel"></span>
+                <span aria-hidden="true">→</span>
+                <strong>To</strong> <span x-text="serverCallback || callbackPlaceholder"></span>
+              </p>
+            </div>
+
+            {# SaveToFilePath → the path FM writes the export to (readable by CORPUSfm; verifiable only for local). #}
+            <div class="cfm-field" x-show="jobForm.script === SAVE_TO_FILE_PATH">
+              <label class="cfm-field-label" for="job-filepath">File path</label>
+              <input id="job-filepath" type="text" class="cfm-input" x-model="jobForm.file_path"
+                     placeholder="/path/CORPUSfm can read (co-located disk or shared mount)">
+            </div>
+
+            <div class="cfm-field">
+              <span class="cfm-field-label">Trigger</span>
+              {# Switching to One time / Recurring must fetch the preview, or the fields appear with
+                 no sentence and no next-run until something else happens to touch them. #}
+              {# `refreshPreview()` resolves up the Alpine scope chain exactly as `jobForm` beside it
+                 does. Without it, switching to One time / Recurring shows the fields with no
+                 sentence and no next-run until something else happens to touch them. #}
+              <div class="cfm-dd" x-data="cfmDropdown({ value: jobForm.trigger_type, options: TRIGGER_OPTS, onChange(v){ jobForm.trigger_type = v; refreshPreview() } })"
+                   @click.outside="close()">
+                <button type="button" class="cfm-dd-trigger" @click="toggle()">
+                  <span x-text="label"></span>
+                  <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+                </button>
+                <div class="cfm-dd-menu" x-show="open" x-cloak>
+                  <template x-for="o in options" :key="o.value">
+                    <button type="button" class="cfm-dd-opt" :class="isOn(o.value) ? 'cfm-dd-opt--on' : ''" @click="pick(o.value)" x-text="o.label"></button>
+                  </template>
+                </div>
+              </div>
+            </div>
+
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="job-account">FileMaker account (OData)</label>
+              <input id="job-account" type="text" class="cfm-input" x-model="jobForm.account"
+                     placeholder="account with fmodata + script access">
+            </div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="job-password">Password</label>
+              <input id="job-password" type="password" class="cfm-input" x-model="jobForm.password"
+                     :placeholder="jobForm.has_credential ? '•••••• (stored — enter to replace)' : 'password'">
+            </div>
+
+            <template x-if="!jobForm.is_new && jobForm.script === SAVE_TO_DOCS">
+              <div class="cfm-field">
+                <span class="cfm-field-label">Verification</span>
+                <div class="cfm-filterbar cfm-filterbar--tight">
+                  <span class="cfm-badge" :class="jobForm.verified ? 'cfm-badge--ok' : 'cfm-badge--idle'"
+                        x-text="jobForm.verified ? 'Verified' : (jobForm.verify_reason ? (FILE_READINESS_REASONS[jobForm.verify_reason] || jobForm.verify_reason) : 'Unverified')"></span>
+                  <button type="button" class="cfm-btn cfm-btn--sm" @click="verifyJob(jobForm)" :disabled="!!verifyingJob">Verify</button>
+                </div>
+              </div>
+            </template>
+
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="job-tags">Artifact tags (comma-separated)</label>
+              <input id="job-tags" type="text" class="cfm-input" x-model="jobForm.tags_text" placeholder="e.g. clientX, production">
+            </div>
+
+            {# A schedule is which days and what time — never a cron expression. Seven toggles and a
+               time, on one line, part of the form rather than a box inside it (packet 1217). All
+               seven slots are always on screen, so a single letter is enough to identify each day by
+               position; the jobs LIST spells them out, because a row drops the days you did not
+               pick and "S, T, T, S" cannot be read back. #}
+            <template x-if="jobForm.trigger_type === 'schedule'">
+              <div class="cfm-mt-14">
+                {# The server's clock, because that is the one the schedule means, and it is the one
+                   fact here the buttons cannot tell you. The reader's own clock is NOT mirrored —
+                   they already have one (developer, 2026-07-28). #}
+                <div class="cfm-muted cfm-mb-12">
+                  <span x-show="!clock.fallback">Server time now: <strong x-text="clock.now_text"></strong>
+                    <span x-text="clock.zone"></span></span>
+                  <span x-show="clock.fallback">Server time zone could not be determined; schedules
+                    are using UTC.</span>
+                </div>
+
+                {# The row needs its own bottom gap: without it the NEXT field's label butts
+                   straight against the day buttons and reads as belonging to them. #}
+                <div class="cfm-row cfm-gap-6 cfm-mb-16">
+                  <div>
+                    <label class="cfm-field-label">Days (server time)</label>
+                    <div class="cfm-row cfm-gap-6">
+                      <template x-for="d in WEEKDAY_OPTS" :key="d.value">
+                        <button type="button" class="cfm-btn cfm-btn--sm cfm-day"
+                                :class="jobForm.weekdays.includes(d.value) ? 'cfm-btn--primary' : ''"
+                                :aria-pressed="jobForm.weekdays.includes(d.value) ? 'true' : 'false'"
+                                :aria-label="d.full" :title="d.full"
+                                @click="toggleWeekday(d.value)" x-text="d.letter"></button>
+                      </template>
+                    </div>
+                  </div>
+                  <div>
+                    <label class="cfm-field-label">Time (server time)</label>
+                    <div class="cfm-row cfm-gap-6">
+                      <div class="cfm-dd" x-data="cfmDropdown({ value: schedHour, options: HOUR_OPTS, onChange(v){ setSchedHour(v) } })"
+                           @click.outside="close()">
+                        <button type="button" class="cfm-dd-trigger" @click="toggle()" aria-label="Hour">
+                          <span x-text="label"></span>
+                          <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+                        </button>
+                        <div class="cfm-dd-menu cfm-dd-menu--scroll" x-show="open" x-cloak>
+                          <template x-for="o in options" :key="o.value">
+                            <button type="button" class="cfm-dd-opt" :class="isOn(o.value) ? 'cfm-dd-opt--on' : ''" @click="pick(o.value)" x-text="o.label"></button>
+                          </template>
+                        </div>
+                      </div>
+                      <div class="cfm-dd" x-data="cfmDropdown({ value: schedMinute, options: MINUTE_OPTS, onChange(v){ setSchedMinute(v) } })"
+                           @click.outside="close()">
+                        <button type="button" class="cfm-dd-trigger" @click="toggle()" aria-label="Minute">
+                          <span x-text="label"></span>
+                          <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+                        </button>
+                        <div class="cfm-dd-menu cfm-dd-menu--scroll" x-show="open" x-cloak>
+                          <template x-for="o in options" :key="o.value">
+                            <button type="button" class="cfm-dd-opt" :class="isOn(o.value) ? 'cfm-dd-opt--on' : ''" @click="pick(o.value)" x-text="o.label"></button>
+                          </template>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <p class="cfm-err cfm-mt-6" x-show="preview.errors.length" x-text="preview.errors.join('; ')"></p>
+                <p class="cfm-err cfm-mt-6" x-show="jobForm.legacy_cron">
+                  This job's old schedule (<span x-text="jobForm.legacy_cron"></span>) cannot be
+                  expressed here, so it is not running. Choose a new one to replace it.
+                </p>
+              </div>
+            </template>
+
+            {# packet 1154: bound on the export (the acquire step is one blocking call with no progress
+               signal, so this is a hard limit). Minutes; blank = the default (10 min). #}
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="job-export-timeout">Export timeout (minutes)</label>
+              <input id="job-export-timeout" type="number" min="1" step="1" class="cfm-input"
+                     x-model="jobForm.export_timeout_min" placeholder="default (10 min)">
+            </div>
+
+            {# packet 1153: each AI switch renders only when its capability is configured. #}
+            {% if index_capable %}
+            <div class="cfm-field">
+              <div class="cfm-switch" :class="jobForm.index_on_ingest ? 'cfm-switch--on' : ''" @click="jobForm.index_on_ingest = !jobForm.index_on_ingest">
+                <span class="cfm-switch-track"></span><span>Index for semantic search</span>
+              </div>
+            </div>
+            {% endif %}
+            {% if summarize_capable %}
+            <div class="cfm-field">
+              <div class="cfm-switch" :class="jobForm.summarize_on_ingest ? 'cfm-switch--on' : ''" @click="jobForm.summarize_on_ingest = !jobForm.summarize_on_ingest">
+                <span class="cfm-switch-track"></span><span>Summarize with AI</span>
+              </div>
+            </div>
+            {% endif %}
+            <div class="cfm-field">
+              <div class="cfm-switch" :class="jobForm.enable_artifact_limit ? 'cfm-switch--on' : ''" @click="jobForm.enable_artifact_limit = !jobForm.enable_artifact_limit">
+                <span class="cfm-switch-track"></span><span>Keep only the latest N artifacts</span>
+              </div>
+            </div>
+            <div class="cfm-field" x-show="jobForm.enable_artifact_limit">
+              <label class="cfm-field-label" for="job-maxn">Max artifacts</label>
+              <input id="job-maxn" type="number" class="cfm-input" x-model="jobForm.max_artifacts" min="1">
+            </div>
+
+            <div class="cfm-field">
+              <span class="cfm-field-label">Git export credential (optional)</span>
+              <div class="cfm-dd" x-data="cfmDropdown({ value: jobForm.git_reg, options: gitRegOpts, onChange(v){ jobForm.git_reg = v } })"
+                   @click.outside="close()">
+                <button type="button" class="cfm-dd-trigger" @click="toggle()">
+                  <span x-text="label || 'None'"></span>
+                  <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+                </button>
+                <div class="cfm-dd-menu" x-show="open" x-cloak>
+                  <template x-for="o in options" :key="o.value">
+                    <button type="button" class="cfm-dd-opt" :class="isOn(o.value) ? 'cfm-dd-opt--on' : ''" @click="pick(o.value)" x-text="o.label"></button>
+                  </template>
+                </div>
+              </div>
+            </div>
+            <template x-if="jobForm.git_reg && selectedJobReg">
+              <div class="cfm-field">
+                <label class="cfm-field-label" for="job-repo" x-text="selectedJobReg.cred_type === 'deploy_key' ? 'Bound repo (fixed by deploy key)' : 'Repo URL'"></label>
+                <input id="job-repo" type="text" class="cfm-input"
+                       :value="selectedJobReg.cred_type === 'deploy_key' ? selectedJobReg.repo : jobForm.git_repo"
+                       @input="jobForm.git_repo = $event.target.value"
+                       :disabled="selectedJobReg.cred_type === 'deploy_key'"
+                       :placeholder="selectedJobReg.repo ? selectedJobReg.repo + ' (credential default)' : 'https://github.com/you/repo.git'">
+                <p class="cfm-muted cfm-mt-6" x-show="selectedJobReg.cred_type !== 'deploy_key'">Blank uses the credential's default repo.</p>
+              </div>
+            </template>
+            <template x-if="jobForm.git_reg && selectedJobReg">
+              <div class="cfm-field">
+                <span class="cfm-field-label">Export content</span>
+                <div class="cfm-dd" x-data="cfmDropdown({ value: jobForm.git_content, options: CONTENT_OPTS, onChange(v){ jobForm.git_content = v } })"
+                     @click.outside="close()">
+                  <button type="button" class="cfm-dd-trigger" @click="toggle()">
+                    <span x-text="label || 'Rendered + structured'"></span>
+                    <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+                  </button>
+                  <div class="cfm-dd-menu" x-show="open" x-cloak>
+                    <template x-for="o in options" :key="o.value">
+                      <button type="button" class="cfm-dd-opt" :class="isOn(o.value) ? 'cfm-dd-opt--on' : ''" @click="pick(o.value)" x-text="o.label"></button>
+                    </template>
+                  </div>
+                </div>
+                <p class="cfm-muted cfm-mt-6">What this job writes per object: the FM-readable rendering, the structured fields, or both.</p>
+              </div>
+            </template>
+
+            <p class="cfm-inline-error" x-show="jobMsg" x-text="jobMsg"></p>
+          </div>
+
+          <div class="cfm-dialog-ftr">
+            <template x-if="!jobForm.is_new">
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="runJob(jobForm)"
+                      :disabled="!!runningJob[jobForm.name] || $store.ready.blocked(2)"
+                      :title="$store.ready.blocked(2) ? 'Running a job needs FileMaker Server apply prerequisites (PKI / tool / helper)' : ''">Run now</button>
+            </template>
+            <template x-if="!jobForm.is_new && !confirmDelJob">
+              <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="confirmDelJob = true">Delete</button>
+            </template>
+            <template x-if="confirmDelJob">
+              <span class="cfm-confirm">
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger"
+                        :disabled="!!delJobBusy" @click="doDeleteJob()">Confirm?</button>
+                <button type="button" class="cfm-btn cfm-btn--sm"
+                        :disabled="!!delJobBusy" @click="confirmDelJob = false">Cancel</button>
+              </span>
+            </template>
+            <span class="cfm-spacer"></span>
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="closeJobForm()">Cancel</button>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="saveJob()" :disabled="!!savingJob">Save job</button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const FILE_READINESS_REASONS = {
+  ok: 'Provable',
+  no_credential: 'No credentials',
+  bad_creds: 'Bad credentials',
+  no_addon: 'Addon not installed',
+  odata_unreachable: 'OData unreachable',
+  script_disabled: 'Export script disabled',
+  error: 'Error',
+};
+
+// packet 1185: one schedule shape — which days, and what time.
+const TRIGGER_OPTS = [
+  { value: 'manual',   label: 'Manual (run on demand)' },
+  { value: 'schedule', label: 'Schedule (days and a time)' },
+  { value: 'webhook',  label: 'Webhook' },
+];
+
+// Sunday first — a display ordering only. The wire and the scheduler keep Python's Monday=0
+// (`server/jobs/schedule.py` WEEKDAYS, indexed by datetime.weekday()), and the route normalizes,
+// so send order is irrelevant. `letter` identifies a day by POSITION, which only works because all
+// seven are always on screen; `full` carries hover and screen readers, where position does not.
+const WEEKDAY_OPTS = [
+  { value: 'sun', letter: 'S', full: 'Sunday' },    { value: 'mon', letter: 'M', full: 'Monday' },
+  { value: 'tue', letter: 'T', full: 'Tuesday' },   { value: 'wed', letter: 'W', full: 'Wednesday' },
+  { value: 'thu', letter: 'T', full: 'Thursday' },  { value: 'fri', letter: 'F', full: 'Friday' },
+  { value: 'sat', letter: 'S', full: 'Saturday' },
+];
+
+// All 60 minutes. Stepping by 5 would make an existing 02:07 schedule unrepresentable, and silently
+// rewriting someone's schedule to fit a picker is worse than a long list.
+const MINUTE_OPTS = Array.from({ length: 60 }, (_, m) => (
+  { value: String(m).padStart(2, '0'), label: String(m).padStart(2, '0') }));
+
+// 12- or 24-hour follows the READER's system (developer, 2026-07-29: "can allow for both, system
+// choice"). Display only — the stored value is always the 24-hour `HH:MM` string `server_time`
+// already carries, so the model never learns about clock conventions.
+const HOUR_OPTS = Array.from({ length: 24 }, (_, h) => {
+  const hh = String(h).padStart(2, '0');
+  let label = hh;
+  try {
+    label = new Date(2026, 0, 1, h).toLocaleTimeString([], { hour: 'numeric', hour12: undefined })
+      .replace(/:\d\d(:\d\d)?/, '');
+  } catch (_) { /* a browser without toLocaleTimeString options keeps the 24-hour form */ }
+  return { value: hh, label };
+});
+
+// Export methods (addon script names) — mirror corpusfm/core/addon/scripts.py (packet 1015).
+const SAVE_TO_DOCS      = 'CFM.TOOLS.ExportSchemaXML.SaveToDocumentsFolder';
+const SAVE_TO_FILE_PATH = 'CFM.TOOLS.ExportSchemaXML.SaveToFilePath';
+const POST_TO_SERVER    = 'CFM.TOOLS.ExportSchemaXML.PostToServer';
+const METHOD_LABELS = {
+  [SAVE_TO_DOCS]:      'Save to Documents folder',
+  [SAVE_TO_FILE_PATH]: 'Save to file path',
+  [POST_TO_SERVER]:    'Post to CORPUSfm',
+};
+// First entry is the default for that server context.
+const LOCAL_METHOD_OPTS  = [SAVE_TO_DOCS, SAVE_TO_FILE_PATH].map(v => ({ value: v, label: METHOD_LABELS[v] }));
+const REMOTE_METHOD_OPTS = [POST_TO_SERVER, SAVE_TO_FILE_PATH].map(v => ({ value: v, label: METHOD_LABELS[v] }));
+
+const CONTENT_OPTS = [
+  { value: 'both',       label: 'Rendered + structured' },
+  { value: 'rendered',   label: 'Rendered only' },
+  { value: 'structured', label: 'Structured only' },
+];
+
+function jobsPage() {
+  return {
+    files: [],
+    // Which read produced `files`: 'none' = the job-derived page-load read (no discovery was
+    // attempted), 'ok' = a live discovery that RAN, 'failed' = a live discovery that failed.
+    // The empty state says something different for each (packet 1227).
+    discovery: 'none',
+    loading: false,
+    verifyingJob: false,
+    msgErr: false,
+    detail: null, detailTab: 'jobs', _trap: null,
+    jobs: [], jobForm: null, jobMsg: '', savingJob: false, runningJob: {},
+    confirmDelJob: false, _jobTrap: null,
+    // The schedule form's server-computed preview + clock envelope (packet 1185).
+    preview: { summary: '', next: [], errors: [] },
+    clock: { now_text: '', zone: '', fallback: false },
+    WEEKDAY_OPTS, HOUR_OPTS, MINUTE_OPTS,
+    delJobBusy: false, orphanWipeBusy: false,   // per-operation in-flight guards (packet 1186)
+    runningNames: [], _runTimer: null,
+    fileSearch: '',
+    confirmOrphanWipe: false,
+    TRIGGER_OPTS,
+    CONTENT_OPTS,
+    // Export-method constants exposed to the template (Alpine expressions can't see module consts).
+    SAVE_TO_DOCS, SAVE_TO_FILE_PATH, POST_TO_SERVER,
+    gitRegs: [],
+    servers: [],
+    callbackDefault: '',
+    // The callback belongs to the SERVER, not the job (packet 1219) — the form SHOWS it as the To
+    // half of the transfer, and Settings is where it is edited.
+    get serverCallback() {
+      const s = (this.servers || []).find(x => x.id === this.jobForm?.server_ref);
+      return (s && s.callback_url) || '';
+    },
+
+    // ── Server context (packet 1015): the HEADER selection drives the whole page ──
+    serverRef: 'local',
+    serverMenuOpen: false,
+    get serverHeaderOpts() {
+      return [{ value: 'local', label: 'Local' },
+              ...this.servers.map(s => ({ value: s.id, label: s.name }))];
+    },
+    get isRemote() { return this.serverRef !== 'local'; },
+    get serverLabel() {
+      const o = this.serverHeaderOpts.find(x => x.value === this.serverRef);
+      return o ? o.label : 'Local';
+    },
+    // The export methods valid for the current server context (first = default).
+    get methodOpts() { return this.isRemote ? REMOTE_METHOD_OPTS : LOCAL_METHOD_OPTS; },
+    get defaultMethod() { return this.isRemote ? POST_TO_SERVER : SAVE_TO_DOCS; },
+
+    // Callback-URL placeholder. NEVER suggest the loopback default (127.0.0.1/localhost) — a remote
+    // server can't reach our loopback, so it's a useless hint. Show a public example instead.
+    get callbackPlaceholder() {
+      const d = this.callbackDefault || '';
+      const loopback = /^https?:\/\/(127\.0\.0\.1|localhost|\[?::1\]?)(:|\/|$)/i.test(d);
+      return (d && !loopback) ? d : 'https://this-corpusfm-host/corpusfm';
+    },
+
+    async pickServer(v) {
+      if (v === this.serverRef) return;
+      this.serverRef = v;
+      this.closeDetail();
+      await this.load();
+      // The read-only load only knows job-having files; the gallery promises EVERY hosted file
+      // (that's the point of the page). Follow the fast paint with one live discovery so switching
+      // to a server shows all its files, whether or not it already has jobs.
+      if (!this.msgErr) await this.refresh();
+    },
+
+    get gitRegOpts() {
+      return [{ value: '', label: 'None' },
+              ...this.gitRegs.map(r => ({ value: r.name, label: r.name + (r.cred_type === 'deploy_key' ? ' (deploy key)' : ' (token)') }))];
+    },
+    get selectedJobReg() {
+      return this.jobForm ? (this.gitRegs.find(r => r.name === this.jobForm.git_reg) || null) : null;
+    },
+
+    // Gallery: filter (search) then sort by health — broken/amber float up.
+    get visibleFiles() {
+      const rank = { broken: 0, ok: 1, idle: 2, warn: 3 };  // red → green → grey → amber
+      let fs = this.files.slice();
+      const q = this.fileSearch.trim().toLowerCase();
+      if (q) fs = fs.filter(f => (f.name || '').toLowerCase().includes(q));
+      return fs.sort((a, b) => (rank[this.health(a)] - rank[this.health(b)]) || a.name.localeCompare(b.name));
+    },
+
+    // The empty state must tell THREE situations apart (packet 1227). It used to say one thing —
+    // "No files discovered. Confirm the Admin API PKI key is configured" — for all of them, so
+    // deleting the last job on a file blamed the operator's PKI for a list that had emptied because
+    // they had just emptied it. `load()` performs NO discovery by design (the FMS Admin API session
+    // pool is small, error 956), so on that path the PKI advice is not merely unhelpful: it asserts
+    // a failure that was never attempted. `discovery` records which read produced these rows, and
+    // it is set by load()/refresh() — never inferred from `files.length`, which is the conflation
+    // being fixed.
+    get emptyMessage() {
+      const where = this.isRemote ? this.serverLabel : 'this FileMaker Server';
+      // Kept on one line each: the static guard that runs where node does not searches for these
+      // strings whole, and a concatenation across lines would defeat it silently.
+      if (this.discovery === 'failed') {
+        return this.isRemote
+          ? `Could not list the files hosted on ${this.serverLabel}. Confirm its fmsadmin account (Settings → FileMaker → Remote servers) — use Test there.`
+          : 'Could not list the files hosted on this FileMaker Server. Confirm the Admin API PKI key is configured (Settings → FileMaker).';
+      }
+      if (this.discovery === 'ok') return `No files are hosted on ${where}.`;
+      // A jobs read that ERRORED with nothing on screen knows nothing about what has jobs. Claiming
+      // "nothing has jobs yet" there would be the same defect as the PKI message, one branch over:
+      // asserting a fact we did not establish. `msgErr` already records exactly this (load() sets it
+      // and refresh() does not, which is why it is the right signal and `discovery` is not).
+      if (this.msgErr) return 'The file list could not be read. See the error above, then retry.';
+      return `No files here have jobs yet. Use Refresh to list the files hosted on ${where}.`;
+    },
+
+    async loadGitRegs() {
+      try { const r = await fetch('/api/library/git-registrations'); const d = await r.json();
+        this.gitRegs = d.registrations || []; } catch(e) { this.gitRegs = []; }
+    },
+
+    async loadServers() {
+      try { const r = await fetch('/api/remote-servers'); const d = await r.json();
+        this.servers = d.servers || []; this.callbackDefault = d.callback_default || ''; }
+      catch(e) { this.servers = []; }
+    },
+    // ?server_ref= suffix so every /api/files* read is scoped to the selected server.
+    _sr() { return '?server_ref=' + encodeURIComponent(this.serverRef); },
+
+    async init() {
+      await this.load();
+      await this.loadGitRegs();
+      await this.loadServers();
+      // Fast paint from the read-only load (job-having files only), then ONE live discovery so the
+      // gallery shows every hosted file — the page's core promise. Discovery is a single sequential
+      // Admin API call per page visit (paired with a logout); the small-session-pool / error-956
+      // concern is about concurrent sessions, not one-per-navigation. The 5s poll below drives the ONE
+      // unified activity feed (JobRun rows), never discovery (packet 1136 Stage 2 retired /api/jobs/running).
+      if (!this.msgErr) await this.refresh();
+      // Running state FOLDS onto the ONE activity cadence (packet 1136 Stage 3): instead of a private 5s
+      // timer (and the retired /api/jobs/running), patch from the unified store on each `cfm-activity`
+      // tick. The store's own adaptive cadence (idle heartbeat → fast on work) keeps the feed fresh; the
+      // JobRun rows carry job_name/file_name. Cross-process scheduled runs surface at the next tick.
+      this._onActivity = () => this.patchRunning();
+      window.addEventListener('cfm-activity', this._onActivity);
+      this.patchRunning();     // initial paint from whatever the store already holds
+      await this._openDeepLinkedJob();
+    },
+
+    // ?job_uuid= — the Runs page's "Job" button (packet 1143/1144). The page is organised by
+    // FILE, so resolve the job's file by UUID and open that card's Jobs tab. A uuid that no
+    // longer resolves says so plainly rather than opening an arbitrary file.
+    async _openDeepLinkedJob() {
+      const ju = new URLSearchParams(window.location.search).get('job_uuid');
+      if (!ju) return;
+      try {
+        const r = await fetch('/api/jobs/locate?job_uuid=' + encodeURIComponent(ju));
+        const d = await r.json();
+        if (!d.ok) { window.cfmNotify.error(d.error || 'That job could not be found.'); return; }
+        if (d.server_ref && d.server_ref !== this.serverRef) { await this.pickServer(d.server_ref); }
+        const f = this.files.find(x => x.name === d.file);
+        if (f) this.openDetail(f);
+        else window.cfmNotify.error(`‘${d.name}’ targets ${d.file}, which is not in this list.`);
+      } catch (e) { window.cfmNotify.error(String(e)); }
+    },
+
+    // True when this file has a live run marker (cross-process: scheduled runs mark in the
+    // scheduler process, surfaced here via the JobRun activity rows).
+    fileRunning(f) { return !!(f && f.running); },
+    patchRunning() {
+      const q = this.$store.queue;
+      if (!q) return;
+      const jobSet = new Set(q.runningJobNames);
+      const fileSet = new Set(q.runningFileNames);
+      this.runningNames = [...jobSet];
+      // Patch the card rows reactively from the feed-derived running file set (no page-data pretense —
+      // this only flips a `running` flag; the file rows come from /api/files).
+      this.files = this.files.map(f => Object.assign({}, f, { running: fileSet.has(f.name) }));
+      // Flip the open detail's job rows immediately too.
+      if (this.jobs && this.jobs.length) {
+        this.jobs = this.jobs.map(j => Object.assign({}, j, { running: jobSet.has(j.name) }));
+      }
+    },
+    destroy() { if (this._onActivity) window.removeEventListener('cfm-activity', this._onActivity); },
+
+    // Aggregate file health → card icon + badge color (packet 085 U3b: keyed off the per-job
+    // summary fields, not a per-file readiness). GRAY (idle) is reserved for a missing/
+    // deactivated file; every PRESENT-but-not-automated file is AMBER (warn) — it's automatable,
+    // just not automated yet. has jobs + last error → red; has jobs → green.
+    health(f) {
+      if (f.missing) return 'idle';                              // gray — gone/deactivated
+      if (f.job_count && f.last_status === 'error') return 'broken';  // red — automated but last run failed
+      if (f.job_count) return 'ok';                              // green — automated
+      return 'warn';                                             // amber — present, automatable
+    },
+    healthWord(f) {
+      if (f.missing) return 'Missing';
+      const h = this.health(f);
+      if (h === 'ok') return 'Automated';
+      if (h === 'broken') return 'Broken';
+      if (h === 'warn') return 'Set up';
+      return 'Idle';
+    },
+
+    // An error must never blank the visible list (packet 1227, defect 2). `/api/files` answers 200
+    // with `{"files": [], "error": …}` on any exception, so `this.files = d.files || []` replaced
+    // the rows with nothing and left a toast over an empty page, recoverable only by reloading.
+    // Take the response's rows whenever it HAS rows — a refresh whose live scan failed still returns
+    // the job-having files, and discarding that partial result would be its own defect — and clear
+    // the list only when the server SUCCEEDED in saying there are none.
+    _applyFileRows(d) {
+      const rows = d.files || [];
+      if (rows.length || !d.error) this.files = rows;
+    },
+
+    async load() {
+      this.loading = true;
+      try {
+        const r = await fetch('/api/files' + this._sr());
+        const d = await r.json();
+        this._applyFileRows(d);
+        this.discovery = 'none';    // this read never discovers, whatever it returned
+        if (d.error) { this.msgErr = true; window.cfmNotify.error(d.error); } else { this.msgErr = false; }
+      } catch (e) { this.msgErr = true; window.cfmNotify.error(String(e)); }
+      finally { this.loading = false; }
+    },
+
+    async refresh() {
+      this.loading = true;
+      try {
+        const r = await fetch('/api/files/refresh' + this._sr(), { method: 'POST' });
+        const d = await r.json();
+        this._applyFileRows(d);
+        this.discovery = d.error ? 'failed' : 'ok';
+        if (d.error) { window.cfmNotify.error(d.error); }
+      } catch (e) { this.discovery = 'failed'; window.cfmNotify.error(String(e)); }
+      finally { this.loading = false; }
+    },
+
+    openDetail(f) {
+      this.detail = Object.assign({}, f);
+      this.detailTab = f.job_count ? 'jobs' : 'file';
+      this.jobs = []; this.jobForm = null; this.jobMsg = ''; this.confirmDelJob = false;
+      this.confirmOrphanWipe = false;
+      this.loadJobs(f.name);
+    },
+    closeDetail() { this.detail = null; this.jobForm = null; },
+
+    async loadJobs(name) {
+      try {
+        const r = await fetch(`/api/files/${encodeURIComponent(name)}/jobs` + this._sr());
+        const d = await r.json();
+        this.jobs = d.jobs || [];
+      } catch (e) { /* non-fatal */ }
+    },
+
+    // ── Job-row actions — every one scoped to THIS job's uuid (packet 1143) ──
+    goRuns(j)      { cfmGo('/runs?job_uuid=' + encodeURIComponent(j.uuid || '')); },
+    goArtifacts(j) { cfmGo('/artifacts?job_uuid=' + encodeURIComponent(j.uuid || '')); },
+
+    // Fire and forget: report that the run STARTED, nothing more. The row's running badge and
+    // last-run status refresh on the activity store's cadence (patchRunning is bound to
+    // `cfm-activity`), so there is nothing to poll for from a row the user will click away from.
+    // Deliberately NOT runJob() — that one polls run-status for minutes, which is right in the
+    // editor dialog where the user is parked and wrong here.
+    async runNow(j) {
+      const file = this.detail && this.detail.name;   // capture up front — detail may change
+      if (!file) return;
+      this.runningJob = Object.assign({}, this.runningJob, { [j.name]: true });
+      try {
+        const r = await fetch(`/api/files/${encodeURIComponent(file)}/jobs/${encodeURIComponent(j.name)}/run`,
+                              { method: 'POST' });
+        const d = await r.json();
+        if (d.ok) window.cfmNotify.info(`'${j.name}' started.`);
+        else window.cfmNotify.error(d.error || `Could not start '${j.name}'.`);
+      } catch (e) { window.cfmNotify.error(String(e)); }
+      finally {
+        this.runningJob = Object.assign({}, this.runningJob, { [j.name]: false });
+        if (this.detail && this.detail.name === file) await this.loadJobs(file);
+      }
+    },
+
+    async wipeOrphanJobs() {
+      if (this.orphanWipeBusy) return;        // BEFORE any await (packet 1186)
+      this.orphanWipeBusy = true;
+      try {
+        // Inside the try: a null `detail` on a delayed invocation must not throw past the finally
+        // and strand this control disabled until reload.
+        const name = this.detail.name;
+        const doomed = this.jobs.slice();     // frozen once — the loop is over this snapshot
+        let failed = 0;
+        for (const j of doomed) {             // ordering + one request per job, unchanged
+          const r = await fetch(`/api/files/${encodeURIComponent(name)}/jobs/${encodeURIComponent(j.name)}`, { method: 'DELETE' });
+          const d = await r.json();
+          if (!d.ok) failed++;
+        }
+        if (failed) {                         // fetch does not reject on 4xx/5xx — {ok} is the signal
+          window.cfmNotify.error(`${failed} of ${doomed.length} job(s) could not be removed.`);
+          await this.loadJobs(name); await this.refresh();
+          return;
+        }
+        this.confirmOrphanWipe = false;       // only on success — a failure keeps Confirm for a retry
+        window.cfmNotify.success(`Removed ${doomed.length} job(s) from ${name}.`);
+        await this.loadJobs(name); await this.refresh();
+      } catch (e) { window.cfmNotify.error(String(e)); }
+      finally { this.orphanWipeBusy = false; }
+    },
+
+    startAddJob() {
+      this.jobMsg = ''; this.confirmDelJob = false;
+      this.jobForm = {
+        is_new: true, name: '', trigger_type: 'manual',
+        server_time: '02:00', weekdays: [], legacy_cron: '',
+        script: this.defaultMethod, file_path: '',
+        index_on_ingest: true, summarize_on_ingest: true, export_timeout_min: '',
+        enable_artifact_limit: false, max_artifacts: 10, git_reg: '', git_repo: '', git_content: 'both',
+        account: '', password: '', tags_text: '', has_credential: false, verified: false, verify_reason: '',
+      };
+      this.resetPreview(); this.refreshPreview();
+    },
+
+    editJob(j) {
+      this.jobMsg = ''; this.confirmDelJob = false;
+      this.jobForm = {
+        is_new: false, name: j.name, trigger_type: j.trigger_type || 'manual',
+        server_time: j.server_time || '02:00',
+        weekdays: (j.weekdays || []).slice(), legacy_cron: j.legacy_cron || '',
+        script: j.script || this.defaultMethod, file_path: j.file_path || '',
+        index_on_ingest: j.index_on_ingest, summarize_on_ingest: j.summarize_on_ingest,
+        export_timeout_min: j.export_timeout_s ? Math.round(j.export_timeout_s / 60) : '',
+        enable_artifact_limit: j.enable_artifact_limit, max_artifacts: j.max_artifacts || 10,
+        git_reg: j.git_reg || '', git_repo: j.git_repo || '', git_content: j.git_content || 'both',
+        account: j.account || '', password: '', tags_text: (j.tags || []).join(', '),
+        has_credential: !!j.has_credential, verified: !!j.verified, verify_reason: j.verify_reason || '',
+      };
+      this.resetPreview(); this.refreshPreview();
+    },
+    closeJobForm() { this.jobForm = null; this.confirmDelJob = false; },
+
+    // ── Schedule form (packet 1185) ────────────────────────────────────────────
+    isScheduled() { return !!this.jobForm && this.jobForm.trigger_type === 'schedule'; },
+    toggleWeekday(d) {
+      const w = this.jobForm.weekdays;
+      const i = w.indexOf(d);
+      if (i >= 0) { w.splice(i, 1); } else { w.push(d); }
+      this.refreshPreview();
+    },
+    get schedHour() { return (this.jobForm && this.jobForm.server_time || '').split(':')[0] || '00'; },
+    get schedMinute() { return (this.jobForm && this.jobForm.server_time || '').split(':')[1] || '00'; },
+    setSchedHour(h) { this.jobForm.server_time = h + ':' + this.schedMinute; this.refreshPreview(); },
+    setSchedMinute(m) { this.jobForm.server_time = this.schedHour + ':' + m; this.refreshPreview(); },
+    resetPreview() { this.preview = { summary: '', next: [], errors: [] }; },
+
+    // The SERVER computes both the sentence and the next occurrences. A recurrence rule
+    // reimplemented in the browser is a second opinion, and the one the user reads is the one that
+    // would be wrong.
+    async refreshPreview() {
+      if (!this.isScheduled()) { this.resetPreview(); return; }
+      try {
+        const r = await fetch('/api/schedule-preview', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            server_time: this.jobForm.server_time, weekdays: this.jobForm.weekdays,
+          }),
+        });
+        const d = await r.json();
+        this.preview = { summary: d.summary || '', next: d.next || [], errors: d.errors || [] };
+        this.clock = { now_text: d.server_now_text || '', zone: d.server_zone_label || '',
+                       fallback: !!d.server_time_fallback };
+      } catch (e) { this.resetPreview(); }
+    },
+
+    async saveJob() {
+      if (!this.jobForm.name || !this.jobForm.name.trim()) { this.jobMsg = 'Job name is required.'; return; }
+      this.savingJob = true; this.jobMsg = '';
+      try {
+        const r = await fetch(`/api/files/${encodeURIComponent(this.detail.name)}/jobs`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...this.jobForm,
+            // `revision` and `effective_after` are NOT sent — the server stamps them, and a
+            // client that could author them could make a schedule fire during its own save.
+            server_ref: this.serverRef,   // the job's server context = the page's header selection
+            max_artifacts: parseInt(this.jobForm.max_artifacts, 10) || 10,
+            // packet 1154: minutes in the UI → seconds in the model; blank/0 → null (use the default).
+            export_timeout_s: (parseInt(this.jobForm.export_timeout_min, 10) > 0
+                               ? parseInt(this.jobForm.export_timeout_min, 10) * 60 : null),
+            account: this.jobForm.account, password: this.jobForm.password,
+            tags: this.jobForm.tags_text,
+          }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+          window.cfmNotify.success(`Job '${this.jobForm.name}' saved.`);
+          this.jobForm = null;
+          await this.loadJobs(this.detail.name); await this.refresh();
+        } else { this.jobMsg = d.error || 'Save failed.'; }
+      } catch (e) { this.jobMsg = String(e); }
+      finally { this.savingJob = false; }
+    },
+
+    async doDeleteJob() {
+      if (this.delJobBusy) return;            // BEFORE any await (packet 1186)
+      this.delJobBusy = true;
+      try {
+        // Inside the try: a null `jobForm`/`detail` on a delayed invocation must not throw past the
+        // finally and strand this control disabled until reload.
+        const name = this.jobForm.name;
+        const file = this.detail.name;
+        const r = await fetch(`/api/files/${encodeURIComponent(file)}/jobs/${encodeURIComponent(name)}`,
+                              { method: 'DELETE' });
+        const d = await r.json();
+        // fetch does not reject on 4xx/5xx — the route's {ok} is the only honest signal.
+        if (!d.ok) { this.jobMsg = d.error || 'Delete failed.'; window.cfmNotify.error(this.jobMsg); return; }
+        this.confirmDelJob = false;           // only on success — a failure keeps Confirm for a retry
+        window.cfmNotify.success(`Job '${name}' deleted.`);
+        this.jobForm = null;
+        await this.loadJobs(file); await this.load();
+      } catch (e) { this.jobMsg = String(e); }
+      finally { this.delJobBusy = false; }
+    },
+
+    async runJob(j) {
+      this.runningJob = Object.assign({}, this.runningJob, { [j.name]: true });
+      window.cfmNotify.info(`Running '${j.name}'…`);
+      try {
+        const r = await fetch(`/api/files/${encodeURIComponent(this.detail.name)}/jobs/${encodeURIComponent(j.name)}/run`,
+                              { method: 'POST' });
+        const d = await r.json();
+        if (d.task_id) {
+          // Carry the durable run id (packet 1149) — after a web restart the server's in-memory
+          // task map is empty, and this is the only way the poll can resolve a true outcome.
+          const res = await this._pollJob(d.task_id, d.run_id || '');
+          if (res) window.cfmNotify.info(`'${j.name}' ${res.status || 'finished'}.`);
+        }
+      } catch (e) { window.cfmNotify.error(String(e)); }
+      finally {
+        this.runningJob = Object.assign({}, this.runningJob, { [j.name]: false });
+        await this.loadJobs(this.detail.name);
+      }
+    },
+
+    async _pollJob(taskId, runId = '') {
+      for (let i = 0; i < 180; i++) {
+        await new Promise(res => setTimeout(res, 2000));
+        try {
+          const r = await fetch(`/api/files/jobs/run-status/${taskId}`
+                                + (runId ? `?run_id=${encodeURIComponent(runId)}` : ''));
+          const d = await r.json();
+          if (d.status && !['running', 'unknown', 'triggering'].includes(d.status)) return d;
+        } catch (e) { /* keep polling */ }
+      }
+    },
+
+    // Per-job readiness probe (packet 085 U3b) — the job's own credential against its file.
+    // Only meaningful for a saved (non-new) job.
+    async verifyJob(jobForm) {
+      if (!jobForm || jobForm.is_new) return;
+      this.verifyingJob = true;
+      try {
+        const r = await fetch(`/api/files/${encodeURIComponent(this.detail.name)}/jobs/${encodeURIComponent(jobForm.name)}/verify`,
+                              { method: 'POST' });
+        const d = await r.json();
+        const ok = d.status === 'provable';
+        jobForm.verified = ok;
+        jobForm.verify_reason = d.reason || '';
+        window.cfmNotify[(ok) ? 'success' : 'error'](ok ? 'Provable — ready to automate.'
+                           : ('Blocked: ' + (FILE_READINESS_REASONS[d.reason] || d.reason || 'unknown')));
+        await this.loadJobs(this.detail.name);
+      } catch (e) { window.cfmNotify.error(String(e)); }
+      finally { this.verifyingJob = false; }
+    },
+  };
+}
+</script>
+{% endblock %}

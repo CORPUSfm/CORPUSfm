@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}Runs — CORPUSfm{% endblock %}
+
+{# ── Runs — successful runs only, every action scoped to its own run (packet 1144).
+   A run is unambiguous: one run → one job, one artifact, one previous artifact. Each row
+   carries its four actions (Job · Explore · Diff · Filter); there is no detail pop-over and
+   the row is not a click target. Failures are still RECORDED — they are surfaced on the Jobs
+   page (red card / ✗ footer / error badge), on the Queue while failing, and over MCP by run
+   id; they are simply not listed here. #}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+<div x-data="runsPage()" @click="openDD = ''">
+
+  <div class="cfm-page-hdr">
+    <h1>Runs</h1>
+    <div class="cfm-hdr-actions">
+      {{ doc_help('jobs#runs', 'About runs') }}
+      <button type="button" class="cfm-btn cfm-btn--sm" @click="load()">Refresh</button>
+    </div>
+  </div>
+
+  {# ── Filter: the job dropdown (keyed on uuid — a name is a label, not an identity) ─── #}
+  <div class="cfm-filterbar">
+    <div class="cfm-dd" @click.stop>
+      <button type="button" class="cfm-dd-trigger" aria-label="Filter by job"
+              @click="openDD = (openDD === 'job' ? '' : 'job')">
+        <span x-text="filterLabel || 'All jobs'"></span>
+        <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
+      </button>
+      <div class="cfm-dd-menu" x-show="openDD === 'job'" x-cloak>
+        <button type="button" class="cfm-dd-opt" :class="{ 'cfm-dd-opt--on': filterJobUuid === '' }" @click="setFilter('', ''); openDD=''">All jobs</button>
+        <template x-for="j in jobs" :key="j.uuid">
+          <button type="button" class="cfm-dd-opt" :class="{ 'cfm-dd-opt--on': filterJobUuid === j.uuid }"
+                  @click="setFilter(j.uuid, j.name); openDD=''" x-text="j.name"></button>
+        </template>
+      </div>
+    </div>
+
+    <span class="cfm-spacer"></span>
+    <span class="cfm-badge cfm-badge--muted" x-show="total > 0" x-text="total + ' run' + (total === 1 ? '' : 's')"></span>
+  </div>
+
+  <div x-show="taskError" class="cfm-inline-error" x-text="taskError"></div>
+
+  {# ── Ledger: one list-card per successful run, actions on the row ────────────── #}
+  <template x-if="!loading && runs.length === 0">
+    <p class="cfm-list-empty">No runs yet. Jobs record a run entry after each execution.</p>
+  </template>
+
+  <div x-show="runs.length > 0">
+    <template x-for="r in runs" :key="r.run_id || (r.job_uuid + r.ts)">
+      <div class="cfm-listcard cfm-listcard--ok cfm-listcard--acts">
+        <span class="cfm-lc-when" x-text="r.ts_display"></span>
+        <span class="cfm-lc-ident">
+          <span class="cfm-lc-name" x-text="r.job_name" :title="r.job_name"></span>
+          <span class="cfm-lc-sub" x-show="r.file_name" x-text="r.file_name" :title="r.file_name"></span>
+        </span>
+        <span class="cfm-lc-dur" x-text="(r.duration_s == null ? 0 : r.duration_s) + 's'"></span>
+        <span class="cfm-lc-tail" x-text="r.trigger || 'manual'"></span>
+        <span class="cfm-lc-actions">
+          <button type="button" class="cfm-btn cfm-btn--sm" title="Open this run's job"
+                  @click="goJob(r)">Job</button>
+          <button type="button" class="cfm-btn cfm-btn--sm" title="Explore this run's artifact"
+                  x-show="!!r.archive_exists" @click="explore(r.archive_path)">Explore</button>
+          <button type="button" class="cfm-btn cfm-btn--sm"
+                  :disabled="!r.prev_archive_path"
+                  :title="r.prev_archive_path ? 'Diff against this job\'s previous artifact'
+                                              : 'No earlier artifact from this job to diff against'"
+                  @click="diff(r)">Diff</button>
+          <button type="button" class="cfm-btn cfm-btn--sm" title="Show only this job's runs"
+                  @click="filterBy(r)">Filter</button>
+        </span>
+      </div>
+    </template>
+  </div>
+
+  {# ── Pagination ───────────────────────────────────────────────────────────── #}
+  <div x-show="pages > 1" class="cfm-filterbar cfm-filterbar--center">
+    <button type="button" class="cfm-btn cfm-btn--sm" :disabled="page <= 1" @click="goPage(page - 1)">← Prev</button>
+    <span class="cfm-badge cfm-badge--muted" x-text="'Page ' + page + ' of ' + pages"></span>
+    <button type="button" class="cfm-btn cfm-btn--sm" :disabled="page >= pages" @click="goPage(page + 1)">Next →</button>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function runsPage() {
+  return {
+    runs: [], jobs: [], total: 0, page: 1, pages: 1, loading: false,
+    filterJobUuid: '', filterLabel: '',
+    taskError: '', openDD: '',
+
+    async init() {
+      const p = new URLSearchParams(window.location.search);
+      // Deep-link from a Jobs-page "Runs" jump. Keyed on uuid; `job` (a name) is still accepted
+      // so an older bookmark keeps working.
+      if (p.get('job_uuid')) this.filterJobUuid = p.get('job_uuid');
+      if (p.get('job')) this.filterLabel = p.get('job');
+      await this.load();
+    },
+
+    async _fetch(n) {
+      // status=ok is not a filter the user can change — this page lists successes only.
+      const p = new URLSearchParams({ page: n, per_page: 50, status: 'ok',
+                                      job_uuid: this.filterJobUuid,
+                                      job: this.filterJobUuid ? '' : this.filterLabel });
+      const r = await fetch('/api/runs/list?' + p);
+      const d = await r.json();
+      this.runs = d.runs || []; this.total = d.total || 0; this.pages = d.pages || 1;
+      if (d.jobs) this.jobs = d.jobs;
+      if (this.filterJobUuid && !this.filterLabel) {
+        const j = this.jobs.find(x => x.uuid === this.filterJobUuid);
+        if (j) this.filterLabel = j.name;
+      }
+      this.page = n;
+    },
+    async load()  { this.loading = true; try { await this._fetch(1); } catch (_) {} finally { this.loading = false; } },
+    async goPage(n) { this.loading = true; try { await this._fetch(n); } catch (_) {} finally { this.loading = false; } },
+
+    setFilter(uuid, label) { this.filterJobUuid = uuid; this.filterLabel = label; this.load(); },
+    filterBy(r) { this.setFilter(r.job_uuid || '', r.job_name || ''); },
+
+    // The run's OWN job, by uuid. A name is mutable and a deleted-then-recreated job reuses it,
+    // so a name-keyed link can land on the wrong job or on nothing.
+    goJob(r) {
+      cfmGo('/jobs' + (r.job_uuid ? '?job_uuid=' + encodeURIComponent(r.job_uuid) : ''));
+    },
+
+    async explore(uuid) {
+      const pending = window.cfmOpenPending(); this.taskError = '';
+      try {
+        const r = await fetch('/api/generate/explorer', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ artifact_paths: [uuid] }),
+        });
+        const d = await r.json();
+        if (d.error) { this.taskError = d.error; window.cfmResolvePending(pending, null, d.error); return; }
+        window.cfmTrackInTab(pending, d.task_id);
+      } catch (e) { this.taskError = String(e); window.cfmResolvePending(pending, null, String(e)); }
+    },
+
+    async diff(run) {
+      const pending = window.cfmOpenPending(); this.taskError = '';
+      try {
+        const r = await fetch('/api/generate/diff', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ artifact_a: run.prev_archive_path, artifact_b: run.archive_path }),
+        });
+        const d = await r.json();
+        if (d.error) { this.taskError = d.error; window.cfmResolvePending(pending, null, d.error); return; }
+        window.cfmTrackInTab(pending, d.task_id);
+      } catch (e) { this.taskError = String(e); window.cfmResolvePending(pending, null, String(e)); }
+    },
+  };
+}
+</script>
+{% endblock %}

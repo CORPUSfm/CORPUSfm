@@ -1,0 +1,1097 @@
+{% extends "base.html" %}
+{% block title %}ISV Tool — CORPUSfm{% endblock %}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+<div x-data="patchWorkspace()">
+
+  <div class="cfm-page-hdr">
+    <h1>ISV Tool</h1>
+    <div class="cfm-hdr-actions">{{ doc_help('isv-workflow', 'About the ISV workflow') }}</div>
+  </div>
+
+  {# Tier-2 notice: validate/apply need the FileMaker Server apply prerequisites. Authoring a
+     patch (Tier 1) still works — only the apply-side controls are unavailable. #}
+  <div class="cfm-tier-notice" x-show="$store.ready.blocked(2)" x-cloak>
+    <svg class="cfm-tier-notice-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="M10 6v5"/><circle cx="10" cy="13.5" r=".8" fill="currentColor" stroke="none"/></svg>
+    <div class="cfm-tier-notice-body">
+      <div class="cfm-tier-notice-title">Apply features unavailable</div>
+      <div class="cfm-tier-notice-text">Validating and applying patches need the FileMaker Server apply prerequisites (PKI key, FMUpgradeTool, scoped helper). Set them up in <a :href="(window.CFM_PREFIX||'') + '/settings#filemaker'">Settings → FileMaker</a>. You can still author + download a patch.</div>
+    </div>
+  </div>
+
+  {# ── Empty state hint + recent ISV patches ──────────────────────────────── #}
+  <div x-show="!artifactA">
+    <div class="cfm-panel">
+      <p>Generate a deployable FileMaker patch from two versions of the same file. Start from the
+      <a href="{{ url_prefix }}/artifacts">Artifacts</a> page: select a <strong>baseline</strong> and a
+      <strong>new version</strong> (two SaveAsXML of the same file), then choose <strong>ISV</strong> in
+      the selection toolbar.</p>
+      <div class="cfm-filterbar cfm-filterbar--tight">
+        <a class="cfm-btn cfm-btn--sm cfm-btn--primary" href="{{ url_prefix }}/artifacts">Go to Artifacts</a>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="$dispatch('cfm-open-docs', 'isv-workflow')">Learn more →</button>
+      </div>
+    </div>
+    <template x-if="recentPatches.length">
+      <div class="cfm-panel cfm-table-wrap">
+        <p class="cfm-field-label">Recent ISV patches</p>
+        <table class="cfm-table">
+          <tbody>
+            <template x-for="p in recentPatches" :key="p.uuid">
+              <tr>
+                <td>
+                  <a :href="'{{ url_prefix }}/artifacts#detail=' + encodeURIComponent(p.uuid)"
+                     x-text="p.name || p.fm_file || p.uuid"></a>
+                </td>
+                <td class="cfm-muted" x-text="(p.timestamp || '').slice(0,10)"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </template>
+  </div>
+
+  {# ── Comparison Rail ─────────────────────────────────────────────────────── #}
+  <div class="card pw-rail card-mb" x-show="artifactA">
+
+    {# A — Baseline (locked) #}
+    <div class="pw-artifact">
+      <div class="pw-artifact-role">A — Baseline</div>
+      <div class="pw-artifact-name" x-text="labelA"></div>
+      <a href="{{ url_prefix }}/artifacts" class="pw-change-a caption">← Select from Artifacts</a>
+    </div>
+
+    <div class="pw-arrow">→</div>
+
+    {# B — New Version (re-selectable) #}
+    <div class="pw-artifact">
+      <div class="pw-artifact-role">B — Upgrade From</div>
+      <template x-if="!artifactB">
+        <button type="button" class="cfm-btn cfm-btn--primary" @click="openBPicker()">Select New Version (B)</button>
+      </template>
+      <template x-if="artifactB">
+        <div>
+          <div class="pw-artifact-name" x-text="labelB"></div>
+          <button type="button" class="cfm-btn cfm-btn--sm cfm-mt-6" @click="openBPicker()">Change B</button>
+        </div>
+      </template>
+    </div>
+
+  </div>
+
+  {# ── Stage 2: Preflight running / intelligence / actions ───────────────── #}
+  <template x-if="artifactA && artifactB">
+    <div>
+
+      {# Preflight spinner — bound to the unified feed's per-item state (packet 1136 Stage 4): the ring
+         STOPS to a static "taking longer / no update" on a progress-silence soft state, and animates
+         again when real progress resumes. #}
+      <template x-if="preflightRunning && !preflightDone">
+        <div class="card card-mb" style="padding:28px;text-align:center;color:var(--text-dim)">
+          <div class="spinner-small" :class="preflightSoft ? 'spinner-soft' : ''" style="margin:0 auto 10px"></div>
+          <span x-text="preflightSoft ? 'Still analyzing — taking longer, no update…' : 'Analyzing differences…'"></span>
+        </div>
+      </template>
+
+      {# Preflight error #}
+      <template x-if="preflightError">
+        <div class="alert alert-error card-mb" x-text="preflightError"></div>
+      </template>
+
+      {# Intelligence panels — shown once preflight completes #}
+      <template x-if="preflightDone && !preflightError">
+        <div>
+
+          {# Version mismatch warning #}
+          <template x-if="versionMismatch">
+            <div class="alert alert-warn card-mb">
+              <strong>Version mismatch:</strong> A and B were exported from different FileMaker versions.
+              The patch XML schema version will follow the baseline (A).
+            </div>
+          </template>
+
+          {# Coverage overview #}
+          <div class="card card-mb pw-panel-card">
+            <div class="pw-panel-title">Patch Coverage</div>
+            <div class="pw-coverage-bar">
+              <div class="pw-cov-fill"
+                   :style="'width:' + (coverage.length ? Math.round(patchableCount/coverage.length*100) : 0) + '%'">
+              </div>
+            </div>
+            <div class="pw-cov-stats">
+              <span class="pw-cov-ok"><span x-text="patchableCount"></span> patchable</span>
+              <template x-if="notPatchableItems.length > 0">
+                <span class="pw-cov-bad"><span x-text="notPatchableItems.length"></span> not patchable</span>
+              </template>
+              <template x-if="blockedItems.length > 0">
+                <span class="pw-cov-blk"><span x-text="blockedItems.length"></span> blocked</span>
+              </template>
+              <span class="pw-cov-tot">of <span x-text="coverage.length"></span> total</span>
+            </div>
+          </div>
+
+          {# Coverage — sections collapsed by default; click section to see items; click item to see reason #}
+          <template x-if="coverage && coverage.length > 0">
+            <div class="card card-mb pw-panel-card">
+              <div class="pw-panel-title">Coverage</div>
+              <template x-for="sec in coverageBySection" :key="sec.key">
+                <div class="pw-sec-block">
+                  <div class="pw-sec-header" @click="toggleSection(sec.key)">
+                    <svg class="pw-sec-chevron" :class="{'pw-sec-chevron-open': expandedSections[sec.key]}" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>
+                    <span class="pw-sec-label" x-text="sec.label"></span>
+                    <div class="pw-sec-counts">
+                      <template x-if="sec.addCount"><span class="pw-act-add" x-text="'+' + sec.addCount"></span></template>
+                      <template x-if="sec.repCount"><span class="pw-act-rep" x-text="'~' + sec.repCount"></span></template>
+                      <template x-if="sec.delCount"><span class="pw-act-del" x-text="'−' + sec.delCount"></span></template>
+                    </div>
+                    <span x-show="sec.worstStatus !== 'patchable'"
+                          :class="statusClass(sec.worstStatus)"
+                          class="pw-sec-worst"
+                          x-text="sec.worstStatus.replace('_',' ')"></span>
+                  </div>
+                  <div class="pw-sec-items" x-show="expandedSections[sec.key]">
+                    <table class="pw-items-table">
+                      <template x-for="entry in sec.entries" :key="entry._idx">
+                        <tbody>
+                          <tr class="pw-sec-item-row"
+                              :class="{'pw-sec-item-clickable': entry.reason}"
+                              @click="entry.reason ? toggleRow(entry._idx) : null">
+                            <td class="pw-item-chev-cell">
+                              <svg x-show="entry.reason" class="pw-item-chevron" :class="{'pw-item-chevron-open': expandedIdx[entry._idx]}"
+                                   width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>
+                            </td>
+                            <td x-text="entry.name"></td>
+                            <td width="80"><span :class="actionClass(entry.action)" x-text="entry.action"></span></td>
+                            <td width="110"><span :class="statusClass(entry.status)" x-text="entry.status.replace('_',' ')"></span></td>
+                          </tr>
+                          <tr x-show="expandedIdx[entry._idx] && entry.reason" class="pw-sec-reason-row">
+                            <td></td>
+                            <td colspan="3" class="pw-sec-item-reason" x-text="entry.reason"></td>
+                          </tr>
+                        </tbody>
+                      </template>
+                    </table>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          {# Action buttons — stage 2 only #}
+          <template x-if="stage < 3">
+            <div class="card card-mb">
+              {# Export script notice — only shown when art_b lacks it #}
+              <template x-if="needsExportScript">
+                <div class="pw-export-notice">
+                  <svg class="cfm-i" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="M10 9v4.5"/><circle cx="10" cy="6.5" r=".8" fill="currentColor" stroke="none"/></svg>
+                  <div>
+                    <strong>Artifact B does not have the CORPUSfm export script.</strong>
+                    Enabling the option below will add the
+                    <code>CFM.TOOLS.ExportSchemaXML.SaveToDocumentsFolder</code> export
+                    script (and its cleanup companion) to the patch,
+                    so you can run a schema re-import after applying it.
+                    Read the <a href="{{ url_prefix }}/settings#integrations">Addon documentation</a> before enabling.
+                  </div>
+                </div>
+              </template>
+
+              <div class="pw-actions">
+                <template x-if="generateError">
+                  <div class="alert alert-error pw-act-error" x-text="generateError"></div>
+                </template>
+                <template x-if="diffError">
+                  <div class="alert alert-error pw-act-error" x-text="diffError"></div>
+                </template>
+                <button type="button" class="cfm-btn cfm-btn--primary" aria-label="Generate and Save Patch"
+                        :disabled="!!generating || !preflightTaskId"
+                        @click="generatePatch()" x-text="generating ? 'Generating…' : 'Generate & Save Patch'"></button>
+                <template x-if="needsExportScript">
+                  <label class="pw-inject-label">
+                    <input type="checkbox" x-model="injectExportScript">
+                    Include CORPUSfm export script
+                  </label>
+                </template>
+                <button type="button" class="cfm-btn" @click="openDiff()">View Diff</button>
+              </div>
+            </div>
+          </template>
+
+        </div>
+      </template>
+    </div>
+  </template>
+
+  {# ── Stage 3: Patch generated ──────────────────────────────────────────── #}
+  <template x-if="stage === 3 && patchUuid">
+    <div>
+
+      {# Primary actions #}
+      <div class="card card-mb pw-stage3-card">
+        <div class="pw-panel-title pw-stage3-title">✓ Patch Generated &amp; Saved as an Artifact</div>
+        <div class="pw-stage3-actions">
+          <a class="cfm-btn cfm-btn--primary"
+                  :href="(window.CFM_PREFIX||'') + '/api/artifact-download/' + encodeURIComponent(patchUuid)">Download .patch</a>
+          <a class="cfm-btn"
+                  :href="'{{ url_prefix }}/artifacts#detail=' + encodeURIComponent(patchUuid)">View in Artifacts</a>
+          <button type="button" class="cfm-btn" @click="openDiff()">View Diff</button>
+        </div>
+        <template x-if="diffError">
+          <div class="alert alert-error pw-stage3-err" x-text="diffError"></div>
+        </template>
+      </div>
+
+      {# Encrypt — co-located only #}
+      <template x-if="toolAvailable">
+        <div class="card card-mb">
+          <div class="pw-panel-title">Encrypt Patch</div>
+          <p style="font-size:13px;color:var(--text-dim);margin:0 0 12px">
+            Encrypt before distributing to protect your schema IP.
+            Customers can apply but cannot inspect the patch.
+          </p>
+          <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+            <div style="flex:1;min-width:200px">
+              <label class="field-label">Encryption key</label>
+              <input type="password" class="form-input" x-model="encryptKey"
+                     placeholder="passphrase" autocomplete="off">
+            </div>
+            <button type="button" class="cfm-btn"
+                    :disabled="!!encryptBusy || !encryptKey"
+                    @click="doEncrypt()">Encrypt &amp; Download</button>
+          </div>
+          <template x-if="encryptError">
+            <div class="alert alert-error" style="margin-top:10px" x-text="encryptError"></div>
+          </template>
+        </div>
+      </template>
+
+      {# Dry-run on the server — safe; production untouched #}
+      <template x-if="sandboxAvailable">
+        <div class="card card-mb">
+          <div class="pw-panel-title">Dry-run on the server <span class="caption" style="font-weight:400">· safe</span></div>
+          <p style="font-size:13px;color:var(--text-dim);margin:0 0 12px">
+            Apply this patch to a throwaway <strong>copy</strong> of a hosted database and verify
+            exactly what landed — the live database is never touched.
+          </p>
+          <template x-if="dryRunStep === 'idle' || dryRunStep === 'error'">
+            <div class="pw-rail" style="flex-direction:column;padding:0;gap:10px">
+              <div>
+                <label class="field-label">Database name (as shown in FMS)</label>
+                <input type="text" class="form-input" x-model="applyDbName" placeholder="MyFile">
+              </div>
+              <div>
+                <button type="button" class="cfm-btn cfm-btn--primary"
+                        :disabled="!applyDbName"
+                        @click="doDryRunVerify()">Dry-run on server</button>
+                <span class="pw-action-note" style="margin-left:.5rem">Patches a copy, verifies, discards. ~30–60s.</span>
+              </div>
+              <div x-show="dryRunError" class="alert alert-error" style="margin:0" x-text="dryRunError"></div>
+            </div>
+          </template>
+          <template x-if="dryRunStep === 'running'">
+            <p class="caption">Dry-running on the server — patching a copy and verifying… (~30–60s)</p>
+          </template>
+          <template x-if="dryRunStep === 'done' && dryRunReport">
+            <div>
+              <template x-if="dryRunReport.applied_cleanly && dryRunReport.exact">
+                <div class="alert alert-success" style="margin:0">
+                  ✓ Dry-run applied cleanly — all
+                  <span x-text="dryRunReport.confirmed_count"></span> intended change(s) landed,
+                  nothing else changed. Safe to apply for real.
+                </div>
+              </template>
+              <template x-if="!(dryRunReport.applied_cleanly && dryRunReport.exact)">
+                <div style="margin:0" :class="dryRunReport.applied_cleanly ? 'alert alert-warn' : 'alert alert-error'">
+                  <strong>Dry-run:</strong>
+                  <span x-show="!dryRunReport.applied_cleanly"
+                        x-text="dryRunReport.missing_count + ' intended change(s) did NOT land'"></span>
+                  <span x-show="dryRunReport.applied_cleanly && dryRunReport.unexpected_count"
+                        x-text="'applied, but ' + dryRunReport.unexpected_count + ' unexpected change(s)'"></span>.
+                  <ul style="margin:.5rem 0 0;padding-left:1.25rem">
+                    <template x-for="f in dryRunFindings()" :key="f.status + f.section + f.name">
+                      <li><span class="badge" x-text="f.status"></span>
+                        <span x-text="(f.action ? f.action + ' ' : '') + f.section + ' / ' + f.name"></span></li>
+                    </template>
+                  </ul>
+                </div>
+              </template>
+              <div class="pw-gen-row" style="margin-top:10px">
+                <button type="button" class="cfm-btn cfm-btn--sm" @click="dryRunStep = 'idle'">Reset</button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      {# Apply — co-located only #}
+      <template x-if="toolAvailable && adminPkiConfigured">
+        <div class="card card-mb">
+          <div class="pw-panel-title">Apply to Server File</div>
+          <p style="font-size:13px;color:var(--text-dim);margin:0 0 12px">
+            Apply this patch directly to a FileMaker file hosted on this server.
+            CORPUSfm first runs a <strong>sandbox dry-run</strong> (a copy is patched and
+            verified, production untouched) and only proceeds if it applies cleanly; the
+            real apply is <strong>reversible</strong> — the live file is backed up before
+            the swap and restored automatically if anything fails.
+          </p>
+
+          {# Inputs #}
+          <template x-if="applyStep === 'idle'">
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div>
+                <label class="field-label">FM file path on this server</label>
+                <input type="text" class="form-input" x-model="applySrcPath"
+                       placeholder="/Library/FileMaker Server/Data/Databases/MyFile.fmp12">
+              </div>
+              <div>
+                <label class="field-label">Database name (as shown in FMS)</label>
+                <input type="text" class="form-input" x-model="applyDbName"
+                       placeholder="MyFile">
+              </div>
+              <div>
+                <label class="field-label">Target-file account</label>
+                <input type="text" class="form-input" x-model="fileAccount"
+                       placeholder="Uses the baseline Job credential when available"
+                       autocomplete="off" @input="touchPatchSecrets()">
+              </div>
+              <div>
+                <label class="field-label">Target-file password</label>
+                <input type="password" class="form-input" x-model="filePassword"
+                       placeholder="Required when no exact Job credential is available"
+                       autocomplete="off" @input="touchPatchSecrets()">
+              </div>
+              <div>
+                <label class="field-label">Source EAR password <span class="caption">· if encrypted</span></label>
+                <input type="password" class="form-input" x-model="earPassword"
+                       placeholder="Encryption At Rest password"
+                       autocomplete="off" @input="touchPatchSecrets()">
+              </div>
+              <div>
+                <button type="button" class="cfm-btn"
+                        :disabled="!applySrcPath || !applyDbName"
+                        @click="doValidate()">Validate First</button>
+              </div>
+            </div>
+          </template>
+
+          {# Validate output #}
+          <template x-if="applyStep === 'validated' || applyStep === 'confirming'">
+            <div>
+              <pre class="pw-apply-log" x-text="validateOutput"></pre>
+              <p class="cfm-muted cfm-mt-6" x-show="credentialSource === 'job'">
+                Using the credential stored by the exact baseline Job.
+              </p>
+              <template x-if="validateOk">
+                <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+                  <button type="button" class="cfm-btn cfm-btn--danger"
+                          :disabled="applyStep === 'confirming'"
+                          @click="doApply()">Apply to Server</button>
+                  <button type="button" class="cfm-btn"
+                          @click="cancelApply()">Back</button>
+                  <span style="font-size:12px;color:var(--text-dim)">
+                    This will close, patch, and reopen the database.
+                  </span>
+                </div>
+              </template>
+              <template x-if="!validateOk">
+                <div style="margin-top:10px">
+                  <button type="button" class="cfm-btn"
+                          @click="cancelApply()">Back</button>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          {# Apply log #}
+          <template x-if="applyStep === 'done' || applyStep === 'error'">
+            <div>
+              <pre class="pw-apply-log" x-text="applyLog"></pre>
+              <div style="display:flex;gap:8px;margin-top:10px">
+                <template x-if="applyStep === 'done'">
+                  <span style="color:var(--health-ok);font-size:13px;font-weight:600">
+                    ✓ Patch applied successfully.
+                  </span>
+                </template>
+                <button type="button" class="cfm-btn cfm-btn--sm"
+                        @click="cancelApply()">Reset</button>
+              </div>
+            </div>
+          </template>
+
+        </div>
+      </template>
+
+    </div>
+  </template>
+
+
+  {# ── The ISV workflow ────────────────────────────────────────────────────── #}
+  <div class="card card-mb pw-about-card">
+    <div class="pw-panel-title">The ISV workflow</div>
+    <p>The ISV Tool turns a CORPUSfm diff into an <code>FMUpgradeToolPatch</code> — one XML file that carries your schema changes (scripts, fields, layouts, and more) into any FileMaker file matching the baseline, <strong>without touching data</strong>.</p>
+    <p>It's built for <strong>ISV deployments</strong> — one product, many client sites, schema updates that must reach every site reliably:</p>
+    <ol class="pw-about-ol">
+      <li>Import the <strong>baseline</strong> (the schema currently at client sites) and your <strong>new version</strong>.</li>
+      <li>On the <a href="{{ url_prefix }}/artifacts">Artifacts</a> page, open the baseline's detail and click <strong>Patch (ISV)</strong>.</li>
+      <li>Pick the new version (B) here and <strong>read the Coverage report</strong> — for this exact pair it lists, object by object, what will land and what won't (and why). <em>That report is the part that matters.</em></li>
+      <li><strong>Generate</strong>, then download <code>patch.xml</code> for distribution — or, on a co-located server, Dry-run and Apply right here.</li>
+      <li>Client sites run:
+        <code class="pw-cmd-code">FMUpgradeTool --validatePatch -patch_path patch.xml -src_path clientfile.fmp12<br>FMUpgradeTool --update -src_path clientfile.fmp12 -patch_path patch.xml -dest_path patched.fmp12</code>
+      </li>
+    </ol>
+    <p class="caption">What a patch can and can't express for <em>your</em> change is decided per-patch: the <strong>Coverage report</strong> above flags anything <em>not patchable</em> with its reason. Trust that report for this patch rather than any general list — it's computed from the actual diff.</p>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const _PATCH_BOOT_TS = "{{ boot_ts }}";
+
+function patchWorkspace() {
+  return {
+    // Artifact selection
+    artifactA: '',
+    artifactB: '',
+    labelA:    '',
+    labelB:    '',
+    rootUuid:  '',
+
+    // Stage: 1 = A selected awaiting B, 2 = preflight/intelligence, 3 = generated
+    stage: 1,
+
+    // Preflight
+    preflightTaskId:  null,
+    preflightRunning: false,
+    preflightSoft:    false,   // packet 1136 Stage 4: the feed's progress-silence soft state (static spinner)
+    preflightDone:    false,
+    preflightError:   '',
+
+    // Results
+    summary:         null,
+    coverage:        [],
+    versionMismatch: false,
+
+    // Generate / saved artifact
+    patchUuid:  null,   // uuid of the saved PatchXML artifact (set after generate)
+    patchXml:      '',   // generated patch XML — drives validate/encrypt/apply
+    generating:    false,
+    generateError: '',
+
+    // Recent ISV patches (shown on the empty state)
+    recentPatches: [],
+
+    // Diff
+    diffError: '',
+
+    // Export script injection
+    needsExportScript:  false,
+    injectExportScript: false,
+
+    // Tool availability (co-located)
+    toolAvailable:    false,
+    adminPkiConfigured: false,
+    sandboxAvailable:  false,
+
+    // Dry-run on the server (sandbox)
+    dryRunStep:   'idle',
+    dryRunReport: null,
+    dryRunError:  '',
+
+    // Encrypt
+    encryptKey:   '',
+    encryptBusy:  false,
+    encryptError: '',
+
+    // Apply
+    applyStep:        'idle',   // idle | validated | confirming | done | error
+    applySrcPath:     '',
+    applyDbName:      '',
+    fileAccount:      '',
+    filePassword:     '',
+    earPassword:      '',
+    credentialSource: '',
+    patchSecretTimer: null,
+    validateOutput:   '',
+    validateOk:       false,
+    applyLog:         '',
+
+    // Coverage expansion state
+    expandedSections: {},   // section key → true
+    expandedIdx:      {},   // coverage array index → true (item-level reason expand)
+
+    // ── Session persistence ──────────────────────────────────────────────────
+
+    saveSession() {
+      try {
+        sessionStorage.setItem('corpusfm_patch_workspace', JSON.stringify({
+          boot_ts:         _PATCH_BOOT_TS,
+          artifactA:       this.artifactA,
+          artifactB:       this.artifactB,
+          labelA:          this.labelA,
+          labelB:          this.labelB,
+          rootUuid:        this.rootUuid,
+          stage:           this.stage,
+          preflightDone:      this.preflightDone,
+          summary:            this.summary,
+          coverage:           this.coverage,
+          versionMismatch:    this.versionMismatch,
+          needsExportScript:  this.needsExportScript,
+          patchUuid:         this.patchUuid,
+        }));
+      } catch(e) {}
+    },
+
+    _loadSession() {
+      try {
+        const s = sessionStorage.getItem('corpusfm_patch_workspace');
+        if (!s) return null;
+        const parsed = JSON.parse(s);
+        // Invalidate if the server has restarted since this was saved
+        if (parsed.boot_ts !== _PATCH_BOOT_TS) { this.clearSession(); return null; }
+        return parsed;
+      } catch(e) { return null; }
+    },
+
+    clearSession() {
+      try { sessionStorage.removeItem('corpusfm_patch_workspace'); } catch(e) {}
+    },
+
+    // ── Init ────────────────────────────────────────────────────────────────
+
+    init() {
+      const params = new URLSearchParams(window.location.search);
+      const paramA = params.get('artifact_a') || '';
+
+      this._fetchToolStatus();
+      this._fetchRecentPatches();
+      window.addEventListener('pagehide', () => this.clearPatchSecrets(), { once: true });
+
+      if (paramA) {
+        // Fresh navigation from Artifacts — URL params win, clear prior session
+        this.artifactA = paramA;
+        this.artifactB = params.get('artifact_b') || '';
+        this.labelA    = params.get('label_a')    || paramA;
+        this.labelB    = params.get('label_b')    || this.artifactB;
+        this.rootUuid  = params.get('root_uuid')  || '';
+        this.clearSession();
+        if (this.artifactA && this.artifactB) {
+          this.stage = 2;
+          this.runPreflight();
+        }
+      } else {
+        // Try session restore
+        const saved = this._loadSession();
+        if (saved && saved.artifactA) {
+          this.artifactA = saved.artifactA;
+          this.artifactB = saved.artifactB   || '';
+          this.labelA    = saved.labelA      || saved.artifactA;
+          this.labelB    = saved.labelB      || saved.artifactB || '';
+          this.rootUuid  = saved.rootUuid    || '';
+          this.stage     = saved.stage       || 1;
+          this.patchUuid = saved.patchUuid || null;
+
+          if (saved.preflightDone && saved.artifactB) {
+            // Restore full preflight results immediately from session
+            this.summary            = saved.summary            || null;
+            this.coverage           = saved.coverage           || [];
+            this.versionMismatch    = saved.versionMismatch    || false;
+            this.needsExportScript  = saved.needsExportScript  || false;
+            this.preflightDone   = true;
+            // If stage < 3, refresh task ID in background so Generate button works
+            if (this.stage < 3) {
+              this._refreshPreflightTaskId();
+            }
+          } else if (saved.stage === 2 && saved.artifactB) {
+            // Was mid-preflight when navigated away — re-run
+            this.stage = 2;
+            this.runPreflight();
+          }
+        }
+      }
+    },
+
+    // ── Recent ISV patches (catalog) ──────────────────────────────────────────
+
+    async _fetchRecentPatches() {
+      try {
+        const r = await fetch('/api/library/artifacts/search?' + new URLSearchParams({
+          origin: 'Patch (ISV)', per_page: '10',
+        }));
+        const d = await r.json();
+        this.recentPatches = d.rows || [];
+      } catch(e) {}
+    },
+
+    // ── Picker ──────────────────────────────────────────────────────────────
+
+    openBPicker() {
+      this.$dispatch('open-artifact-picker', {
+        title:            'Select New Version (B) to Patch To',
+        types:            ['SaveAsXML'],
+        requiresArtifact: true,
+        multiSelect:      false,
+        rootUuid:         this.rootUuid,
+        exclude:          this.artifactA,
+        callback:         (rows) => {
+          if (!rows.length) return;
+          const row = rows[0];
+          this.artifactB = row.uuid;
+          this.labelB    = (row.label || row.fm_file || row.uuid) + '  ' + (row.timestamp || '').slice(0, 10);
+          const url = new URL(window.location);
+          url.searchParams.set('artifact_b', this.artifactB);
+          url.searchParams.set('label_b',    this.labelB);
+          history.replaceState({}, '', url);
+          this.preflightDone  = false;
+          this.preflightError = '';
+          this.stage          = 2;
+          this.saveSession();
+          this.runPreflight();
+        },
+      });
+    },
+
+    // ── Preflight ───────────────────────────────────────────────────────────
+
+    async runPreflight() {
+      // Packet 1136 Stage 4: the preflight SPINNER STATE (active / soft / evicted / unknown / done) now
+      // comes from the ONE unified activity feed ($store.queue) + its shared cadence — NOT an independent
+      // /api/generate/status poll loop. The generate task is an ephemeral feed record keyed by task id;
+      // we watch its per-item state and fetch the RESULT (/api/generate/patch/result) only AFTER the feed
+      // reports the task DONE. Generation token (packet 1135) still guards a stale run from stomping a newer.
+      const gen = (this._preflightGen = (this._preflightGen || 0) + 1);
+      this.preflightRunning = true;
+      this.preflightSoft    = false;
+      this.preflightDone    = false;
+      this.preflightError   = '';
+      this.summary          = null;
+      this.coverage         = [];
+      this.preflightTaskId  = null;
+      try {
+        const r = await fetch('/api/generate/patch/preflight', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ artifact_a: this.artifactA, artifact_b: this.artifactB }),
+        });
+        const d = await r.json();
+        if (gen !== this._preflightGen) return;         // superseded by a newer preflight
+        if (d.error) { this.preflightError = d.error; this.preflightRunning = false; return; }
+        this.preflightTaskId = d.task_id;
+        if (this.$store.queue) this.$store.queue.refresh();   // hand off: the feed picks up the new task
+        // Watch the feed for THIS task's terminal; the soft callback drives the static-spinner state.
+        const terminal = await this._awaitFeedTerminal(gen, d.task_id, (soft) => {
+          if (gen === this._preflightGen) this.preflightSoft = soft;
+        });
+        if (gen !== this._preflightGen || terminal === null) return;   // superseded mid-wait
+        this.preflightSoft = false;
+        if (terminal === 'done') {
+          const data = await this._fetchPreflightResult(d.task_id);   // terminal OUTPUT, only after feed-done
+          if (gen !== this._preflightGen) return;
+          if (!data || data.error) {
+            this.preflightError = (data && data.error) || 'Could not load the analysis result — re-run preflight.';
+          } else {
+            this.summary            = data.summary  || null;
+            this.coverage           = data.coverage?.entries || [];
+            this.versionMismatch    = !!data.coverage?.version_mismatch;
+            this.needsExportScript  = !!data.needs_export_script;
+            this.injectExportScript = false;  // always reset on new preflight
+            this.preflightDone      = true;
+            this.saveSession();
+          }
+        } else if (terminal === 'failed') {
+          this.preflightError = 'Analysis failed — re-run preflight.';
+        } else if (terminal === 'evicted') {
+          this.preflightError = 'Analysis task expired (the server restarted) — re-run preflight.';
+        } else {   // 'unknown_expired' / 'finished' — absence is never success
+          this.preflightError = 'Analysis result was not observed in time — re-run preflight.';
+        }
+        this.preflightRunning = false;                  // ALWAYS resolves the spinner on any terminal state
+      } catch(e) {
+        if (gen !== this._preflightGen) return;
+        this.preflightError   = String(e);
+        this.preflightSoft    = false;
+        this.preflightRunning = false;
+      }
+    },
+
+    // Poll a generate task to a terminal state (packet 1135). Bounded (no infinite loop),
+    // transient-tolerant (a single non-JSON/network blip keeps polling — packets 081/1000/1067),
+    // and honest about a vanished task: a server restart evicts the in-memory task so
+    // /api/generate/status returns 404 {status:'not_found'}, which the old while(true) never handled
+    // -> the spinner spun forever. Returns {status:'done'|'error'|'not_found'|'timeout', data?, error?}.
+    // Watch the UNIFIED FEED for a generate task's terminal (packet 1136 Stage 4) — replaces the old
+    // independent /api/generate/status poll loop. State is derived from $store.queue.itemState(taskId)
+    // on each shared-cadence `cfm-activity` tick: null/active → still working (onSoft(false)); soft →
+    // progress-silence (onSoft(true)); otherwise a terminal (done/failed/evicted/unknown_expired/finished)
+    // resolves the promise. No client-side timeout — the feed + the server watchdog own the real terminal;
+    // a failed/unobserved feed source keeps the spinner last-known (the store retains + pauses), which is
+    // honest. Returns null if a newer preflight superseded this one.
+    _awaitFeedTerminal(gen, taskId, onSoft) {
+      return new Promise((resolve) => {
+        const h = () => {
+          if (gen !== this._preflightGen) { window.removeEventListener('cfm-activity', h); resolve(null); return; }
+          const q = this.$store.queue;
+          if (!q) return;
+          const st = q.itemState(taskId);
+          if (st === null || st === 'active') { if (onSoft) onSoft(false); return; }
+          if (st === 'soft') { if (onSoft) onSoft(true); return; }
+          window.removeEventListener('cfm-activity', h);   // terminal
+          resolve(st);
+        };
+        window.addEventListener('cfm-activity', h);
+        h();   // check immediately in case the store already holds the task's state
+      });
+    },
+    async _fetchPreflightResult(taskId) {
+      try { const r = await fetch(`/api/generate/patch/result/${taskId}`); return await r.json(); }
+      catch (e) { return { error: 'Could not load the analysis result — re-run preflight.' }; }
+    },
+
+    // Background refresh — called on session restore when stage < 3. Gets a fresh preflightTaskId
+    // without disturbing the displayed results, watching the FEED for its terminal (no spinner shown);
+    // (packet 1135) never stomps a newer foreground preflight (generation-token guard).
+    async _refreshPreflightTaskId() {
+      const gen = (this._preflightGen = (this._preflightGen || 0) + 1);
+      try {
+        const r = await fetch('/api/generate/patch/preflight', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ artifact_a: this.artifactA, artifact_b: this.artifactB }),
+        });
+        const d = await r.json();
+        if (gen !== this._preflightGen || d.error || !d.task_id) return;
+        this.preflightTaskId = d.task_id;
+        if (this.$store.queue) this.$store.queue.refresh();
+        const terminal = await this._awaitFeedTerminal(gen, d.task_id, null);   // background — no soft display
+        if (gen !== this._preflightGen || terminal !== 'done') return;          // silent on non-done
+        const data = await this._fetchPreflightResult(d.task_id);
+        if (gen !== this._preflightGen || !data || data.error) return;
+        this.summary            = data.summary  || null;
+        this.coverage           = data.coverage?.entries || [];
+        this.versionMismatch    = !!data.coverage?.version_mismatch;
+        this.needsExportScript  = !!data.needs_export_script;
+        this.saveSession();
+      } catch(e) {
+        // Silently fail — cached results remain; Generate button stays disabled
+      }
+    },
+
+    // ── Generate ────────────────────────────────────────────────────────────
+
+    async generatePatch() {
+      if (!this.preflightTaskId) return;
+      this.generating    = true;
+      this.generateError = '';
+      try {
+        const r = await fetch(`/api/generate/patch/confirm/${this.preflightTaskId}`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            inject_export_script: this.injectExportScript,
+          }),
+        });
+        const d = await r.json();
+        if (d.error) { this.generateError = d.error; return; }
+        this.patchUuid = d.uuid;
+        this.patchXml     = d.patch_xml || '';
+        this.stage        = 3;
+        this.saveSession();
+        this._fetchRecentPatches();
+      } catch(e) {
+        this.generateError = String(e);
+      } finally {
+        this.generating = false;
+      }
+    },
+
+    // ── Diff ────────────────────────────────────────────────────────────────
+
+    // The opened tab self-polls + shows progress, so the original page does not lock
+    // or poll — it just starts the task and hands it off.
+    async openDiff() {
+      const pending = window.cfmOpenPending();
+      this.diffError = '';
+      try {
+        const r = await fetch('/api/generate/diff', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ artifact_a: this.artifactA, artifact_b: this.artifactB }),
+        });
+        const d = await r.json();
+        if (d.error) { this.diffError = d.error; window.cfmResolvePending(pending, null, d.error); return; }
+        window.cfmTrackInTab(pending, d.task_id);
+      } catch(e) {
+        this.diffError = String(e);
+        window.cfmResolvePending(pending, null, String(e));
+      }
+    },
+
+    // ── Tool status + server configs ─────────────────────────────────────────
+
+    async _fetchToolStatus() {
+      try {
+        const r = await fetch('/api/patch-ops/tool-status');
+        const d = await r.json();
+        this.toolAvailable     = !!d.tool_available;
+        this.adminPkiConfigured = !!d.admin_pki_configured;
+        this.sandboxAvailable  = !!d.sandbox_available;
+      } catch(e) {}
+    },
+
+    // ── Dry-run on the server (sandbox; production untouched) ─────────────────
+    dryRunFindings() {
+      if (!this.dryRunReport) return [];
+      return (this.dryRunReport.missing || []).concat(this.dryRunReport.unexpected || []);
+    },
+
+    async doDryRunVerify() {
+      if (!this.applyDbName) return;
+      const xml = await this._ensurePatchXml();
+      if (!xml) { this.dryRunError = 'No patch XML available.'; this.dryRunStep = 'error'; return; }
+      this.dryRunStep = 'running'; this.dryRunError = ''; this.dryRunReport = null;
+      this.touchPatchSecrets();
+      try {
+        const r = await fetch('/api/patch-ops/dry-run-verify', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            patch_xml:     xml,
+            before_path:   this.artifactA,
+            database_name: this.applyDbName,
+            file_account:  this.fileAccount,
+            file_password: this.filePassword,
+            ear_password:  this.earPassword,
+          }),
+        });
+        const d = await r.json();
+        if (!r.ok || !d.ok) { this.dryRunError = d.error || 'Dry-run failed.'; this.dryRunStep = 'error'; return; }
+        this.dryRunReport = d.report; this.dryRunStep = 'done';
+      } catch (e) {
+        this.dryRunError = 'Request failed: ' + e; this.dryRunStep = 'error';
+      } finally {
+        this.clearPatchSecrets();
+      }
+    },
+
+    // Patch ops act on the generated patch XML. After a page-restore the XML isn't
+    // kept in sessionStorage (too large) — re-fetch it from the saved PatchXML
+    // artifact on demand.
+    async _ensurePatchXml() {
+      if (this.patchXml) return this.patchXml;
+      if (!this.patchUuid) return '';
+      try {
+        const r = await fetch('/api/artifact-download/' + encodeURIComponent(this.patchUuid));
+        if (r.ok) this.patchXml = await r.text();
+      } catch(_) {}
+      return this.patchXml;
+    },
+
+    // ── Encrypt ──────────────────────────────────────────────────────────────
+
+    async doEncrypt() {
+      if (!this.encryptKey) return;
+      this.encryptBusy  = true;
+      this.encryptError = '';
+      try {
+        const xml = await this._ensurePatchXml();
+        if (!xml) { this.encryptError = 'No patch in this session.'; return; }
+        const r = await fetch('/api/patch-ops/encrypt', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ patch_xml: xml, key: this.encryptKey }),
+        });
+        if (!r.ok) {
+          const d = await r.json();
+          this.encryptError = d.error || 'Encryption failed.';
+          return;
+        }
+        const blob = await r.blob();
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href     = url;
+        a.download = 'patch-encrypted.xml';
+        a.click();
+        URL.revokeObjectURL(url);
+        this.encryptKey = '';
+      } catch(e) {
+        this.encryptError = String(e);
+      } finally {
+        this.encryptBusy = false;
+      }
+    },
+
+    // ── Apply ────────────────────────────────────────────────────────────────
+
+    async doValidate() {
+      this.applyStep     = 'confirming';
+      this.validateOutput = '';
+      this.validateOk    = false;
+      this.touchPatchSecrets();
+      try {
+        const xml = await this._ensurePatchXml();
+        if (!xml) { this.validateOutput = 'No patch in this session.'; this.applyStep = 'validated'; return; }
+        const r = await fetch('/api/patch-ops/validate', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            patch_xml: xml, src_path: this.applySrcPath, database_name: this.applyDbName,
+            before_path: this.artifactA, file_account: this.fileAccount,
+            file_password: this.filePassword, ear_password: this.earPassword,
+          }),
+        });
+        const d = await r.json();
+        this.credentialSource = d.access_source || '';
+        this.validateOutput = d.output || '';
+        this.validateOk     = !!d.ok;
+        this.applyStep      = 'validated';
+        if (!this.validateOk) this.clearPatchSecrets();
+      } catch(e) {
+        this.validateOutput = String(e);
+        this.validateOk     = false;
+        this.applyStep      = 'validated';
+        this.clearPatchSecrets();
+      }
+    },
+
+    async doApply() {
+      this.applyStep = 'confirming';
+      this.touchPatchSecrets();
+      try {
+        const xml = await this._ensurePatchXml();
+        if (!xml) { this.applyLog = 'No patch in this session.'; this.applyStep = 'error'; return; }
+        const r = await fetch('/api/patch-ops/apply', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            patch_xml:     xml,
+            src_path:      this.applySrcPath,
+            database_name: this.applyDbName,
+            // Enables the production-safe pre-flight (sandbox dry-run must apply cleanly,
+            // production untouched, before the real reversible apply).
+            before_path:   this.artifactA,
+            file_account:  this.fileAccount,
+            file_password: this.filePassword,
+            ear_password:  this.earPassword,
+          }),
+        });
+        const d = await r.json();
+        this.credentialSource = d.access_source || '';
+        this.applyLog  = d.log || '';
+        this.applyStep = d.ok ? 'done' : 'error';
+      } catch(e) {
+        this.applyLog  = String(e);
+        this.applyStep = 'error';
+      } finally {
+        this.clearPatchSecrets();
+      }
+    },
+
+    touchPatchSecrets() {
+      if (this.patchSecretTimer) clearTimeout(this.patchSecretTimer);
+      this.patchSecretTimer = setTimeout(() => this.clearPatchSecrets(), 10 * 60 * 1000);
+    },
+
+    clearPatchSecrets() {
+      this.fileAccount = '';
+      this.filePassword = '';
+      this.earPassword = '';
+      if (this.patchSecretTimer) clearTimeout(this.patchSecretTimer);
+      this.patchSecretTimer = null;
+    },
+
+    cancelApply() {
+      this.clearPatchSecrets();
+      this.fileAccount = '';
+      this.applyStep = 'idle';
+    },
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    get patchableCount()    { return this.coverage.filter(e => e.status === 'patchable').length; },
+    get blockedItems()      { return this.coverage.filter(e => e.status === 'blocked'); },
+    get notPatchableItems() { return this.coverage.filter(e => e.status === 'not_patchable'); },
+
+    // Coverage grouped by section — sections sorted worst-status-first then label;
+    // items within each section sorted blocked → not_patchable → patchable then name
+    get coverageBySection() {
+      const pri = { blocked: 0, not_patchable: 1, patchable: 2 };
+      const groups = {};
+      this.coverage.forEach((e, i) => {
+        if (!groups[e.section]) groups[e.section] = { entries: [], worstStatus: 'patchable' };
+        groups[e.section].entries.push({ ...e, _idx: i });
+        if ((pri[e.status] ?? 3) < (pri[groups[e.section].worstStatus] ?? 3))
+          groups[e.section].worstStatus = e.status;
+      });
+      Object.values(groups).forEach(g => {
+        g.entries.sort((a, b) => {
+          const pa = pri[a.status] ?? 3, pb = pri[b.status] ?? 3;
+          if (pa !== pb) return pa - pb;
+          return a.name.localeCompare(b.name);
+        });
+      });
+      return Object.entries(groups)
+        .map(([key, g]) => ({
+          key, label: this.sectionLabel(key),
+          entries:     g.entries,
+          worstStatus: g.worstStatus,
+          addCount:    g.entries.filter(e => e.action === 'Add').length,
+          repCount:    g.entries.filter(e => e.action === 'Replace' || e.action === 'Rename').length,
+          delCount:    g.entries.filter(e => e.action === 'Delete').length,
+        }))
+        .sort((a, b) => {
+          const pa = pri[a.worstStatus] ?? 3, pb = pri[b.worstStatus] ?? 3;
+          if (pa !== pb) return pa - pb;
+          return a.label.localeCompare(b.label);
+        });
+    },
+
+    toggleSection(key) {
+      this.expandedSections = this.expandedSections[key]
+        ? Object.fromEntries(Object.entries(this.expandedSections).filter(([k]) => k !== key))
+        : { ...this.expandedSections, [key]: true };
+    },
+
+    toggleRow(idx) {
+      this.expandedIdx = this.expandedIdx[idx]
+        ? Object.fromEntries(Object.entries(this.expandedIdx).filter(([k]) => +k !== idx))
+        : { ...this.expandedIdx, [idx]: true };
+    },
+
+    actionClass(action) {
+      return {
+        'pw-act-add': action === 'Add',
+        'pw-act-del': action === 'Delete',
+        'pw-act-rep': action === 'Replace' || action === 'Rename',
+      };
+    },
+
+    sectionLabel(key) {
+      const map = {
+        ScriptCatalog:             'Scripts',
+        BaseTableCatalog:          'Tables',
+        FieldsForTables:           'Fields',
+        LayoutCatalog:             'Layouts',
+        CustomFunctionsCatalog:    'Custom Functions',
+        ValueListCatalog:          'Value Lists',
+        RelationshipCatalog:       'Relationships',
+        TableOccurrenceCatalog:    'Table Occurrences',
+        AccountsCatalog:           'Accounts',
+        PrivilegeSetsCatalog:      'Privilege Sets',
+        ThemeCatalog:              'Themes',
+        CustomMenuSetCatalog:      'Custom Menus',
+        ExternalDataSourceCatalog: 'External Sources',
+      };
+      return map[key] || key;
+    },
+
+    statusClass(status) {
+      return {
+        'pw-status-ok':  status === 'patchable',
+        'pw-status-bad': status === 'not_patchable',
+        'pw-status-blk': status === 'blocked',
+      };
+    },
+  };
+}
+</script>
+{% endblock %}

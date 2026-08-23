@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}About — CORPUSfm{% endblock %}
+
+{# About — re-platform (bespoke kit; no Shoelace). Static info: description, version
+   (+ Python, moved here off Settings → General), third-party credits. Plan surface 17. #}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+<div class="cfm-page-hdr"><h1>About CORPUSfm</h1>
+  <div class="cfm-hdr-actions">{{ doc_help('overview', 'CORPUSfm overview') }}</div>
+</div>
+
+<p class="cfm-about-lede">
+  CORPUSfm is a FileMaker schema intelligence platform: browse and search schema catalogs,
+  compare artifact versions, automate pull and push ingestion via Jobs, export structured
+  content for AI-assisted development, and validate schema mappings with the built-in gap analyzer.
+</p>
+
+<div class="cfm-about-row">
+  <div class="cfm-panel cfm-about-ver">
+    <div class="cfm-field-label">Version</div>
+    <div class="cfm-about-vernum">{{ version }}</div>
+    <div class="cfm-field-label cfm-mt-6">Python</div>
+    <div class="cfm-muted">{{ python_version }}</div>
+  </div>
+  <div class="cfm-panel cfm-about-gh">
+    <div class="cfm-field-label">GitHub</div>
+    <a href="https://github.com/CORPUSfm/CORPUSfm">CORPUSfm/CORPUSfm</a>
+    <div class="cfm-mt-6"><a href="{{ releases_url }}">View releases →</a></div>
+  </div>
+  <div class="cfm-panel">
+    <div class="cfm-field-label">License</div>
+    <div>Apache-2.0</div>
+    <div class="cfm-muted cfm-mt-6">Published and supported by PINAX SOFTWARE LLC</div>
+    <div class="cfm-mt-6"><a href="https://github.com/CORPUSfm/CORPUSfm">Source code →</a></div>
+  </div>
+</div>
+
+<p class="cfm-muted cfm-mt-6">
+  CORPUSfm is licensed under the Apache License, Version 2.0.
+  FileMaker is a registered trademark of Claris International Inc.; CORPUSfm is an independent
+  tool and is not affiliated with or endorsed by Claris.
+</p>
+
+<h2 class="cfm-section-h">Third-party libraries</h2>
+<p class="cfm-muted cfm-mb-12">Runtime dependencies. Build-only and test-only packages are excluded.</p>
+
+<div class="cfm-panel cfm-table-wrap">
+  <table class="cfm-table">
+    <thead><tr><th>Library</th><th>License</th><th>Homepage</th></tr></thead>
+    <tbody>
+      {% set credits = [
+        ("FastAPI", "MIT", "https://fastapi.tiangolo.com"),
+        ("Starlette", "BSD 3-Clause", "https://www.starlette.io"),
+        ("python-multipart", "Apache 2.0", "https://github.com/Kludex/python-multipart"),
+        ("uvicorn", "BSD 3-Clause", "https://www.uvicorn.org"),
+        ("cryptography", "Apache 2.0", "https://cryptography.io"),
+        ("requests", "Apache 2.0", "https://python-requests.org"),
+        ("PyYAML", "MIT", "https://pyyaml.org"),
+        ("anthropic", "MIT", "https://github.com/anthropics/anthropic-sdk-python"),
+        ("GitPython", "BSD 3-Clause", "https://gitpython.readthedocs.io"),
+        ("psutil", "BSD 3-Clause", "https://github.com/giampaolo/psutil"),
+        ("croniter", "MIT", "https://github.com/kiorky/croniter"),
+        ("chromadb", "Apache 2.0", "https://github.com/chroma-core/chroma"),
+        ("fastmcp", "MIT", "https://github.com/jlowin/fastmcp"),
+        ("Alpine.js", "MIT", "https://alpinejs.dev"),
+        ("Fuse.js", "Apache 2.0", "https://www.fusejs.io"),
+        ("Lucide", "ISC", "https://lucide.dev"),
+      ] %}
+      {% for name, license, url in credits %}
+      <tr><td>{{ name }}</td><td>{{ license }}</td><td><a href="{{ url }}">{{ url }}</a></td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{# Last informational update notice, persistent here (not gated on banner dismissal). #}
+{% if update_notice %}
+<div class="cfm-panel">
+  <div class="cfm-panel-h">Last update</div>
+  <p class="cfm-muted">{{ update_notice }}</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,2580 @@
+{% extends "base.html" %}
+{% block title %}Artifacts — CORPUSfm{% endblock %}
+
+{# Artifacts / Catalog — re-platform (bespoke kit; no Shoelace). The dev's favorite page.
+   Gallery of type-coded identity cards with a top-right corner SELECT WEDGE (in the card's
+   type color; fills + checks on select); selecting LIFTS cards into a box-less Action space
+   with a flat toolbar (Explore · Diff · ISV · Merge · Index · De-index · trash, contiguous);
+   a no-checkbox unified-pill Filter pop-over; and a tabbed detail pop-over (Overview · Notes ·
+   Health) with ONE Save (leaving discards). Deferred (backend-dependent): the import pop-over
+   (Import still links the existing page), DB-backed Recent, the Export-tab git model + parent-job
+   link, the History tab. See plan surfaces 12–13. #}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+
+<div x-data="libraryPage()" @cfm-imported.window="load(); loadTagNames()"
+     @cfm-index-batch-done.window="load()" @paste.window="onGlobalPaste($event)"
+     @dragenter.window="onWinDragEnter($event)" @dragover.window="onWinDragOver($event)"
+     @dragleave.window="onWinDragLeave($event)" @drop.window="onWinDrop($event)">
+
+  {# ── Full-window file-drop overlay (packet 1038) — shown only during an OS-file drag,
+       distinct from the card-drag selection cue. Files are content-sniffed + routed on drop. #}
+  <div class="cfm-filedrop-overlay" x-show="fileDragActive" x-cloak aria-hidden="true">
+    <div class="cfm-filedrop-card">
+      <div class="cfm-filedrop-title">Drop to import</div>
+      <div class="cfm-filedrop-sub">Schema export · Add-on · .artifact · FileMaker clip — each is queued. A .fmp12 or DDR report is declined with guidance.</div>
+    </div>
+  </div>
+
+  {# ── Page header ──────────────────────────────────────────────────────────── #}
+  <div class="cfm-page-hdr">
+    <div class="cfm-hdr-title">
+      <h1>Artifacts</h1>
+      <span class="cfm-hdr-tagline">drop &amp; paste to this page</span>
+    </div>
+    <div class="cfm-hdr-actions">
+      {{ doc_help('artifacts-catalog', 'About the Artifacts catalog') }}
+      <button type="button" class="cfm-btn" @click="recentOpen = true; loadRecent()">Recent</button>
+      <button type="button" class="cfm-btn" @click="$dispatch('cfm-open-paste')">Paste</button>
+      <button type="button" class="cfm-btn cfm-btn--primary" @click="$dispatch('cfm-open-import')">Import</button>
+    </div>
+  </div>
+
+  {# ── Selection space — box-less. A persistent cue that multi-select happens here:
+       when empty it shows the drop hint; selected cards lift into it (out of the grid
+       below). Drag a card up to select. (Importing files is the Import button, not here.) #}
+  <div class="cfm-actionspace" x-show="total > 0 || selected.length > 0 || dragActive" x-cloak
+       @dragover.prevent @drop.prevent="onDrop()">
+    <template x-if="selected.length === 0">
+      <p class="cfm-drop-hint" :class="{ 'cfm-drop-hint--drag': dragActive }"><span class="cfm-desktop-only">Drop artifacts here to act on a selection. </span>Tap the corner of an artifact to add it to a selection</p>
+    </template>
+    <template x-if="selected.length > 0">
+      <div>
+        <div class="cfm-grid">
+          <template x-for="s in _selRows()" :key="s.uuid">
+            <div class="cfm-card cfm-card--sel" :class="'cfm-card--' + typeKey(s)" @click="openDetail(s.uuid)">
+              <button type="button" class="cfm-wedge cfm-wedge--on" @click.stop="toggleSelect(s)"
+                      :aria-label="'Remove ' + fileName(s) + ' from selection'" title="Remove from selection">
+                <svg class="cfm-wedge-check" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 6.5l2.5 2.5L10 3"/></svg>
+              </button>
+              <div class="cfm-card-icon" :class="'cfm-card-icon--' + typeKey(s)">
+                <template x-if="s.is_addon && s.has_icon">
+                  <img :src="(window.CFM_PREFIX||'') + '/api/artifact-icon/' + s.uuid" alt="">
+                </template>
+                <template x-if="!(s.is_addon && s.has_icon)"><span x-html="typeSvg(typeKey(s))"></span></template>
+              </div>
+              <div class="cfm-card-name" x-text="fileName(s)" :title="fileName(s)"></div>
+              <div class="cfm-card-foot">
+                <span class="cfm-badge cfm-badge--muted" x-text="typeLabel(s)"></span>
+                <template x-for="t in (s.tags || []).slice(0, 2)" :key="'st'+s.uuid+t">
+                  <span class="cfm-badge" x-text="t"></span>
+                </template>
+              </div>
+              <div class="cfm-card-sub" x-text="fmtTs(s.timestamp)"></div>
+            </div>
+          </template>
+        </div>
+
+        {# Flat toolbar — no surrounding panel. Grouped by purpose with thin separators;
+           the trash is the last group, contiguous with the bar (its own divider, no spacer).
+           (The old "Tags removed from multi-select" ruling is SUPERSEDED by packet 1280 —
+           the developer reinstated bulk Tag as an actionspace tool, 2026-08-19.) #}
+        <div class="cfm-actionbar">
+          <span class="cfm-selcount" x-text="selected.length + ' selected'"></span>
+          <button type="button" class="cfm-btn cfm-btn--text cfm-btn--sm" @click="clearSel()">Clear</button>
+          <span class="cfm-tool-sep"></span>
+          <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!canExplore"
+                  :title="canExplore ? 'Open the selected in Explorer' : 'Select schema artifacts (a clip / patch / script / calc has no Explorer lens)'" @click="selExplore()">Explore</button>
+          <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!canDiff"
+                  :title="canDiff ? 'Compare the two' : 'Select exactly 2 diffable schema artifacts'" @click="selDiff()">Diff</button>
+          <span class="cfm-tool-sep"></span>
+          <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!canPatch"
+                  :title="canPatch ? 'Generate an ISV patch (older = baseline)' : 'Select 2 SaveAsXML versions of the same file'" @click="selPatch()">ISV</button>
+          <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!canMerge || merging"
+                  :title="canMerge ? 'Merge the SaveAsXML + its add-on' : 'Select a SaveAsXML + its add-on (same file)'" @click="selMerge()" x-text="merging ? 'Merging…' : 'Merge'"></button>
+          <span class="cfm-tool-sep"></span>
+          <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!downloadBusy"
+                  title="Download the selected artifacts as one .zip bundle (a single download — browsers block multiple simultaneous downloads)"
+                  @click="selDownload()" x-text="downloadBusy ? 'Bundling…' : 'Download'"></button>
+          <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!reingestBusy"
+                  title="Re-ingest the selected schema artifacts from their stored source (in-place refresh, queued). Deliverables and artifacts with no stored source are skipped."
+                  @click="selReingest()" x-text="reingestBusy ? 'Queuing…' : 'Re-ingest'"></button>
+          <span class="cfm-tool-sep"></span>
+          <button type="button" class="cfm-btn cfm-btn--sm"
+                  title="Add tags to or remove tags from the selected artifacts"
+                  @click="openTagDlg()">Tag</button>
+          <template x-if="embedderOn">
+            <span class="cfm-confirm">
+              <span class="cfm-tool-sep"></span>
+              <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!(!canIndex)"
+                      title="Add the selected artifacts to the search index (enables semantic search — no summaries needed)"
+                      @click="selIndex()" x-text="selIndexLabel"></button>
+            </span>
+          </template>
+          <template x-if="summarizerOn">
+            <span class="cfm-confirm">
+              <span class="cfm-tool-sep"></span>
+              <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!(!canSummarize)"
+                      :title="'Generate optional AI summaries for the selected artifacts (one chat call per object — background; does not enable search by itself)'"
+                      @click="selSummarize()" x-text="selSummarizeLabel"></button>
+            </span>
+          </template>
+          <span class="cfm-tool-sep"></span>
+          <template x-if="!selConfirm">
+            <button type="button" class="cfm-iconbtn" title="Delete the selected artifacts" aria-label="Delete selected" @click="selConfirm = true">
+              <svg class="cfm-i" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10"/></svg>
+            </button>
+          </template>
+          <template x-if="selConfirm">
+            <span class="cfm-confirm">
+              <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger"
+                      :disabled="!!selForgetBusy" @click="selForget()">Confirm?</button>
+              <button type="button" class="cfm-btn cfm-btn--sm"
+                      :disabled="!!selForgetBusy" @click="selConfirm = false">Cancel</button>
+            </span>
+          </template>
+        </div>
+        <div class="cfm-progress-row" x-show="merging" x-cloak>
+          <span class="cfm-progress-lbl">Merging…</span>
+          <div class="cfm-progress"></div>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  {# ── Filter bar ───────────────────────────────────────────────────────────── #}
+  <datalist id="tag-names-list">
+    <template x-for="n in tagNames" :key="n"><option :value="n"></option></template>
+  </datalist>
+  <div class="cfm-filterbar">
+    <button type="button" class="cfm-btn" @click="filterOpen = true">
+      Filters<span x-show="activeFilterCount > 0" class="cfm-facet-badge" x-text="activeFilterCount"></span>
+    </button>
+    <button type="button" class="cfm-btn" :disabled="rows.length === 0" @click="selectPage()"
+            title="Select every artifact on this page (the filtered items shown)">Select All</button>
+    <div class="cfm-switch" :class="latestOnly ? 'cfm-switch--on' : ''" @click="latestOnly = !latestOnly; page = 1; load()"
+         title="Show only the newest version per job lineage (manual uploads always shown)">
+      <span class="cfm-switch-track"></span><span>Latest only</span>
+    </div>
+    <input type="text" class="cfm-input cfm-filter-search" data-kbd-search x-model="search" placeholder="Search by name…" @input.debounce.300ms="page=1; load()">
+    <button type="button" class="cfm-btn" x-show="anyFilter" title="Clear all filters" @click="clearFilters()">Clear</button>
+    <div class="cfm-chips" x-show="hasChips">
+      <button type="button" class="cfm-pill cfm-pill--chip" x-show="untagged" @click="untagged=false; page=1; load()">Untagged <span class="cfm-pill-x">✕</span></button>
+      <template x-for="t in selTags" :key="'tg'+t">
+        <button type="button" class="cfm-pill cfm-pill--chip" @click="toggleTag(t)"><span x-text="t"></span> <span class="cfm-pill-x">✕</span></button>
+      </template>
+      <template x-for="t in selSys" :key="'sy'+t">
+        <button type="button" class="cfm-pill cfm-pill--chip" @click="toggleSys(t)" :title="t"><span x-text="sysLabel(t)"></span> <span class="cfm-pill-x">✕</span></button>
+      </template>
+      <button type="button" class="cfm-pill cfm-pill--chip" x-show="fromDate || toDate" @click="fromDate=''; toDate=''; page=1; load()">
+        <span x-text="'date: ' + (fromDate || '…') + ' – ' + (toDate || '…')"></span> <span class="cfm-pill-x">✕</span></button>
+    </div>
+  </div>
+
+  {# ── Faceted filter pop-over (overlay; no checkboxes — unified toggle pills) ── #}
+  <div class="cfm-overlay" x-show="filterOpen" x-cloak
+       @click.self="filterOpen = false" @keydown.escape.window="filterOpen = false"
+       x-effect="filterOpen ? $nextTick(() => { _ftrap = window.cfmFocusTrap($refs.filterDlg) }) : (_ftrap && _ftrap())">
+    <div class="cfm-dialog" x-ref="filterDlg" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr">
+        <span class="cfm-dialog-title">Filter artifacts</span>
+        {{ doc_help('artifacts-catalog#filtering-and-facets', 'About filtering') }}
+        <button type="button" class="cfm-iconbtn" @click="filterOpen = false" aria-label="Close" title="Close">✕</button>
+      </div>
+      <div class="cfm-dialog-body">
+        <div class="cfm-field">
+          <span class="cfm-field-label">Date range</span>
+          <div class="cfm-filterbar cfm-filterbar--tight">
+            <input type="date" class="cfm-input" x-model="fromDate" @change="page=1; load()" aria-label="From date">
+            <span class="cfm-muted">–</span>
+            <input type="date" class="cfm-input" x-model="toDate" @change="page=1; load()" aria-label="To date">
+          </div>
+        </div>
+
+        <div class="cfm-field">
+          <div class="cfm-filterbar cfm-filterbar--tight">
+            <span class="cfm-field-label cfm-label-inline">Facets</span>
+            <span class="cfm-spacer"></span>
+            <span class="cfm-muted" x-show="selTags.length > 1">match</span>
+            <div class="cfm-seg" x-show="selTags.length > 1">
+              <button type="button" class="cfm-seg-btn" :class="tagMode==='any'?'cfm-seg-btn--on':''" @click="tagMode='any'; page=1; load()">any</button>
+              <button type="button" class="cfm-seg-btn" :class="tagMode==='all'?'cfm-seg-btn--on':''" @click="tagMode='all'; page=1; load()">all</button>
+            </div>
+          </div>
+          <div class="cfm-facet-pills">
+            <template x-for="f in allFacets" :key="f.key">
+              <button type="button" class="cfm-pill" :class="facetOn(f) ? 'cfm-pill--on' : ''" @click="facetToggle(f)">
+                <span x-text="f.label"></span><span class="cfm-pill-n" x-text="f.count"></span>
+              </button>
+            </template>
+            <p class="cfm-muted" x-show="allFacets.length === 0">No facets yet.</p>
+          </div>
+        </div>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="clearFilters()">Clear all</button>
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="filterOpen = false">Close</button>
+      </div>
+    </div>
+  </div>
+
+  {# ── Bulk Tag dialog (packet 1280) — add via the shared datalist; staged removal chips.
+       Plain by developer decision: no membership survey beyond what removal itself requires,
+       and no second confirmation — staging + Apply IS the deliberate step, reversible here. #}
+  <div class="cfm-overlay" x-show="tagDlg" x-cloak
+       @click.self="closeTagDlg()" @keydown.escape.window="tagDlg && closeTagDlg()"
+       x-effect="tagDlg ? $nextTick(() => { _tagtrap = window.cfmFocusTrap($refs.tagDlg) }) : (_tagtrap && _tagtrap())">
+    <div class="cfm-dialog" x-ref="tagDlg" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr">
+        <span class="cfm-dialog-title" x-text="'Tag ' + selected.length + ' artifact' + (selected.length === 1 ? '' : 's')"></span>
+        <button type="button" class="cfm-iconbtn" @click="closeTagDlg()" aria-label="Close" title="Close">✕</button>
+      </div>
+      <div class="cfm-dialog-body">
+        <div class="cfm-field">
+          <label class="cfm-field-label" for="tag-add-input">Add tags</label>
+          <input id="tag-add-input" type="text" class="cfm-input" x-model="tagAddInput"
+                 list="tag-names-list" placeholder="existing or new — comma separates"
+                 autocomplete="off">
+        </div>
+        <div class="cfm-field" x-show="selTagCounts().length > 0">
+          <span class="cfm-field-label">On selection</span>
+          <div class="cfm-facet-pills">
+            {# ✕ stages removal (strikethrough); click again to unstage. A partial tag removes
+               where present, no-op elsewhere. USER tags only — s.tags never carries system tags. #}
+            <template x-for="tc in selTagCounts()" :key="'rm'+tc.name">
+              <button type="button" class="cfm-pill"
+                      :class="tagRemoveStaged.includes(tc.name) ? 'cfm-pill--on' : ''"
+                      :style="tagRemoveStaged.includes(tc.name) ? 'text-decoration: line-through' : ''"
+                      :title="tagRemoveStaged.includes(tc.name) ? 'Removal staged — click to keep' : 'Stage removal from the selected that carry it'"
+                      @click="toggleRemoveTag(tc.name)">
+                <span x-text="tc.name"></span>
+                <span class="cfm-pill-n" x-show="tc.count < selected.length" x-text="tc.count + '/' + selected.length"></span>
+                <span class="cfm-pill-x">✕</span>
+              </button>
+            </template>
+          </div>
+        </div>
+        <p class="cfm-inline-error" x-show="tagDlgErr" x-text="tagDlgErr"></p>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="closeTagDlg()" :disabled="!!tagAdjustBusy">Cancel</button>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary"
+                :disabled="!!(tagAdjustBusy || !tagStaged())"
+                @click="tagApply()"
+                x-text="tagAdjustBusy ? 'Applying…' : ('Apply to ' + selected.length + ' artifact' + (selected.length === 1 ? '' : 's'))"></button>
+      </div>
+    </div>
+  </div>
+
+  <p class="cfm-inline-error" x-show="taskError" x-text="taskError"></p>
+
+  {# ── Storage/server unreachable (packet 071): outage, NOT an empty catalog ──── #}
+  <template x-if="!!unavailable">
+    <div class="cfm-unavailable" role="status">
+      <span x-text="unavailReason === 'server'
+        ? 'Server unreachable — retrying…'
+        : 'Storage unreachable — retrying… your stored artifacts are safe.'"></span>
+    </div>
+  </template>
+
+  {# ── Empty state (only when NOT an outage) ─────────────────────────────────── #}
+  <template x-if="rows.length === 0 && !loading && !unavailable">
+    <div class="cfm-list-empty">
+      <p x-text="anyFilter ? 'No artifacts match the current filters.' : 'No artifacts stored yet. Import a schema XML or addon package to add one.'"></p>
+      <button type="button" class="cfm-btn cfm-btn--sm" x-show="!anyFilter"
+              @click="$dispatch('cfm-open-docs', 'overview')">Start here →</button>
+    </div>
+  </template>
+
+  {# ── Gallery — grid of identity cards (body → detail; corner wedge → select) ── #}
+  <template x-if="rows.length > 0">
+    <div>
+      <div class="cfm-grid cfm-grid--gallery" data-kbd-grid>
+        <template x-for="s in rows.filter(r => !isSel(r))" :key="s.uuid">
+          <div class="cfm-card" :class="'cfm-card--' + typeKey(s)" draggable="true"
+               @dragstart="onDragStart(s)" @dragend="onDragEnd()" @click="openDetail(s.uuid)">
+            <button type="button" class="cfm-wedge" @click.stop="toggleSelect(s)"
+                    :aria-label="'Add ' + fileName(s) + ' to selection'" title="Add to selection">
+              <svg class="cfm-wedge-check" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 6.5l2.5 2.5L10 3"/></svg>
+            </button>
+            <div class="cfm-card-icon" :class="'cfm-card-icon--' + typeKey(s)">
+              <template x-if="s.is_addon && s.has_icon">
+                <img :src="(window.CFM_PREFIX||'') + '/api/artifact-icon/' + s.uuid" alt="">
+              </template>
+              <template x-if="!(s.is_addon && s.has_icon)"><span x-html="typeSvg(typeKey(s))"></span></template>
+            </div>
+            <div class="cfm-card-name" x-text="fileName(s)" :title="fileName(s)"></div>
+            <div class="cfm-card-foot">
+              <span class="cfm-badge cfm-badge--muted" x-text="typeLabel(s)"></span>
+              <span x-show="!!(_isIndexed(s) || _indexPending(s))" class="cfm-badge"
+                    :class="_indexPending(s) ? (_indexSoft(s) ? 'cfm-badge--soft' : 'cfm-badge--pending') : 'cfm-badge--ok'"
+                    :title="_indexPending(s) ? (_indexSoft(s) ? 'Indexing — taking longer, no recent update' : 'Queued: indexing…') : 'Indexed for search'">Indexed</span>
+              <span x-show="!!(s.has_summaries || _summarizePending(s))" class="cfm-badge"
+                    :class="_summarizePending(s) ? (_summarizeSoft(s) ? 'cfm-badge--soft' : 'cfm-badge--pending') : 'cfm-badge--ok'"
+                    :title="_summarizePending(s) ? (_summarizeSoft(s) ? 'Summarizing — taking longer, no recent update' : 'Queued: summarizing…') : 'Has AI summaries'">Summarized</span>
+              <span x-show="s.job_uuid" class="cfm-badge cfm-badge--muted" title="Produced by a job (see detail for which)">Job</span>
+              <span x-show="s.gap_issues > 0" class="cfm-badge cfm-badge--warn" x-text="'⚠ ' + s.gap_issues"></span>
+              <span x-show="!!s.analysis_incomplete" class="cfm-badge cfm-badge--warn"
+                    title="A forward-compat analyzer could not complete — coverage is partial, not proven clean (see Health)">⚠ analysis incomplete</span>
+              <span x-show="!!s.acceptance_state" class="cfm-badge" x-text="acceptanceLabel(s)"
+                    :class="acceptanceBadgeClass(s)" :title="'Paste-acceptance observation (see detail for batch/case/source)'"></span>
+              <template x-for="t in (s.tags || []).slice(0, 2)" :key="'c'+s.uuid+t">
+                <span class="cfm-badge" x-text="t"></span>
+              </template>
+            </div>
+            <div class="cfm-card-sub" x-text="fmtTs(s.timestamp)"></div>
+            {# One-click Explorer (packet 1287; text form per developer 2026-08-19) — hidden, not
+               disabled, when the artifact has no Explorer lens (server-authored capability; same
+               gate as the toolbar Explore). #}
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-card-explore"
+                    x-show="_hasCap(s, 'explorer')" @click.stop="openExplorer(s)"
+                    :aria-label="'Open ' + fileName(s) + ' in Explorer'"
+                    title="Open in Explorer">Explorer</button>
+          </div>
+        </template>
+      </div>
+
+      <div class="cfm-pagination">
+        <button type="button" class="cfm-btn cfm-btn--sm" :disabled="page === 1" @click="page--; load(false)">← Prev</button>
+        <span class="cfm-muted" x-text="'Page ' + page + ' of ' + totalPages + ' · ' + total + ' artifact' + (total === 1 ? '' : 's')"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!hasMore" @click="page++; load(false)">Next →</button>
+      </div>
+    </div>
+  </template>
+
+  {# ── Recent activity pop-over (Explorer/Diff/Merge/ISV; reads /api/overview) ── #}
+  <div class="cfm-overlay" x-show="recentOpen" x-cloak
+       @click.self="recentOpen = false" @keydown.escape.window="recentOpen = false"
+       x-effect="recentOpen ? $nextTick(() => { _rtrap = window.cfmFocusTrap($refs.recentDlg) }) : (_rtrap && _rtrap())">
+    <div class="cfm-dialog cfm-dialog--wide" x-ref="recentDlg" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr">
+        <span class="cfm-dialog-title">Recent activity</span>
+        {{ doc_help('artifacts-catalog#what-you-can-do-from-here', 'About recent activity') }}
+        <button type="button" class="cfm-iconbtn" @click="recentOpen = false" aria-label="Close" title="Close">✕</button>
+      </div>
+      <div class="cfm-dialog-body">
+        <div class="cfm-recent-tabs">
+          <template x-for="t in ['Explorer','Diff','Merge','ISV']" :key="t">
+            <button type="button" class="cfm-tab" :class="recentTab === t ? 'cfm-tab--on' : ''" @click="recentTab = t" x-text="t"></button>
+          </template>
+        </div>
+        <div class="cfm-recent-panels">
+        <div x-show="recentTab === 'Explorer'">
+          <p class="cfm-muted" x-show="recent.explores.length === 0">No Explorer runs yet.</p>
+          <table class="cfm-table" x-show="recent.explores.length > 0">
+            <template x-for="(e, i) in recent.explores" :key="i">
+              <tr>
+                <td x-text="(e.labels && e.labels.length) ? e.labels.join('  +  ') : (e.artifacts || []).join(', ')"></td>
+                <td class="cfm-muted" x-text="fmtIso(e.ts)"></td>
+                <td><button type="button" class="cfm-btn cfm-btn--sm" @click="reExplore(e)">Re-run</button></td>
+              </tr>
+            </template>
+          </table>
+        </div>
+        <div x-show="recentTab === 'Diff'">
+          <p class="cfm-muted" x-show="recent.diffs.length === 0">No comparisons yet.</p>
+          <table class="cfm-table" x-show="recent.diffs.length > 0">
+            <template x-for="(d, i) in recent.diffs" :key="i">
+              <tr :class="{ 'cfm-muted': !d.exists }">
+                <td x-text="d.label_a + '  ↔  ' + d.label_b"></td>
+                <td class="cfm-muted" x-text="d.ts_display"></td>
+                <td><button type="button" class="cfm-btn cfm-btn--sm" :disabled="!d.exists" @click="reDiff(d)">Re-run</button></td>
+              </tr>
+            </template>
+          </table>
+        </div>
+        <div x-show="recentTab === 'Merge'">
+          <p class="cfm-muted" x-show="recent.merges.length === 0">No merged artifacts yet.</p>
+          <table class="cfm-table" x-show="recent.merges.length > 0">
+            <template x-for="s in recent.merges" :key="s.uuid">
+              <tr>
+                <td x-text="s.fm_file"></td>
+                <td class="cfm-muted" x-text="fmtTs(s.timestamp)"></td>
+                <td><button type="button" class="cfm-btn cfm-btn--sm" @click="openRecentArtifact(s.uuid)">Open</button></td>
+              </tr>
+            </template>
+          </table>
+        </div>
+        <div x-show="recentTab === 'ISV'">
+          <p class="cfm-muted" x-show="recent.patches.length === 0">No patches yet.</p>
+          <table class="cfm-table" x-show="recent.patches.length > 0">
+            <template x-for="s in recent.patches" :key="s.uuid">
+              <tr>
+                <td x-text="s.fm_file"></td>
+                <td class="cfm-muted" x-text="fmtTs(s.timestamp)"></td>
+                <td><button type="button" class="cfm-btn cfm-btn--sm" @click="openRecentArtifact(s.uuid)">Open</button></td>
+              </tr>
+            </template>
+          </table>
+        </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Artifact detail pop-over (overlay; tabbed; ONE Save / leaving discards) ── #}
+  <div class="cfm-overlay" x-show="detailOpen" x-cloak
+       @click.self="closeDetail()" @keydown.escape.window="closeDetail()"
+       x-effect="detailOpen ? $nextTick(() => { _dtrap = window.cfmFocusTrap($refs.detailDlg) }) : (_dtrap && _dtrap())">
+    <div class="cfm-dialog cfm-dialog--wide cfm-dialog--tabbed" x-ref="detailDlg" role="dialog" aria-modal="true">
+      <template x-if="detailLoading">
+        <div class="cfm-dialog-body"><p class="cfm-muted">Loading…</p></div>
+      </template>
+      <template x-if="!detailLoading && detail">
+        <div class="cfm-dialog-contents">
+          <div class="cfm-dialog-hdr">
+            <span class="cfm-dialog-title" x-text="detail.name || detail.identity.file_name"></span>
+            {{ doc_help('artifacts-catalog#the-detail-pop-over', 'About the detail view') }}
+            <button type="button" class="cfm-iconbtn" @click="closeDetail()" aria-label="Close" title="Close">✕</button>
+          </div>
+
+          <div class="cfm-dialog-body">
+            <div class="cfm-tabs">
+              <button type="button" class="cfm-tab" :class="detailTab==='overview'?'cfm-tab--on':''" @click="detailTab='overview'">Overview</button>
+              <button type="button" class="cfm-tab" :class="detailTab==='notes'?'cfm-tab--on':''" @click="detailTab='notes'">Notes</button>
+              <button type="button" class="cfm-tab" :class="detailTab==='health'?'cfm-tab--on':''" @click="detailTab='health'">
+                Health<span class="cfm-tab-badge" x-show="detail.analysis.gap_issues > 0" x-text="detail.analysis.gap_issues"></span>
+              </button>
+              <button type="button" class="cfm-tab" :class="detailTab==='history'?'cfm-tab--on':''" @click="detailTab='history'; loadHistory()">
+                History<span class="cfm-tab-badge" x-show="!!(detailHistory && detailHistory.length)" x-text="detailHistory ? detailHistory.length : ''"></span>
+              </button>
+              <button type="button" class="cfm-tab" :class="detailTab==='related'?'cfm-tab--on':''" @click="detailTab='related'; loadRelated()">
+                Related<span class="cfm-tab-badge" x-show="!!relatedCount" x-text="relatedCount || ''"></span>
+              </button>
+              <button type="button" class="cfm-tab" x-show="detail.content.is_schema" :class="detailTab==='export'?'cfm-tab--on':''" @click="detailTab='export'">Export</button>
+              <button type="button" class="cfm-tab" x-show="detail.type==='fmClip'" :class="detailTab==='raw'?'cfm-tab--on':''" @click="detailTab='raw'; loadRaw()">Raw</button>
+            </div>
+
+            {# ── Overview ──────────────────────────────────────────────────── #}
+            <div x-show="detailTab === 'overview'">
+              <div class="cfm-field">
+                <label class="cfm-field-label" for="detail-name">Name</label>
+                <input id="detail-name" type="text" class="cfm-input" x-model="detail.name">
+              </div>
+              <div class="cfm-field">
+                <label class="cfm-field-label" for="detail-desc">Description</label>
+                <textarea id="detail-desc" class="cfm-textarea" rows="4" x-model="detail.description"
+                          placeholder="A human description of this artifact…"></textarea>
+              </div>
+              <div class="cfm-field">
+                <label class="cfm-field-label" for="detail-tags">Tags</label>
+                <input id="detail-tags" type="text" class="cfm-input" x-model="detailTagsDraft"
+                       list="tag-names-list" placeholder="comma-separated tags…">
+              </div>
+
+              <div class="cfm-meta-grid">
+                <span class="cfm-meta-k">Type</span>      <span class="cfm-meta-v" x-text="detail.type"></span>
+                <span class="cfm-meta-k">Origin</span>    <span class="cfm-meta-v" x-text="detail.origin"></span>
+                <template x-if="detail.merge_parents && detail.merge_parents.length">
+                  <span class="cfm-meta-k">Merged from</span></template>
+                <template x-if="detail.merge_parents && detail.merge_parents.length">
+                  <span class="cfm-meta-v">
+                    <template x-for="(p, i) in detail.merge_parents" :key="i">
+                      <span>
+                        <template x-if="i > 0"><span class="cfm-muted"> + </span></template>
+                        <a x-show="p.exists" href="#" @click.prevent="openDetail(p.uuid)"
+                           x-text="p.name + (p.type ? ' (' + p.type + ')' : '')"></a>
+                        <span x-show="!p.exists" class="cfm-muted"
+                              x-text="p.name + (p.type ? ' (' + p.type + ')' : '') + ' (not in catalog)'"></span>
+                      </span>
+                    </template>
+                  </span></template>
+                <template x-if="detail.job_name"><span class="cfm-meta-k">Job</span></template>
+                <template x-if="detail.job_name"><span class="cfm-meta-v"><a :href="(window.CFM_PREFIX||'') + '/jobs'" x-text="detail.job_name"></a></span></template>
+                <template x-if="detail.type !== 'MergedXML'">
+                  <span class="cfm-meta-k">Internal name</span></template>
+                <template x-if="detail.type !== 'MergedXML'">
+                  <span class="cfm-meta-v" x-text="detail.identity.file_name"></span></template>
+                <span class="cfm-meta-k">FM version</span> <span class="cfm-meta-v" x-text="detail.identity.fm_version || '—'"></span>
+                <span class="cfm-meta-k">Timestamp</span>  <span class="cfm-meta-v" x-text="fmtTs(detail.identity.timestamp)"></span>
+                <span class="cfm-meta-k">Root UUID</span>  <span class="cfm-meta-v cfm-meta-v--uuid" x-text="detail.identity.root_uuid || '—'"></span>
+                <template x-if="detail.provenance.created_at">
+                  <span class="cfm-meta-k">Created</span></template>
+                <template x-if="detail.provenance.created_at">
+                  <span class="cfm-meta-v" x-text="detail.provenance.created_at"></span></template>
+                <template x-if="detail.provenance.corpusfm_build">
+                  <span class="cfm-meta-k">Build</span></template>
+                <template x-if="detail.provenance.corpusfm_build">
+                  <span class="cfm-meta-v" x-text="detail.provenance.corpusfm_build"></span></template>
+                <template x-if="detail.provenance.catalog_version">
+                  <span class="cfm-meta-k">Catalog</span></template>
+                <template x-if="detail.provenance.catalog_version">
+                  <span class="cfm-meta-v" x-text="detail.provenance.catalog_version"></span></template>
+                <template x-if="detail.content.summarizable_count">
+                  <span class="cfm-meta-k">Summarizable</span></template>
+                <template x-if="detail.content.summarizable_count">
+                  <span class="cfm-meta-v"><span x-text="detail.content.summarizable_count"></span> objects<span x-show="detailSummarized" class="cfm-badge cfm-badge--ok" style="margin-left:.5em;">summarized</span></span></template>
+                <template x-if="detailIndexConfigured">
+                  <span class="cfm-meta-k">Search index</span></template>
+                <template x-if="detailIndexConfigured">
+                  <span class="cfm-meta-v"><span class="cfm-badge" :class="detailIndexed ? 'cfm-badge--ok' : 'cfm-badge--idle'" x-text="detailIndexed ? 'Indexed' : 'Not indexed'"></span></span></template>
+                {# Packet 059: retained source XML + the delete election (User). #}
+                <template x-if="detail.content.xml_bytes">
+                  <span class="cfm-meta-k">Source XML</span></template>
+                <template x-if="detail.content.xml_bytes">
+                  <span class="cfm-meta-v" style="display:flex; align-items:center; gap:.6em;">
+                    <span x-show="detail.content.has_source" x-text="fmtMB(detail.content.xml_bytes) + ' MB stored'"></span>
+                    <span x-show="!detail.content.has_source" class="cfm-muted">deleted</span>
+                    <button type="button" class="cfm-btn cfm-btn--sm" x-show="detail.content.has_source"
+                            :disabled="!!deletingSource" @click="deleteSource()"
+                            x-text="deletingSource ? 'Deleting…' : 'Delete source'"
+                            title="Free space by dropping the original export. The analyzed artifact is kept; this can't be undone."></button>
+                  </span></template>
+              </div>
+            </div>
+
+            {# ── Notes (agent notes, own tab) ──────────────────────────────── #}
+            <div x-show="detailTab === 'notes'" class="cfm-fill-pane">
+              <p class="cfm-muted cfm-mb-12">Notes about this artifact — normally written by tools over MCP, editable here.</p>
+              <textarea class="cfm-textarea" rows="10" x-model="detail.memory" placeholder="No agent notes yet."></textarea>
+            </div>
+
+            {# ── Health (gap detail from the stored CompletenessProfile) ────── #}
+            <div x-show="detailTab === 'health'">
+              {# packet 072-D: analyzer CRASHED at ingestion → the gap list is untrustworthy. Show
+                 "couldn't analyze", never a false "Clean". #}
+              <template x-if="detail.analysis.analysis_ok === false">
+                <div class="cfm-unavailable" role="status">
+                  <span x-text="'Analysis incomplete — the forward-compatibility analyzer ('
+                    + (detail.analysis.analyzer_incomplete || []).join(', ')
+                    + ') failed on this artifact, so its gap results can\'t be trusted as clean. Re-import to retry.'"></span>
+                </div>
+              </template>
+              {# ── packet 1080 §4: a stored clip's OWN drift signal (packet 1079). An incoming clip is
+                 the only FMXML that comes toward us, so it is where clip-format drift shows up first.
+                 Its wording differs from the schema panel on purpose: unrecognised clip content is "no
+                 evidence", NOT proof FileMaker changed — we cannot tell drift from an uncaptured shape
+                 from a clip alone. Unknown STEP IDS are the exception and are called out as such. #}
+              <template x-if="detail.analysis.is_clip">
+                <div>
+                  <template x-if="detail.analysis.gap_issues > 0">
+                    <div>
+                      <p class="cfm-section-h">Clip analysis — <span class="cfm-badge cfm-badge--warn" x-text="detail.analysis.gap_issues + ' unrecognised item' + (detail.analysis.gap_issues === 1 ? '' : 's')"></span></p>
+                      <div class="cfm-meta-grid">
+                        <template x-if="(detail.analysis.gap_step_ids || []).length">
+                          <span class="cfm-meta-k">Unknown step IDs</span>
+                        </template>
+                        <template x-if="(detail.analysis.gap_step_ids || []).length">
+                          <span class="cfm-meta-v" x-text="detail.analysis.gap_step_ids.join(', ') + ' — this clip is FileMaker\'s own output, so a step ID outside the catalog really does mean FileMaker moved.'"></span>
+                        </template>
+                        <template x-if="(detail.analysis.clip_gaps || []).length">
+                          <span class="cfm-meta-k">Unrecognised content</span>
+                        </template>
+                        <template x-if="(detail.analysis.clip_gaps || []).length">
+                          <span class="cfm-meta-v" x-text="detail.analysis.clip_gaps.join('; ')"></span>
+                        </template>
+                      </div>
+                      <p class="cfm-muted cfm-mt-14">Unrecognised content means <em>we have no evidence for this shape</em> — it could be a newer FileMaker, or simply a shape nobody has captured yet. A clip alone can't tell those apart, so this is a capture-worthy signal, not a verdict.</p>
+                    </div>
+                  </template>
+                  <template x-if="detail.analysis.gap_issues === 0 && detail.analysis.analysis_ok !== false">
+                    <p class="cfm-badge cfm-badge--ok">Clean — every step ID, value, and element in this clip matches what we've already observed.</p>
+                  </template>
+                  <div class="cfm-meta-grid cfm-mt-14">
+                    <template x-if="detail.analysis.clip_inferred_fm_form">
+                      <span class="cfm-meta-k">FileMaker form (inferred)</span>
+                    </template>
+                    <template x-if="detail.analysis.clip_inferred_fm_form">
+                      <span class="cfm-meta-v" x-text="detail.analysis.clip_inferred_fm_form + ' — inferred from content, not declared. A clip carries no version stamp; the FM2025 and FM2026 envelopes are byte-identical.'"></span>
+                    </template>
+                  </div>
+                  <p class="cfm-muted cfm-mt-14">Element checking is partial by design — only step IDs we hold a reference shape for are checked<span x-text="(detail.analysis.clip_elements_checked_ids || []).length ? ' (' + detail.analysis.clip_elements_checked_ids.length + ' of them).' : '.'"></span> Silence on the rest means unchecked, not clean.</p>
+                </div>
+              </template>
+
+              <template x-if="!detail.analysis.is_clip && detail.analysis.gap_issues > 0">
+                <div>
+                  <p class="cfm-section-h">Gap analysis — <span class="cfm-badge cfm-badge--warn" x-text="detail.analysis.gap_issues + ' issue' + (detail.analysis.gap_issues === 1 ? '' : 's')"></span></p>
+                  <div class="cfm-meta-grid">
+                    <template x-if="(detail.analysis.gap_step_ids || []).length">
+                      <span class="cfm-meta-k">Unmapped step IDs</span>
+                    </template>
+                    <template x-if="(detail.analysis.gap_step_ids || []).length">
+                      <span class="cfm-meta-v" x-text="detail.analysis.gap_step_ids.join(', ')"></span>
+                    </template>
+                    <template x-if="(detail.analysis.gap_ref_types || []).length">
+                      <span class="cfm-meta-k">Unknown reference types</span>
+                    </template>
+                    <template x-if="(detail.analysis.gap_ref_types || []).length">
+                      <span class="cfm-meta-v" x-text="detail.analysis.gap_ref_types.join(', ')"></span>
+                    </template>
+                    <template x-if="(detail.analysis.gap_unmapped || []).length">
+                      <span class="cfm-meta-k">Unmapped sections</span>
+                    </template>
+                    <template x-if="(detail.analysis.gap_unmapped || []).length">
+                      <span class="cfm-meta-v" x-text="detail.analysis.gap_unmapped.join(', ')"></span>
+                    </template>
+                  </div>
+                  <p class="cfm-muted cfm-mt-14">CORPUSfm can't fix these in the app. Point your agent at the MCP YAML-adjustment tools — it can propose <code>mappings.yaml</code> / <code>rendering.yaml</code> entries from this artifact's sampled XML.</p>
+                </div>
+              </template>
+              <template x-if="!detail.analysis.is_clip && detail.analysis.gap_issues === 0 && detail.analysis.analysis_ok !== false">
+                <p class="cfm-badge cfm-badge--ok">Clean — no gap issues. Every step ID and reference type present in this artifact maps to a known catalog entry. (Catalog sections a file simply doesn't use are not gaps.)</p>
+              </template>
+            </div>
+
+            {# ── History (DB-backed HISTORY — activity mentions around this artifact) ── #}
+            {# Lazy (packet 085 U3d): the /history read fires only on first tab open. #}
+            <div x-show="detailTab === 'history'">
+              <template x-if="detailHistoryLoading">
+                <p class="cfm-muted">Loading history…</p>
+              </template>
+              <template x-if="!detailHistoryLoading && detailHistory !== null && detailHistory.length === 0">
+                <p class="cfm-muted">No activity recorded yet. Diffs, patches, merges, arrivals, and enrichment appear here.</p>
+              </template>
+              <template x-if="!detailHistoryLoading && detailHistory !== null && detailHistory.length > 0">
+                <div class="cfm-table-wrap">
+                  <table class="cfm-table">
+                    <thead><tr><th>When</th><th>Action</th><th>Tool</th></tr></thead>
+                    <tbody>
+                      <template x-for="(e, i) in detailHistory" :key="i">
+                        <tr>
+                          <td class="cfm-muted" x-text="fmtIso(e.ts)"></td>
+                          <td x-text="e.action"></td>
+                          <td class="cfm-muted" x-text="e.tool"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </template>
+            </div>
+
+            {# ── Related (packet 085 U3d): byte-identical · same file · built-from-this ── #}
+            <div x-show="detailTab === 'related'">
+              <template x-if="detailRelatedLoading">
+                <p class="cfm-muted">Checking the catalog…</p>
+              </template>
+              <template x-if="!detailRelatedLoading && detailRelated !== null && relatedCount === 0">
+                <p class="cfm-muted">Nothing related in the catalog — no byte-identical copies, no other snapshots of this file, and no merges built from it.</p>
+              </template>
+              <template x-if="!detailRelatedLoading && detailRelated !== null && relatedCount > 0">
+                <div>
+                  {# same file lineage #}
+                  <template x-if="detailRelated.same_root.length">
+                    <div class="cfm-mb-16">
+                      <h4 class="cfm-mb-4">Same file</h4>
+                      <p class="cfm-muted cfm-mb-8">Other artifacts sharing this file's root — earlier or later snapshots, its add-on companion, or merged versions.</p>
+                      <div class="cfm-table-wrap">
+                        <table class="cfm-table">
+                          <thead><tr><th>Name</th><th>File</th><th>Imported</th><th>Type</th><th></th></tr></thead>
+                          <tbody>
+                            <template x-for="c in detailRelated.same_root" :key="c.uuid">
+                              <tr>
+                                <td x-text="c.name || c.file_name"></td>
+                                <td class="cfm-muted" x-text="c.file_name"></td>
+                                <td class="cfm-muted" x-text="fmtIso(c.timestamp)"></td>
+                                <td class="cfm-muted" x-text="c.type"></td>
+                                <td><button type="button" class="cfm-btn" @click="openDetail(c.uuid)">Open</button></td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </template>
+                  {# built from this #}
+                  <template x-if="detailRelated.built_from_this.length">
+                    <div class="cfm-mb-16">
+                      <h4 class="cfm-mb-4">Built from this</h4>
+                      <p class="cfm-muted cfm-mb-8">Merged artifacts that used this one as a source. A merge no longer in the catalog is shown but cannot be opened.</p>
+                      <div class="cfm-table-wrap">
+                        <table class="cfm-table">
+                          <thead><tr><th>Name</th><th>Imported</th><th>Type</th><th></th></tr></thead>
+                          <tbody>
+                            <template x-for="c in detailRelated.built_from_this" :key="c.uuid">
+                              <tr>
+                                <td x-text="c.name"></td>
+                                <td class="cfm-muted" x-text="fmtIso(c.timestamp)"></td>
+                                <td class="cfm-muted" x-text="c.type"></td>
+                                <td><button type="button" class="cfm-btn" x-show="c.exists" @click="openDetail(c.uuid)">Open</button><span class="cfm-muted" x-show="!c.exists">removed</span></td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+
+            {# ── Export (the artifact's OWN git destination — decoupled from its job) ── #}
+            <div x-show="detailTab === 'export'">
+              <p class="cfm-muted cfm-mb-12">Export this artifact's per-item <code>.txt</code> files (structured + rendered) to git — for <code>git diff</code> and AI consumption. This artifact owns its destination: it was seeded from the job that made it, but you can repoint it here without affecting the job. Manage credentials in <a :href="(window.CFM_PREFIX||'') + '/settings#integrations'">Settings → Integrations</a>.</p>
+              <p class="cfm-muted cfm-mb-12" x-show="detail.job_name">Spawned by job <strong x-text="detail.job_name"></strong> (history — not a live link).</p>
+              <template x-if="detailRegs.length === 0">
+                <p class="cfm-muted">No git credentials yet — add one in <a :href="(window.CFM_PREFIX||'') + '/settings#integrations'">Settings → Integrations</a>.</p>
+              </template>
+              <template x-if="detailRegs.length > 0">
+                <div>
+                  <div class="cfm-field">
+                    <span class="cfm-field-label">Credential</span>
+                    <div class="cfm-dd" x-data="{ open:false }" @click.outside="open=false">
+                      <button type="button" class="cfm-dd-trigger" @click="open=!open" aria-label="Git credential" aria-haspopup="listbox">
+                        <span x-text="exportReg || 'Pick a credential…'"></span>
+                        <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+                      </button>
+                      <div class="cfm-dd-menu" x-show="open" x-cloak>
+                        <template x-for="r in detailRegs" :key="r.name">
+                          <button type="button" class="cfm-dd-opt" :class="exportReg===r.name?'cfm-dd-opt--on':''" @click="exportReg=r.name; open=false" x-text="r.name + (r.cred_type==='deploy_key' ? ' (deploy key)' : ' (token)')"></button>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                  <template x-if="exportReg && selectedDetailReg">
+                    <div class="cfm-field">
+                      <label class="cfm-field-label" for="art-repo" x-text="selectedDetailReg.cred_type === 'deploy_key' ? 'Bound repo (fixed by deploy key)' : 'Repo URL'"></label>
+                      <input id="art-repo" type="text" class="cfm-input"
+                             :value="selectedDetailReg.cred_type === 'deploy_key' ? selectedDetailReg.repo : exportRepo"
+                             @input="exportRepo = $event.target.value"
+                             :disabled="selectedDetailReg.cred_type === 'deploy_key'"
+                             :placeholder="selectedDetailReg.repo ? selectedDetailReg.repo + ' (credential default)' : 'https://github.com/you/repo.git'">
+                    </div>
+                  </template>
+                  <div class="cfm-filterbar cfm-filterbar--tight">
+                    <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" :disabled="!exportReg || !!exportBusy" @click="detailGitExport()" x-text="exportBusy ? 'Exporting…' : 'Export & push'"></button>
+                  </div>
+                  <p class="cfm-muted cfm-mt-6" x-show="exportMsg" x-text="exportMsg"></p>
+                </div>
+              </template>
+            </div>
+
+            {# ── Raw (fmClip only, packet 1025): the clip XML for clipboard pickup. The panel fills the
+               dialog body (a flex column) and the <pre> scrolls INTERNALLY, so the raw XML is anchored
+               to the visible bottom and the footer never gets pushed off-screen (packet 1034). ── #}
+            <div x-show="detailTab === 'raw'" style="flex:1 1 auto; min-height:0; display:flex; flex-direction:column">
+              <p class="cfm-muted cfm-mb-8">The raw clip XML. Copy it, then reconstitute FileMaker's
+                clipboard flavor with MBS or FmClipTools and paste into FileMaker. The browser can't write
+                the native flavor directly, so a clipboard tool bridges that last step.</p>
+              <div class="cfm-filterbar cfm-filterbar--tight">
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" :disabled="!!rawLoading"
+                        aria-label="Copy clip XML" @click="copyRaw()" x-text="rawCopied ? 'Copied ✓' : 'Copy XML'"></button>
+                <span class="cfm-muted cfm-ml-8" x-show="rawClass">FM class: <code x-text="rawClass"></code></span>
+              </div>
+              <template x-if="rawLoading"><p class="cfm-muted cfm-mt-6">Loading…</p></template>
+              <template x-if="!rawLoading && rawError"><p class="cfm-inline-error cfm-mt-6" x-text="rawError"></p></template>
+              <pre class="cfm-mono cfm-mt-6" x-show="!rawLoading && !rawError"
+                   style="flex:1 1 auto; min-height:0; overflow:auto; white-space:pre-wrap; word-break:break-word" x-text="rawXml"></pre>
+            </div>
+          </div>
+
+          {# Action bar + the single Save / Close footer. The per-item delete (far left)
+             and the action buttons appear only for an artifact NOT in the multi-select
+             group — a selected item is acted on / deleted from the action space above,
+             so its detail shows just Close / Save. #}
+          <div class="cfm-dialog-ftr">
+            <template x-if="!isDetailSelected && !detailConfirmDel">
+              <button type="button" class="cfm-iconbtn" title="Delete this artifact" aria-label="Delete artifact" @click="detailConfirmDel = true">
+                <svg class="cfm-i" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10"/></svg>
+              </button>
+            </template>
+            <template x-if="!isDetailSelected && detailConfirmDel">
+              <span class="cfm-confirm">
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger"
+                        :disabled="!!detailDeleteBusy" @click="detailDeleteOne()">Confirm?</button>
+                <button type="button" class="cfm-btn cfm-btn--sm"
+                        :disabled="!!detailDeleteBusy" @click="detailConfirmDel = false">Cancel</button>
+              </span>
+            </template>
+            <button type="button" class="cfm-btn cfm-btn--sm" x-show="!isDetailSelected" @click="detailExplore()">Explore</button>
+            {# Two downloads (packets 1034 + 1226): the portable artifact — ONE document carrying the
+               notes/memory/tags, the step catalog and the payload, served as `<name>.artifact.zip` —
+               and the raw text file (a deliverable's clip/patch/script/calc, or a schema artifact's
+               retained source XML, which comes down zipped). #}
+            <a class="cfm-btn cfm-btn--sm" x-show="!isDetailSelected"
+               :href="dlUrl('artifact')" title="Download the artifact as one portable file">.artifact</a>
+            <a class="cfm-btn cfm-btn--sm" x-show="!isDetailSelected && canDownloadRaw"
+               :href="dlUrl('raw')" :title="'Download the raw .' + rawExt + ' (zipped)'" x-text="'.' + rawExt"></a>
+            <button type="button" class="cfm-btn cfm-btn--sm"
+                    x-show="!isDetailSelected && detailIndexConfigured && detail.content.indexable"
+                    :disabled="!!detailIndexBusy"
+                    :title="detailIndexed ? 'Refresh this artifact in the search index' : 'Add this artifact to the search index (enables semantic search — no summaries needed)'"
+                    @click="detailIndex()" x-text="detailIndexed ? 'Reindex' : 'Index'"></button>
+            {# De-index: per-artifact-addressed. For a SCHEMA artifact it's file-level (one index per file,
+               packet 1010); for a DELIVERABLE (fmClip/fmScript/fmCalc, packet 1042) it's per-record —
+               either way the deindex_artifact route is per-uuid. Confirm-gated (destructive), shown only
+               when the record actually has an index to remove. #}
+            <template x-if="!isDetailSelected && detailIndexConfigured && detail.content.indexable && detailIndexed && !detailConfirmDeindex">
+              <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger"
+                      :disabled="!!detailIndexBusy"
+                      title="Remove this artifact from the search index (immediate)"
+                      @click="detailConfirmDeindex = true">De-index</button>
+            </template>
+            <template x-if="!isDetailSelected && detailIndexConfigured && detail.content.indexable && detailIndexed && detailConfirmDeindex">
+              <span class="cfm-confirm">
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger"
+                        :disabled="!!detailDeindexBusy" @click="detailDeindex()">Confirm?</button>
+                <button type="button" class="cfm-btn cfm-btn--sm"
+                        :disabled="!!detailDeindexBusy" @click="detailConfirmDeindex = false">Cancel</button>
+              </span>
+            </template>
+            <button type="button" class="cfm-btn cfm-btn--sm"
+                    x-show="!isDetailSelected && summarizerOn && detail.content.is_schema"
+                    :title="detailSummarized ? 'Regenerate optional AI summaries for this artifact (replaces; background)' : 'Generate optional AI summaries for this artifact (background; does not enable search by itself)'"
+                    @click="detailSummarize()" x-text="detailSummarized ? 'Re-summarize' : 'Summaries'"></button>
+            {# Re-ingest (packet 1062/1063 B): re-run the whole pipeline from stored source and replace
+               the artifact in place. Distinct from Reindex (which only re-embeds). Shown ONLY for a
+               schema artifact with retained source. #}
+            <button type="button" class="cfm-btn cfm-btn--sm"
+                    x-show="!isDetailSelected && detail.content.is_schema && detail.content.has_source"
+                    :disabled="!!detailReingestBusy"
+                    title="Re-run the full pipeline from the stored source XML and refresh this artifact in place (same identity). Preserves your notes; re-indexes/re-summarizes only if it already was."
+                    @click="detailReingest()" x-text="detailReingestBusy ? 'Queuing…' : 'Re-ingest'"></button>
+            <span class="cfm-spacer"></span>
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="closeDetail()">Close</button>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" :disabled="!detailDirty" @click="saveAll()">Save</button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  {# ── Import pop-over (folded in from the retired Ingestion import page) ────── #}
+  {# The upload is browser-bound and CANNOT survive navigation, so the pop-over LOCKS while uploading
+     (`busy`): close / Esc / click-out are refused and the only action is Cancel. It releases the instant
+     every file is handed off to the server; from there the server jobs run in the background (Queue page).
+     This is the honest model — lock the client step that can't be left, background the server work. #}
+  <div class="cfm-overlay" x-data="importTool()" @cfm-open-import.window="open($event.detail)"
+       x-show="show" x-cloak
+       @click.self="if (!busy) close()" @keydown.escape.window="if (show && !busy) close()"
+       x-effect="show ? $nextTick(() => { _trap = window.cfmFocusTrap($refs.impDlg) }) : (_trap && _trap())">
+    <div class="cfm-dialog cfm-dialog--wide" x-ref="impDlg" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr">
+        <span class="cfm-dialog-title">Import</span>
+        {{ doc_help('importing', 'About importing schema') }}
+        <button type="button" class="cfm-iconbtn" @click="close()" :disabled="!!busy" aria-label="Close" title="Close">✕</button>
+      </div>
+      <div class="cfm-dialog-body">
+        <p class="cfm-muted cfm-mb-12">Drop a schema XML export or addon package — it's parsed, gap-checked, and committed to the catalog. Addon records are stripped on import.</p>
+
+        <div x-show="view === 'select'">
+          <div x-show="items.length === 0" class="drop-zone-outer">
+            <div class="drop-zone" :class="{ dragging: dragging }"
+                 @click="$refs.fileInput.click()"
+                 @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false" @drop.prevent="onDrop($event)">
+              <input type="file" x-ref="fileInput" accept=".xml,.fmaddon,.zip,.artifact" multiple hidden @change="onFileChange($event)">
+              <div class="drop-zone-icon">⬆</div>
+              <p class="drop-zone-label">Drop files here, or click to browse</p>
+              <p class="cfm-muted">Accepts .xml schema exports · .fmaddon addon packages · .artifact (reabsorb a downloaded artifact)</p>
+            </div>
+          </div>
+
+          <div x-show="items.length > 0" class="drop-zone-compact" @click="$refs.fileInput.click()">
+            <span class="drop-zone-compact-icon">📂</span>
+            <span class="drop-zone-compact-info" x-text="fileInfo"></span>
+            <span class="drop-zone-compact-change cfm-muted">Change</span>
+          </div>
+
+          <template x-if="items.length > 0">
+            <div class="upload-file-list cfm-mt-14">
+              <template x-for="(item, idx) in items" :key="idx">
+                <div class="upload-file-row upload-file-row-intake">
+                  <span class="upload-file-name" x-text="item.name"></span>
+                  <span class="upload-file-size" x-text="item.size_mb + ' MB'"></span>
+                  <label class="upload-name-field">
+                    <span class="cfm-muted">Name</span>
+                    <input type="text" class="cfm-input" x-model="item.userName"
+                           :placeholder="item.inspecting ? 'inspecting…' : (nameRequired(item) ? 'required' : 'auto')" @click.stop>
+                  </label>
+                  <div class="cfm-dd" x-show="isAddonFile(item.name)" x-data="{ open:false }" @click.outside="open=false" @click.stop>
+                    <button type="button" class="cfm-dd-trigger" @click="open=!open" aria-label="Addon locale" aria-haspopup="listbox">
+                      <span x-text="localeLabel(item.locale)"></span>
+                      <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+                    </button>
+                    <div class="cfm-dd-menu" x-show="open" x-cloak>
+                      <template x-for="[code, lbl] in FM_LOCALES" :key="code">
+                        <button type="button" class="cfm-dd-opt" :class="item.locale===code?'cfm-dd-opt--on':''" @click="item.locale=code; open=false" x-text="lbl + ' (' + code + ')'"></button>
+                      </template>
+                    </div>
+                  </div>
+                  <span class="cfm-badge cfm-badge--warn" x-show="nameRequired(item)" title="No internal name could be derived — a name is required">⚠ name required</span>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <template x-if="hasEmbedder || hasSummarizer">
+            <div class="cfm-mt-14" style="font-size:.85em;">
+              <p class="cfm-muted" style="margin:0 0 .5em;">
+                Import stays fast — these run afterwards on the background queue (interruptible), never
+                blocking the import:
+              </p>
+              <label x-show="hasEmbedder" style="display:inline-flex; align-items:center; gap:.4em; margin-right:1.2em;"
+                     title="Enables semantic search and MCP retrieval. No summaries required.">
+                <input type="checkbox" x-model="wantIndex"> Add to search index
+              </label>
+              <label x-show="hasSummarizer" style="display:inline-flex; align-items:center; gap:.4em;"
+                     title="Adds optional AI-written descriptions. Does not enable search by itself.">
+                <input type="checkbox" x-model="wantSummarize"> Generate AI summaries <span class="cfm-muted">(optional)</span>
+              </label>
+            </div>
+          </template>
+        </div>
+
+        <div x-show="view === 'results'">
+          <p class="cfm-badge cfm-badge--warn cfm-mb-12" x-show="busy"
+             x-text="'Uploading ' + files.length + ' file' + (files.length !== 1 ? 's' : '') + ' — this stays open until they\'re all handed off to the server. Use Cancel to stop; anything already queued keeps going.'"></p>
+          <div class="upload-file-list">
+            <template x-for="(item, idx) in items" :key="idx">
+              <div class="upload-file-row">
+                <span class="upload-status-icon" :class="'upload-status-' + item.status" x-text="statusIcon(item.status)"></span>
+                <span class="upload-file-name" x-text="item.name"></span>
+                <span class="upload-file-size" x-text="item.size_mb + ' MB'"></span>
+                <span class="cfm-badge cfm-badge--warn" x-show="item.gap_issues > 0" :title="'Unmapped: ' + item.gap_unmapped.join(', ')" x-text="item.gap_issues + ' gap' + (item.gap_issues !== 1 ? 's' : '')"></span>
+                <span class="cfm-badge cfm-badge--muted" x-show="item.is_addon" x-text="item.addon_locale ? item.addon_locale.toUpperCase() : 'Addon'"></span>
+                <span class="cfm-badge cfm-badge--muted" x-show="item.is_clip">fmClip</span>
+                <span class="cfm-badge cfm-badge--muted" x-show="item.reabsorb" title="Re-imported from a downloaded .artifact">Reabsorb</span>
+                <span class="upload-file-msg" :class="'upload-status-' + item.status" x-show="item.msg" x-text="item.msg"></span>
+              </div>
+            </template>
+          </div>
+          <template x-if="allDone">
+            <p class="cfm-badge cfm-mt-14" :class="errorCount === 0 ? 'cfm-badge--ok' : 'cfm-badge--broken'"
+               x-text="queuedCount + ' queued for import'
+                       + (doneCount ? (', ' + doneCount + ' skipped') : '')
+                       + (errorCount ? (', ' + errorCount + ' failed') : '')
+                       + '. Track progress on the Queue page.'"></p>
+          </template>
+        </div>
+      </div>
+
+      <div class="cfm-dialog-ftr">
+        <span class="cfm-muted" x-show="view === 'select' && anyNameMissing">Fill the required name(s) first.</span>
+        <span class="cfm-spacer"></span>
+        <template x-if="view === 'select'">
+          <button type="button" class="cfm-btn cfm-btn--sm" @click="close()">Cancel</button>
+        </template>
+        <template x-if="view === 'select'">
+          <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" aria-label="Import"
+                  :disabled="!!(files.length === 0 || anyNameMissing)" @click="startImport()" x-text="btnLabel"></button>
+        </template>
+        {# While uploading, the ONLY action is Cancel (the pop-over is locked). Everything else appears
+           once every file is handed off (busy=false) — at which point navigating is safe. #}
+        <template x-if="view === 'results' && busy">
+          <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!cancelling"
+                  @click="cancelUpload()" x-text="cancelling ? 'Cancelling…' : 'Cancel'"></button>
+        </template>
+        <template x-if="view === 'results' && !busy">
+          <button type="button" class="cfm-btn cfm-btn--sm" @click="reset()">Import more</button>
+        </template>
+        {# One-click path to the Queue — only after uploads are done, so it can't trap an in-flight upload. #}
+        <template x-if="view === 'results' && !busy && queuedCount">
+          <a class="cfm-btn cfm-btn--sm" href="{{ url_prefix }}/queue">View Queue</a>
+        </template>
+        <template x-if="view === 'results' && !busy">
+          <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="close()">Done</button>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  {# ── Paste pop-over (packet 1025): clipboard TEXT → a deliverable artifact ── #}
+  <div class="cfm-overlay" x-data="pasteTool()" @cfm-open-paste.window="open($event.detail)"
+       x-show="show" x-cloak
+       @click.self="if (!busy) close()" @keydown.escape.window="if (show && !busy) close()"
+       x-effect="show ? $nextTick(() => { _ptrap = window.cfmFocusTrap($refs.pasteDlg) }) : (_ptrap && _ptrap())">
+    <div class="cfm-dialog" x-ref="pasteDlg" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr">
+        <span class="cfm-dialog-title">Paste a clip</span>
+        {{ doc_help('artifacts-catalog#paste-a-clip', 'About pasting clips') }}
+        <button type="button" class="cfm-iconbtn" @click="close()" :disabled="!!busy" aria-label="Close" title="Close">✕</button>
+      </div>
+      <div class="cfm-dialog-body">
+        <p class="cfm-muted cfm-mb-12">Paste a FileMaker clipboard clip (script steps, fields, a
+          calculation, …). It's recognized, previewed, and stored as a deliverable artifact. Pasting a
+          <em>file</em>? Use Import instead.</p>
+
+        <div class="cfm-field-label">Pasted content</div>
+        <textarea class="cfm-input cfm-mono" rows="7" x-model="text" @input="onInput()"
+                  placeholder="⌘V here — or it's read from your clipboard when this opens…"
+                  style="width:100%; resize:vertical"></textarea>
+
+        {# file → route to Import (recognition says this is not a clip) #}
+        <template x-if="isFile">
+          <p class="cfm-inline-error cfm-mt-8" x-text="cls.message"></p>
+        </template>
+
+        <template x-if="!isFile && (text || '').trim()">
+          <div class="cfm-mt-12">
+            <div style="display:flex; gap:1em; align-items:flex-end; flex-wrap:wrap">
+              {# A <label for=…> cannot point at a div, so the caption is associated by id. #}
+              <div class="upload-name-field">
+                <span class="cfm-muted" id="paste-type-label">Type</span>
+                <div class="cfm-dd" @click.outside="typeMenuOpen = false"
+                     @keydown.escape.stop="typeMenuOpen = false">
+                  <button type="button" class="cfm-dd-trigger" aria-labelledby="paste-type-label"
+                          :aria-expanded="!!typeMenuOpen" @click="typeMenuOpen = !typeMenuOpen">
+                    <span x-text="(PASTE_TYPES.find(t => t.value === type) || {}).label || 'Select…'"></span>
+                    <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+                  </button>
+                  <div class="cfm-dd-menu" x-show="typeMenuOpen" x-cloak>
+                    <template x-for="t in PASTE_TYPES" :key="t.value">
+                      <button type="button" class="cfm-dd-opt" :class="t.value === type ? 'cfm-dd-opt--on' : ''"
+                              @click="typeMenuOpen = false; type = t.value; onTypeChange()"
+                              x-text="t.label"></button>
+                    </template>
+                  </div>
+                </div>
+              </div>
+              <label class="upload-name-field" style="flex:1; min-width:12em">
+                <span class="cfm-muted">Name</span>
+                <input type="text" class="cfm-input" x-model="name" @input="nameAuto = false"
+                       placeholder="auto-named from the clip">
+              </label>
+            </div>
+            <label class="upload-name-field cfm-mt-8" style="display:block">
+              <span class="cfm-muted">Tags (comma-separated, optional)</span>
+              <input type="text" class="cfm-input" x-model="tagsInput" placeholder="e.g. draft, review">
+            </label>
+
+            {# fmClip advisory — informational, NEVER a gate (fragments welcome) #}
+            <template x-if="type === 'fmClip' && advisory">
+              <p class="cfm-muted cfm-mt-8" style="font-size:.85em">
+                <span x-show="advisory.well_formed && advisory.blocks_balanced">✓ well-formed clip</span>
+                <span class="cfm-badge cfm-badge--warn" x-show="!advisory.blocks_balanced"
+                      title="A fragment stores fine — this is only a heads-up">fragment · unbalanced blocks</span>
+                · <span x-text="advisory.reference_count"></span> reference(s)
+                <template x-if="cls && cls.object_class"><span> · <span x-text="cls.object_class"></span></span></template>
+                <template x-if="cls && cls.note"><span class="cfm-muted"> · <span x-text="cls.note"></span></span></template>
+              </p>
+            </template>
+
+            <template x-if="embedderOn">
+              <label class="cfm-mt-8" style="display:inline-flex; align-items:center; gap:.4em; font-size:.85em"
+                     title="Enables semantic search / MCP retrieval. Runs on the background queue.">
+                <input type="checkbox" x-model="wantIndex"> Add to search index
+              </label>
+            </template>
+          </div>
+        </template>
+
+        <p class="cfm-inline-error cfm-mt-8" x-show="error" x-text="error"></p>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <span class="cfm-muted" x-show="inspecting">identifying…</span>
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="close()" :disabled="!!busy">Cancel</button>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" :disabled="!canSave"
+                aria-label="Add to CORPUSfm" @click="save()" x-text="busy ? 'Adding…' : 'Add to CORPUSfm'"></button>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Downloads are `<name>.artifact.zip` (packet 1226); a bare `.zip` and a bare `.artifact` are both
+// older names and both still import. The server decides by CONTENT — these only gate the picker and
+// the drop zone, so keep them permissive.
+const CFM_REABSORB_EXT = ['.zip', '.artifact'];
+// Original crafted set — Bootstrap Icons (file-earmark-text / puzzle / intersect /
+// wrench-adjustable / clipboard), inlined now that Shoelace is gone. Filled glyphs,
+// rendered white (knockout) on the type-color badge.
+const TYPE_SVG = {
+  saveas: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 7a.5.5 0 0 0 0 1h5a.5.5 0 0 0 0-1zM5 9.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5m0 2a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5"/><path d="M9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4.5zm0 1v2A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"/></svg>',
+  addon:  '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3.112 3.645A1.5 1.5 0 0 1 4.605 2H7a.5.5 0 0 1 .5.5v.382c0 .696-.497 1.182-.872 1.469a.5.5 0 0 0-.115.118l-.012.025L6.5 4.5v.003l.003.01q.005.015.036.053a.9.9 0 0 0 .27.194C7.09 4.9 7.51 5 8 5c.492 0 .912-.1 1.19-.24a.9.9 0 0 0 .271-.194.2.2 0 0 0 .039-.063v-.009l-.012-.025a.5.5 0 0 0-.115-.118c-.375-.287-.872-.773-.872-1.469V2.5A.5.5 0 0 1 9 2h2.395a1.5 1.5 0 0 1 1.493 1.645L12.645 6.5h.237c.195 0 .42-.147.675-.48.21-.274.528-.52.943-.52.568 0 .947.447 1.154.862C15.877 6.807 16 7.387 16 8s-.123 1.193-.346 1.638c-.207.415-.586.862-1.154.862-.415 0-.733-.246-.943-.52-.255-.333-.48-.48-.675-.48h-.237l.243 2.855A1.5 1.5 0 0 1 11.395 14H9a.5.5 0 0 1-.5-.5v-.382c0-.696.497-1.182.872-1.469a.5.5 0 0 0 .115-.118l.012-.025.001-.006v-.003a.2.2 0 0 0-.039-.064.9.9 0 0 0-.27-.193C8.91 11.1 8.49 11 8 11s-.912.1-1.19.24a.9.9 0 0 0-.271.194.2.2 0 0 0-.039.063v.003l.001.006.012.025c.016.027.05.068.115.118.375.287.872.773.872 1.469v.382a.5.5 0 0 1-.5.5H4.605a1.5 1.5 0 0 1-1.493-1.645L3.356 9.5h-.238c-.195 0-.42.147-.675.48-.21.274-.528.52-.943.52-.568 0-.947-.447-1.154-.862C.123 9.193 0 8.613 0 8s.123-1.193.346-1.638C.553 5.947.932 5.5 1.5 5.5c.415 0 .733.246.943.52.255.333.48.48.675.48h.238zM4.605 3a.5.5 0 0 0-.498.55l.001.007.29 3.4A.5.5 0 0 1 3.9 7.5h-.782c-.696 0-1.182-.497-1.469-.872a.5.5 0 0 0-.118-.115l-.025-.012L1.5 6.5h-.003a.2.2 0 0 0-.064.039.9.9 0 0 0-.193.27C1.1 7.09 1 7.51 1 8s.1.912.24 1.19c.07.14.14.225.194.271a.2.2 0 0 0 .063.039H1.5l.006-.001.025-.012a.5.5 0 0 0 .118-.115c.287-.375.773-.872 1.469-.872H3.9a.5.5 0 0 1 .498.542l-.29 3.408a.5.5 0 0 0 .497.55h1.878c-.048-.166-.195-.352-.463-.557-.274-.21-.52-.528-.52-.943 0-.568.447-.947.862-1.154C6.807 10.123 7.387 10 8 10s1.193.123 1.638.346c.415.207.862.586.862 1.154 0 .415-.246.733-.52.943-.268.205-.415.39-.463.557h1.878a.5.5 0 0 0 .498-.55l-.001-.007-.29-3.4A.5.5 0 0 1 12.1 8.5h.782c.696 0 1.182.497 1.469.872.05.065.091.099.118.115l.025.012.006.001h.003a.2.2 0 0 0 .064-.039.9.9 0 0 0 .193-.27c.14-.28.24-.7.24-1.191s-.1-.912-.24-1.19a.9.9 0 0 0-.194-.271.2.2 0 0 0-.063-.039H14.5l-.006.001-.025.012a.5.5 0 0 0-.118.115c-.287.375-.773.872-1.469.872H12.1a.5.5 0 0 1-.498-.543l.29-3.407a.5.5 0 0 0-.497-.55H9.517c.048.166.195.352.463.557.274.21.52.528.52.943 0 .568-.447.947-.862 1.154C9.193 5.877 8.613 6 8 6s-1.193-.123-1.638-.346C5.947 5.447 5.5 5.068 5.5 4.5c0-.415.246-.733.52-.943.268-.205.415-.39.463-.557z"/></svg>',
+  merged: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M0 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2H2a2 2 0 0 1-2-2zm5 10v2a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2v5a2 2 0 0 1-2 2zm6-8V2a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2V6a2 2 0 0 1 2-2z"/></svg>',
+  patch:  '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M16 4.5a4.5 4.5 0 0 1-1.703 3.526L13 5l2.959-1.11q.04.3.041.61"/><path d="M11.5 9c.653 0 1.273-.139 1.833-.39L12 5.5 11 3l3.826-1.53A4.5 4.5 0 0 0 7.29 6.092l-6.116 5.096a2.583 2.583 0 1 0 3.638 3.638L9.908 8.71A4.5 4.5 0 0 0 11.5 9m-1.292-4.361-.596.893.809-.27a.25.25 0 0 1 .287.377l-.596.893.809-.27.158.475-1.5.5a.25.25 0 0 1-.287-.376l.596-.893-.809.27a.25.25 0 0 1-.287-.377l.596-.893-.809.27-.158-.475 1.5-.5a.25.25 0 0 1 .287.376M3 14a1 1 0 1 1 0-2 1 1 0 0 1 0 2"/></svg>',
+  clip:   '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg>',
+};
+
+function libraryPage() {
+  return {
+    rows:      [],       // current server page
+    total:     0,        // total matching the filters
+    hasMore:   false,
+    loading:   false,
+
+    // Live catalog refresh (packet 1039): re-issue the CURRENT-view query on a gentle timer and
+    // reconcile in place, so an add/delete/land from another surface (MCP save, a Job, a second
+    // tab) appears without a manual reload — no server-push, no global fingerprint token.
+    _refreshTimer: null,
+    _visHandler:   null,    // visibilitychange listener: refresh immediately on tab refocus (not up to 7s later)
+    _refreshBusy:  false,   // re-entrancy guard: a slow refetch must not overlap the next tick
+    _rowsSig:      '',      // signature of the displayed page — swap the DOM only when it changes
+
+    embedderOn:  {{ 'true' if has_embedding_provider else 'false' }},  // semantic-search index available
+    summarizerOn: {{ 'true' if has_summary_provider else 'false' }},   // AI summary (chat) provider available (independent of embedder — D3)
+    indexingAll: false,
+
+    search:   '',
+    fromDate: '',
+    toDate:     '',
+    latestOnly: false,
+    jobUuid: '',
+
+    // facet selections (multi)
+    selTags:   [],
+    selSys:    [],   // includes type:* — type is folded into the system tags
+    tagMode:   'any',
+    untagged:  false,
+
+    // facet vocabulary (from the server's facets block)
+    facetTags:     [],
+    facetSys:      [],
+    facetUntagged: 0,
+    filterOpen:    false,
+    // Bulk Tag dialog (packet 1280). tagAdjustBusy is this operation's OWN in-flight flag.
+    tagDlg: false, tagAddInput: '', tagRemoveStaged: [], tagAdjustBusy: false, tagDlgErr: '',
+    _tagtrap: null,
+    _ftrap: null, _rtrap: null, _dtrap: null,
+
+    sortBy:  'timestamp',
+    sortDir: 'desc',
+    page:    1,
+    perPage: 25,
+
+    taskError: '',
+
+    // Three-state read (packet 071): distinguish a genuinely empty catalog from a backend/server
+    // outage so we don't render "no artifacts" (reads as data loss) when storage is just unreachable.
+    unavailable:   false,
+    unavailReason: '',   // 'storage' = FM backend down (app up); 'server' = app/network unreachable
+
+    // Drag-to-select: drag a grid card up into the Action space
+    dragActive: false,
+    _dragRow:   null,
+
+    // Recent activity pop-over (human transformations; reads /api/overview)
+    recentOpen: false,
+    recentTab:  'Explorer',
+    recent:     { explores: [], diffs: [], merges: [], patches: [] },
+
+    tagNames:    [],
+
+    // ── Selection workspace (loose form) ──────────────────────────────────────
+    selected:  [],   // record UUIDs in the selection group (persists across filter/sort)
+    selData:   {},   // uuid → row snapshot, so the toolbar validates/labels across pages
+    selConfirm: false,
+    merging:   false,  // a synchronous merge POST is in flight (drives the progress bar)
+    downloadBusy: false,  // a multi-item download-bundle POST is streaming (packet 1063)
+    reingestBusy: false,  // a bulk re-ingest enqueue is in flight (packet 1063 D)
+
+    // Detail pop-over
+    detailOpen:    false,
+    detailLoading: false,
+    detailUuid:     '',
+    detail:        null,
+    detailTab:     'overview',
+    // Raw tab (fmClip clipboard pickup, packet 1025)
+    rawXml: '', rawClass: '', rawLoading: false, rawCopied: false, rawError: '',
+    detailHistory: null,          // null = not loaded yet (lazy, packet 085 U3d)
+    detailHistoryLoading: false,
+    detailRelated: null,          // {same_root, built_from_this} or null (lazy)
+    detailRelatedLoading: false,
+    get relatedCount() {
+      const r = this.detailRelated;
+      return r ? (r.same_root.length + r.built_from_this.length) : 0;
+    },
+    detailRegs:    [],
+    exportReg:     '', exportRepo: '', exportBusy: false, exportMsg: '',
+    get selectedDetailReg() { return this.detailRegs.find(r => r.name === this.exportReg) || null; },
+    detailOrig:    { name: '', description: '', memory: '' },
+    detailTags:    [],
+    detailTagsDraft: '',
+    detailTagsOrig:  '',
+    detailBusy:    false,
+    detailIndexed:         false,
+    deletingSource:        false,
+    detailSummarized:      false,
+    detailIndexConfigured: false,
+    detailIndexBusy:       false,
+    detailReingestBusy:    false,
+    detailConfirmDel:      false,
+    detailConfirmDeindex:  false,
+    // In-flight guards, one per destructive OPERATION (packet 1186). Never one page-wide flag: an
+    // unrelated action must not unlock or block a confirmation that isn't its own.
+    detailDeleteBusy:      false,
+    selForgetBusy:         false,
+    detailDeindexBusy:     false,
+
+    // The detail being viewed is part of the multi-select group → its footer shows
+    // only Close / Save (no per-item delete, no action buttons).
+    get isDetailSelected() { return this.selected.includes(this.detailUuid); },
+
+    // Packet 052: enrichment is a queue — work is NEVER rejected, it's enqueued. So the action
+    // buttons no longer gate on a "busy" state; they enqueue and the unified activity chip tracks it.
+    // (Packet 1136 Stage 2 retired the always-false `indexBusy` getter + its dead gates.)
+
+    // Two downloads (packet 1034). dlUrl('artifact') = the portable envelope (all types);
+    // dlUrl('raw') = the simple text file. A deliverable always has a raw form; a schema artifact
+    // only when its source XML was retained (has_source).
+    get _deliverableType() {
+      const t = (this.detail && this.detail.content && this.detail.content.artifact_type) || '';
+      return ({ PatchXML: 'patch', fmClip: 'fmclip', fmScript: 'fmscript', fmCalc: 'fmcalc' })[t] || '';
+    },
+    get canDownloadRaw() {
+      const c = (this.detail && this.detail.content) || {};
+      return !!(this._deliverableType || c.has_source);
+    },
+    get rawExt() { return this._deliverableType || 'xml'; },
+    dlUrl(form) {
+      return (window.CFM_PREFIX || '') + '/api/artifact-download/'
+        + encodeURIComponent(this.detailUuid) + '?form=' + form;
+    },
+
+    get totalPages() { return Math.max(1, Math.ceil(this.total / this.perPage)); },
+
+    get anyFilter() {
+      return !!(this.search || this.fromDate || this.toDate || this.latestOnly || this.jobUuid
+        || this.untagged || this.selTags.length || this.selSys.length);
+    },
+
+    get hasChips() {
+      return !!(this.untagged || this.selTags.length || this.selSys.length
+        || this.fromDate || this.toDate);
+    },
+
+    get activeFilterCount() {
+      return this.selTags.length + this.selSys.length
+        + (this.untagged ? 1 : 0) + ((this.fromDate || this.toDate) ? 1 : 0);
+    },
+
+    // Unified facet collection (system + user tags + Untagged) → one pill set.
+    get allFacets() {
+      const out = [];
+      if (this.facetUntagged > 0 || this.untagged)
+        out.push({ key: 'untagged', label: 'Untagged', count: this.facetUntagged, kind: 'untagged' });
+      for (const f of this.facetSys)
+        out.push({ key: 'sys:' + f.name, label: this.sysLabel(f.name), raw: f.name, count: f.count, kind: 'sys' });
+      for (const f of this.facetTags)
+        out.push({ key: 'tag:' + f.name, label: f.name, raw: f.name, count: f.count, kind: 'tag' });
+      return out;
+    },
+    facetOn(f) {
+      if (f.kind === 'untagged') return this.untagged;
+      if (f.kind === 'sys') return this.selSys.includes(f.raw);
+      return this.selTags.includes(f.raw);
+    },
+    facetToggle(f) {
+      if (f.kind === 'untagged') { this.untagged = !this.untagged; this.page = 1; this.load(); }
+      else if (f.kind === 'sys') { this.toggleSys(f.raw); }
+      else { this.toggleTag(f.raw); }
+    },
+
+    // ── Selection helpers ─────────────────────────────────────────────────────
+    isSel(s)  { return this.selected.includes(s.uuid); },
+    toggleSelect(s) {
+      const i = this.selected.indexOf(s.uuid);
+      if (i >= 0) { this.selected.splice(i, 1); delete this.selData[s.uuid]; }
+      else { this.selected.push(s.uuid); this.selData[s.uuid] = s; }
+      this.selConfirm = false;
+    },
+    clearSel() { this.selected = []; this.selData = {}; this.selConfirm = false; },
+
+    // ── Bulk Tag dialog (packet 1280) ─────────────────────────────────────────
+    openTagDlg() { this.tagAddInput = ''; this.tagRemoveStaged = []; this.tagDlgErr = ''; this.tagDlg = true; },
+    closeTagDlg() { if (!this.tagAdjustBusy) this.tagDlg = false; },
+    // Union of USER tags across the selection with per-tag counts — computed from selData (the
+    // rows carry user tags only; system tags travel separately), so it spans pages for free.
+    selTagCounts() {
+      const counts = {};
+      for (const row of this._selRows())
+        for (const t of (row.tags || [])) counts[t] = (counts[t] || 0) + 1;
+      return Object.keys(counts).sort().map(name => ({ name, count: counts[name] }));
+    },
+    toggleRemoveTag(name) {
+      const i = this.tagRemoveStaged.indexOf(name);
+      if (i >= 0) this.tagRemoveStaged.splice(i, 1); else this.tagRemoveStaged.push(name);
+    },
+    _tagAddList() { return [...new Set(this.tagAddInput.split(',').map(t => t.trim().toLowerCase()).filter(Boolean))]; },
+    tagStaged() { return this._tagAddList().length > 0 || this.tagRemoveStaged.length > 0; },
+    async tagApply() {
+      if (this.tagAdjustBusy || !this.tagStaged()) return;
+      this.tagAdjustBusy = true; this.tagDlgErr = '';
+      try {
+        const r = await fetch('/api/tags/adjust', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uuids: this.selected.slice(),
+                                 add: this._tagAddList(), remove: this.tagRemoveStaged.slice() }) });
+        const d = await r.json();
+        if (!r.ok) { this.tagDlgErr = d.error || ('Tagging failed (' + r.status + ').'); return; }
+        // The refresh contract (packet 1280): the SERVER's final per-record tags land on every
+        // successful selData entry — including off-page selections load() cannot see — and
+        // success is never derived locally from what was staged.
+        for (const [uuid, tags] of Object.entries(d.tags_by_uuid || {}))
+          if (this.selData[uuid]) this.selData[uuid].tags = tags;
+        const parts = [];
+        if (d.assignments_added) parts.push(d.assignments_added + ' added');
+        if (d.assignments_removed) parts.push(d.assignments_removed + ' removed');
+        const msg = (parts.length ? parts.join(', ') : 'No changes')
+                  + ' across ' + d.records_changed + ' artifact' + (d.records_changed === 1 ? '' : 's') + '.';
+        if (d.failed && d.failed.length) {
+          window.cfmNotify.error(msg + ' ' + d.failed.length + ' failed — tags unchanged there.');
+        } else { window.cfmNotify.success(msg); }
+        this.tagDlg = false;
+        await this.load(); await this.loadTagNames();
+      } catch (e) { this.tagDlgErr = String(e); }
+      finally { this.tagAdjustBusy = false; }
+    },
+    // Select every artifact on the CURRENT page (rows IS the filtered page). Union, never
+    // toggles off — the action-space Clear deselects. Per-page by design (no cross-page fetch).
+    selectPage() { this.rows.forEach(s => { if (!this.isSel(s)) this.toggleSelect(s); }); },
+
+    // ── Drag-to-select ────────────────────────────────────────────────────────
+    onDragStart(s) { this._dragRow = s; this.dragActive = true; },
+    onDragEnd()    { this.dragActive = false; },
+    onDrop() {
+      this.dragActive = false;
+      const s = this._dragRow; this._dragRow = null;
+      if (s && !this.isSel(s)) this.toggleSelect(s);
+    },
+
+    // ── Recent activity pop-over (reads /api/overview) ────────────────────────
+    async loadRecent() {
+      try {
+        const r = await fetch('/api/overview');
+        const d = await r.json();
+        this.recent = {
+          explores: d.explores || [], diffs: d.diffs || [],
+          merges:   d.merges   || [], patches: d.patches || [],
+        };
+      } catch (_) {}
+    },
+    async reExplore(e) {
+      const pending = window.cfmOpenPending(); this.taskError = '';
+      try {
+        const r = await fetch('/api/generate/explorer', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ artifact_paths: e.artifacts || [], labels: e.labels || [], record_history: false }),
+        });
+        const d = await r.json();
+        if (d.error) { this.taskError = d.error; window.cfmResolvePending(pending, null, d.error); return; }
+        window.cfmTrackInTab(pending, d.task_id);
+      } catch (err) { this.taskError = String(err); window.cfmResolvePending(pending, null, String(err)); }
+    },
+    async reDiff(d) {
+      if (!d.exists) return;
+      const pending = window.cfmOpenPending(); this.taskError = '';
+      try {
+        const r = await fetch('/api/generate/diff', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ artifact_a: d.artifact_a, artifact_b: d.artifact_b, record_history: false }),
+        });
+        const data = await r.json();
+        if (data.error) { this.taskError = data.error; window.cfmResolvePending(pending, null, data.error); return; }
+        window.cfmTrackInTab(pending, data.task_id);
+      } catch (err) { this.taskError = String(err); window.cfmResolvePending(pending, null, String(err)); }
+    },
+    openRecentArtifact(rp) { this.recentOpen = false; this.openDetail(rp); },
+    fmtIso(ts) { try { return ts.replace('T', ' ').slice(0, 16); } catch (_) { return ts; } },
+    _selRows() { return this.selected.map(rp => this.selData[rp]).filter(Boolean); },
+    _selSorted() {  // oldest first (older = A / baseline)
+      return this._selRows().slice().sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+    },
+    // Positive identity check (packet 040): a SaveAsXML proper, NOT a denylist (a denylist let
+    // fmScript/fmCalc leak through as SaveAsXML → wrongly Patch/Merge-eligible).
+    _isSaveas(s) {
+      const t = s.artifact_type || '';
+      return t === 'SaveAsXML' && !s.is_addon;
+    },
+    // Server-authored capability check (packet 040): the front-end never re-derives a
+    // type→capability rule — it reads the flags the listing payload ships.
+    _hasCap(s, cap) { return (s && s.capabilities || []).includes(cap); },
+    // Explore / Diff gate on the server-authored `explorer` / `diff` capability — a clip /
+    // patch / fmScript / fmCalc (no schema lens) is never offered a lens (packet 040).
+    get canExplore() {
+      const r = this._selRows();
+      return r.length > 0 && r.every(s => this._hasCap(s, 'explorer'));
+    },
+    get canDiff() {
+      const r = this._selRows();
+      return r.length === 2 && r.every(s => this._hasCap(s, 'diff'));
+    },
+    // Patch generation = exactly 2 SaveAsXML of the same file (positive identity + pairing,
+    // NOT the patch_ops capability — that gates applying an existing patch). _isSaveas is now a
+    // positive check, so fmScript/fmCalc no longer leak in (packet 040).
+    get canPatch() {
+      const r = this._selRows();
+      return r.length === 2 && r.every(s => this._isSaveas(s) && s.is_schema)
+        && r[0].root_uuid && r[0].root_uuid === r[1].root_uuid;
+    },
+    get canMerge() {  // exactly a SaveAsXML + its AddonXML, same root
+      const r = this._selRows();
+      if (r.length !== 2) return false;
+      const saveas = r.find(s => this._isSaveas(s));
+      const addon  = r.find(s => s.is_addon || s.artifact_type === 'AddonXML');
+      return !!(saveas && addon && saveas.root_uuid && saveas.root_uuid === addon.root_uuid);
+    },
+    _isIndexed(s) { return (s.system_tags || []).includes('indexed'); },
+    // packet 075: is this artifact queued/running for index / summarize? (live overlay from the
+    // enrich-queue poll in $store.queue — durable badge stays "reality", this only colors "in flight").
+    _indexPending(s)     { const p = this.$store.queue && this.$store.queue.pending; return !!(p && p.index && p.index[s.uuid]); },
+    _summarizePending(s) { const p = this.$store.queue && this.$store.queue.pending; return !!(p && p.summarize && p.summarize[s.uuid]); },
+    // Per-item soft (progress-silence) state (packet 1136 Stage 4) — the artifact's own stall, independent
+    // of siblings still progressing. The pending overlay carries 'active' | 'soft' per uuid.
+    _indexSoft(s)        { const p = this.$store.queue && this.$store.queue.pending; return !!(p && p.index && p.index[s.uuid] === 'soft'); },
+    _summarizeSoft(s)    { const p = this.$store.queue && this.$store.queue.pending; return !!(p && p.summarize && p.summarize[s.uuid] === 'soft'); },
+    // Indexing is the search substrate (packet 1006): any schema artifact can be indexed, and an
+    // already-indexed one can be re-indexed (a refresh). Bulk de-index is NOT a selection action; the
+    // only human de-index is the confirm-gated per-artifact De-index in the detail pop-over (packet
+    // 1010 — file-level effect, one index per file).
+    get canIndex()   { return this.embedderOn && this._selRows().some(s => s.indexable); },
+    // "Reindex" when every selected INDEXABLE artifact is already indexed; "Index" otherwise. Indexable
+    // = schema + fmClip/fmScript/fmCalc (packet 1042); PatchXML in the selection is silently excluded.
+    get selIndexLabel() {
+      const rows = this._selRows().filter(s => s.indexable);
+      return (rows.length && rows.every(s => this._isIndexed(s))) ? 'Reindex' : 'Index';
+    },
+    // Summaries: gated on its OWN provider, independent of the embedder (D3). Any stored artifact
+    // can be summarized (the chat model captions its objects).
+    get canSummarize() { return this.summarizerOn && this._selRows().some(s => s.is_schema); },
+    _isSummarized(s) { return !!s.has_summaries; },
+    // Contextual label (E3): "Re-summarize" (replaces) when every selected artifact already has
+    // summaries; "Summaries" (does the un-summarized ones) otherwise. No unsummarize — summaries
+    // live with the artifact, so there's nothing to remove.
+    get selSummarizeLabel() {
+      const rows = this._selRows().filter(s => s.is_schema);
+      return (rows.length && rows.every(s => this._isSummarized(s))) ? 'Re-summarize' : 'Summaries';
+    },
+
+    // Explore: open ALL selected in one Explorer (self-polling result tab; the Catalog never polls).
+    async selExplore() {
+      if (!this.canExplore) return;
+      const r = this._selRows();
+      if (!r.length) return;
+      const pending = window.cfmOpenPending();
+      this.taskError = '';
+      try {
+        const resp = await fetch('/api/generate/explorer', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            artifact_paths: r.map(s => s.uuid),
+            labels:         r.map(s => this.fileName(s)),
+          }),
+        });
+        const d = await resp.json();
+        if (d.error) { this.taskError = d.error; window.cfmResolvePending(pending, null, d.error); return; }
+        window.cfmTrackInTab(pending, d.task_id);
+      } catch (e) { this.taskError = String(e); window.cfmResolvePending(pending, null, String(e)); }
+    },
+
+    // Diff: exactly 2 → result tab (older = A).
+    async selDiff() {
+      if (!this.canDiff) return;
+      const r = this._selSorted();
+      if (r.length !== 2) return;
+      const pending = window.cfmOpenPending();
+      this.taskError = '';
+      try {
+        const resp = await fetch('/api/generate/diff', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ artifact_a: r[0].uuid, artifact_b: r[1].uuid }),
+        });
+        const d = await resp.json();
+        if (d.error) { this.taskError = d.error; window.cfmResolvePending(pending, null, d.error); return; }
+        window.cfmTrackInTab(pending, d.task_id);
+      } catch (e) { this.taskError = String(e); window.cfmResolvePending(pending, null, String(e)); }
+    },
+
+    // Patch (ISV): exactly 2 SaveAsXML, same root → prime the ISV bench (older = baseline A).
+    selPatch() {
+      if (!this.canPatch) return;
+      const r = this._selSorted();
+      const lbl = (s) => this.fileName(s) + '  ' + (s.timestamp || '').slice(0, 10);
+      const params = new URLSearchParams({
+        artifact_a: r[0].uuid, artifact_b: r[1].uuid,
+        label_a: lbl(r[0]), label_b: lbl(r[1]),
+        root_uuid: r[0].root_uuid || '',
+      });
+      cfmGo('/isv?' + params.toString());
+    },
+
+    // Merge: a SaveAsXML + its add-on (same root) → merge IN PLACE; the new MergedXML drops in on reload.
+    async selMerge() {
+      if (!this.canMerge || this.merging) return;
+      const r = this._selRows();
+      const saveas = r.find(s => this._isSaveas(s));
+      const addon  = r.find(s => s.is_addon || s.artifact_type === 'AddonXML');
+      this.taskError = '';
+      this.merging = true;
+      try {
+        const resp = await fetch('/api/merged-artifacts/create', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ saveas_uuid: saveas.uuid, addon_uuid: addon.uuid }),
+        });
+        const d = await resp.json();
+        if (!d.ok) { this.taskError = d.error || 'Merge failed.'; return; }
+        window.cfmNotify.success('Merged ' + this.fileName(saveas) + ' + its add-on — new MergedXML artifact added.');
+        this.clearSel();
+        await this.load();
+      } catch (e) { this.taskError = String(e); }
+      finally { this.merging = false; }
+    },
+
+    // Multi-item download (packet 1063): stream ONE server-side .zip of the selected artifacts'
+    // .artifact envelopes. Deliberately a single bundle — browsers block multiple simultaneous
+    // downloads, so firing N per-item downloads is unreliable.
+    async selDownload() {
+      if (this.downloadBusy || this.selected.length === 0) return;
+      const refs = this._selRows().map(s => s.uuid);
+      this.downloadBusy = true;
+      try {
+        const resp = await fetch('/api/artifacts/download-bundle', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refs, form: 'artifact' }),
+        });
+        if (!resp.ok) {
+          let msg = 'Download failed.';
+          try { const d = await resp.json(); msg = d.detail || d.error || msg; } catch (e) {}
+          window.cfmNotify.info(msg); return;
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'corpusfm-artifacts-' + refs.length + '.zip';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (e) { window.cfmNotify.error(String(e)); }
+      finally { this.downloadBusy = false; }
+    },
+
+    // Bulk re-ingest of a selection (packet 1063 D): server-side enqueue, eligibility-filtered
+    // (schema + retained source). No browser wall — this isn't a download.
+    async selReingest() {
+      if (this.reingestBusy || this.selected.length === 0) return;
+      const refs = this._selRows().map(s => s.uuid);
+      this.reingestBusy = true;
+      try {
+        const r = await fetch('/api/artifacts/reingest-bulk', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refs }),
+        });
+        const d = await r.json();
+        if (!r.ok || d.ok === false) { window.cfmNotify.error(d.error || 'Re-ingest failed.'); return; }
+        let msg = d.queued + ' queued for re-ingest — see Queue';
+        const extra = [];
+        if (d.skipped) extra.push(d.skipped + ' skipped: no stored source / not a schema artifact');
+        if (d.already) extra.push(d.already + ' already queued');
+        window.cfmNotify.info(msg + (extra.length ? ' (' + extra.join('; ') + ')' : '') + '.');
+      } catch (e) { window.cfmNotify.error(String(e)); }
+      finally { this.reingestBusy = false; }
+    },
+
+    // Delete the single artifact open in the detail pop-over (far-left trash, unselected only).
+    async detailDeleteOne() {
+      if (this.detailDeleteBusy) return;      // BEFORE any await: a second click can't start a second cascade
+      this.detailDeleteBusy = true;
+      try {
+        const rp = this.detailUuid;          // inside the try: nothing may throw past the finally
+        const r = await fetch('/api/library/artifacts/' + encodeURIComponent(rp), { method: 'DELETE' });
+        const d = await r.json();
+        // fetch does NOT reject on 4xx/5xx, so the route's own {ok} is the only honest signal —
+        // without this a 500 would clear the confirmation and report a deletion that never happened.
+        if (!d.ok) { this.taskError = d.error || 'Delete failed.'; window.cfmNotify.error(this.taskError); return; }
+        window.cfmNotify.success('Deleted artifact.');
+        this.detailConfirmDel = false;        // only on success — a failure leaves Confirm for a retry
+        this.closeDetail();
+        await this.load();
+      } catch (e) { this.taskError = String(e); }
+      finally { this.detailDeleteBusy = false; }
+    },
+
+    // Bulk delete the selected artifacts — confirmed via the Confirm?/Cancel toolbar buttons.
+    async selForget() {
+      if (this.selForgetBusy) return;
+      this.selForgetBusy = true;
+      try {
+        const paths = this.selected.slice();  // frozen once — the loop is over this snapshot
+        const failed = [];
+        for (const rp of paths) {             // ordering + exactly one request per UUID, unchanged
+          const r = await fetch('/api/library/artifacts/' + encodeURIComponent(rp), { method: 'DELETE' });
+          const d = await r.json();
+          if (!d.ok) failed.push(rp);
+        }
+        if (failed.length) {
+          // Partial failure keeps the confirmation for a retry — but the retry must target only what
+          // survived. Leaving the deleted UUIDs selected would make every retry fail on them (the
+          // route answers Not Found), so the confirmation could never reach success.
+          this.selected = failed;
+          this.taskError = failed.length + ' of ' + paths.length + ' could not be deleted.';
+          window.cfmNotify.error(this.taskError);
+          await this.load();
+          return;
+        }
+        window.cfmNotify.success('Deleted ' + paths.length + ' artifact' + (paths.length === 1 ? '' : 's') + '.');
+        this.clearSel();
+        await this.load();
+      } catch (e) { this.taskError = String(e); }
+      finally { this.selForgetBusy = false; }
+    },
+
+    // Bulk index / de-index / summarize the selected artifacts → ENQUEUE on the server queue
+    // (packet 052; never rejected). The global queue chip tracks it; on completion the queue store
+    // fires `cfm-index-batch-done` → this page reloads its badges. Selection clears immediately.
+    async _kickBatch(url, body, kind, total) {
+      this.taskError = '';
+      try {
+        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                     body: JSON.stringify(body) });
+        const d = await r.json();
+        if (!d.ok) { this.taskError = d.error || 'Failed to enqueue.'; window.cfmNotify.error(this.taskError); return false; }
+        const where = d.position > 1 ? (' (position ' + d.position + ' in the queue)') : '';
+        window.cfmNotify.success('Queued ' + kind + where + '.');
+        if (this.$store.queue) this.$store.queue.refresh();
+        return true;
+      } catch (e) { this.taskError = String(e); return false; }
+    },
+    // Index (or reindex/refresh) the selected schema artifacts — indexing is idempotent, so this
+    // covers both first-time index and a refresh of an already-indexed one (packet 1006).
+    async selIndex() {
+      const todo = this._selRows().filter(s => s.indexable);
+      if (!todo.length) return;
+      const kind = this.selIndexLabel.toLowerCase();
+      const ok = await this._kickBatch('/api/indexed/index-batch',
+                            { uuids: todo.map(s => s.uuid) }, kind, todo.length);
+      if (ok) this.clearSel();
+    },
+    // Generate AI summaries for the selected artifacts — same single-flight batch + chip as
+    // indexing, but gated on the summary provider (D3). One chat call per object, interruptible.
+    async selSummarize() {
+      const all = this._selRows().filter(s => s.is_schema);
+      if (!all.length) return;
+      // E3: if every selected artifact is already summarized, Re-summarize ALL (replace); otherwise
+      // do just the un-summarized ones (don't re-spend AI on the already-done).
+      const allDone = all.every(s => this._isSummarized(s));
+      const todo = allDone ? all : all.filter(s => !this._isSummarized(s));
+      const ok = await this._kickBatch('/api/indexed/summarize-batch',
+                            { uuids: todo.map(s => s.uuid) }, 'summarize', todo.length);
+      if (ok) this.clearSel();
+    },
+
+    fileName(s) {
+      return s.name || s.fm_file;
+    },
+
+    // ── Card type → glyph/colour ──────────────────────────────────────────────
+    typeKey(s) {
+      const t = s.artifact_type || '';
+      if (t === 'fmClip')   return 'clip';
+      if (t === 'fmScript') return 'fmscript';
+      if (t === 'fmCalc')   return 'fmcalc';
+      if (t === 'MergedXML')    return 'merged';
+      if (t === 'PatchXML')     return 'patch';
+      if (s.is_addon || t === 'AddonXML') return 'addon';
+      return 'saveas';
+    },
+    typeSvg(key) { return TYPE_SVG[key] || TYPE_SVG.saveas; },
+    typeLabel(s) {
+      const t = s.artifact_type || '';
+      if (t === 'fmClip')   return 'fmClip';
+      if (t === 'fmScript') return 'fmScript';
+      if (t === 'fmCalc')   return 'fmCalc';
+      if (t === 'MergedXML')    return 'Merged';
+      if (t === 'PatchXML')     return 'Patch';
+      if (s.is_addon || t === 'AddonXML') return 'AddonXML';
+      return 'SaveAsXML';
+    },
+    // packet 1121 — the paste-acceptance OBSERVATION badge (a separate axis from format gaps).
+    acceptanceLabel(s) {
+      return ({
+        awaiting_paste: 'awaiting paste', paste_rejected: 'paste rejected',
+        returned_shape_match: 'shape match', returned_shape_changed: 'shape changed',
+        not_found_in_return: 'not found', evaluation_incomplete: 'eval incomplete',
+      })[s.acceptance_state] || s.acceptance_state;
+    },
+    acceptanceBadgeClass(s) {
+      const st = s.acceptance_state;
+      if (st === 'returned_shape_match') return 'cfm-badge--ok';
+      if (st === 'awaiting_paste') return 'cfm-badge--pending';
+      if (st === 'returned_shape_changed' || st === 'not_found_in_return') return 'cfm-badge--warn';
+      if (st === 'paste_rejected' || st === 'evaluation_incomplete') return 'cfm-badge--warn';
+      return 'cfm-badge--muted';
+    },
+    // Humanize a system tag for display (filter dialog + chips). Filter value stays raw.
+    sysLabel(name) {
+      const TYPES = { saveasxml: 'SaveAsXML', addonxml: 'AddonXML', addon: 'AddonXML',
+                      mergedxml: 'MergedXML', patchxml: 'PatchXML', clipboardxml: 'Clip', clip: 'Clip' };
+      if (name.startsWith('type:'))   return TYPES[name.slice(5).toLowerCase()] || name.slice(5);
+      if (name.startsWith('origin:')) { const o = name.slice(7); return o.charAt(0).toUpperCase() + o.slice(1); }
+      if (name.startsWith('fm:'))     return 'FM ' + name.slice(3);
+      if (name === 'has-dead-ends')   return 'Has dead-ends';
+      if (name === 'indexed')         return 'Indexed';
+      if (name === 'unindexed')       return 'Unindexed';
+      if (name === 'summarized')      return 'Summarized';
+      if (name === 'unsummarized')    return 'Unsummarized';
+      if (name === 'has-gaps')        return 'Has gaps';
+      if (name === 'analysis-incomplete') return 'Analysis incomplete';
+      if (name.startsWith('acceptance:')) return 'Acceptance: ' + name.slice(11).replace(/-/g, ' ');
+      return name;
+    },
+
+    toggleTag(t)  { this._toggle('selTags', t); },
+    toggleSys(t)  { this._toggle('selSys', t); },
+    _toggle(key, t) {
+      const i = this[key].indexOf(t);
+      if (i >= 0) this[key].splice(i, 1); else this[key].push(t);
+      this.page = 1; this.load();
+    },
+
+    async init() {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get('tags')) this.selTags = p.get('tags').split(',').map(t => t.trim()).filter(Boolean);
+      // Deep-link: artifacts PRODUCED BY one job (packet 1143 "A-facts"). Keyed on the job uuid,
+      // never a file name — many unrelated artifacts can carry the same name.
+      if (p.get('job_uuid')) this.jobUuid = p.get('job_uuid');
+      if (p.get('q')) this.search = p.get('q');
+      await Promise.all([this.load(), this.loadTagNames()]);
+      const m = (window.location.hash || '').match(/^#detail=(.+)$/);
+      if (m) this.openDetail(decodeURIComponent(m[1]));
+      this._startLiveRefresh();   // packet 1039: keep the current page live from here on
+    },
+
+    destroy() {
+      if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }
+      if (this._visHandler) { document.removeEventListener('visibilitychange', this._visHandler); this._visHandler = null; }
+    },
+
+    // ── Detail pop-over ───────────────────────────────────────────────────────
+
+    async openDetail(uuid) {
+      this.detailUuid     = uuid;
+      this.detailOpen    = true;
+      this.detailLoading = true;
+      this.detail        = null;
+      this.detailTab     = 'overview';
+      this.detailHistory = null;
+      this.detailHistoryLoading = false;
+      this.detailRelated = null;
+      this.detailRelatedLoading = false;
+      this.detailConfirmDel = false;
+      this.detailConfirmDeindex = false;
+      try { window.location.hash = 'detail=' + encodeURIComponent(uuid); } catch (_) {}
+      try {
+        // The five endpoints are independent — fetch them in PARALLEL (audit #1); the pop-over
+        // shows as soon as the detail payload lands, the rest fill their tabs as they resolve.
+        const enc = encodeURIComponent(uuid);
+        const j = (p) => fetch(p).then(r => r.json()).catch(() => null);
+        const [d, id, gd, td] = await Promise.all([
+          fetch('/api/library/artifacts/' + enc).then(r => r.json()),
+          j('/api/indexed/check?uuid=' + enc),
+          j('/api/library/git-registrations'),
+          j('/api/library/artifacts/' + enc + '/git-target'),
+        ]);
+        d.identity   = d.identity   || {};
+        d.provenance = d.provenance || {};
+        d.content    = d.content    || {};
+        d.analysis   = d.analysis   || { gap_issues: 0, gap_unmapped: [], gap_step_ids: [], gap_ref_types: [], analyzer_incomplete: [], analysis_ok: true };
+        this.detail     = d;
+        this.detailOrig = { name: d.name || '', description: d.description || '', memory: d.memory || '' };
+        // Seed tags from the gallery row / selection snapshot (or the detail payload if present).
+        const row = this.rows.find(x => x.uuid === uuid) || this.selData[uuid] || null;
+        const tags = (row && row.tags) ? row.tags.slice() : (d.tags || []);
+        this.detailTags = tags; this.detailTagsDraft = tags.join(', '); this.detailTagsOrig = this.detailTagsDraft;
+        // Summarized state (packet 051) — reliable has_summaries from the row → contextual button label.
+        this.detailSummarized = !!(row && row.has_summaries) || !!(d.content && d.content.has_summaries);
+        // Search-index status for this artifact (drives the index buttons below).
+        this.detailIndexConfigured = !!(id && id.configured);
+        this.detailIndexed = !!(id && id.indexed);
+        // History + Related are LAZY (packet 085 U3d) — loaded on first tab open, not here.
+        // Git destinations for the Export tab + this artifact's OWN stored target.
+        this.detailRegs = (gd && gd.registrations) || [];
+        this.exportReg = ''; this.exportRepo = ''; this.exportMsg = '';
+        if (td && td.registration) { this.exportReg = td.registration; this.exportRepo = td.repo || ''; }
+        else if (this.detailRegs.length === 1) this.exportReg = this.detailRegs[0].name;
+      } catch (e) {
+        this.taskError = String(e);
+        this.detailOpen = false;
+      } finally {
+        this.detailLoading = false;
+      }
+    },
+
+    // History tab (packet 085 U3d): lazy — the /history read fires only on first tab open.
+    async loadHistory() {
+      if (this.detailHistory !== null || this.detailHistoryLoading) return;
+      this.detailHistoryLoading = true;
+      try {
+        const r = await fetch('/api/library/artifacts/' + encodeURIComponent(this.detailUuid) + '/history');
+        const d = await r.json();
+        this.detailHistory = (d && d.events) || [];
+      } catch (_) {
+        this.detailHistory = [];
+      } finally {
+        this.detailHistoryLoading = false;
+      }
+    },
+
+    // Related tab (packet 085 U3d): lazy — three bounded indexed reads (byte-identical /
+    // same-file / built-from-this), only on first tab open.
+    async loadRelated() {
+      if (this.detailRelated !== null || this.detailRelatedLoading) return;
+      this.detailRelatedLoading = true;
+      try {
+        const r = await fetch('/api/library/artifacts/' + encodeURIComponent(this.detailUuid) + '/related');
+        const d = await r.json();
+        this.detailRelated = {
+          same_root: (d && d.same_root) || [],
+          built_from_this: (d && d.built_from_this) || [],
+        };
+      } catch (_) {
+        this.detailRelated = { same_root: [], built_from_this: [] };
+      } finally {
+        this.detailRelatedLoading = false;
+      }
+    },
+
+    // ── Raw tab: the fmClip XML for clipboard pickup (packet 1025) ──────────────
+    _sniffFmClass(xml) {
+      const m = (xml || '').match(/<fmxmlsnippet[^>]*>\s*<(\w+)/);
+      const first = m ? m[1] : '';
+      return ({ Step:'XMSS', Script:'XMSC', Group:'XMSC', Field:'XMFD', BaseTable:'XMTB',
+                CustomFunction:'XMFN', ValueList:'XMVL', Layout:'XMLO', Object:'XMLO' }[first]) || 'XMSS';
+    },
+    async loadRaw() {
+      if (this._rawFor === this.detailUuid && this.rawXml) return;   // cached for this artifact
+      this._rawFor = this.detailUuid;
+      this.rawLoading = true; this.rawError = ''; this.rawCopied = false; this.rawXml = ''; this.rawClass = '';
+      try {
+        const r = await fetch('/api/artifact-download/' + encodeURIComponent(this.detailUuid));
+        if (!r.ok) throw new Error('load');
+        this.rawXml = await r.text();
+        this.rawClass = this._sniffFmClass(this.rawXml);
+      } catch (_) { this.rawError = 'Could not load the clip XML.'; }
+      finally { this.rawLoading = false; }
+    },
+    async copyRaw() {
+      try {
+        await navigator.clipboard.writeText(this.rawXml);
+        this.rawCopied = true; setTimeout(() => { this.rawCopied = false; }, 1500);
+      } catch (_) { window.cfmNotify.error('Copy failed — select the text and copy manually.'); }
+    },
+
+    // ── Global paste routing (packet 1025): ⌘V on the page → the right formal tool ──
+    onGlobalPaste(e) {
+      // Never hijack a paste aimed at an editable field (search / name / filter boxes).
+      const t = e.target;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || ''))) return;
+      // A pop-over already owns the gesture when open.
+      if (this.detailOpen || this.recentOpen) return;
+      const cd = e.clipboardData; if (!cd) return;
+      if (cd.files && cd.files.length) {                 // copied FILE(s) → content-sniff + route
+        e.preventDefault();
+        this._ingestFiles(Array.from(cd.files));
+        return;
+      }
+      const text = cd.getData('text/plain');
+      if (text && text.trim()) {                         // pasted TEXT → the Paste tool (classifies)
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('cfm-open-paste', { detail: { text } }));
+      }
+    },
+
+    // ── Window file-drop ingestion (packet 1038) ──────────────────────────────
+    // Drop OS files anywhere on the Artifacts window → each is content-SNIFFED (not by extension)
+    // and routed: schema/addon/.artifact → the Import pop-over (its durable queue pipeline); an
+    // fmClip → the clip store; .fmp12 / FMPReport / unknown → a per-file rejection with the fix.
+    // OS-file drags are told apart from the internal CARD drag (selection) by dataTransfer.types
+    // including "Files" — so the existing drag-to-select is untouched.
+    fileDragActive: false,
+    _fileDragDepth: 0,
+    _isFileDrag(e) {
+      const dt = e.dataTransfer;
+      return !!dt && Array.from(dt.types || []).includes('Files');
+    },
+    // A pop-over (Import / Paste / Detail / Recent — all `.cfm-overlay`) owns its OWN drop zone; if the
+    // drag targets inside an open overlay, the window handler must stand down (else double-ingest).
+    _winDnd(e) {
+      const t = e.target;
+      const inOverlay = t && t.closest && t.closest('.cfm-overlay');
+      return this._isFileDrag(e) && !inOverlay;
+    },
+    onWinDragEnter(e) {
+      if (!this._winDnd(e)) return;
+      this._fileDragDepth++; this.fileDragActive = true;
+    },
+    onWinDragOver(e) {
+      if (!this._winDnd(e)) return;
+      e.preventDefault();                                // required to allow the drop
+    },
+    onWinDragLeave() {
+      if (!this.fileDragActive) return;
+      this._fileDragDepth = Math.max(0, this._fileDragDepth - 1);
+      if (this._fileDragDepth === 0) this.fileDragActive = false;
+    },
+    onWinDrop(e) {
+      const wasActive = this.fileDragActive;
+      this._fileDragDepth = 0; this.fileDragActive = false;
+      if (!this._winDnd(e)) return;                      // a card drag / a pop-over's own zone → leave it
+      e.preventDefault();
+      const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+      if (files.length) this._ingestFiles(files);
+      else if (wasActive) window.cfmNotify.info('Nothing to import — drop a schema export, add-on, .artifact, or clip.');
+    },
+    async _classifyDroppedFile(file) {
+      const name = (file.name || '').toLowerCase();
+      if (name.endsWith('.fmp12'))
+        return { kind: 'reject', reason: 'a FileMaker file — export it via File → Save a Copy as XML (Include details for analysis tools) first, then drop the .xml.' };
+      if (name.endsWith('.fmaddon') || CFM_REABSORB_EXT.some(e => name.endsWith(e)))
+        return { kind: 'import' };                       // binary XAR / envelope — inspected server-side
+      let head = '';
+      try { head = await file.slice(0, 8192).text(); } catch (_) { head = ''; }
+      if (/<FMSaveAsXML[\s>]/.test(head) || /<FMAdd_on[\s>]/.test(head)) return { kind: 'import' };
+      if (/<fmxmlsnippet[^>]*type\s*=\s*["']FMObjectList["']/.test(head)) return { kind: 'clip' };
+      if (/<FMPReport[\s>]/.test(head))
+        return { kind: 'reject', reason: 'a Database Design Report (FMPReport) is not a supported input — export FMSaveAsXML instead (Save a Copy as XML → Include details).' };
+      return { kind: 'reject', reason: 'unrecognized — drop a SaveAsXML schema export, a .fmaddon, a downloaded .artifact, or a FileMaker clip (.xml).' };
+    },
+    async _ingestFiles(files) {
+      const forImport = [], forClip = [];
+      for (const f of files) {
+        const c = await this._classifyDroppedFile(f);
+        if (c.kind === 'import') forImport.push(f);
+        else if (c.kind === 'clip') forClip.push(f);
+        else window.cfmNotify.info(`${f.name}: ${c.reason}`);
+      }
+      if (forImport.length)                              // reuse the Import pop-over's durable pipeline
+        window.dispatchEvent(new CustomEvent('cfm-open-import', { detail: { files: forImport } }));
+      let clipOk = 0;
+      for (const f of forClip) { if (await this._storeClipFile(f)) clipOk++; }
+      if (clipOk) {
+        window.cfmNotify.success(`${clipOk} clip${clipOk !== 1 ? 's' : ''} stored.`);
+        window.dispatchEvent(new CustomEvent('cfm-imported'));   // refresh the catalog (see pkt 1039)
+      }
+    },
+    async _storeClipFile(file) {
+      try {
+        const text = await file.text();
+        const r = await fetch('/api/clip/paste', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, type: 'fmClip', name: (file.name || '').replace(/\.[^.]+$/, '') }) });
+        const d = await r.json().catch(() => null);
+        if (d && d.ok) return true;
+        window.cfmNotify.error(`${file.name}: ${(d && d.error) || 'could not store clip'}.`);
+      } catch (_) { window.cfmNotify.info(`${file.name}: could not store clip.`); }
+      return false;
+    },
+
+    // The artifact-Detail Evidence tab was removed (inbox packet 002, Batch 2): neutral
+    // query-time evidence is an AI/MCP perspective, reachable via get_object_evidence /
+    // get_change_impact_evidence / get_artifact_attention_signals. The backing web routes
+    // (/library/artifacts/{rel}/objects | /evidence | /attention-signals) are kept.
+
+    closeDetail() {
+      this.detailOpen = false;
+      this.detail     = null;
+      this.detailUuid  = '';
+      this.detailConfirmDel = false;
+      this.detailConfirmDeindex = false;
+      try {
+        if ((window.location.hash || '').startsWith('#detail=')) {
+          history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+      } catch (_) {}
+    },
+
+    fmtMB(bytes) { return ((bytes || 0) / 1048576).toFixed(1); },
+    // Packet 059 — the User election: drop the retained source XML (irreversible; keeps the artifact).
+    async deleteSource() {
+      if (!this.detail || this.deletingSource) return;
+      if (!window.confirm('Delete the stored source XML for this artifact? This frees space and keeps the analyzed artifact, but the original export can\'t be recovered.')) return;
+      this.deletingSource = true;
+      try {
+        const r = await fetch('/api/library/artifacts/' + this.detailUuid + '/delete-source', { method: 'POST' });
+        const d = await r.json().catch(() => null);
+        if (d && d.ok) {
+          this.detail.content.has_source = false;
+          window.cfmNotify.success('Source XML deleted.');
+          this.load();
+        } else { window.cfmNotify.error((d && d.error) || 'Could not delete source.'); }
+      } catch (_) { window.cfmNotify.error('Could not delete source.'); }
+      finally { this.deletingSource = false; }
+    },
+
+    get detailDirty() {
+      if (!this.detail) return false;
+      return this.detail.name !== this.detailOrig.name
+          || this.detail.description !== this.detailOrig.description
+          || this.detail.memory !== this.detailOrig.memory
+          || this.detailTagsDraft.trim() !== this.detailTagsOrig.trim();
+    },
+
+    // ONE Save commits every buffered edit across tabs (pop-over law); Close discards.
+    async saveAll() {
+      if (!this.detail || !this.detailDirty) return;
+      const rel = encodeURIComponent(this.detailUuid);
+      const J = (body) => ({ method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const reqs = [];
+      const name = (this.detail.name || '').trim();
+      if (this.detail.name !== this.detailOrig.name)
+        reqs.push(fetch('/api/library/artifacts/' + rel + '/name', J({ name })));
+      if (this.detail.description !== this.detailOrig.description)
+        reqs.push(fetch('/api/library/artifacts/' + rel + '/description', J({ description: this.detail.description || '' })));
+      if (this.detail.memory !== this.detailOrig.memory)
+        reqs.push(fetch('/api/library/artifacts/' + rel + '/memory', J({ memory: this.detail.memory || '' })));
+      const newTags = [...new Set(this.detailTagsDraft.split(',').map(t => t.trim()).filter(Boolean))];
+      const tagsChanged = this.detailTagsDraft.trim() !== this.detailTagsOrig.trim();
+      if (tagsChanged)
+        reqs.push(fetch('/api/tags/set', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uuid: this.detailUuid, tags: newTags }) }));
+      try {
+        await Promise.all(reqs);
+        this.detail.name = name;
+        this.detailOrig = { name, description: this.detail.description || '', memory: this.detail.memory || '' };
+        this.detailTags = newTags; this.detailTagsOrig = newTags.join(', '); this.detailTagsDraft = this.detailTagsOrig;
+        if (tagsChanged) await this.loadTagNames();
+        window.cfmNotify.success('Saved.');
+        await this.load();
+      } catch (e) { window.cfmNotify.error(String(e)); }
+    },
+
+    _detailRow() {
+      const d = this.detail;
+      return {
+        uuid:          this.detailUuid,
+        artifact_type: d.type,
+        is_addon:      d.type === 'AddonXML',
+        fm_file:       d.identity.file_name,
+        name:          d.name,
+        timestamp:     d.identity.timestamp,
+        root_uuid:     d.identity.root_uuid || '',
+        is_schema:     !!d.content.is_schema,
+        indexable:     !!d.content.indexable,
+      };
+    },
+    detailExplore() { this.openExplorer(this._detailRow()); this.closeDetail(); },
+    async detailGitExport() {
+      if (!this.exportReg) return;
+      this.exportBusy = true; this.exportMsg = '';
+      const reg = this.selectedDetailReg;
+      const repo = (reg && reg.cred_type === 'deploy_key') ? '' : this.exportRepo;
+      try {
+        const r = await fetch((window.CFM_PREFIX||'') + '/api/library/artifacts/' + this.detailUuid + '/git-export',
+          { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ registration_name: this.exportReg, repo }) });
+        const d = await r.json();
+        const pushNote = d.push_ok === false ? ' — push failed: ' + (d.push_msg || '')
+                       : d.push_ok === true ? ' — pushed' : '';
+        this.exportMsg = d.ok
+          ? ('Exported: ' + (d.files_written || 0) + ' written, ' + (d.files_deleted || 0) + ' deleted'
+             + (d.commit_sha ? ' (' + d.commit_sha.slice(0,7) + ')' : '') + pushNote)
+          : ('Export failed: ' + (d.error || 'unknown'));
+        if (d.ok) window.cfmNotify.success('Exported to ' + this.exportReg + '.');
+      } catch (e) { this.exportMsg = 'Export failed: ' + e; }
+      finally { this.exportBusy = false; }
+    },
+
+    // ── Semantic-search index ─────────────────────────────────────────────────
+    // The detail single index/de-index routes through the SAME server-side batch (batch of 1) as
+    // the selection, so it participates in the one app-wide lock + global chip. Optimistically
+    // reflect the new state; the chip's completion event reloads the badges.
+    async detailIndex() {
+      if (!this.detail) return;
+      const ok = await this._kickBatch('/api/indexed/index-batch', { uuids: [this.detailUuid] }, 'index', 1);
+      if (ok) this.detailIndexed = true;
+    },
+    // Per-artifact-addressed de-index (packet 1010): immediate (not queued) — removes the artifact's
+    // FILE from the index (one index per file). Confirm-gated in the footer.
+    async detailDeindex() {
+      if (this.detailDeindexBusy) return;
+      this.detailDeindexBusy = true;
+      try {
+        const uuid = this.detailUuid;       // inside the try — a throw must not escape the finally
+        const r = await fetch((window.CFM_PREFIX||'') + '/api/indexed/artifact/' + encodeURIComponent(uuid), { method: 'DELETE' });
+        const d = await r.json();
+        if (d.ok) {
+          this.detailIndexed = false;
+          this.detailConfirmDeindex = false;   // only on success — a failure keeps Confirm for a retry
+          window.cfmNotify.success(`Removed ${d.deleted} vector(s) for ${d.file_name}.`);
+          window.dispatchEvent(new CustomEvent('cfm-index-batch-done'));   // refresh the card badges
+        } else {
+          window.cfmNotify.error(d.error || 'De-index failed.');
+        }
+      } catch (e) { window.cfmNotify.error(String(e)); }
+      finally { this.detailDeindexBusy = false; }
+    },
+    // Single-artifact summaries — same batch-of-1 through the shared lock + chip (D3-gated on the
+    // summary provider, independent of the embedder).
+    async detailSummarize() {
+      if (!this.detail) return;
+      await this._kickBatch('/api/indexed/summarize-batch', { uuids: [this.detailUuid] }, 'summarize', 1);
+    },
+
+    // Re-ingest ONE artifact (packet 1062/1063 B): atomic re-ingest-and-replace from stored source,
+    // queued. Non-blocking; the Queue shows progress.
+    async detailReingest() {
+      if (!this.detail || this.detailReingestBusy) return;
+      this.detailReingestBusy = true;
+      try {
+        const r = await fetch('/api/artifact/' + encodeURIComponent(this.detailUuid) + '/reingest',
+                              { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok || d.ok === false) { window.cfmNotify.error(d.error || 'Re-ingest failed.'); return; }
+        window.cfmNotify.success(d.message || (d.queued ? 'Re-ingest queued — see Queue.'
+                                               : 'A re-ingest is already queued.'));
+      } catch (e) { window.cfmNotify.error(String(e)); }
+      finally { this.detailReingestBusy = false; }
+    },
+
+    // The current-view query — the SAME filter/search/sort/page the user is looking at. Both the
+    // foreground load() and the background live refresh (packet 1039) issue exactly this, so a
+    // refresh can never drift onto a different filter or page than what's on screen.
+    _listParams(withFacets = true) {
+      return new URLSearchParams({
+        q:           this.search,
+        tags:        this.selTags.join(','),
+        tag_mode:    this.tagMode,
+        untagged:    this.untagged ? 'true' : 'false',
+        sys_tags:    this.selSys.join(','),
+        from_date:   this.fromDate,
+        to_date:     this.toDate,
+        latest_only: this.latestOnly ? 'true' : 'false',
+        job_uuid:    this.jobUuid,
+        page:        this.page,
+        per_page:    this.perPage,
+        sort:        this.sortBy,
+        dir:         this.sortDir,
+        facets:      withFacets ? 'true' : 'false',
+      });
+    },
+
+    async load(withFacets = true) {
+      // Pagination/sort-only reloads pass withFacets=false (audit #2): the facet vocabulary
+      // doesn't change, so the server skips computing it; the UI keeps the ones it has.
+      const params = this._listParams(withFacets);
+      try {
+        this.loading = true;
+        const r = await fetch('/api/library/artifacts?' + params);
+        const d = await r.json();
+        if (d.unavailable) {
+          // App responded, but a named backend (storage/FM) is down — NOT an empty catalog.
+          this.unavailable = true; this.unavailReason = d.reason || 'storage';
+          this.rows = []; this.total = 0; this.hasMore = false;
+          return;
+        }
+        this.unavailable = false; this.unavailReason = '';
+        this.rows    = d.rows || [];
+        this.total   = d.total || 0;
+        this.hasMore = !!d.has_more;
+        this._rowsSig = JSON.stringify(this.rows);   // baseline for the live-refresh diff (packet 1039)
+        for (const s of this.rows) if (this.selected.includes(s.uuid)) this.selData[s.uuid] = s;
+        const f = d.facets || {};
+        if (Object.keys(f).length) {
+          this.facetTags     = f.tags || [];
+          this.facetSys      = f.system_tags || [];
+          this.facetUntagged = f.untagged || 0;
+        }
+      } catch(_) {
+        // The fetch itself failed → the CORPUSfm app/network is unreachable (distinct from storage).
+        this.unavailable = true; this.unavailReason = 'server';
+        this.rows = []; this.total = 0; this.hasMore = false;
+      }
+      finally { this.loading = false; }
+    },
+
+    // ── Live catalog refresh (packet 1039) ────────────────────────────────────
+    // Every ~7s re-issue the current-view query and reconcile the current page in place. Refetching
+    // the real page rows IS the truth — nothing to diff globally, no add/delete inference, no
+    // fingerprint/revision-token endpoint (that design was explicitly rejected: a cheap count+max_ts
+    // token is fooled by an add+delete in the same tick). Scoped to one page, so a real query every
+    // few seconds is negligible on both backends.
+    _startLiveRefresh() {
+      if (this._refreshTimer) return;
+      this._refreshTimer = setInterval(() => this._refreshTick(), 7000);
+      // The tick pauses while the tab is backgrounded (document.hidden), so an artifact landed by a
+      // Job/MCP/second tab while you were away is invisible until the NEXT tick (up to 7s after you
+      // return). Fire one immediate refresh the moment the tab regains focus so it shows right away.
+      this._visHandler = () => { if (document.visibilityState === 'visible') this._refreshTick(); };
+      document.addEventListener('visibilitychange', this._visHandler);
+    },
+    async _refreshTick() {
+      // Skip while the user is mid-interaction or a foreground fetch/mutation is running — a silent
+      // background refetch must never fight the user or race a write. document.hidden pauses it while
+      // the tab is backgrounded (cheaper, and avoids a surprise offset shift on return).
+      if (this._refreshBusy || this.loading || this.merging || this.indexingAll
+          || this.dragActive || document.hidden) return;
+      this._refreshBusy = true;
+      try {
+        // facets off: the vocabulary rarely changes and the foreground load already owns it; a silent
+        // tick just wants the current page's rows.
+        const r = await fetch('/api/library/artifacts?' + this._listParams(false), { cache: 'no-store' });
+        const d = await r.json();
+        if (d.unavailable) { this._refreshRetrying(d.reason || 'storage'); return; }
+        // Recovered (or steady) — clear any retrying banner, then reconcile only on a real change.
+        this.unavailable = false; this.unavailReason = '';
+        this.total   = d.total || 0;      // scalars: cheap, no flicker — always current
+        this.hasMore = !!d.has_more;
+        const incoming = d.rows || [];
+        const sig = JSON.stringify(incoming);
+        if (sig === this._rowsSig) return;   // identical page → don't touch the DOM (no flicker/scroll jump)
+        this._rowsSig = sig;
+        // :key="uuid" in the x-for keys the DOM by record, so a keyed reassign reuses nodes for
+        // unchanged rows (no flicker) and only adds/removes/patches what actually differs.
+        this.rows = incoming;
+        // Re-map selection snapshots by uuid (never by index): a deleted/reordered row must not
+        // silently reselect a different record. `selected` (uuids) is untouched, so it survives.
+        for (const s of this.rows) if (this.selected.includes(s.uuid)) this.selData[s.uuid] = s;
+      } catch (_) {
+        // A transient fetch failure (storage blip / proxy reload) must NOT flash "no artifacts":
+        // keep the last good page and show the existing retrying affordance until it recovers.
+        this._refreshRetrying('server');
+      } finally { this._refreshBusy = false; }
+    },
+    // Outage during a background tick: mark retrying WITHOUT wiping the last good rows (unlike the
+    // foreground load(), which has no prior page to keep). The banner rides above the stale list;
+    // the next good tick clears it.
+    _refreshRetrying(reason) {
+      this.unavailable = true; this.unavailReason = reason;
+    },
+
+    async loadTagNames() {
+      try {
+        const r = await fetch('/api/tags/names');
+        const d = await r.json();
+        this.tagNames = d.names || [];
+      } catch(_) {}
+    },
+
+    clearFilters() {
+      this.search = ''; this.fromDate = ''; this.toDate = '';
+      this.selTags = []; this.selSys = [];
+      this.untagged = false; this.tagMode = 'any'; this.latestOnly = false;
+      this.jobUuid = '';
+      this.page = 1;
+      this.load();
+    },
+
+    // ── Single-artifact launches ──────────────────────────────────────────────
+    async openExplorer(snap) {
+      const label = (snap.is_addon ? (snap.name || snap.fm_file) : snap.fm_file) || snap.uuid;
+      const pending = window.cfmOpenPending();
+      this.taskError = '';
+      try {
+        const r = await fetch('/api/generate/explorer', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ artifact_paths: [snap.uuid], labels: [label] }),
+        });
+        const d = await r.json();
+        if (d.error) { this.taskError = d.error; window.cfmResolvePending(pending, null, d.error); return; }
+        window.cfmTrackInTab(pending, d.task_id);
+      } catch (e) { this.taskError = String(e); window.cfmResolvePending(pending, null, String(e)); }
+    },
+
+    fmtTs(ts) {
+      try {
+        const [date, time] = ts.split('_');
+        return `${date} ${time.slice(0,2)}:${time.slice(2,4)}`;
+      } catch(_) { return ts; }
+    },
+
+  };
+}
+
+// ── Import pop-over (folded in from the retired Ingestion import page) ──────────
+const FM_LOCALES = [
+  ['en','English'],['de','Deutsch'],['es','Español'],['fr','Français'],
+  ['it','Italiano'],['ja','日本語'],['ko','한국어'],['nl','Nederlands'],
+  ['pt','Português'],['sv','Svenska'],['zh','中文'],
+];
+const IMPORT_HAS_EMBEDDER = {{ 'true' if has_embedding_provider else 'false' }};
+const IMPORT_HAS_SUMMARIZER = {{ 'true' if has_summary_provider else 'false' }};
+const PREFERRED_LOCALE = '{{ preferred_locale }}';
+
+function importTool() {
+  return {
+    show: false, view: 'select',
+    files: [], items: [], busy: false, dragging: false,
+    cancelling: false, _abort: null,
+    wantSummarize: false, wantIndex: false,
+    hasEmbedder: IMPORT_HAS_EMBEDDER, hasSummarizer: IMPORT_HAS_SUMMARIZER, FM_LOCALES, _trap: null,
+
+    open(detail) {
+      this.reset(); this.show = true;
+      // Seeded from a global paste (packet 1025): a copied file → load it here as if dropped.
+      const files = detail && detail.files;
+      if (files && files.length) this._seedFiles(files);
+    },
+    _seedFiles(files) {
+      const ok = Array.from(files).filter(f => f.name.endsWith('.xml')
+        || f.name.endsWith('.fmaddon') || CFM_REABSORB_EXT.some(e => f.name.toLowerCase().endsWith(e)));
+      if (!ok.length) { window.cfmNotify.info('Pasted file isn\'t a .xml / .fmaddon / .artifact — drop one to import.'); return; }
+      this._setFiles(ok);
+    },
+    // Locked while uploading (busy): close is refused so a file can't be abandoned mid-upload. Once every
+    // file is handed off the lock lifts. Cancel is the deliberate way out during upload.
+    close() { if (this.busy) return; this.show = false; },
+    // Stop the upload loop: abort the in-flight fetch + skip the rest. Files already handed off stay queued.
+    cancelUpload() { this.cancelling = true; if (this._abort) { try { this._abort.abort(); } catch (_) {} } },
+
+    localeLabel(code) { const f = FM_LOCALES.find(x => x[0] === code); return f ? (f[1] + ' (' + code + ')') : (code || 'en'); },
+
+    get fileInfo() {
+      if (!this.files.length) return '';
+      if (this.files.length === 1) return `${this.files[0].name}  (${(this.files[0].size/1048576).toFixed(1)} MB)`;
+      const total = this.files.reduce((s, f) => s + f.size, 0);
+      return `${this.files.length} files selected  (${(total/1048576).toFixed(1)} MB total)`;
+    },
+    get btnLabel() { return this.files.length <= 1 ? 'Import' : `Import ${this.files.length} files`; },
+    get doneCount()  { return this.items.filter(i => i.status === 'done').length; },
+    get queuedCount() { return this.items.filter(i => i.status === 'queued').length; },
+    get errorCount() { return this.items.filter(i => i.status === 'error').length; },
+    nameRequired(item) { return !item.inspecting && !item.internal_name && !(item.userName || '').trim(); },
+    get anyNameMissing() { return this.items.some(i => this.nameRequired(i)); },
+    get allDone() { return this.items.length > 0 && !this.busy && this.items.every(i => i.status === 'done' || i.status === 'queued' || i.status === 'error'); },
+    statusIcon(s) { return { pending: '·', importing: '…', queued: '⋯', done: '✓', error: '✗' }[s] || '·'; },
+    isAddonFile(name) { return name.endsWith('.fmaddon'); },
+
+    // Download produces `.artifact.zip`; a bare `.zip` or `.artifact` are older names that still
+    // import (the server recognises the envelope by its contents, not by any of these extensions).
+    isReabsorbFile(name) { const n = (name || '').toLowerCase();
+                           return CFM_REABSORB_EXT.some(e => n.endsWith(e)); },
+    _setFiles(files) {
+      // Hard 1 GB upload limit (matches the server's MAX_UPLOAD_BYTES). Reject oversized files
+      // BEFORE they enter the intake list; keep the rest of a mixed batch.
+      const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
+      const accepted = [], rejected = [];
+      files.forEach(f => (f.size > MAX_UPLOAD_BYTES ? rejected : accepted).push(f));
+      rejected.forEach(f => window.cfmNotify.error(`${f.name} exceeds the 1 GB upload limit and was skipped.`));
+      if (!accepted.length) { this.files = []; this.items = []; return; }
+      files = accepted;
+      this.files = files;
+      this.items = files.map(f => ({
+        name: f.name, size_mb: (f.size/1048576).toFixed(1), status: 'pending', msg: '',
+        gap_issues: 0, gap_unmapped: [], is_addon: false, is_clip: false, artifact_type: '',
+        has_name_map: false, addon_locale: '', has_icon: false, uuid: '',
+        root_uuid: '', locale: PREFERRED_LOCALE, inspecting: true, internal_name: '', userName: '',
+        reabsorb: false, token: '',
+      }));
+      this.items.forEach((item, idx) => this._inspect(this.files[idx], idx));
+    },
+    async _inspect(file, idx) {
+      try {
+        const fd = new FormData();
+        // .fmaddon and .artifact need the WHOLE file server-side (XAR metadata read / artifact
+        // validate + stage); .xml only needs the 8 KB head sniff.
+        const whole = file.name.toLowerCase().endsWith('.fmaddon') || CFM_REABSORB_EXT.some(e => file.name.toLowerCase().endsWith(e));
+        fd.append('file', whole ? file : file.slice(0, 8192), file.name);
+        const r = await fetch('/api/upload/inspect', { method: 'POST', body: fd });
+        const d = await r.json();
+        const it = this.items[idx]; if (!it) return;
+        it.internal_name = d.internal_name || '';
+        it.artifact_type = d.type || '';
+        if (d.reabsorb) {
+          it.reabsorb = true;
+          it.token = d.token || '';
+          // Naming doctrine: prefill from the uploaded filename stem (primary), editable.
+          if (!it.userName) it.userName = d.primary_name || it.internal_name || '';
+          if (d.error) { it.status = 'error'; it.msg = d.error; }
+        } else if (it.internal_name && !it.userName) {
+          it.userName = it.internal_name;
+        }
+      } catch (_) {} finally { if (this.items[idx]) this.items[idx].inspecting = false; }
+    },
+    onFileChange(evt) { if (!evt.target.files.length) return; this._setFiles(Array.from(evt.target.files)); },
+    onDrop(evt) {
+      this.dragging = false;
+      const all = Array.from(evt.dataTransfer.files);
+      const accepted = all.filter(f => f.name.endsWith('.xml') || f.name.endsWith('.fmaddon') || CFM_REABSORB_EXT.some(e => f.name.toLowerCase().endsWith(e)));
+      if (!accepted.length) { window.cfmNotify.error('Unsupported file — drop a .xml schema export, a .fmaddon package, or a downloaded .artifact.'); return; }
+      this._setFiles(accepted);
+    },
+    startImport() { if (!this.files.length) return; this.view = 'results'; this._runImport(); },
+    // Client-driven durable import (packet 060): each file's bytes POST once to /api/import/source, which
+    // writes a durable PENDING storage record and pokes the background worker. The upload CANNOT survive
+    // navigation, so the pop-over LOCKS while it runs — the only way out is Cancel — and releases the
+    // instant every file is handed off. The beforeunload guard is a belt-and-suspenders backstop for a
+    // raw tab-close. Once handed off, the import is durable: it survives a restart and shows on the Queue.
+    async _runImport() {
+      this.busy = true;                                   // LOCAL pop-over lock (client-owned) — unchanged
+      this.cancelling = false;
+      this._guardFn = (e) => { if (this.busy) { e.preventDefault(); e.returnValue = ''; } };
+      window.addEventListener('beforeunload', this._guardFn);
+      // Non-blocking GLOBAL transfer indicator, sourced from THIS local transfer state (Stage 2 —
+      // replaces the retired fm-task global busy driver). Off the server feed, off the silence-timeout.
+      window.dispatchEvent(new CustomEvent('cfm-transfer-start',
+        { detail: { msg: `Uploading ${this.files.length} file${this.files.length !== 1 ? 's' : ''}…` } }));
+      let queued = 0, cancelled = 0;
+      try {
+      const files = this.files, items = this.items;   // pin the batch — reset()/reopen won't derail it
+      for (let i = 0; i < files.length; i++) {
+        const it = items[i];
+        if (!it) break;
+        if (this.cancelling) {   // Cancel pressed → leave the rest un-uploaded (already-queued stay queued).
+          if (it.status === 'pending' || it.status === 'importing') { it.status = 'error'; it.msg = 'cancelled'; cancelled++; }
+          continue;
+        }
+        // An inspect error (e.g. a corrupt/over-cap .artifact) already set status='error'.
+        if (it.status === 'error') continue;
+        it.status = 'importing'; it.msg = 'uploading…';
+        const ok = await this._postSourceWithRetry(files[i], it);
+        if (this.cancelling && !ok) { it.status = 'error'; it.msg = 'cancelled'; cancelled++; continue; }
+        if (ok) { it.status = 'queued'; it.msg = 'queued for import'; queued++; }
+        else { it.status = 'error'; it.msg = it.msg || 'Upload failed — re-add this file.'; }
+      }
+        // End-of-run poke (belt-and-suspenders — each source POST already poked the worker).
+        if (queued) { try { fetch('/api/import/poke', { method: 'POST' }); } catch (_) {} }
+        // Hand off to the durable activity feed with NO feedback gap: refresh the store so the import
+        // records surface in the feed (the nav Queue badge picks them up) BEFORE the transfer indicator
+        // drops (the finally below). Transfer is client-owned, the feed is server-observed; the overlap
+        // makes the handoff continuous (never a blank moment where neither shows activity).
+        if (queued) { try { if (this.$store.queue) await this.$store.queue.refresh(); } catch (_) {} }
+      } finally {
+        // ALWAYS lift the local lock + drop the guards + transfer indicator, even if the loop or the
+        // handoff threw (packet 1000 Phase 2) — otherwise a throw wedges the pop-over (busy stuck),
+        // the global "Uploading…" indicator, and the beforeunload guard permanently (reload-only recovery).
+        this.busy = false;                                  // LOCAL pop-over lock lifts (handoff is durable)
+        this.cancelling = false;
+        this._abort = null;
+        window.removeEventListener('beforeunload', this._guardFn);
+        window.dispatchEvent(new CustomEvent('cfm-transfer-end'));
+      }
+      if (queued) {
+        window.cfmNotify.success(`${queued} file${queued !== 1 ? 's' : ''} queued for import — see the Queue page.`
+          + (cancelled ? ` (${cancelled} cancelled)` : ''));
+      } else if (cancelled) {
+        window.cfmNotify.error(`Import cancelled — ${cancelled} file${cancelled !== 1 ? 's' : ''} not uploaded.`);
+      }
+      // The gallery + queue badge will pick up the new artifacts as the jobs complete.
+      window.dispatchEvent(new CustomEvent('cfm-imported'));
+    },
+    _sourceFd(file, it) {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('name', (it.userName || '').trim());
+      fd.append('locale', it.locale || '');
+      fd.append('summarize', this.wantSummarize ? 'true' : 'false');
+      fd.append('index', this.wantIndex ? 'true' : 'false');
+      return fd;
+    },
+    // Upload the raw bytes to /api/import/source, which durably stores them as a pending import record.
+    // Survives a brief server blip (a restart / proxy 502 returns HTML that would blow up r.json()) with
+    // a bounded retry; FormData is rebuilt each attempt (its body is consumed). Returns true once the
+    // pending record is written, false on give-up.
+    async _postSourceWithRetry(file, it) {
+      const MAX = 4;
+      for (let attempt = 1; attempt <= MAX; attempt++) {
+        if (this.cancelling) return false;
+        try {
+          this._abort = new AbortController();
+          const r = await fetch('/api/import/source', { method: 'POST', body: this._sourceFd(file, it), signal: this._abort.signal });
+          const ct = (r.headers.get('content-type') || '').toLowerCase();
+          if (ct.includes('json')) {
+            const d = await r.json().catch(() => null);
+            if (d && d.ok && d.id) return true;
+            if (d && d.error) { it.msg = d.error; return false; }
+          }
+          if (attempt < MAX) {
+            it.msg = `server busy — retrying (${attempt}/${MAX - 1})…`;
+            await new Promise(res => setTimeout(res, 1500 * attempt));
+            continue;
+          }
+          it.msg = `Server unavailable (HTTP ${r.status || '—'})`;
+          return false;
+        } catch (e) {
+          if (this.cancelling || (e && e.name === 'AbortError')) return false;   // Cancel aborted the upload
+          if (attempt < MAX) {
+            it.msg = `connection lost — retrying (${attempt}/${MAX - 1})…`;
+            await new Promise(res => setTimeout(res, 1500 * attempt));
+            continue;
+          }
+          it.msg = 'Connection lost';
+          return false;
+        }
+      }
+      return false;
+    },
+    reset() {
+      this.files = []; this.items = []; this.dragging = false; this.view = 'select';
+      this.$nextTick(() => { const el = this.$refs.fileInput; if (el) el.value = ''; });
+    },
+  };
+}
+
+// Paste pop-over (packet 1025): pasted clipboard TEXT → a deliverable artifact (fmClip/fmCalc/fmScript).
+// Recognition, not judgment — fmClip auto-detects; text is user-picked; validation is advisory.
+function pasteTool() {
+  return {
+    show: false, busy: false, inspecting: false,
+    text: '', type: '', name: '', nameAuto: true, tagsInput: '', wantIndex: false,
+    // `type` is legitimately EMPTY until the pasted text is classified (inspect() leaves it empty for
+    // a file or an unrecognised blob), so the trigger needs a placeholder — the native <select> showed
+    // an unlabelled blank in that state, which read as broken rather than as "nothing chosen yet".
+    typeMenuOpen: false,
+    PASTE_TYPES: [
+      { value: 'fmClip',   label: 'fmClip (clipboard XML)' },
+      { value: 'fmCalc',   label: 'fmCalc (calculation)' },
+      { value: 'fmScript', label: 'fmScript (script text)' },
+    ],
+    cls: null, error: '', _t: null, _ptrap: null,
+    embedderOn: {{ 'true' if has_embedding_provider else 'false' }},
+
+    open(detail) {
+      this.reset();
+      this.show = true;
+      if (detail && detail.text) { this.text = detail.text; this.inspect(); }
+      else { this.tryReadClipboard(); }
+    },
+    reset() {
+      this.busy = false; this.inspecting = false; this.text = ''; this.type = '';
+      this.name = ''; this.nameAuto = true; this.tagsInput = ''; this.wantIndex = false;
+      this.cls = null; this.error = '';
+    },
+    // Auto-name (structural, always editable). Keep in sync with the selected type until the user types.
+    onTypeChange() {
+      if (!this.nameAuto) return;
+      if (this.type === 'fmClip' && this.cls && this.cls.suggested_name) this.name = this.cls.suggested_name;
+      else if (this.type === 'fmCalc') this.name = 'fmCalc: Untitled Calc';
+      else if (this.type === 'fmScript') this.name = 'fmScript: Untitled Script';
+    },
+    close() { if (this.busy) return; this.show = false; },
+
+    async tryReadClipboard() {
+      // Button-opened: read the clipboard on the open gesture. Denied → user pastes into the textarea.
+      try { const t = await navigator.clipboard.readText(); if (t && t.trim()) { this.text = t; this.inspect(); } }
+      catch (_) { /* permission denied — manual paste fallback */ }
+    },
+    onInput() { clearTimeout(this._t); this._t = setTimeout(() => this.inspect(), 250); },
+    async inspect() {
+      const text = this.text || '';
+      if (!text.trim()) { this.cls = null; this.type = ''; return; }
+      this.inspecting = true;
+      try {
+        const r = await fetch('/api/clip/inspect', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }) });
+        this.cls = await r.json();
+        if (this.cls.kind === 'fmClip') this.type = 'fmClip';
+        else if (this.cls.kind === 'text') this.type = this.cls.suggest || 'fmCalc';
+        else this.type = '';                    // file / empty — no store
+        if (this.nameAuto && this.cls.suggested_name) this.name = this.cls.suggested_name;
+      } catch (_) { this.cls = null; }
+      finally { this.inspecting = false; }
+    },
+
+    get isFile() { return !!(this.cls && this.cls.kind === 'file'); },
+    get advisory() { return (this.cls && this.cls.advisory) || null; },
+    get canSave() { return !this.busy && !this.isFile && !!this.type && !!(this.text || '').trim(); },
+
+    async save() {
+      if (!this.canSave) return;
+      this.busy = true; this.error = '';
+      try {
+        const tags = this.tagsInput.split(',').map(s => s.trim()).filter(Boolean);
+        const r = await fetch('/api/clip/paste', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: this.text, type: this.type, name: this.name, tags }) });
+        const d = await r.json();
+        if (!d.ok) { this.error = d.error || 'Could not store the paste.'; this.busy = false; return; }
+        // Only index once the record has actually LANDED (status 'ok'); on 'timeout' it's still
+        // enqueued and the uuid isn't queryable yet — indexing it would no-op (packet 1000 Phase-2).
+        if (this.wantIndex && this.embedderOn && d.uuid && d.status === 'ok') {
+          try { await fetch('/api/indexed/index-batch', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uuids: [d.uuid] }) }); } catch (_) {}
+        }
+        window.cfmNotify.success('Pasted ' + this.type + ' added to the catalog.');
+        window.dispatchEvent(new CustomEvent('cfm-imported'));
+        this.show = false;
+      } catch (_) { this.error = 'Request failed.'; }
+      finally { this.busy = false; }
+    },
+  };
+}
+</script>
+{% endblock %}

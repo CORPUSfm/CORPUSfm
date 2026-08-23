@@ -1,0 +1,375 @@
+# FMXML (clipboard) clip catalog — packet 1072
+#
+# The clip-side parallel to the DDR structure_catalog. Declarative source of truth for what the
+# variation DETECTOR knows about the DDR→clip transform, so coverage growth is driven by evidence,
+# not guesswork. This is DATA the detector reads (corpusfm/core/clip_catalog.py) — the packet-999
+# principle: a future variation is added HERE, not in code.
+#
+# EVERY layer here must be READ by shipped code — test_clip_catalog_consumers.py fails the build
+# otherwise, naming the orphan. That guard exists because this file twice grew a layer nothing consumed
+# (packets 1074 + 1079): an unread layer derives nothing and is proved wrong by nothing, so it rots in
+# silence. If you add a key, give it a consumer or don't add it.
+#
+# What lives here (grounded in our OWN committed (DDR, clip) pairs + the coverage doc — never an
+# inference off an external spec; the fence law still governs emission):
+#   ddr_gaps       — step ids where the CLIP carries data the SaveAsXML export does NOT hold, so the
+#                    step is fundamentally not reproducible from the DDR alone. The detector flags these
+#                    `ddr-gap` (a policy decision — emit-semantic-only / empty-unset / refuse — NOT a
+#                    capture that would unblock an emitter). Distinct from "no emitter yet".
+#   clip_evidence  — which clip masters we hold, per step id, so the backlog can say "the blocker is
+#                    CODE, don't go capture this" instead of sending someone to FileMaker Pro for bytes
+#                    already in the repo (packet 1080 §3).
+#   known_clip_values — clip values OBSERVED in our committed clips: the drift oracle for INCOMING clips
+#                    (packet 1079). NOT a DDR→clip remap table; see its header for why that matters.
+#   version_sensitivity — where the CLIP shape differs by FileMaker version (packet 1077).
+#   external_skeletons  — third-party RE'd shapes for ids we cannot emit. A capture HINT layer; never an
+#                    emit licence (guard: test_external_skeletons_never_leak_into_the_fence).
+#   notes          — per-id human hint the detector attaches to a needs-capture finding.
+#
+# The COVERED / EXPERIMENTAL / UNACCOUNTED classification is NOT duplicated here — the detector reads the
+# live step assessment (step_generation_assessment: VERIFIED_STEP_IDS + _VERIFIED_SIGS + the migrated
+# capability rules, packet 1091) so it can never drift from what the emitter actually generates. Packet
+# 1074 proposed moving that knowledge here and was REFUTED: this file adds only what the fence cannot
+# answer on its own.
+
+version: 1
+
+# ── ddr-gaps: the clip needs data the DDR lacks → not emitter-buildable without a policy call ──
+#
+# These are WHOLE-ID gaps: no emitter exists, and id-level is therefore an honest description
+# (guard: test_ddr_gap_ids_have_no_emitter). A gap that applies to only SOME shapes of an id does NOT
+# belong here — it lives in clip_emit._SOURCE_INCOMPLETE_SIGS, per-shape and live, because an id-level
+# entry cannot express "this shape is fully covered, that shape is class-2" without lying about one of
+# them. Print Setup (42) was moved out for exactly that reason — see below.
+ddr_gaps:
+  242:
+    name: Print PDF
+    gap: "the clip's <PrintSettings> carries the same machine printer ticket as Print Setup — 4
+      <PlatformData> children (PrNm/M_PM/M_PD/MMod) — which the DDR does not hold. CONFIRMED 2026-07-15
+      from the `backlog` pair, no longer 'almost certainly'."
+    decision: "open — no emitter yet. When one is built, expect the SAME empty/populated split as 42:
+      the base-shape clip (DDR <PageSetup> empty) carries no <PrintSettings> at all and should be plain
+      class-1 coverage; only the populated shape is class-2. Follow 42's pattern (packet 1076)."
+  # 243 Create PDF was HERE until 2026-07-15 and has been RECLASSIFIED — it is not a class-2 gap. See
+  # `notes: 243` below for the reasoning, and docs/clip-spec-crosscheck.md for the full account. Kept as
+  # a tombstone because "we already decided this is impossible" is exactly the belief that stops work.
+
+# ── TOMBSTONE: `target_mode_pdf_gap` (244/245/246) — removed 2026-07-15, packet 1080 §1 ──────
+# It was a KEY; nothing read it. Kept as a comment because the knowledge is true and worth stating,
+# but it is a signpost, not data: File mode IS emitted; Target mode serialises a UniversalPathList path
+# the DDR doesn't hold, and the LIVE per-shape fence refuses it on its own with no catalog involved.
+# A key that only restates what the fence already enforces is the mirror this packet exists to stop.
+#
+# ── TOMBSTONE: `print_setup_shape_gap` (42) — removed 2026-07-15, packet 1080 §1 ─────────────
+# It was worse than an orphan: ClipCatalog never even LOADED it, so it was dead data from birth, and
+# its own `authority:` field pointed at clip_emit._SOURCE_INCOMPLETE_SIGS — it announced that it wasn't
+# the truth. The knowledge it held, in full, and the AUTHORITY remains that live register:
+#   * PageSetup:empty  → the clip has NO <PageFormat>; fully reproducible; ordinary verified coverage.
+#   * PageSetup:set    → the clip's <PageFormat> carries printer-computed geometry + a PlatformData
+#                        ticket. PROVEN unrecoverable (packet 1076): two steps with byte-identical DDR
+#                        content produce clips with DIFFERENT PlatformData, so the DDR does not
+#                        determine the clip and no emitter can. We emit orientation + scale only, BY
+#                        DEFAULT (packet 1089), labelled source-incomplete in the result metadata; a
+#                        strict/verified-only caller still refuses it.
+#     ✅ PASTE TEST GREEN (dev, 2026-07-15, FM Pro 2026/macOS): the masked clip PASTES, FileMaker fills
+#     its own printer defaults for everything omitted, and orientation + scale survive as emitted. The
+#     opt-in path STAYS. ⚠ But the test surfaced a CLASS-1 loss hiding inside this class-2 gap: the DDR
+#     holds <size height width> (paper size) and we emit nothing for it, so an A4 step pastes as US
+#     Letter. The sample could not show this — its paper size IS the local default. See clip_emit.py's
+#     _emit_print_setup comment + docs/clip-emit-coverage.md.
+#
+# ── TOMBSTONE: `enum_tables` — DELETED 2026-07-15, packet 1080 §2. Do not rebuild it. ────────
+# It mirrored 8 of clip_emit.py's 16 enum maps (DDR selector name → clip value) and was read by NOTHING
+# but its own lockstep test — a guard whose only job was to check the mirror still matched its original.
+# Its stated purpose ("an unseen KEY for one of these ids means a new enum variation → a real capture
+# need") is ALREADY delivered, in full, by the live per-shape fence: an unseen DDR enum value produces
+# an unaccounted shape → the step assessment refuses it → detect_clip_variations reports
+# new-variation, with no catalog involved. Demonstrated 2026-07-15 with DDR List name="Perplexity".
+# That redundancy is why nothing ever consumed it, and why the 8-in/8-out split had no principle behind
+# it: nothing depended on the answer. Packet 1079's follow-on "add the 8 missing maps" DIES HERE — it
+# would have extended an orphan.
+#   The knowledge is not lost; it lives where it is USED and where it is READ:
+#     * the maps + every one of these comments, verbatim → clip_emit.py (_SMTP_ENCRYPTION, _SMTP_AUTH,
+#       _OAUTH_PROVIDER, _LLM_PROVIDER, _ADJUST_WINDOW, _SNAPSHOT_SAVETYPE, _PRINT_TYPE,
+#       _WEBVIEWER_ACTION) — the authority, adjacent to the emitter that applies it.
+#     * the hard-won remaps (OpenAI→ChatGPT, Custom→Other) → docs/clip-emit-coverage.md.
+# ⚠ Do NOT confuse this with `known_clip_values` below. That is the INVERSE axis (clip values OBSERVED,
+# not DDR names REMAPPED) and it has a real consumer. Conflating them flagged an ordinary Anthropic clip
+# as drift — see its header.
+
+# ── clip evidence: WHAT WE ALREADY HOLD, so the backlog never sends anyone to re-capture it ──
+#
+# Packet 1080 §3. The detector used to print "NEEDS CAPTURE — each needs ONE real (DDR, clip) pair;
+# capture the top rows first" for EVERY not-covered step. That was false for essentially all of them:
+# measured 2026-07-15, **all 217 canonical step types have a committed clip**. The blocker is CODE, not
+# evidence. Sending someone to FileMaker Pro to re-capture what is already committed is worse than
+# stale — it is actively misleading, the same defect the dev called out in CAPTURE-BACKLOG §③.
+#
+# WHY THIS IS DATA AND NOT DERIVED: the fixtures live in tests/fixtures/, which a SHIPPED detector cannot
+# read. So the id lists travel here — machine-generated by scripts/gen_clip_evidence.py and held to the
+# committed bytes by test_clip_evidence_matches_the_committed_masters. Never hand-edit them: an
+# unverified "we have this already" SUPPRESSES a capture that was really needed, which is worse than a
+# spurious ask.
+#
+# ⚠ THE LIMIT, STATED PLAINLY — this is id-level evidence, and the fence is PER-SHAPE.
+# "We hold a clip for id 144" does NOT mean we hold one for YOUR shape of 144 (its DDR has 9). So this
+# layer never renders a verdict; it reports what exists and lets the reader judge. Since every id is
+# held, a genuine capture ask can now only ever be a per-SHAPE one — and that is exactly what this layer
+# cannot answer, because the DDR halves of the masters are NOT committed (they are gitignored under
+# xmlsamples/; only the synthetic clip halves are here). The clip is also the half that costs a human a
+# FileMaker Pro round trip — a DDR is re-exportable by machine — so id-level clip evidence is precisely
+# the signal that answers "is this trip worth taking?". `multi_shape` says how many distinct shapes of an
+# id a fixture really holds, which is the closest honest proxy for per-shape depth.
+#
+# scope:  base       — one unconfigured sample step per type (proves base grammar only)
+#         configured — real, varied option shapes (the detail-bearing captures)
+#         pair       — a full committed (DDR, clip) pair: the emitter fence's own ground truth
+# flavor: XMSC (whole-script copy) / XMSS (bare steps) — see docs/clip-emit-coverage.md; the two differ.
+#
+# NB 186 MBS is HELD (mbs_step.xml) and is neither code- nor capture-blocked: it is fence-don't-emit by
+# POLICY (plugin-defined grammar). See notes: 186. An earlier cut of the generator read only master/ and
+# so reported 186 as capture-less — the very bug this layer exists to prevent, in the tool built to
+# prevent it. Scan every fixture.
+clip_evidence:
+  fixtures:
+    master/AllScriptSteps.xml:
+      scope: base
+      flavor: XMSC
+      steps: 215
+      ids: [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 55, 56, 57, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 101, 102, 103, 104, 105, 106, 107, 108, 109, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 154, 155, 156, 157, 158, 159, 160, 161, 164, 165, 166, 167, 168, 169, 172, 174, 175, 177, 178, 179, 180, 181, 182, 183, 185, 187, 188, 189, 190, 191, 192, 194, 195, 196, 197, 199, 200, 201, 202, 203, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 225, 226, 227, 228, 237, 238, 240, 241, 242, 243, 244, 245, 246, 247]
+    master/AI_ScriptSteps.xml:
+      scope: configured
+      flavor: XMSC
+      steps: 16
+      ids: [202, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 226, 227, 240, 241]
+    master/scriptstepsamples_1-205.xml:
+      scope: base
+      flavor: XMSC
+      steps: 205
+      multi_shape: {89: 2}
+      ids: [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 55, 56, 57, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 73, 74, 75, 76, 77, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 101, 102, 103, 104, 105, 106, 107, 108, 109, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 154, 155, 156, 157, 158, 159, 160, 161, 164, 165, 166, 167, 168, 169, 172, 174, 175, 177, 178, 179, 180, 181, 182, 183, 185, 187, 188, 189, 190, 191, 192, 194, 195, 196, 197, 199, 200, 201, 202, 203, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 225, 226, 227, 228]
+    master/scriptstepsamples_fm2026_xmss.xml:
+      scope: base
+      flavor: XMSS
+      steps: 230
+      multi_shape: {89: 15}
+      ids: [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 55, 56, 57, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 101, 102, 103, 104, 105, 106, 107, 108, 109, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 154, 155, 156, 157, 158, 159, 160, 161, 164, 165, 166, 167, 168, 169, 172, 174, 175, 177, 178, 179, 180, 181, 182, 183, 185, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 199, 200, 201, 202, 203, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 225, 226, 227, 228, 237, 238, 240, 241, 242, 243, 244, 245, 246, 247]
+    master/scriptstepsamples_fm2025_xmss.xml:
+      scope: base
+      flavor: XMSS
+      steps: 230
+      multi_shape: {89: 15}
+      ids: [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 55, 56, 57, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 101, 102, 103, 104, 105, 106, 107, 108, 109, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 154, 155, 156, 157, 158, 159, 160, 161, 164, 165, 166, 167, 168, 169, 172, 174, 175, 177, 178, 179, 180, 181, 182, 183, 185, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 199, 200, 201, 202, 203, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 225, 226, 227, 228, 237, 238, 240, 241, 242, 243, 244, 245, 246, 247]
+    master/scriptstepsamples_configured_fm2026_xmss.xml:
+      scope: configured
+      flavor: XMSS
+      steps: 97
+      multi_shape: {63: 3, 89: 5, 91: 3, 128: 6, 143: 2, 144: 8, 152: 2, 161: 10, 177: 3, 210: 6, 238: 2, 242: 2, 243: 9, 244: 2, 245: 2}
+      ids: [36, 37, 42, 43, 57, 61, 63, 89, 91, 128, 130, 131, 139, 143, 144, 152, 161, 177, 181, 185, 192, 193, 202, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 225, 226, 227, 238, 240, 241, 242, 243, 244, 245, 246]
+    mbs_step.xml:
+      scope: configured
+      flavor: XMSC
+      steps: 1
+      ids: [186]
+    read_from_data_file.xml:
+      scope: configured
+      flavor: XMSC
+      steps: 1
+      ids: [193]
+    clip_emit_pairs.xml:
+      scope: pair
+      flavor: XMSC
+      steps: 322
+      multi_shape: {1: 3, 6: 28, 9: 2, 16: 3, 17: 3, 22: 2, 26: 2, 28: 2, 29: 3, 31: 3, 36: 3, 37: 2, 39: 4, 43: 2, 61: 4, 63: 4, 71: 3, 74: 3, 75: 2, 86: 2, 87: 7, 91: 5, 99: 5, 119: 2, 121: 2, 122: 6, 130: 3, 131: 2, 132: 2, 137: 2, 141: 3, 143: 3, 144: 8, 148: 2, 150: 2, 152: 2, 154: 3, 160: 2, 164: 3, 166: 3, 175: 3, 188: 2, 189: 2, 190: 2, 191: 2, 192: 2, 194: 2, 196: 2, 205: 2, 212: 5, 225: 2, 243: 9}
+      ids: [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 55, 56, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 101, 102, 103, 104, 105, 106, 107, 108, 109, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 154, 155, 156, 157, 158, 159, 160, 164, 165, 166, 167, 168, 169, 172, 174, 175, 178, 179, 180, 182, 183, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 199, 200, 201, 202, 203, 205, 206, 207, 208, 209, 212, 223, 225, 227, 228, 237, 243, 244, 245, 246, 247]
+    clip_emit_pairs_xmss.xml:
+      scope: pair
+      flavor: XMSS
+      steps: 6
+      ids: [85, 86, 94, 115, 168, 223]
+    clip_emit_external_pairs.xml:
+      scope: pair
+      flavor: XMSC
+      steps: 8
+      multi_shape: {33: 2, 138: 2, 164: 2}
+      ids: [1, 33, 34, 138, 164]
+    clip_emit_calc_conflict.xml:
+      scope: pair
+      flavor: XMSC
+      steps: 3
+      multi_shape: {91: 3}
+      ids: [91]
+    clip_emit_datafile_projection_conflict.xml:
+      scope: pair
+      flavor: XMSC
+      steps: 3
+      multi_shape: {193: 2}
+      ids: [193, 195]
+    xmsc_toggle_dialect_evidence.xml:
+      scope: evidence
+      flavor: XMSC
+      steps: 0
+      ids: []
+
+known_clip_values:
+  31:                                   # Adjust Window
+    WindowState: [Maximize, ResizeToFit, Hide]   # packet 1129 — Hide
+  146:                                  # Set Web Viewer — NB 'Reset' is observed but NOT in enum_tables
+    Action: [GoToURL, Reset]
+  152:                                  # Save Records as Snapshot Link
+    SaveType: [BrowsedRecords, CurrentRecord]
+  212:                                  # Configure AI Account — all 5 providers (packet 1078)
+    LLMType: [Anthropic, ChatGPT, Cohere, Google, Other]
+
+# ── version sensitivity: where the CLIP shape differs by FileMaker version (packet 1077) ──
+#
+# We emit FM2026-form clips, always (clip_emit.CLIP_TARGET_VERSION). Established by the packet-1068
+# version sweep, diffing the two committed whole-catalog XMSS masters (scriptstepsamples_fm2025_xmss.xml
+# vs _fm2026_xmss.xml). Two layers:
+#
+#   * EVERY step is version-shaped, not just the ids below — `<DisableStepCollapsed>` is an FM2026
+#     clipboard addition the FM2025 clip omits entirely, and we emit it on every step. Normalizing it
+#     out, 197/216 shared steps are byte-identical across versions; the 19 below are the rest.
+#   * `emitted: true` marks an id we ACTUALLY emit today, i.e. where the FM2026 assumption is live
+#     rather than hypothetical. Guard-locked to the fence by test_version_sensitivity_emitted_flags —
+#     build an emitter for one of the `false` ids and the flag must move with it.
+#
+# FM2025 acceptance of an FM2026-form clip is UNTESTED (a paste test on an FM2025 box would settle it).
+# Do NOT "fix" a 2025 spelling toward 2026 or vice versa; declare the target instead.
+version_sensitivity:
+  target: FM2026                        # mirrors clip_emit.CLIP_TARGET_VERSION (guard-locked)
+  universal:
+    element: DisableStepCollapsed
+    delta: "FM2026 clipboard addition; the FM2025 clip omits it entirely. Emitted on every step, so
+      every clip we produce is FM2026-form — the 19 ids below are additional, not the whole story."
+  # Names are the structure catalog's; every `delta` below was re-derived first-hand from the two
+  # committed masters (packet 1077), NOT copied from prose — the coverage doc's terse parentheticals had
+  # mis-titled five of these ids.
+  steps:
+    # 10 FM2026-only types — render as <unknown> in an FM2025 export
+    237: {kind: fm2026-only, emitted: true,  name: Flush Web Viewer Cookies}
+    238: {kind: fm2026-only, emitted: false, name: Configure Persistent Data}
+    240: {kind: fm2026-only, emitted: false, name: Insert Image Captions in Found Set}
+    241: {kind: fm2026-only, emitted: false, name: Insert Image Caption}
+    242: {kind: fm2026-only, emitted: false, name: Print PDF}
+    243: {kind: fm2026-only, emitted: true,  name: Create PDF}   # packet 1081
+    244: {kind: fm2026-only, emitted: true,  name: Append PDF}
+    245: {kind: fm2026-only, emitted: true,  name: Close PDF}
+    246: {kind: fm2026-only, emitted: true,  name: Open PDF}
+    247: {kind: fm2026-only, emitted: true,  name: Cancel PDF}
+    # 9 with real payload deltas between the versions (each verified against the masters)
+    3:   {kind: payload-delta, emitted: true,  name: Save a Copy as XML,
+          delta: "FM2026 adds <OutputEntireBinaryData>, <SpecifyJSONOptions> and a <SaXML><JSONOptions>
+            calc subtree; FM2025 carries only <Option>."}
+    89:  {kind: payload-delta, emitted: true,  name: "# (comment)",
+          delta: "FM2026 adds <Restore state=…/> before <Text>."}
+    144: {kind: payload-delta, emitted: true,  name: Save Records as PDF,   # packet 1081
+          delta: "FM2026 adds <PDFSaveType> as the first child of <PDFOptions>. We emit the FM2026 form
+            (CLIP_TARGET_VERSION) — there is no FM2025 output mode; whether FM2025 accepts it is
+            untested."}
+    161: {kind: payload-delta, emitted: false, name: Insert from Device,
+          delta: "FM2026 adds <LightMode choice=…/> inside <DeviceOptions>."}
+    202: {kind: payload-delta, emitted: true,  name: Configure Machine Learning Model,
+          delta: "FM2025 puts the operation as <ConfigureCoreML> TEXT; FM2026 wraps it in <Operation>."}
+    212: {kind: payload-delta, emitted: true,  name: Configure AI Account,
+          delta: "FM2025 ships the TYPO <SetLLMAccout>; FM2026 fixed it to <SetLLMAccount>. We emit the
+            FM2026 spelling — pasted into FM2025 that is simply the wrong element name. Do NOT 'correct'
+            it toward 2025; declaring a target is what this is for."}
+    215: {kind: payload-delta, emitted: false, name: Insert Embedding,
+          delta: "FM2026 adds <Option state=…/> before <LLMEmbedding>."}
+    218: {kind: payload-delta, emitted: false, name: Perform Semantic Find,
+          delta: "FM2026 adds <UniversalPathList type=…/> before <LLMSemanticFind>."}
+    219: {kind: payload-delta, emitted: false, name: Perform RAG Action,
+          delta: "FM2026 adds <DetectVertical> + <RAGSpaceTokensPerTextChunk> before <RAGSpace>."}
+
+# ── external skeletons: an INDEPENDENT RE of the clip format (packet 1075) ─────
+#
+# Source:   andykear/FileMaker-XMLsnippet-Claude-Skill  v1.13
+#           https://github.com/andykear/FileMaker-XMLsnippet-Claude-Skill
+# Licence:  CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/  (adaptable WITH ATTRIBUTION;
+#           stated in the repo README, not a LICENSE file, so GitHub reports licenseInfo: null)
+# Ingested: 2026-07-15. Cross-check report: docs/clip-spec-crosscheck.md
+#
+# ⚠ THIS IS A HYPOTHESIS LAYER, NOT GROUND TRUTH. It is clip-only: it describes the TARGET shape and
+# says nothing about the DDR→clip mapping (enum remaps, defaults, DDR-gaps) — the hard, code-bearing
+# half. NEVER widen _VERIFIED_SIGS off it. An emitter still ships only when byte-exact against a real
+# captured pair. Where this and one of our pairs disagree, OUR PAIR WINS (it is a real FileMaker
+# artifact) — record the disagreement, it may be a version difference (the spec lags FM versions).
+#
+# ONLY the 31 ids we CANNOT emit are carried. The other 123 the spec covers are deliberately excluded:
+# we already hold a stronger oracle for them (a real clip), so importing a weaker, version-lagging
+# description would add a second source of truth to drift against — the hand-maintained mirror this
+# codebase keeps getting bitten by. A skeleton earns its place only where we have no capture.
+#
+# `elements` is the skeleton's child-element ORDER, with DisableStepCollapsed normalised out (the spec
+# omits it from every skeleton by choice). Use it as a capture HINT — what to expect when someone
+# finally captures the step — never as a licence to emit.
+# ⚠ An id here must be one we CANNOT emit. Once a real captured clip grounds an emitter, its skeleton
+# must GO: we then hold a stronger oracle, and keeping the guess alongside it is a second source of truth
+# to drift against (guard: test_external_skeletons_never_leak_into_the_fence). 144 + 243 were removed
+# 2026-07-15 when packet 1081 built them from committed pairs; 91 + 61 + 131 the same day (pkt 1082).
+external_skeletons:
+  source: "andykear/FileMaker-XMLsnippet-Claude-Skill v1.13"
+  licence: "CC BY 4.0"
+  url: "https://github.com/andykear/FileMaker-XMLsnippet-Claude-Skill"
+  status: "hypothesis — verify against a captured (DDR, clip) pair before emitting"
+  steps:
+    57: {name: 'Send Event', elements: [ContentType, Event]}
+    128: {name: 'Perform Find/Replace', elements: [NoInteract, FindReplaceOperation]}
+    139: {name: 'Convert File', elements: [NoInteract, Option, SkipIndexes, VerifySSLCertificates]}
+    161: {name: 'Insert from Device', elements: [InsertFrom, DeviceOptions]}
+    177: {name: 'AVPlayer Play', elements: [Source]}
+    181: {name: 'Get Folder Path', elements: [AllowFolderCreation]}
+    185: {name: 'Configure Region Monitor Script', elements: [MonitorType]}
+    # 192/193 removed (packet 1126): we now hold a real captured (DDR, clip) pair and emit them byte-exact —
+    # a stronger oracle than the RE'd skeleton, which would only be a second source of truth to drift against.
+    210: {name: 'Perform Script on Server with Callback', elements: [CallbackScriptState, CallbackScript]}
+    211: {name: 'Trigger Claris Connect Flow', elements: [NoInteract, DontEncodeURL, SelectAll, VerifySSLCertificates, Flow, CURLOptions, Text]}
+    213: {name: 'Fine-Tune Model', elements: [Option, UniversalPathList, Table, FineTuneLLM]}
+    214: {name: 'Perform SQL Query by Natural Language', elements: [Option, Stream, UniversalPathList, PerformSQLQuerybyNaturalLanguage]}
+    215: {name: 'Insert Embedding', elements: [Option, LLMEmbedding]}
+    216: {name: 'Insert Embedding in Found Set', elements: [LLMBulkEmbedding]}
+    217: {name: 'Set AI Call Logging', elements: [Set, LLMDebugLog]}
+    218: {name: 'Perform Semantic Find', elements: [UniversalPathList, LLMSemanticFind]}
+    219: {name: 'Perform RAG Action', elements: [DetectVertical, RAGSpaceTokensPerTextChunk, RAGSpace]}
+    220: {name: 'Generate Response from Model', elements: [Option, SelectAll, Stream, Set, LinkAvail, Restore, UniversalPathList, LLMRequestWithTools]}
+    221: {name: 'Perform Find by Natural Language', elements: [Option, SelectAll, LLMCreateFind]}
+    222: {name: 'Configure Regression Model', elements: [LLMTrain]}
+    226: {name: 'Configure Prompt Template', elements: [Option, ConfigurePromptTemplate]}
+    238: {name: 'Configure Persistent Data', elements: [Option]}
+    240: {name: 'Insert Image Captions in Found Set', elements: [LLMBulkEmbedding]}
+    241: {name: 'Insert Image Caption', elements: [LLMEmbedding]}
+    242: {name: 'Print PDF', elements: [NoInteract, Option, UsePrintOptionsFromEnabled, SavePrintOptionsToEnabled, Restore]}
+
+# ── per-id needs-capture hints (attached to detector findings) ──
+notes:
+  186: "MBS: ⚠ NEITHER capture NOR emitter — this one is settled POLICY, not a backlog item. It is a
+    plug-in step whose <PluginStep> parameter schema is plugin-DEFINED (Source=\"MBSP\"), so its grammar
+    is not FileMaker's to standardise and no fixed emitter can be right for it. We hold its clip
+    (tests/fixtures/clip_emit/mbs_step.xml) and deliberately DO NOT emit: it is the fence-don't-emit
+    exemplar. Do not 'fix' it. (It appears in the needs-an-emitter group because the fence refuses it,
+    which is correct — the fence has no way to express 'refused on purpose, forever'.)"
+  63: "Send Mail: unseen send-mode/crypto shape — capture SSL/StartTLS, non-Plain auth, or a non-Google
+    OAuth provider (CAPTURE-BACKLOG P2)."
+  212: "Configure AI Account: provider coverage is COMPLETE (packet 1078) — OpenAI/Anthropic/Cohere/
+    Google/Custom all captured, and Custom→Other+Endpoint serves any endpoint, so there is no per-provider
+    tail to chase. Still uncaptured: the SSL flag in its unseen pairings (a standard provider with
+    Verify SSL Certificates=True; Custom with False) and DDR List value 3."
+  243: >-
+    Create PDF: BUILT (packet 1081) — 9 configured shapes emit byte-exact; the shared
+    Document/Security/View subtree emitter serves 144 too. Its history is worth keeping: it was filed as
+    a class-2 ddr-gap (the clip carries an output path the DDR lacks) and that was WRONG. The bare
+    <Calculation> between <Restore> and <CreatePDFFile> is the TITLE, MIRRORED — Create PDF creates in
+    MEMORY (Append/Close PDF do the file work) so there is no destination to encode, and the PDF family
+    encodes paths as <UniversalPathList> (244/245/246), never as a bare calc. A wrong class-2 verdict is
+    SELF-SEALING — nothing re-examines "we already established that is impossible" — which is why this
+    sat unbuilt for three sessions. Still fenced: the BASE shape (empty <Options/>), whose clip carries a
+    full non-default config the DDR does not hold — a class-2 CANDIDATE, deliberately NOT declared on one
+    sample. See docs/clip-emit-coverage.md (packet 1081).
+  227: "Configure RAG Account: a non-OpenAI provider variant (CAPTURE-BACKLOG P2)."
+  39: "Sort Records: descending / multi-field / custom (value-list) order / dialog-on / no-spec
+    (CAPTURE-BACKLOG P2)."
+  1: "Perform Script: external-file target, by-calculation, by-name+param calc, CurrentScript != Pause."
+  164: "Perform Script on Server: external-file target / by-calculation."
+  16: "Go to Record/Request/Page: Last / Previous / By Field / dialog-on / Request+Page kinds."
+  28: "Perform Find: Omit / multiple requests / multiple criteria / relational-operator criteria."

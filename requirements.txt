@@ -1,0 +1,18 @@
+fastapi
+python-multipart
+uvicorn
+requests
+pyyaml
+anthropic
+chromadb
+gitpython
+psutil
+pytest
+croniter
+fastmcp
+pyinstaller
+cryptography
+defusedxml
+
+# In-app documentation rendering (Documentation page)
+markdown-it-py>=3.0,<5

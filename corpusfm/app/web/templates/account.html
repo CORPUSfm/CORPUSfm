@@ -1,0 +1,327 @@
+{% extends "base.html" %}
+{% block title %}Your account — CORPUSfm{% endblock %}
+
+{# Your account (System group) — universal self-service for any logged-in user:
+   see who you are + your access gates, and change your own password. Admin-side user
+   management (create users, set gates, reset others) lives in Settings → Access. #}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+<div class="cfm-page-hdr"><h1>Your account</h1>
+  <div class="cfm-hdr-actions">{{ doc_help('overview', 'User access overview') }}</div>
+</div>
+
+{% set GATE_LABELS = {
+  'automation': 'Automation', 'library_mcp': 'Library + MCP',
+  'patching': 'Patching', 'fms_api': 'Full FMS API', 'settings': 'Settings (Admin)'
+} %}
+
+<div class="account-tabs" x-data="accountTabs()" @hashchange.window="fromHash()">
+<div class="cfm-tabs" role="tablist" aria-label="Your account sections"
+     @keydown.right.prevent="moveTab(1)" @keydown.left.prevent="moveTab(-1)"
+     @keydown.home.prevent="selectEdge(0)" @keydown.end.prevent="selectEdge(-1)">
+  <button id="account-tab-profile" type="button" class="cfm-tab" role="tab"
+          :class="tab==='profile'?'cfm-tab--on':''" :aria-selected="tab==='profile'"
+          aria-controls="account-panel-profile" @click="setTab('profile')">Profile</button>
+  {% if current_user %}
+  <button id="account-tab-preferences" type="button" class="cfm-tab" role="tab"
+          :class="tab==='preferences'?'cfm-tab--on':''" :aria-selected="tab==='preferences'"
+          aria-controls="account-panel-preferences" @click="setTab('preferences')">Preferences</button>
+  {% endif %}
+  <button id="account-tab-appearance" type="button" class="cfm-tab" role="tab"
+          :class="tab==='appearance'?'cfm-tab--on':''" :aria-selected="tab==='appearance'"
+          aria-controls="account-panel-appearance" @click="setTab('appearance')">Appearance</button>
+  {% if current_user %}
+  <button id="account-tab-password" type="button" class="cfm-tab" role="tab"
+          :class="tab==='password'?'cfm-tab--on':''" :aria-selected="tab==='password'"
+          aria-controls="account-panel-password" @click="setTab('password')">Password</button>
+  {% endif %}
+</div>
+
+<section id="account-panel-profile" role="tabpanel" aria-labelledby="account-tab-profile"
+         x-show="tab==='profile'" x-cloak>
+<div class="cfm-panel" style="max-width:520px">
+  <div class="cfm-field-label">Signed in as</div>
+  <div class="cfm-about-vernum">{{ (current_user.display_name if current_user else 'local (no auth)') }}</div>
+  {% if current_user %}
+  <div class="cfm-muted cfm-mt-6">{{ current_user.username }}{% if current_user.is_admin %} · Admin{% endif %}</div>
+  <div class="cfm-field-label cfm-mt-6">Your access</div>
+  <div class="cfm-card-tags">
+    {% for g in current_user.gates %}<span class="cfm-badge">{{ GATE_LABELS.get(g, g) }}</span>{% endfor %}
+    {% if not current_user.gates %}<span class="cfm-muted">No gates yet — ask an admin.</span>{% endif %}
+  </div>
+  {% else %}
+  <div class="cfm-muted cfm-mt-6">Standalone mode — no login required.</div>
+  {% endif %}
+</div>
+</section>
+
+{% if current_user %}
+<section id="account-panel-preferences" role="tabpanel" aria-labelledby="account-tab-preferences"
+         x-show="tab==='preferences'" x-cloak>
+<div class="cfm-panel" style="max-width:520px" x-data="acctPrefs()">
+  <div class="form-row">
+    <span class="cfm-field-label">Landing page (where <code>/</code> opens)</span>
+    <div class="cfm-dd" @click.outside="o1=false">
+      <button type="button" class="cfm-dd-trigger" @click="o1=!o1"><span x-text="landingLabel(p.landing_page)"></span>
+        <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>
+      <div class="cfm-dd-menu" x-show="o1" x-cloak>
+        <template x-for="pg in LANDING_PAGES" :key="pg.key">
+          <button type="button" class="cfm-dd-opt" :class="p.landing_page===pg.key?'cfm-dd-opt--on':''" @click="p.landing_page=pg.key; o1=false" x-text="pg.label"></button>
+        </template>
+      </div>
+    </div>
+  </div>
+  <div class="form-row cfm-mt-6">
+    <span class="cfm-field-label">Documentation drawer side</span>
+    <div class="cfm-dd" @click.outside="o2=false">
+      <button type="button" class="cfm-dd-trigger" @click="o2=!o2"><span x-text="p.docs_drawer_side==='left'?'Left':'Right'"></span>
+        <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>
+      <div class="cfm-dd-menu" x-show="o2" x-cloak>
+        <button type="button" class="cfm-dd-opt" :class="p.docs_drawer_side==='right'?'cfm-dd-opt--on':''" @click="p.docs_drawer_side='right'; o2=false">Right</button>
+        <button type="button" class="cfm-dd-opt" :class="p.docs_drawer_side==='left'?'cfm-dd-opt--on':''" @click="p.docs_drawer_side='left'; o2=false">Left</button>
+      </div>
+    </div>
+  </div>
+  <div class="form-row cfm-mt-6">
+    <span class="cfm-field-label">Add-on locale (name resolution at import)</span>
+    <div class="cfm-dd" @click.outside="o3=false">
+      <button type="button" class="cfm-dd-trigger" @click="o3=!o3"><span x-text="localeLabel(p.addon_locale)"></span>
+        <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>
+      <div class="cfm-dd-menu" x-show="o3" x-cloak>
+        <button type="button" class="cfm-dd-opt" :class="p.addon_locale===''?'cfm-dd-opt--on':''" @click="p.addon_locale=''; o3=false">System default</button>
+        <template x-for="[code, lbl] in FM_LOCALES" :key="code">
+          <button type="button" class="cfm-dd-opt" :class="p.addon_locale===code?'cfm-dd-opt--on':''" @click="p.addon_locale=code; o3=false" x-text="lbl + ' (' + code + ')'"></button>
+        </template>
+      </div>
+    </div>
+  </div>
+  <div class="cfm-mt-12">
+    <button class="cfm-btn cfm-btn--primary" :disabled="!!busy" @click="save()">Save preferences</button>
+    <span x-show="msg" x-text="msg" :class="ok ? 'cfm-ok' : 'cfm-err'" class="cfm-ml-8"></span>
+  </div>
+</div>
+
+<script>
+function acctPrefs() {
+  return {
+    FM_LOCALES: [['en','English'],['de','Deutsch'],['es','Español'],['fr','Français'],
+      ['it','Italiano'],['ja','日本語'],['ko','한국어'],['nl','Nederlands'],
+      ['pt','Português'],['sv','Svenska'],['zh','中文']],
+    LANDING_PAGES: JSON.parse('{{ landing_pages | tojson }}'),
+    // This tab owns only these three fields. Do not carry palette values here: a later save from
+    // this independently-lived Alpine component must never replay stale Appearance state.
+    p: { landing_page: '{{ acct_prefs.landing_page }}',
+         docs_drawer_side: '{{ acct_prefs.docs_drawer_side }}',
+         addon_locale: '{{ acct_prefs.addon_locale }}' },
+    _side0: '{{ acct_prefs.docs_drawer_side }}',
+    o1: false, o2: false, o3: false, busy: false, ok: false, msg: '',
+    landingLabel(key) { const f = this.LANDING_PAGES.find(x => x.key === key); return f ? f.label : (key || 'Artifacts'); },
+    localeLabel(code) { if (!code) return 'System default'; const f = this.FM_LOCALES.find(x => x[0] === code); return f ? (f[1] + ' (' + code + ')') : code; },
+    async save() {
+      this.msg = ''; this.busy = true;
+      try {
+        const r = await fetch('/api/account/prefs', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.p) });
+        const d = await r.json();
+        this.ok = !!d.ok; this.msg = d.ok ? 'Preferences saved.' : (d.error || 'Failed.');
+        if (d.ok && this.p.docs_drawer_side !== this._side0) {
+          // Clear any per-device flip so the new personal default takes effect, and live-update an open drawer.
+          try { localStorage.removeItem('cfm_docs_placement'); } catch (_) {}
+          window.dispatchEvent(new CustomEvent('cfm-docs-side', { detail: this.p.docs_drawer_side }));
+          this._side0 = this.p.docs_drawer_side;
+        }
+      } catch (e) { this.ok = false; this.msg = 'Request failed.'; }
+      this.busy = false;
+    },
+  };
+}
+</script>
+</section>
+{% endif %}
+
+<section id="account-panel-appearance" role="tabpanel" aria-labelledby="account-tab-appearance"
+         x-show="tab==='appearance'" x-cloak>
+<div class="cfm-panel syntax-prefs" x-data="appearancePrefs()">
+  <p class="cfm-muted cfm-mb-12">Choose calculation and script colors independently. Newly generated
+    Explorer and Diff files keep these exact colors; existing files stay unchanged.</p>
+  <div class="syntax-pref-grid">
+    <section>
+      <div class="form-row">
+        <span class="cfm-field-label">Calculation palette</span>
+        <div class="cfm-dd" @click.outside="calcOpen=false">
+          <button type="button" class="cfm-dd-trigger" @click="calcOpen=!calcOpen">
+            <span x-text="paletteLabel(p.calculation_palette)"></span>
+            <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+          </button>
+          <div class="cfm-dd-menu" x-show="calcOpen" x-cloak>
+            <template x-for="pal in PALETTES" :key="pal.id">
+              <button type="button" class="cfm-dd-opt" :class="p.calculation_palette===pal.id?'cfm-dd-opt--on':''"
+                      @click="p.calculation_palette=pal.id; calcOpen=false">
+                <span x-text="pal.label"></span><small x-text="pal.description"></small>
+              </button>
+            </template>
+          </div>
+        </div>
+      </div>
+      <div class="syntax-preview" :data-syntax-palette="p.calculation_palette">
+        <div class="syntax-preview-h">Calculation specimen</div>
+        <pre x-html="fmHighlight(CALC_SAMPLE)"></pre>
+      </div>
+    </section>
+    <section>
+      <div class="form-row">
+        <span class="cfm-field-label">Script palette</span>
+        <div class="cfm-dd" @click.outside="scriptOpen=false">
+          <button type="button" class="cfm-dd-trigger" @click="scriptOpen=!scriptOpen">
+            <span x-text="paletteLabel(p.script_palette)"></span>
+            <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+          </button>
+          <div class="cfm-dd-menu" x-show="scriptOpen" x-cloak>
+            <template x-for="pal in PALETTES" :key="pal.id">
+              <button type="button" class="cfm-dd-opt" :class="p.script_palette===pal.id?'cfm-dd-opt--on':''"
+                      @click="p.script_palette=pal.id; scriptOpen=false">
+                <span x-text="pal.label"></span><small x-text="pal.description"></small>
+              </button>
+            </template>
+          </div>
+        </div>
+      </div>
+      <div class="syntax-preview syntax-preview--script" :data-syntax-palette="p.script_palette">
+        <div class="syntax-preview-h">Script specimen</div>
+        <pre x-html="scriptPreview()"></pre>
+      </div>
+    </section>
+  </div>
+  <div class="cfm-mt-12">
+    <button class="cfm-btn cfm-btn--primary" :disabled="!!busy" @click="save()">Save appearance</button>
+    <span x-show="msg" x-text="msg" :class="ok ? 'cfm-ok' : 'cfm-err'" class="cfm-ml-8"></span>
+  </div>
+</div>
+
+<style>
+{{ syntax_palette_css | safe }}
+.syntax-prefs{max-width:980px}.syntax-pref-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.syntax-prefs .cfm-dd{max-width:none}.syntax-prefs .cfm-dd-opt{display:flex;flex-direction:column;align-items:flex-start}
+.syntax-prefs .cfm-dd-opt small{color:var(--text-3);font-size:11px;font-weight:400;margin-top:2px}
+.syntax-preview{margin-top:10px;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;background:#181a1d}
+[data-theme="light"] .syntax-preview{background:#e8e8e8}
+.syntax-preview-h{padding:7px 10px;border-bottom:1px solid var(--border);color:var(--text-3);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.syntax-preview pre{min-height:190px;margin:0;padding:11px 12px;overflow:auto;color:var(--calc-plain);font:12px/1.55 'SFMono-Regular',Consolas,'Liberation Mono',monospace;white-space:pre-wrap}
+.syntax-preview--script pre{color:var(--script-plain)}
+.syntax-preview .cf-cmt{color:var(--calc-comment)}.syntax-preview .cf-str{color:var(--calc-string)}
+.syntax-preview .cf-num{color:var(--calc-number)}.syntax-preview .cf-field{color:var(--calc-field)}
+.syntax-preview .cf-func{color:var(--calc-function)}.syntax-preview .cf-kw{color:var(--calc-keyword)}
+.syntax-preview .cf-op{color:var(--calc-operator)}
+.syntax-preview .step-verb{color:var(--script-verb)}.syntax-preview .step-cmt{color:var(--script-comment)}
+.syntax-preview .step-str{color:var(--script-string)}.syntax-preview .step-field{color:var(--script-field)}
+.syntax-preview .step-bracket,.syntax-preview .step-sep{color:var(--script-punct)}
+.syntax-preview .step-warn{color:var(--health-warn)}
+@media(max-width:800px){.syntax-pref-grid{grid-template-columns:1fr}}
+</style>
+
+<script>
+{{ syntax_highlighter_js | safe }}
+function appearancePrefs() {
+  return {
+    PALETTES: JSON.parse('{{ syntax_palettes | tojson }}'),
+    p: { calculation_palette: '{{ acct_prefs.calculation_palette }}', script_palette: '{{ acct_prefs.script_palette }}' },
+    CALC_SAMPLE: 'Let ( [\n  $customerID = Customers::Customer ID ;\n  total = Round ( Sum ( Orders::Amount ) ; 2 ) ;\n  note = "Preferred customer" ;\n  active = True\n] ;\n  If ( active and total ≥ 1000 ;\n    note ; "Standard" )\n)\n\n// Customer display classification',
+    SCRIPT_SAMPLE: 'Set Variable [ $total ; Value: Sum ( Orders::Amount ) ]\nIf [ $total ≥ 1000 ]\n  Set Field [ Customers::Status ; "Preferred" ]\nElse\n  # Keep the ordinary status\n  Set Field [ Customers::Status ; "Standard" ]\nEnd If\n⚠ Missing target file credential',
+    calcOpen: false, scriptOpen: false, busy: false, ok: false, msg: '',
+    paletteLabel(id) { const f=this.PALETTES.find(x=>x.id===id); return f ? f.label : 'Classic'; },
+    scriptPreview() { return this.SCRIPT_SAMPLE.split('\n').map(line=>{
+      const indent=(line.match(/^\s*/)||[''])[0];
+      return indent+fmStepHighlight(line.slice(indent.length));
+    }).join('\n'); },
+    async save() {
+      this.msg=''; this.busy=true;
+      try {
+        const r=await fetch('/api/account/prefs',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(this.p)});
+        const d=await r.json(); this.ok=!!d.ok;
+        this.msg=d.ok?'Appearance saved. New Explorer and Diff files will use it.':(d.error||'Failed.');
+      } catch(e) { this.ok=false; this.msg='Request failed.'; }
+      this.busy=false;
+    },
+  };
+}
+</script>
+</section>
+
+{% if current_user %}
+
+<section id="account-panel-password" role="tabpanel" aria-labelledby="account-tab-password"
+         x-show="tab==='password'" x-cloak>
+<div class="cfm-panel" style="max-width:520px" x-data="accountPage()">
+  <div class="form-row">
+    <label class="cfm-field-label">Current password</label>
+    <input type="password" class="cfm-input" x-model="cur" autocomplete="current-password">
+  </div>
+  <div class="form-row cfm-mt-6">
+    <label class="cfm-field-label">New password</label>
+    <input type="password" class="cfm-input" x-model="nw" autocomplete="new-password" placeholder="At least 8 characters">
+  </div>
+  <div class="form-row cfm-mt-6">
+    <label class="cfm-field-label">Confirm new password</label>
+    <input type="password" class="cfm-input" x-model="cfm" autocomplete="new-password">
+  </div>
+  <div class="cfm-mt-12">
+    <button class="cfm-btn cfm-btn--primary" :disabled="!!busy" @click="save()">Change password</button>
+    <span x-show="msg" x-text="msg" :class="ok ? 'cfm-ok' : 'cfm-err'" class="cfm-ml-8"></span>
+  </div>
+</div>
+
+<script>
+function accountPage() {
+  return {
+    cur: '', nw: '', cfm: '', busy: false, ok: false, msg: '',
+    async save() {
+      this.msg = '';
+      if (this.nw.length < 8) { this.ok = false; this.msg = 'New password must be at least 8 characters.'; return; }
+      if (this.nw !== this.cfm) { this.ok = false; this.msg = 'New passwords do not match.'; return; }
+      this.busy = true;
+      try {
+        const r = await fetch('/api/account/password', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ current: this.cur, new: this.nw }),
+        });
+        const d = await r.json();
+        this.ok = !!d.ok;
+        this.msg = d.ok ? 'Password changed.' : (d.error || 'Failed.');
+        if (d.ok) { this.cur = this.nw = this.cfm = ''; }
+      } catch (e) { this.ok = false; this.msg = 'Request failed.'; }
+      this.busy = false;
+    },
+  };
+}
+</script>
+</section>
+{% endif %}
+</div>
+
+<script>
+function accountTabs() {
+  return {
+    allowed: ['profile'{% if current_user %}, 'preferences'{% endif %}, 'appearance'{% if current_user %}, 'password'{% endif %}],
+    tab: 'profile',
+    init() { this.fromHash(); },
+    fromHash() {
+      const requested=(window.location.hash||'').slice(1);
+      this.tab=this.allowed.includes(requested)?requested:'profile';
+    },
+    setTab(next, focus=false) {
+      if (!this.allowed.includes(next)) return;
+      this.tab=next;
+      history.replaceState(null, '', '#'+next);
+      if (focus) this.$nextTick(()=>document.getElementById('account-tab-'+next)?.focus());
+    },
+    moveTab(delta) {
+      const at=this.allowed.indexOf(this.tab);
+      this.setTab(this.allowed[(at+delta+this.allowed.length)%this.allowed.length], true);
+    },
+    selectEdge(edge) { this.setTab(edge===0?this.allowed[0]:this.allowed[this.allowed.length-1], true); },
+  };
+}
+</script>
+{% endblock %}

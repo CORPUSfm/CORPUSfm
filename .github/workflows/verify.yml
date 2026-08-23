@@ -1,0 +1,70 @@
+name: Verify public snapshot
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  site:
+    name: Website
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the published source
+        uses: actions/checkout@v7
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Build and test
+        run: npm test
+
+  contracts:
+    name: ${{ matrix.name }} contracts
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            platform_test: tests/test_linux_installer_surface.py
+          - name: Windows
+            os: windows-latest
+            platform_test: tests/test_windows_installer_source_clone.py
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out the published source
+        uses: actions/checkout@v7
+      - name: Use Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install the contract test runner
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Verify the public release and installer contracts
+        run: >-
+          python -m pytest -q
+          tests/test_buildstamp.py
+          tests/test_installer_conformance.py
+          tests/test_installer_entrypoint_parity.py
+          tests/test_installer_package_forward_only.py
+          tests/test_installer_parity.py
+          tests/test_series2_package_boundary.py
+          tests/test_installer_warning_contract.py
+          tests/test_uninstall_close_verdict.py
+          ${{ matrix.platform_test }}

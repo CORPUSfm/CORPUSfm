@@ -1,0 +1,61 @@
+# FM internal structure catalog — DELTA for FMSaveAsXML v2.3.0.0 (FileMaker 2026).
+#
+# This is a delta: `inherits: 2.2.3.0` deep-merges these entries onto the v2.2.3.0 catalog,
+# so only the FM2026 ADDITIONS live here (the 1500+ inherited steps/types are not duplicated).
+# These 10 script steps are new in FM2026 (gap analyzer flagged them on a real 26.0.1 export);
+# the native-AI steps (212-227) were already present in 2.2.3.0 (FM 22.x). param_types are the
+# observed <Parameter type="..."> values, in order.
+inherits: "2.2.3.0"
+schema_version: "2.3.0.0"
+
+script_steps:
+  237:
+    name: "Flush Web Viewer Cookies"
+    param_types: []
+    block_role: null
+    fm_version_first_seen: "26.0"
+  238:
+    name: "Configure Persistent Data"
+    param_types: [PersistentStore]   # Parameter carries the named-value: <value>/<Name>/<instanceID>
+    block_role: null
+    fm_version_first_seen: "26.0"
+  240:
+    name: "Insert Image Captions in Found Set"
+    param_types: [Boolean, Boolean]
+    block_role: null
+    fm_version_first_seen: "26.0"
+  241:
+    name: "Insert Image Caption"
+    param_types: []
+    block_role: null
+    fm_version_first_seen: "26.0"
+  242:
+    name: "Print PDF"
+    param_types: [PDFtoPrint, Restore, PageSetup, Boolean, Boolean, Boolean, Boolean]
+    block_role: null
+    fm_version_first_seen: "26.0"
+  243:
+    name: "Create PDF"
+    param_types: [Restore, Options]
+    block_role: null
+    fm_version_first_seen: "26.0"
+  244:
+    name: "Append PDF"
+    param_types: [Boolean, From]
+    block_role: null
+    fm_version_first_seen: "26.0"
+  245:
+    name: "Close PDF"
+    param_types: [Boolean, SaveTo]
+    block_role: null
+    fm_version_first_seen: "26.0"
+  246:
+    name: "Open PDF"
+    param_types: [Boolean, From]
+    block_role: null
+    fm_version_first_seen: "26.0"
+  247:
+    name: "Cancel PDF"
+    param_types: []
+    block_role: null
+    fm_version_first_seen: "26.0"

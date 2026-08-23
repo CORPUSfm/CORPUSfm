@@ -1,0 +1,1307 @@
+# FM script step rendering catalog for FMSaveAsXML version 2.2.3.0
+# Parallel to mappings.yaml — same version directory, same registry fallback.
+#
+# Each step entry:
+#   name:     Display name (for human reference; runtime uses XML @name attr)
+#   template: One-line FM ScriptMaker display string with {key} placeholders.
+#             No template (or null) → rendering engine falls back to name + ⚠ partial badge.
+#   params:   Map of placeholder key → extraction spec.
+#
+# Extraction spec fields:
+#   xpath:    XPath from the Step element root
+#   attr:     (optional) Attribute to read from matched element; omit for element .text
+#   display:  (optional) Value substitution map e.g. {"True": "On", "False": "Off"}
+#
+# If an XPath finds nothing, the placeholder renders as an empty string.
+# Steps absent from this file use graceful fallback rendering.
+
+schema_version: "2.2.3.0"
+
+script_steps:
+
+  # ─── Comment ────────────────────────────────────────────────────────────────
+  89:
+    name: "# (comment)"
+    template: "# {text}"
+    # An empty comment is a blank line in FileMaker — no leading '#'.
+    blank_when_empty: "text"
+    params:
+      text:
+        xpath: "./ParameterValues/Parameter[@type='Comment']/Comment"
+        attr: "value"
+
+  # ─── Variables & Fields ─────────────────────────────────────────────────────
+  141:
+    name: "Set Variable"
+    template: "Set Variable [ {name} ; Value: {value} ]"
+    params:
+      name:
+        xpath: "./ParameterValues/Parameter[@type='Variable']/Name"
+        attr: "value"
+      value:
+        xpath: "./ParameterValues/Parameter[@type='Variable']/value/Calculation/Calculation/Text"
+
+  76:
+    name: "Set Field"
+    template: "Set Field [ {table}::{field} ; {value} ]"
+    params:
+      table:
+        xpath: "./ParameterValues/Parameter[@type='FieldReference']/FieldReference/TableOccurrenceReference"
+        attr: "name"
+      field:
+        xpath: "./ParameterValues/Parameter[@type='FieldReference']/FieldReference"
+        attr: "name"
+      value:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+
+  147:
+    name: "Set Field By Name"
+    template: "Set Field By Name [ {field_name} ; {value} ]"
+    params:
+      field_name:
+        xpath: "./ParameterValues/Parameter[@type='Calculation'][1]/Calculation/Calculation/Text"
+      value:
+        xpath: "./ParameterValues/Parameter[@type='Calculation'][2]/Calculation/Calculation/Text"
+
+  77:
+    name: "Insert Calculated Result"
+    template: "Insert Calculated Result [ {target} ; {value} ]"
+    # render: insert_calc_result — a FIELD target rendered blank (template only read a Variable
+    # target); surface the target field too. packet 1027.
+    render: insert_calc_result
+    params:
+      target:
+        xpath: "./ParameterValues/Parameter[@type='Target']/Variable"
+        attr: "value"
+      value:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+
+  91:
+    name: "Replace Field Contents"
+    template: "Replace Field Contents [ {table}::{field} ]"
+    params:
+      table:
+        xpath: "./ParameterValues/Parameter[@type='FieldReference']/FieldReference/TableOccurrenceReference"
+        attr: "name"
+      field:
+        xpath: "./ParameterValues/Parameter[@type='FieldReference']/FieldReference"
+        attr: "name"
+
+  130:
+    name: "Set Selection"
+    template: "Set Selection [ {table}::{field} ]"
+    params:
+      table:
+        xpath: "./ParameterValues/Parameter[@type='FieldReference']/FieldReference/TableOccurrenceReference"
+        attr: "name"
+      field:
+        xpath: "./ParameterValues/Parameter[@type='FieldReference']/FieldReference"
+        attr: "name"
+
+  # ─── Control Flow ───────────────────────────────────────────────────────────
+  68:
+    name: "If"
+    template: "If [ {condition} ]"
+    params:
+      condition:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+
+  125:
+    name: "Else If"
+    template: "Else If [ {condition} ]"
+    params:
+      condition:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+
+  69:
+    name: "Else"
+    template: "Else"
+
+  70:
+    name: "End If"
+    template: "End If"
+
+  71:
+    name: "Loop"
+    template: "Loop"
+
+  72:
+    name: "Exit Loop If"
+    template: "Exit Loop If [ {condition} ]"
+    params:
+      condition:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+
+  73:
+    name: "End Loop"
+    template: "End Loop"
+
+  103:
+    name: "Exit Script"
+    template: "Exit Script [ {result} ]"
+    params:
+      result:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+
+  62:
+    name: "Pause/Resume Script"
+    template: "Pause/Resume Script [ {duration} ]"
+    params:
+      duration:
+        # FM stores the duration calc under Parameter[type=Options]/Options (the
+        # @type carries the "Duration (seconds): " label); empty = pause indefinitely.
+        alts:
+          - xpath: "./ParameterValues/Parameter[@type='Options']/Options/Calculation/Calculation/Text"
+            prefix: "Duration (seconds): "
+
+  # ─── Scripts ────────────────────────────────────────────────────────────────
+  1:
+    name: "Perform Script"
+    template: 'Perform Script [ {file_prefix}{script} ; Parameter: {param} ]'
+    params:
+      file_prefix:
+        xpath: "./ParameterValues/Parameter[@type='List']/List/DataSourceReference"
+        attr: "name"
+        suffix: ' :: '
+      script:
+        alts:
+          - xpath: "./ParameterValues/Parameter[@type='List']/List/ScriptReference"
+            attr: "name"
+            prefix: '"'
+            suffix: '"'
+          - xpath: "./ParameterValues/Parameter[@type='List']/List/Calculation/Calculation/Text"
+            prefix: "Specified: By name ; "
+      param:
+        xpath: "./ParameterValues/Parameter[@type='Parameter']/Parameter/Calculation/Calculation/Text"
+
+  164:
+    name: "Perform Script on Server"
+    template: 'Perform Script on Server [ {file_prefix}{script} ; Parameter: {param}{wait} ]'
+    params:
+      file_prefix:
+        xpath: "./ParameterValues/Parameter[@type='List']/List/DataSourceReference"
+        attr: "name"
+        suffix: ' :: '
+      script:
+        alts:
+          - xpath: "./ParameterValues/Parameter[@type='List']/List/ScriptReference"
+            attr: "name"
+            prefix: '"'
+            suffix: '"'
+          - xpath: "./ParameterValues/Parameter[@type='List']/List/Calculation/Calculation/Text"
+            prefix: "Specified: By name ; "
+      param:
+        xpath: "./ParameterValues/Parameter[@type='Parameter']/Parameter/Calculation/Calculation/Text"
+      wait:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean[@type='Wait for completion']"
+        attr: "value"
+        display:
+          "True": " ; Wait for completion: On"
+          "False": " ; Wait for completion: Off"
+
+  210:
+    name: "Perform Script on Server with Callback"
+    template: 'Perform Script on Server with Callback [ {file_prefix}{script} ]'
+    params:
+      file_prefix:
+        xpath: "./ParameterValues/Parameter[@type='List']/List/DataSourceReference"
+        attr: "name"
+        suffix: ' :: '
+      script:
+        alts:
+          - xpath: "./ParameterValues/Parameter[@type='List']/List/ScriptReference"
+            attr: "name"
+            prefix: '"'
+            suffix: '"'
+          - xpath: "./ParameterValues/Parameter[@type='List']/List/Calculation/Calculation/Text"
+            prefix: "Specified: By name ; "
+
+  148:
+    name: "Install OnTimer Script"
+    template: 'Install OnTimer Script [ "{script}" ; Interval: {interval} ]'
+    params:
+      script:
+        xpath: "./ParameterValues/Parameter[@type='ScriptReference']/ScriptReference"
+        attr: "name"
+      interval:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+
+  # ─── Navigation ─────────────────────────────────────────────────────────────
+  6:
+    name: "Go to Layout"
+    template: 'Go to Layout [ {layout} ]'
+    params:
+      layout:
+        # By name → "LayoutName"; by calculation → the calc (no <LayoutReference>).
+        alts:
+          - xpath: "./ParameterValues/Parameter[@type='LayoutReferenceContainer']/LayoutReferenceContainer/LayoutReference"
+            attr: "name"
+            prefix: '"'
+            suffix: '"'
+          - xpath: "./ParameterValues/Parameter[@type='LayoutReferenceContainer']/LayoutReferenceContainer/Calculation/Calculation/Text"
+
+  16:
+    name: "Go to Record/Request/Page"
+    template: "Go to Record/Request/Page [ {target} ]"
+    params:
+      target:
+        xpath: "./ParameterValues/Parameter[@type='Records']/List"
+        attr: "name"
+
+  17:
+    name: "Go to Field"
+    template: "Go to Field [ {table}::{field} ]"
+    params:
+      table:
+        xpath: "./ParameterValues/Parameter[@type='FieldReference']/FieldReference/TableOccurrenceReference"
+        attr: "name"
+      field:
+        xpath: "./ParameterValues/Parameter[@type='FieldReference']/FieldReference"
+        attr: "name"
+
+  74:
+    name: "Go to Related Record"
+    template: 'Go to Related Record [ {table} ; "{layout}" ]'
+    # render: gtrr — also surface a layout specified BY CALCULATION (the template's static
+    # LayoutReference xpath dropped a calculated layout). packet 1027.
+    render: gtrr
+    params:
+      table:
+        xpath: "./ParameterValues/Parameter[@type='Related']/TableOccurrenceReference"
+        attr: "name"
+      layout:
+        xpath: "./ParameterValues/Parameter[@type='Related']/LayoutReferenceContainer/LayoutReference"
+        attr: "name"
+
+  99:
+    # render: go_to_portal_row — the row target is a List @name under Parameter[@type='Portal']
+    # (First/Last/Previous/Next/Select entry/By Calculation…), NOT Parameter[@type='Records']; the
+    # old xpath found nothing and rendered [  ]. The By-Calculation… variant nests the row-number
+    # calc inside the List, surfaced alongside the target. packet 1150.
+    render: go_to_portal_row
+    name: "Go to Portal Row"
+    template: "Go to Portal Row [ {target} ]"
+    params:
+      target:
+        xpath: "./ParameterValues/Parameter[@type='Portal']/List"
+        attr: "name"
+
+  145:
+    name: "Go to Object"
+    template: "Go to Object [ {object} ]"
+    params:
+      object:
+        xpath: "./ParameterValues/Parameter[@type='Object']/Name/Calculation/Calculation/Text"
+
+  4:
+    name: "Go to Next Field"
+    template: "Go to Next Field"
+
+  5:
+    name: "Go to Previous Field"
+    template: "Go to Previous Field"
+
+  # ─── Records ────────────────────────────────────────────────────────────────
+  7:
+    name: "New Record/Request"
+    template: "New Record/Request"
+
+  8:
+    name: "Duplicate Record/Request"
+    template: "Duplicate Record/Request"
+
+  9:
+    name: "Delete Record/Request"
+    template: "Delete Record/Request [ With dialog: {dialog} ]"
+    params:
+      dialog:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  10:
+    name: "Delete All Records"
+    template: "Delete All Records [ With dialog: {dialog} ]"
+    params:
+      dialog:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  51:
+    name: "Revert Record/Request"
+    template: "Revert Record/Request [ With dialog: {dialog} ]"
+    params:
+      dialog:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  75:
+    name: "Commit Records/Requests"
+    template: "Commit Records/Requests [ Skip data entry: {skip} ; With dialog: {dialog} ]"
+    params:
+      skip:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean[@type='Skip data entry validation']"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+      dialog:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean[@type='With dialog']"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  104:
+    name: "Delete Portal Row"
+    template: "Delete Portal Row [ With dialog: {dialog} ]"
+    params:
+      dialog:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  133:
+    name: "Open Record/Request"
+    template: "Open Record/Request"
+
+  98:
+    name: "Copy All Records/Requests"
+    template: "Copy All Records/Requests"
+
+  # ─── Find ───────────────────────────────────────────────────────────────────
+  22:
+    name: "Enter Find Mode"
+    template: "Enter Find Mode [ Pause: {pause} ]"
+    params:
+      pause:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean[@type='Pause']"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  28:
+    name: "Perform Find"
+    template: "Perform Find"
+
+  25:
+    name: "Omit Record"
+    template: "Omit Record"
+
+  26:
+    name: "Omit Multiple Records"
+    template: "Omit Multiple Records [ With dialog: {dialog} ]"
+    params:
+      dialog:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  27:
+    name: "Show Omitted Only"
+    template: "Show Omitted Only"
+
+  23:
+    name: "Show All Records"
+    template: "Show All Records"
+
+  21:
+    name: "Unsort Records"
+    template: "Unsort Records"
+
+  126:
+    name: "Constrain Found Set"
+    template: "Constrain Found Set"
+
+  127:
+    name: "Extend Found Set"
+    template: "Extend Found Set"
+
+  150:
+    name: "Perform Quick Find"
+    template: "Perform Quick Find [ {query} ]"
+    params:
+      query:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+
+  # ─── Sort ───────────────────────────────────────────────────────────────────
+  39:
+    # render: sort_records — code-rendered so the SORT FIELDS (SortSpecification/SortList) are
+    # surfaced, not just the dialog flag. The single-value template system can't express a
+    # variable-length field list; the template below is the no-sort-list fallback shape.
+    render: sort_records
+    name: "Sort Records"
+    template: "Sort Records [ With dialog: {dialog} ]"
+    params:
+      dialog:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean[@type='With dialog']"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  154:
+    # render: sort_records_by_field — the sort direction (Ascending/Descending) lives in a
+    # List @name that the base template dropped, and the `{table}::{field}` template printed a
+    # bare `::` when no FieldReference is present (the direction-only case). The render mode adds
+    # the direction and omits the field clause when absent. packet 1150.
+    render: sort_records_by_field
+    name: "Sort Records by Field"
+    template: "Sort Records by Field [ {table}::{field} ]"
+    params:
+      table:
+        xpath: "./ParameterValues/Parameter[@type='FieldReference']/FieldReference/TableOccurrenceReference"
+        attr: "name"
+      field:
+        xpath: "./ParameterValues/Parameter[@type='FieldReference']/FieldReference"
+        attr: "name"
+
+  # ─── Display / UI ───────────────────────────────────────────────────────────
+  87:
+    name: "Show Custom Dialog"
+    template: "Show Custom Dialog [ {message} ]"
+    params:
+      message:
+        xpath: "./ParameterValues/Parameter[@type='Message']/Calculation/Calculation/Text"
+
+  80:
+    name: "Refresh Window"
+    template: "Refresh Window"
+
+  79:
+    name: "Freeze Window"
+    template: "Freeze Window"
+
+  81:
+    name: "Scroll Window"
+    template: "Scroll Window [ {position} ]"
+    params:
+      position:
+        xpath: "./ParameterValues/Parameter[@type='List']/List"
+        attr: "name"
+
+  31:
+    name: "Adjust Window"
+    template: "Adjust Window [ {mode} ]"
+    params:
+      mode:
+        xpath: "./ParameterValues/Parameter[@type='List']/List"
+        attr: "name"
+
+  97:
+    name: "Set Zoom Level"
+    template: "Set Zoom Level [ {level} ]"
+    params:
+      level:
+        xpath: "./ParameterValues/Parameter[@type='List']/List"
+        attr: "name"
+
+  # 29/92/166 (Show/Hide Toolbars/Text Ruler/Menubar): the operative state is the List @name
+  # (Show/Hide/Toggle), NOT a Boolean. The old Boolean xpath matched the FIRST Boolean — for
+  # Toolbars an unrelated Lock flag — and ran it through a Show/Hide map, rendering the OPPOSITE
+  # of the step (packet 1150). No Boolean encoding of this state exists in-window (FM 21+); the
+  # List @name is already the literal word, so no display map. Do NOT add a Boolean fallback.
+  29:
+    name: "Show/Hide Toolbars"
+    template: "Show/Hide Toolbars [ {state} ]"
+    params:
+      state:
+        xpath: "./ParameterValues/Parameter[@type='List']/List"
+        attr: "name"
+
+  166:
+    name: "Show/Hide Menubar"
+    template: "Show/Hide Menubar [ {state} ]"
+    params:
+      state:
+        xpath: "./ParameterValues/Parameter[@type='List']/List"
+        attr: "name"
+
+  92:
+    name: "Show/Hide Text Ruler"
+    template: "Show/Hide Text Ruler [ {state} ]"
+    params:
+      state:
+        xpath: "./ParameterValues/Parameter[@type='List']/List"
+        attr: "name"
+
+  167:
+    name: "Refresh Object"
+    template: "Refresh Object [ {object} ]"
+    params:
+      object:
+        xpath: "./ParameterValues/Parameter[@type='Object']/Name/Calculation/Calculation/Text"
+
+  180:
+    name: "Refresh Portal"
+    template: "Refresh Portal [ {portal} ]"
+    params:
+      portal:
+        xpath: "./ParameterValues/Parameter[@type='Object']/Name/Calculation/Calculation/Text"
+
+  168:
+    name: "Set Layout Object Animation"
+    template: "Set Layout Object Animation [ {state} ]"
+    params:
+      state:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  169:
+    name: "Close Popover"
+    template: "Close Popover"
+
+  146:
+    name: "Set Web Viewer"
+    template: "Set Web Viewer [ {object} ; {action} ]"
+    params:
+      object:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+      action:
+        xpath: "./ParameterValues/Parameter[@type='action']/List"
+        attr: "name"
+
+  # ─── Windows ────────────────────────────────────────────────────────────────
+  122:
+    name: "New Window"
+    template: "New Window"
+    # render: new_window — surface the target LAYOUT (a LayoutReference the bare template dropped
+    # entirely) + window Style/Name. packet 1027 ("the text lies").
+    render: new_window
+
+  121:
+    name: "Close Window"
+    template: "Close Window [ {target} ]"
+    params:
+      target:
+        xpath: "./ParameterValues/Parameter[@type='WindowReference']/WindowReference/Select"
+        attr: "type"
+
+  119:
+    name: "Move/Resize Window"
+    template: "Move/Resize Window"
+
+  123:
+    name: "Select Window"
+    template: "Select Window [ {target} ]"
+    params:
+      target:
+        xpath: "./ParameterValues/Parameter[@type='WindowReference']/WindowReference/Select"
+        attr: "type"
+
+  124:
+    name: "Set Window Title"
+    template: "Set Window Title [ {title} ]"
+    params:
+      title:
+        xpath: "./ParameterValues/Parameter[@type='WindowReference']/WindowReference/Rename/Calculation/Calculation/Text"
+
+  # ─── Error Handling ─────────────────────────────────────────────────────────
+  85:
+    name: "Allow User Abort"
+    template: "Allow User Abort [ {state} ]"
+    params:
+      state:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  86:
+    name: "Set Error Capture"
+    template: "Set Error Capture [ {state} ]"
+    params:
+      state:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  200:
+    name: "Set Error Logging"
+    template: "Set Error Logging [ {state} ]"
+    params:
+      state:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  # ─── Transactions ───────────────────────────────────────────────────────────
+  205:
+    name: "Open Transaction"
+    template: "Open Transaction"
+
+  206:
+    name: "Commit Transaction"
+    template: "Commit Transaction"
+
+  223:
+    name: "Set Revert Transaction on Error"
+    template: "Set Revert Transaction on Error [ {state} ]"
+    params:
+      state:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  # ─── Files ──────────────────────────────────────────────────────────────────
+  33:
+    name: "Open File"
+    template: 'Open File [ "{file}" ]'
+    params:
+      file:
+        xpath: "./ParameterValues/Parameter[@type='DataSourceReference']/DataSourceReference"
+        attr: "name"
+
+  34:
+    name: "Close File"
+    template: 'Close File [ "{file}" ]'
+    params:
+      file:
+        xpath: "./ParameterValues/Parameter[@type='DataSourceReference']/DataSourceReference"
+        attr: "name"
+
+  188:
+    name: "Get File Exists"
+    template: "Get File Exists"
+
+  189:
+    name: "Get File Size"
+    template: "Get File Size"
+
+  190:
+    name: "Create Data File"
+    template: "Create Data File"
+
+  191:
+    name: "Open Data File"
+    template: "Open Data File"
+
+  192:
+    name: "Write to Data File"
+    template: "Write to Data File"
+
+  193:
+    name: "Read from Data File"
+    template: "Read from Data File"
+
+  195:
+    name: "Set Data File Position"
+    template: "Set Data File Position"
+
+  196:
+    name: "Close Data File"
+    template: "Close Data File"
+
+  197:
+    name: "Delete File"
+    template: "Delete File"
+
+  # ─── Import / Export ────────────────────────────────────────────────────────
+  35:
+    name: "Import Records"
+    template: "Import Records"
+
+  36:
+    name: "Export Records"
+    template: "Export Records"
+
+  132:
+    name: "Export Field Contents"
+    template: "Export Field Contents"
+    # render: export_field_contents — surface the SOURCE field (dropped by the bare template). packet 1027.
+    render: export_field_contents
+
+  144:
+    name: "Save Records as PDF"
+    template: "Save Records as PDF"
+
+  3:
+    name: "Save a Copy as XML"
+    template: "Save a Copy as XML"
+
+  96:
+    name: "Save a Copy as Add-on Package"
+    template: "Save a Copy as Add-on Package"
+
+  41:
+    name: "Enter Preview Mode"
+    template: "Enter Preview Mode"
+
+  42:
+    name: "Print Setup"
+    template: "Print Setup"
+
+  43:
+    name: "Print"
+    template: "Print"
+
+  # ─── Insert ─────────────────────────────────────────────────────────────────
+  61:
+    name: "Insert Text"
+    template: "Insert Text [ {target}{text} ]"
+    params:
+      target:
+        xpath: "./ParameterValues/Parameter[@type='Target']/Variable"
+        attr: "value"
+        suffix: " ; "
+      text:
+        xpath: "./ParameterValues/Parameter[@type='Text']/Text"
+        attr: "value"
+
+  131:
+    name: "Insert File"
+    template: "Insert File"
+    # render: insert_file — surface the TARGET field (dropped by the bare template). packet 1027.
+    render: insert_file
+
+  160:
+    name: "Insert from URL"
+    template: "Insert from URL [ {url} ]"
+    # render: insert_from_url — surface the TARGET field (template rendered only the URL calc). packet 1027.
+    render: insert_from_url
+    params:
+      url:
+        xpath: "./ParameterValues/Parameter[@type='URL']/URL/Calculation/Calculation/Text"
+
+  # ─── Accounts / Security ────────────────────────────────────────────────────
+  134:
+    name: "Add Account"
+    template: "Add Account"
+
+  135:
+    name: "Delete Account"
+    template: "Delete Account"
+
+  136:
+    name: "Reset Account Password"
+    template: "Reset Account Password"
+
+  137:
+    name: "Enable Account"
+    template: "Enable Account"
+    render: enable_account  # surface the target account-name calc. packet 1027.
+
+  138:
+    name: "Re-Login"
+    template: "Re-Login"
+    render: relogin  # surface the account-name calc (password intentionally omitted). packet 1027.
+
+  # ─── Web / External ─────────────────────────────────────────────────────────
+  111:
+    name: "Open URL"
+    template: "Open URL [ {url} ]"
+    params:
+      url:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+
+  175:
+    name: "Perform JavaScript in Web Viewer"
+    template: "Perform JavaScript in Web Viewer"
+    render: perform_js_webviewer  # surface the object + JS function. packet 1027.
+
+  203:
+    name: "Execute FileMaker Data API"
+    template: "Execute FileMaker Data API"
+    render: execute_fmdapi  # surface the request calc + target var. packet 1027.
+
+  211:
+    name: "Trigger Claris Connect Flow"
+    template: "Trigger Claris Connect Flow"
+
+  # ─── AI ─────────────────────────────────────────────────────────────────────
+  212:
+    render: ai_params
+    name: "Configure AI Account"
+    template: "Configure AI Account"
+
+  220:
+    render: ai_params
+    name: "Generate Response from Model"
+    template: "Generate Response from Model"
+
+  # ─── Platform / Scripting ───────────────────────────────────────────────────
+  67:
+    name: "Perform AppleScript"
+    template: "Perform AppleScript [ {script} ]"
+    params:
+      script:
+        xpath: "./ParameterValues/Parameter[@type='Options']/Options/Calculation/Calculation/Text"
+
+  57:
+    name: "Send Event"
+    template: "Send Event"
+
+  63:
+    name: "Send Mail"
+    template: "Send Mail"
+
+  157:
+    name: "Install Plug-In File"
+    template: "Install Plug-In File"
+
+  142:
+    name: "Install Menu Set"
+    template: "Install Menu Set [ {menu} ]"
+    params:
+      menu:
+        xpath: "./ParameterValues/Parameter[@type='List']/List"
+        attr: "name"
+
+  55:
+    name: "Enter Browse Mode"
+    template: "Enter Browse Mode [ Pause: {pause} ]"
+    params:
+      pause:
+        xpath: "./ParameterValues/Parameter[@type='Boolean']/Boolean"
+        attr: "value"
+        display:
+          "True": "On"
+          "False": "Off"
+
+  # ─── Misc ───────────────────────────────────────────────────────────────────
+  93:
+    name: "Beep"
+    template: "Beep"
+
+  44:
+    name: "Exit Application"
+    template: "Exit Application"
+
+  50:
+    name: "Select All"
+    template: "Select All"
+
+  47:
+    name: "Copy"
+    template: "Copy"
+
+  182:
+    name: "Truncate Table"
+    template: "Truncate Table"
+
+  183:
+    name: "Open Favorites"
+    template: "Open Favorites"
+
+  187:
+    name: "Configure Local Notification"
+    template: "Configure Local Notification"
+
+  208:
+    name: "Set Session Identifier"
+    template: "Set Session Identifier"
+
+  186:
+    name: "MBS"
+    template: "MBS [ {function} ]"
+    params:
+      function:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+
+  65:
+    name: "Dial Phone"
+    template: "Dial Phone [ {number} ]"
+    params:
+      number:
+        xpath: "./ParameterValues/Parameter[@type='Calculation']/Calculation/Calculation/Text"
+
+  90:
+    name: "Halt Script"
+    template: "Halt Script"
+
+  143:
+    name: "Save Records as Excel"
+    template: "Save Records as Excel"
+
+  155:
+    name: "Find Matching Records"
+    template: "Find Matching Records"
+
+  24:
+    name: "Modify Last Find"
+    template: "Modify Last Find"
+
+  30:
+    name: "View As"
+    template: "View As [ {view} ]"
+    params:
+      view:
+        xpath: "./ParameterValues/Parameter[@type='List']/List/@name"
+
+  56:
+    name: "Insert Picture"
+    template: "Insert Picture"
+
+  83:
+    name: "Change Password"
+    template: "Change Password"
+
+  115:
+    name: "Allow Formatting Bar"
+    template: "Allow Formatting Bar"
+
+  116:
+    name: "Set Next Serial Value"
+    template: "Set Next Serial Value [ {field} ]"
+    params:
+      field:
+        xpath: "./ParameterValues/Parameter[@type='FieldReference']/FieldReference/@name"
+
+
+  11:
+    name: "Insert from Index"
+    template: "Insert from Index"
+
+  12:
+    name: "Insert from Last Visited"
+    template: "Insert from Last Visited"
+
+  13:
+    name: "Insert Current Date"
+    template: "Insert Current Date"
+
+  14:
+    name: "Insert Current Time"
+    template: "Insert Current Time"
+
+  60:
+    name: "Insert Current User Name"
+    template: "Insert Current User Name"
+
+  158:
+    name: "Insert PDF"
+    template: "Insert PDF"
+
+  159:
+    name: "Insert Audio/Video"
+    template: "Insert Audio/Video"
+
+  161:
+    name: "Insert from Device"
+    template: "Insert from Device"
+
+  215:
+    render: ai_params
+    name: "Insert Embedding"
+    template: "Insert Embedding"
+
+  216:
+    render: ai_params
+    name: "Insert Embedding in Found Set"
+    template: "Insert Embedding in Found Set"
+
+
+  18:
+    name: "Check Selection"
+    template: "Check Selection"
+
+  19:
+    name: "Check Record"
+    template: "Check Record"
+
+  20:
+    name: "Check Found Set"
+    template: "Check Found Set"
+
+  106:
+    name: "Correct Word"
+    template: "Correct Word"
+
+  107:
+    name: "Spelling Options"
+    template: "Spelling Options"
+
+  108:
+    name: "Select Dictionaries"
+    template: "Select Dictionaries"
+
+  109:
+    name: "Edit User Dictionary"
+    template: "Edit User Dictionary"
+
+  209:
+    name: "Set Dictionary"
+    template: "Set Dictionary [ {lang} ]"
+    params:
+      lang:
+        xpath: "./ParameterValues/Parameter[@type='List']/List/@name"
+
+
+  45:
+    name: "Undo/Redo"
+    template: "Undo/Redo [ {action} ]"
+    params:
+      action:
+        xpath: "./ParameterValues/Parameter[@type='List']/List/@name"
+
+  46:
+    name: "Cut"
+    template: "Cut"
+
+  48:
+    name: "Paste"
+    template: "Paste"
+
+  49:
+    name: "Clear"
+    template: "Clear"
+
+  101:
+    name: "Copy Record/Request"
+    template: "Copy Record/Request"
+
+
+  37:
+    name: "Save a Copy as"
+    template: "Save a Copy as"
+
+  82:
+    name: "New File"
+    template: "New File"
+
+  95:
+    name: "Recover File"
+    template: "Recover File"
+
+  102:
+    name: "Flush Cache to Disk"
+    template: "Flush Cache to Disk"
+
+  139:
+    name: "Convert File"
+    template: "Convert File"
+
+  152:
+    name: "Save Records as Snapshot Link"
+    template: "Save Records as Snapshot Link"
+
+  181:
+    name: "Get Folder Path"
+    template: "Get Folder Path"
+
+  194:
+    name: "Get Data File Position"
+    template: "Get Data File Position"
+
+  199:
+    name: "Rename File"
+    template: "Rename File"
+
+  225:
+    name: "Save Records as JSONL"
+    template: "Save Records as JSONL"
+
+
+  128:
+    name: "Perform Find/Replace"
+    template: "Perform Find/Replace"
+
+  129:
+    name: "Open Find/Replace"
+    template: "Open Find/Replace"
+
+
+  38:
+    name: "Open Manage Database"
+    template: "Open Manage Database"
+
+  40:
+    name: "Relookup Field Contents"
+    template: "Relookup Field Contents"
+
+  84:
+    name: "Set Multi-User"
+    template: "Set Multi-User [ {mode} ]"
+    params:
+      mode:
+        xpath: "./ParameterValues/Parameter[@type='List']/List/@name"
+
+  88:
+    name: "Open Script Workspace"
+    template: "Open Script Workspace"
+
+  94:
+    name: "Set Use System Formats"
+    template: "Set Use System Formats"
+
+  105:
+    name: "Open Settings"
+    template: "Open Settings"
+
+  112:
+    name: "Open Manage Value Lists"
+    template: "Open Manage Value Lists"
+
+  113:
+    name: "Open Sharing"
+    template: "Open Sharing"
+
+  114:
+    name: "Open File Options"
+    template: "Open File Options"
+
+  117:
+    name: "Execute SQL"
+    template: "Execute SQL"
+
+  118:
+    name: "Open Hosts"
+    template: "Open Hosts"
+
+  140:
+    name: "Open Manage Data Sources"
+    template: "Open Manage Data Sources"
+
+  149:
+    name: "Open Edit Saved Finds"
+    template: "Open Edit Saved Finds"
+
+  151:
+    name: "Open Manage Layouts"
+    template: "Open Manage Layouts"
+
+  156:
+    name: "Open Manage Containers"
+    template: "Open Manage Containers"
+
+  165:
+    name: "Open Manage Themes"
+    template: "Open Manage Themes"
+
+  172:
+    name: "Open Upload to Host"
+    template: "Open Upload to Host"
+
+  207:
+    name: "Revert Transaction"
+    template: "Revert Transaction"
+
+
+  32:
+    name: "Open Help"
+    template: "Open Help"
+
+  64:
+    name: "Send DDE Execute"
+    template: "Send DDE Execute"
+
+  66:
+    name: "Speak"
+    template: "Speak"
+
+  120:
+    name: "Arrange All Windows"
+    template: "Arrange All Windows [ {arrangement} ]"
+    params:
+      arrangement:
+        xpath: "./ParameterValues/Parameter[@type='List']/List/@name"
+
+  174:
+    name: "Enable Touch Keyboard"
+    template: "Enable Touch Keyboard [ {state} ]"
+    params:
+      state:
+        xpath: "./ParameterValues/Parameter[@type='List']/List/@name"
+
+  228:
+    name: "Go to List of Records"
+    template: "Go to List of Records"
+
+
+  185:
+    name: "Configure Region Monitor Script"
+    template: "Configure Region Monitor Script"
+
+  201:
+    name: "Configure NFC Reading"
+    template: "Configure NFC Reading"
+
+  202:
+    render: ai_params
+    name: "Configure Machine Learning Model"
+    template: "Configure Machine Learning Model"
+
+
+  177:
+    name: "AVPlayer Play"
+    template: "AVPlayer Play"
+
+  178:
+    name: "AVPlayer Set Playback State"
+    template: "AVPlayer Set Playback State [ {state} ]"
+    params:
+      state:
+        xpath: "./ParameterValues/Parameter[@type='List']/List/@name"
+
+  179:
+    name: "AVPlayer Set Options"
+    template: "AVPlayer Set Options"
+
+
+  213:
+    render: ai_params
+    name: "Fine-Tune Model"
+    template: "Fine-Tune Model"
+
+  214:
+    render: ai_params
+    name: "Perform SQL Query by Natural Language"
+    template: "Perform SQL Query by Natural Language"
+
+  217:
+    render: ai_params
+    name: "Set AI Call Logging"
+    template: "Set AI Call Logging"
+
+  218:
+    render: ai_params
+    name: "Perform Semantic Find"
+    template: "Perform Semantic Find"
+
+  219:
+    render: ai_params
+    name: "Perform RAG Action"
+    template: "Perform RAG Action"
+
+  221:
+    render: ai_params
+    name: "Perform Find by Natural Language"
+    template: "Perform Find by Natural Language"
+
+  222:
+    render: ai_params
+    name: "Configure Regression Model"
+    template: "Configure Regression Model"
+
+  226:
+    render: ai_params
+    name: "Configure Prompt Template"
+    template: "Configure Prompt Template"
+
+  227:
+    render: ai_params
+    name: "Configure RAG Account"
+    template: "Configure RAG Account"

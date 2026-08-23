@@ -1,0 +1,43 @@
+# FM script step rendering catalog — DELTA for FMSaveAsXML v2.3.0.0 (FileMaker 2026).
+#
+# `inherits: 2.2.3.0` deep-merges these onto the v2.2.3.0 rendering catalog (no duplication).
+# The 10 new FM2026 steps get name-only templates for now: they render cleanly as the step
+# name (no "⚠ partial" badge) without fabricating param XPaths. Param rendering (PDF paths,
+# the persistent-data name/value, etc.) is a future enrichment once FM's display form is
+# ground-truthed — the param structure is recorded in structure_catalog.yaml (v2.3.0.0).
+inherits: "2.2.3.0"
+schema_version: "2.3.0.0"
+
+script_steps:
+  237:
+    name: "Flush Web Viewer Cookies"
+    template: "Flush Web Viewer Cookies"
+  238:
+    name: "Configure Persistent Data"
+    template: "Configure Persistent Data"
+  240:
+    render: ai_params
+    name: "Insert Image Captions in Found Set"
+    template: "Insert Image Captions in Found Set"
+  241:
+    render: ai_params
+    name: "Insert Image Caption"
+    template: "Insert Image Caption"
+  242:
+    name: "Print PDF"
+    template: "Print PDF"
+  243:
+    name: "Create PDF"
+    template: "Create PDF"
+  244:
+    name: "Append PDF"
+    template: "Append PDF"
+  245:
+    name: "Close PDF"
+    template: "Close PDF"
+  246:
+    name: "Open PDF"
+    template: "Open PDF"
+  247:
+    name: "Cancel PDF"
+    template: "Cancel PDF"

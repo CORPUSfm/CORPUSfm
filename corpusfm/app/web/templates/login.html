@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CORPUSfm — Sign in</title>
+  <link rel="stylesheet" href="{{ url_prefix }}/static/style.css">
+  <link rel="stylesheet" href="{{ url_prefix }}/static/kit.css">
+  <script>
+    // Apply the saved theme before first paint (no flash) — shares the app's fmc_theme key.
+    (function () {
+      if (localStorage.getItem('fmc_theme') === 'light') document.documentElement.dataset.theme = 'light';
+    })();
+  </script>
+</head>
+<body class="login-body">
+  <button type="button" class="login-theme" onclick="toggleLoginTheme()"
+          aria-label="Toggle light/dark mode" title="Toggle light/dark mode">
+    <svg class="ic-sun"  viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="3.5"/><path d="M10 1.5v2M10 16.5v2M1.5 10h2M16.5 10h2M4 4l1.4 1.4M14.6 14.6L16 16M16 4l-1.4 1.4M5.4 14.6L4 16"/></svg>
+    <svg class="ic-moon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M16 11.5A6.5 6.5 0 0 1 8.5 4a6.5 6.5 0 1 0 7.5 7.5z"/></svg>
+  </button>
+
+  <img class="login-wordmark wm-dark"  src="{{ url_prefix }}/static/corpusfm-wordmark-darkmode.svg"  alt="CORPUSfm">
+  <img class="login-wordmark wm-light" src="{{ url_prefix }}/static/corpusfm-wordmark-lightmode.svg" alt="CORPUSfm">
+
+  {% if secure_cookies %}
+  {# Shown by JS only when this page is reached over http — a Secure session cookie is dropped over
+     http, so a login there succeeds then bounces straight back. The cookie policy is unchanged; this
+     just points to the working URL. Works with self-signed/expired certs: the link only swaps the
+     scheme, and a Secure cookie needs https (the scheme), not a valid cert. #}
+  <div id="https-hint" class="alert alert-error login-alert" hidden>
+    <strong>This server needs a secure (https) connection.</strong>
+    A sign-in can't be kept over http &mdash; your login won't be saved.
+    <p class="login-https-row"><a id="https-link" class="login-https-link" href="#">Continue over https &rarr;</a></p>
+    <p class="caption login-https-note">On an internal or self-signed server you may see a
+    certificate warning &mdash; that's expected; continue past it to sign in.</p>
+  </div>
+  {% endif %}
+
+  {% if store_unavailable %}
+  {# Packet 1201: the user store could not be READ. This is NOT "no users configured" — that claim
+     needs a successful read — and it is NOT a rejected credential. Deliberately offers no CLI:
+     every user-administration command writes to the same table that just failed. #}
+  <p class="caption login-firstrun">Sign-in is temporarily unavailable.</p>
+  <div class="alert alert-error login-alert">
+    CORPUSfm can't reach its storage database, so it can't check your account. Your users and
+    password are unaffected — this is a connection problem, not a missing account.
+    <p class="caption login-https-note">Check that FileMaker Server is running and the CORPUSfm
+    storage database is open and hosted, then reload this page. An administrator can confirm the
+    connection under Settings &rarr; Connections once sign-in works again.</p>
+  </div>
+  {% elif no_users %}
+  <p class="caption login-firstrun">No users are configured yet.</p>
+  <div class="alert alert-error login-alert">
+    Create the first administrator on the server, then sign in (a browser cannot create the first
+    account — by design). Run on the FileMaker Server box:
+    <pre class="login-cli">{{ admin_cli }}</pre>
+  </div>
+  {% else %}
+
+  {% if error %}
+  <div class="alert alert-error login-alert">{{ error }}</div>
+  {% endif %}
+
+  <form class="login-form" method="post" action="{{ url_prefix }}/login">
+    <div class="form-row">
+      <label class="login-label">Username</label>
+      <input type="text" name="username" autofocus autocomplete="username" placeholder="username">
+    </div>
+    <div class="form-row">
+      <label class="login-label">Password</label>
+      <input type="password" name="password" autocomplete="current-password" aria-label="Password" placeholder="password">
+    </div>
+    <button type="submit" class="cfm-btn cfm-btn--primary cfm-btn--lg login-btn">Sign in</button>
+  </form>
+
+  {% if sso_enabled %}
+  {# Single sign-on (packet 1065). Rendered only when an OIDC identity provider is configured; the
+     username/password form above always stays (per-user option + break-glass). MFA is the IdP's job. #}
+  <div class="login-sso-sep"><span>or</span></div>
+  <a class="cfm-btn cfm-btn--lg login-btn login-sso-btn" href="{{ url_prefix }}/auth/oidc/login">
+    Sign in with SSO
+  </a>
+  {% endif %}
+  {% endif %}
+
+  <script>
+    function toggleLoginTheme() {
+      const root = document.documentElement;
+      if (root.dataset.theme === 'light') { delete root.dataset.theme; localStorage.setItem('fmc_theme', 'dark'); }
+      else { root.dataset.theme = 'light'; localStorage.setItem('fmc_theme', 'light'); }
+    }
+    // Secure-cookie server reached over http → a login can't persist; surface the https URL.
+    // The browser knows its real scheme (the proxy doesn't forward it), so detect client-side.
+    (function () {
+      var hint = document.getElementById('https-hint');
+      if (hint && location.protocol === 'http:') {
+        var link = document.getElementById('https-link');
+        if (link) {
+          // swap scheme; drop an explicit :80 so https defaults to 443
+          var url = location.href.replace(/^http:/i, 'https:').replace(/^(https:\/\/[^/:]+):80(?=[/?#]|$)/i, '$1');
+          link.href = url;
+        }
+        hint.hidden = false;
+      }
+    })();
+  </script>
+</body>
+</html>

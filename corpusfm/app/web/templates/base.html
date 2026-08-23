@@ -1,0 +1,1410 @@
+{% from "_help.html" import doc_help -%}
+<!DOCTYPE html>
+<html lang="en" id="fmc-root">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}CORPUSfm{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_prefix }}/static/corpusfm-node-icon.svg">
+  <link rel="stylesheet" href="{{ url_prefix }}/static/style.css?v={{ css_v }}">
+  {# Bespoke component kit (replaced Shoelace). #}
+  <link rel="stylesheet" href="{{ url_prefix }}/static/kit.css?v={{ css_v }}">
+  <script defer src="{{ url_prefix }}/static/kit.js?v={{ css_v }}"></script>
+  <script>
+    // Set BEFORE Alpine/page scripts run. CFM_PREFIX is the reverse-proxy sub-path
+    // ("" at root). The fetch wrapper prepends it to same-origin absolute URLs so the
+    // ~112 fetch('/api/…') / '/static' calls work unmodified behind /corpusfm; cfmGo()
+    // does the same for navigations. No-op when the prefix is empty.
+    window.CFM_PREFIX = "{{ url_prefix }}";
+    (function () {
+      var pfx = window.CFM_PREFIX;
+      window.cfmGo = function (p) {
+        if (pfx && typeof p === "string" && p.charAt(0) === "/" && p.lastIndexOf(pfx + "/", 0) !== 0) p = pfx + p;
+        window.location.href = p;
+      };
+      // Pop-up-blocker safe tab opening. Explorer/Diff/patch results open in a new
+      // tab AFTER an async poll loop — by then the click gesture is gone and the
+      // browser blocks window.open(). Fix: open a placeholder tab SYNCHRONOUSLY in
+      // the click handler (gesture-allowed). The tab then polls the task ITSELF and
+      // navigates to the result — so it survives the opener tab being reloaded or
+      // backgrounded (whose timers the browser throttles), and shows live progress.
+      var _pendStyle = "font:14px system-ui,-apple-system,sans-serif;background:#141414;"
+        + "color:#c9c9c9;display:flex;align-items:center;justify-content:center;"
+        + "height:100vh;margin:0;text-align:center;padding:0 1rem";
+      function _writePend(w, msg) {
+        try {
+          w.document.open();
+          w.document.write('<!doctype html><meta charset="utf-8"><title>CORPUSfm</title>'
+            + '<body style="' + _pendStyle + '">' + msg + '</body>');
+          w.document.close();
+        } catch (_) {}
+      }
+      // Call inside a click handler, before any await. Returns a window handle or null.
+      window.cfmOpenPending = function () {
+        var w = null;
+        try { w = window.open("", "_blank"); } catch (_) { w = null; }
+        if (w) _writePend(w, "Generating…");
+        return w || null;
+      };
+      // Hand the open tab a task to track: it self-polls /api/generate/status and
+      // navigates to preview_url when done (or shows the error). Same-origin fetch
+      // from the tab carries the session cookie. URL is prefixed for the proxy.
+      //
+      // ── Packet 1136 Stage 4 — REPORTED BOUNDARY (not a silent exemption) ──────────────────────────
+      // This spinner lives in a SEPARATE browsing context (window.open → about:blank) that is DELIBERATELY
+      // decoupled from its opener: it must keep working after the opener tab is reloaded, backgrounded
+      // (whose timers the browser throttles), or CLOSED — at which point window.opener is null. That design
+      // requirement makes the "one activity conversation / shared cadence" ownership TECHNICALLY IMPOSSIBLE
+      // here: the tab has no Alpine store, no shared cfmCadence instance, and cannot borrow the opener's
+      // (it must outlive it). It therefore remains a SINGLE-OWNER, self-resolving spinner owned by its own
+      // task via /api/generate/status, resolving every terminal — done → navigate, error → message,
+      // not_found (restart-evicted) → "no longer available". This is the honest exception the mandate asks
+      // be REPORTED rather than silently exempted; the ISV preflight (same context) IS feed-owned.
+      window.cfmTrackInTab = function (w, taskId) {
+        if (!w || !taskId) return;
+        // Absolute URLs baked from the OPENER's origin — the tab is about:blank, whose
+        // base URL/origin inheritance is unreliable for resolving root-relative paths.
+        var origin = window.location.origin;
+        var statusUrl = origin + pfx + "/api/generate/status/" + taskId;
+        var doc = ''
+          + '<!doctype html><html><head><meta charset="utf-8">'
+          + '<title>CORPUSfm — generating…</title><style>'
+          + 'body{font:14px system-ui,-apple-system,sans-serif;background:#111315;color:#d2d6da;'
+          + 'display:flex;flex-direction:column;align-items:center;justify-content:center;'
+          + 'height:100vh;margin:0;gap:1.1rem;text-align:center;padding:0 1rem}'
+          + '.sp{width:34px;height:34px;border:3px solid #30353a;border-top-color:#b3bac1;'
+          + 'border-radius:50%;animation:cfmr 1s linear infinite}'
+          + '@keyframes cfmr{to{transform:rotate(360deg)}}.sub{color:#8b92a5;font-size:12px}'
+          + '</style></head><body>'
+          + '<div class="sp" id="sp"></div>'
+          + '<div id="m">Building the Explorer…</div>'
+          + '<div class="sub" id="t">Large schemas can take a minute or two — keep this tab open.</div>'
+          + '<script>(function(){var u=' + JSON.stringify(statusUrl) + ';var o=' + JSON.stringify(origin) + ';var t0=Date.now();'
+          + 'var iv=setInterval(function(){var s=Math.round((Date.now()-t0)/1000);'
+          + 'document.getElementById("t").textContent="Working… "+s+"s — large schemas can take a minute or two; keep this tab open.";},1000);'
+          + 'function stop(){clearInterval(iv);var sp=document.getElementById("sp");if(sp)sp.style.display="none";}'
+          + 'function poll(){fetch(u,{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(d){'
+          + 'if(d.status==="done"&&d.preview_url){stop();var p=d.preview_url;if(p.charAt(0)==="/")p=o+p;location.href=p;return;}'
+          + 'if(d.status==="error"){stop();document.getElementById("m").textContent="Generation failed";'
+          + 'document.getElementById("t").textContent=(d.error||"");return;}'
+          + 'if(d.status==="not_found"){stop();document.getElementById("m").textContent="This generation is no longer available.";'
+          + 'document.getElementById("t").textContent="";return;}'
+          + 'setTimeout(poll,1500);}).catch(function(){setTimeout(poll,2500);});}poll();})();<\/script>'
+          + '</body></html>';
+        try { w.document.open(); w.document.write(doc); w.document.close(); } catch (_) {}
+      };
+      // Show an error in the open tab (used when the POST itself fails, before a task exists).
+      window.cfmResolvePending = function (w, url, err) {
+        if (url) {
+          if (w) { try { w.location = url; return; } catch (_) {} }
+          try { window.open(url, "_blank"); } catch (_) {}
+        } else if (w) {
+          _writePend(w, (err ? String(err).replace(/[<>&]/g, " ") : "Generation failed."));
+        }
+      };
+      // Always install the wrapper (CSRF needs it even with no proxy prefix). It (1) prefixes
+      // same-origin absolute paths behind /corpusfm, and (2) echoes the readable corpusfm_csrf
+      // cookie as an X-CSRF-Token header on same-origin MUTATING requests (double-submit CSRF).
+      var _fetch = window.fetch.bind(window);
+      function _csrfTok() {
+        var m = document.cookie.match(/(?:^|;\s*)corpusfm_csrf=([^;]+)/);
+        return m ? decodeURIComponent(m[1]) : "";
+      }
+      window.fetch = function (input, init) {
+        if (pfx && typeof input === "string" && input.charAt(0) === "/"
+            && input.lastIndexOf(pfx + "/", 0) !== 0 && input !== pfx) {
+          input = pfx + input;
+        }
+        var method = ((init && init.method) || "GET").toUpperCase();
+        var sameOrigin = typeof input === "string"
+          && (input.charAt(0) === "/" || input.indexOf(window.location.origin) === 0);
+        if (sameOrigin && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+          init = init || {};
+          var h = new Headers(init.headers || {});
+          var t = _csrfTok();
+          if (t && !h.has("X-CSRF-Token")) h.set("X-CSRF-Token", t);
+          init.headers = h;
+        }
+        return _fetch(input, init).then(function (resp) {
+          // Storage OUTAGE (packet 1067): a session that names a user but whose USER store is
+          // unreachable is degraded, not expired — the server sends 503 + X-CORPUSfm-Storage:
+          // unavailable instead of a 401. Do NOT redirect to /login (that would be a redirect-churn
+          // peg while every poller re-fires); raise a degraded signal the shell turns into the
+          // connectivity toast + a poller pause, and let the caller see the 503.
+          if (resp && resp.status === 503 && sameOrigin
+              && resp.headers && resp.headers.get("X-CORPUSfm-Storage") === "unavailable") {
+            try { window.dispatchEvent(new CustomEvent("cfm-storage-outage")); } catch (_) {}
+            return resp;
+          }
+          // Session expiry (the 12h cookie) leaves the SPA on a stale page whose XHRs 401 — page
+          // routes 302 to /login, but an in-page fetch does not navigate. Send the user to login on
+          // any same-origin 401 so an expired session lands on the login screen, not a dead page.
+          if (resp && resp.status === 401 && sameOrigin) {
+            var loginUrl = (pfx || "") + "/login";
+            if (window.location.pathname.lastIndexOf(loginUrl, 0) !== 0) {
+              window.location.assign(loginUrl);
+            }
+          }
+          return resp;
+        });
+      };
+    })();
+  </script>
+  <script src="{{ url_prefix }}/static/alpine.min.js" defer></script>
+</head>
+<body x-data="fmShell()">
+
+  {# Connectivity toast — shown after 2 missed app-heartbeat polls (~20 s). Packet 071: this means
+     the CORPUSfm APP itself is unreachable (the /status/notifications poll failed) — deliberately
+     worded to distinguish it from a named background endpoint being down (storage/OData/embedder),
+     which surface contextually (catalog "Storage unreachable" banner, Queue enrichment messages). #}
+  <div class="conn-toast" x-show="offline" x-transition.opacity>
+    <span class="conn-dot"></span>
+    <span>Can&rsquo;t reach CORPUSfm — retrying&hellip;</span>
+    <button type="button" class="conn-dismiss" @click="offline = false" aria-label="Dismiss">&times;</button>
+  </div>
+
+  {# Informational post-update notice. Shown once, then dismissed (server-gated per box). #}
+  <div class="update-notice-banner" x-show="!!updateNotice" x-cloak x-transition.opacity>
+    <span class="update-notice-icon" aria-hidden="true"><svg viewBox="0 0 20 20" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 5.5a6.5 6.5 0 1 0 1.4 4.5"/><path d="M16.5 3v3.2h-3.2"/></svg></span>
+    <span class="update-notice-text" x-text="updateNotice ? updateNotice.text : ''"></span>
+    <button type="button" class="conn-dismiss" @click="dismissUpdateNotice()" aria-label="Dismiss">&times;</button>
+  </div>
+
+  <div class="shell">
+
+    {# ── Sidebar ──────────────────────────────────────────────────────────── #}
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <a href="{{ url_prefix }}/" class="sidebar-brand" aria-label="CorpusFM home">
+          <span class="wordmark-wrap">
+            <img class="wm-dark"  src="{{ url_prefix }}/static/corpusfm-wordmark-darkmode.svg"  alt="CorpusFM" height="30">
+            <img class="wm-light" src="{{ url_prefix }}/static/corpusfm-wordmark-lightmode.svg" alt="CorpusFM" height="30">
+          </span>
+          {# Compact mark shown only on the mobile icon rail (CSS-toggled). #}
+          <img class="brand-mark" src="{{ url_prefix }}/static/corpusfm-node-icon.svg" alt="CorpusFM" height="26">
+        </a>
+      </div>
+
+      <div class="sidebar-nav">
+        {# Gate-based nav visibility (server mode). Standalone → all_access → everything shows. #}
+        {% set g_auto  = all_access or (current_user and 'automation' in current_user.gates) %}
+        {% set g_lib   = all_access or (current_user and 'library_mcp' in current_user.gates) %}
+        {% set g_patch = all_access or (current_user and 'patching' in current_user.gates) %}
+        {% set g_admin = all_access or (current_user and 'settings' in current_user.gates) %}
+        {% if g_auto %}
+        <div class="nav-section">Automation</div>
+        <a title="Jobs" href="{{ url_prefix }}/jobs" class="nav-link {% if route_path.startswith('/jobs') or route_path.startswith('/files') %}active{% endif %}" :class="tierBlocked(1) && 'nav-link--gated'">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3.5" width="14" height="5" rx="1.5"/><rect x="3" y="11.5" width="14" height="5" rx="1.5"/><circle cx="6" cy="6" r=".7" fill="currentColor"/><circle cx="6" cy="14" r=".7" fill="currentColor"/></svg></span> Jobs
+        </a>
+        <a title="Monitoring" href="{{ url_prefix }}/monitoring" class="nav-link {% if route_path == '/monitoring' %}active{% endif %}">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 10.5h3.5L8 4l4 12 2.5-5.5H18"/></svg></span> Monitoring
+          <span x-show="alertCount > 0" class="nav-alert-dot" x-cloak
+                :title="alertCount + ' active alert' + (alertCount === 1 ? '' : 's')"></span>
+        </a>
+        <a title="Runs" href="{{ url_prefix }}/runs" class="nav-link {% if route_path == '/runs' %}active{% endif %}" :class="tierBlocked(1) && 'nav-link--gated'">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M7 5h10M7 10h10M7 15h10"/><circle cx="3.5" cy="5" r="1"/><circle cx="3.5" cy="10" r="1"/><circle cx="3.5" cy="15" r="1"/></svg></span> Runs
+        </a>
+        {% endif %}
+
+        {% if g_lib or g_patch %}<div class="nav-section">Library</div>{% endif %}
+        {% if g_lib %}
+        <a title="Artifacts" href="{{ url_prefix }}/artifacts" class="nav-link {% if route_path == '/artifacts' %}active{% endif %}" :class="tierBlocked(1) && 'nav-link--gated'">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M10 3l7 3.5-7 3.5-7-3.5z"/><path d="M3 10l7 3.5 7-3.5"/></svg></span> Artifacts
+        </a>
+        <a title="Tags" href="{{ url_prefix }}/tags" class="nav-link {% if route_path == '/tags' %}active{% endif %}" :class="tierBlocked(1) && 'nav-link--gated'">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 9.5V3.5a1 1 0 0 1 1-1h6L17 9.9a1 1 0 0 1 0 1.4l-5.2 5.2a1 1 0 0 1-1.4 0L2.5 9.5z"/><circle cx="6.2" cy="6.2" r="1.1" fill="currentColor" stroke="none"/></svg></span> Tags
+        </a>
+        <a title="MCP" href="{{ url_prefix }}/mcp-access" class="nav-link {% if route_path == '/mcp-access' %}active{% endif %}">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 13l-2.5 2.5a2.1 2.1 0 0 1-3-3L4 10"/><path d="M13 7l2.5-2.5a2.1 2.1 0 0 1 3 3L16 10"/><path d="M8 12l4-4"/></svg></span> MCP
+        </a>
+        {% endif %}
+        {% if g_patch %}
+        <a title="ISV Tool" href="{{ url_prefix }}/isv" class="nav-link {% if route_path == '/isv' %}active{% endif %}" :class="(tierBlocked(1) || tierBlocked(2)) && 'nav-link--gated'">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 3.5l2 2-2.5 2.5-2-2zM12 6L4 14v2h2l8-8"/></svg></span> ISV Tool
+        </a>
+        {% endif %}
+
+        <div class="nav-section">System</div>
+        {# Documentation has no dedicated nav item — the docs drawer is reachable from the
+           per-page/per-pop-over help icons (and the "g d" shortcut / command palette).
+           The /docs page route still exists as a no-JS fallback. #}
+        <a title="About" href="{{ url_prefix }}/about" class="nav-link {% if route_path == '/about' %}active{% endif %}">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="M10 9v4.5"/><circle cx="10" cy="6.5" r=".8" fill="currentColor" stroke="none"/></svg></span> About
+        </a>
+        {# Queue (packet 052) — visible to any authenticated user: the shared, system-wide view of
+           background enrichment. Cancel/restart inside are owner-or-admin. #}
+        <a title="Queue" href="{{ url_prefix }}/queue" class="nav-link {% if route_path == '/queue' %}active{% endif %}">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5.5h14M3 10h14M3 14.5h9"/></svg></span> Queue
+          <span class="cfm-nav-badge" x-show="$store.queue && $store.queue.inFlightCount" x-cloak x-text="$store.queue.inFlightCount"></span>
+          {# packet 086: a RED badge for parked failures (import/enrichment/job-run) awaiting Restart/Delete #}
+          <span class="cfm-nav-badge cfm-nav-badge--fail" x-show="$store.queue && $store.queue.failedCount" x-cloak x-text="$store.queue.failedCount"></span>
+        </a>
+        {% if g_admin %}
+        <a title="Logs" href="{{ url_prefix }}/logs" class="nav-link {% if route_path == '/logs' %}active{% endif %}">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 2.5h6l4 4v11H5z"/><path d="M11 2.5v4h4"/><path d="M7.5 11h5M7.5 13.5h5"/></svg></span> Logs
+        </a>
+        <a title="Settings" href="{{ url_prefix }}/settings" class="nav-link {% if route_path == '/settings' %}active{% endif %}">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="2.5"/><path d="M10 1.5l1.3 2 2.3-.6.4 2.4 2.1 1.2-1.1 2.1 1.1 2.1-2.1 1.2-.4 2.4-2.3-.6L10 18.5l-1.3-2-2.3.6-.4-2.4-2.1-1.2 1.1-2.1L3.9 9.3 6 8.1l.4-2.4 2.3.6z"/></svg></span> Settings
+        </a>
+        {% endif %}
+      </div>
+
+      {# ── Activity indicator + logout ──────────────────────────────────── #}
+      <div class="sidebar-footer">
+        {# Update-available notice — shown to ALL users so anyone can tell an admin a new
+           build is ready (admins apply it in Settings → Updates). Informational, not a
+           link; polled every couple hours. #}
+        <div class="nav-update" x-show="updateAvailable" x-cloak
+             :title="(updateVersion ? 'Version ' + updateVersion : 'A newer build') + ' is available — an admin can apply it in Settings → Updates'">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 2.5v9"/><path d="M6.5 8L10 11.5 13.5 8"/><path d="M3.5 14.5v1a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1"/></svg></span>
+          <span class="nav-update-label">Update available</span>
+          <span class="nav-update-ver" x-show="updateVersion" x-text="updateVersion"></span>
+        </div>
+        {# Non-blocking global TRANSFER indicator (Stage 2) — driven by upload's client-owned local
+           transfer state (cfm-transfer-start/end), NOT the server feed. Server work shows on the chip. #}
+        <div class="activity-indicator" x-show="transferActive" x-transition.opacity>
+          <div class="spinner-small"></div>
+          <span class="activity-msg" x-text="transferMsg"></span>
+        </div>
+        {# App-wide enrichment-queue chip (packet 052) — NON-blocking. Shown while the server queue has a
+           running or pending job; links to the Queue page (where cancel/restart live). Polls /api/queue;
+           survives navigation + reload. (packet 1162: the in-chip Stop button was removed — the Queue page
+           is the single cancel control; the chip is now a status indicator that links there.) #}
+        <a class="cfm-index-chip" x-show="queue.active" x-cloak
+           href="{{ url_prefix }}/queue" :title="queueChipText">
+          <div class="spinner-small" :class="queue.queueSoft ? 'spinner-soft' : ''"></div>
+          <span class="cfm-index-chip-lbl" x-text="queueChipText"></span>
+        </a>
+        <button type="button" class="nav-link theme-toggle" @click="toggleTheme()"
+                aria-label="Toggle light/dark mode"
+                :title="darkMode ? 'Switch to light mode' : 'Switch to dark mode'">
+          <span class="nav-icon">
+            <svg x-show="darkMode" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="3.5"/><path d="M10 1.5v2M10 16.5v2M1.5 10h2M16.5 10h2M4 4l1.4 1.4M14.6 14.6L16 16M16 4l-1.4 1.4M5.4 14.6L4 16"/></svg>
+            <svg x-show="!darkMode" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M16 11.5A6.5 6.5 0 0 1 8.5 4a6.5 6.5 0 1 0 7.5 7.5z"/></svg>
+          </span>
+          <span x-text="darkMode ? 'Light mode' : 'Dark mode'"></span>
+        </button>
+        {% if mode == 'server' and authenticated %}
+        {% if current_user %}
+        <a href="{{ url_prefix }}/account" class="nav-link nav-link-dim" title="Your account">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="6.5" r="3"/><path d="M4 16.5a6 6 0 0 1 12 0"/></svg></span>
+          {{ current_user.display_name }}
+        </a>
+        {% endif %}
+        <a href="{{ url_prefix }}/logout" class="nav-link nav-link-dim">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5H5.5a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1H12"/><path d="M9 10h8m0 0l-3-3m3 3l-3 3"/></svg></span>
+          Sign out
+        </a>
+        {% endif %}
+      </div>
+    </nav>
+
+    {# ── Main content ─────────────────────────────────────────────────────── #}
+    <main class="content">
+      {# Tier-1-down banner: storage/SETTINGS not established — route the admin to FileMaker setup. #}
+      <div class="cfm-tier-banner" x-show="tierBlocked(1)" x-cloak>
+        <svg class="cfm-tier-notice-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="M10 6v5"/><circle cx="10" cy="13.5" r=".8" fill="currentColor" stroke="none"/></svg>
+        <span>FileMaker Server isn't set up yet — most features are unavailable until storage is reachable.</span>
+        <a class="cfm-btn cfm-btn--sm" :href="(window.CFM_PREFIX || '') + '/settings#filemaker'">Finish setup →</a>
+      </div>
+      {% block content %}{% endblock %}
+    </main>
+
+  </div>
+
+  {# ── Documentation drawer — slide-out, searchable, context-aware (global) ─────── #}
+  <div class="cfm-drawer-wrap" x-show="docsOpen" x-cloak>
+    <div class="cfm-drawer-scrim" @click="docsOpen = false"></div>
+    <div class="cfm-drawer" :class="docsPlacement === 'end' ? 'cfm-drawer--end' : 'cfm-drawer--start'"
+         role="dialog" aria-modal="true" aria-label="Documentation">
+      <div class="cfm-drawer-hdr">
+        <div class="docs-drawer-tabs" role="tablist">
+          <template x-for="t in docsTabs" :key="t">
+            <button type="button" class="docs-tab" :class="{ active: t === docsTab }"
+                    role="tab" :aria-selected="t === docsTab" @click="selectDocsTab(t)" x-text="t"></button>
+          </template>
+        </div>
+        <div class="cfm-drawer-hdr-actions">
+          <button type="button" class="docs-back" x-show="docsHistory.length" @click="docsBack()"
+                  title="Back to previous article" aria-label="Back to previous article">&lsaquo; Back</button>
+          <button type="button" class="cfm-iconbtn" @click="toggleDocsPlacement()" title="Flip drawer side" aria-label="Flip drawer side"
+                  :title="docsPlacement === 'start' ? 'Move drawer to the right' : 'Move drawer to the left'"
+                  :aria-label="docsPlacement === 'start' ? 'Move drawer to the right' : 'Move drawer to the left'">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="1.5"/><path d="M7.5 3.5v13" :transform="docsPlacement === 'start' ? 'translate(5 0)' : ''"/></svg>
+          </button>
+          <button type="button" class="cfm-iconbtn" @click="docsOpen = false" title="Close" aria-label="Close documentation">✕</button>
+        </div>
+      </div>
+      <div class="cfm-drawer-scroll">
+        <input type="search" class="cfm-input docs-search" placeholder="Search documentation…"
+               x-model="docsQuery" aria-label="Search documentation">
+        <div class="docs-drawer-body">
+          <div class="docs-drawer-toc">
+            <template x-for="g in docsVisibleGroups" :key="g.section">
+              <div>
+                <div class="docs-toc-group" x-show="docsQuery.trim()" x-text="g.section"></div>
+                <template x-for="a in g.items" :key="a.slug">
+                  <button type="button" class="docs-toc-link" :class="{ active: a.slug === docsCurrent }"
+                          @click="selectDoc(a.slug)" x-text="a.title"></button>
+                </template>
+              </div>
+            </template>
+            <p class="cfm-muted" x-show="docsArticles.length && docsFiltered.length === 0">No matches.</p>
+            <p class="cfm-muted" x-show="docsLoaded && docsArticles.length === 0">No documentation yet.</p>
+          </div>
+          <div class="docs-drawer-article" @click="onDocLinkClick($event)">
+            <template x-for="a in docsArticles" :key="'art' + a.slug">
+              <div class="docs-body" x-show="a.slug === docsCurrent" x-html="a.html"></div>
+            </template>
+            <a class="docs-fullpage cfm-muted" x-show="docsCurrent" target="_blank" rel="noopener"
+               :href="(window.CFM_PREFIX || '') + '/docs/' + docsCurrent">Open full page ↗</a>
+          </div>
+        </div>
+      </div>
+      {# Drag the drawer's inner edge to resize (width persisted to localStorage). #}
+      <div class="docs-resize-handle" :class="docsPlacement === 'end' ? 'docs-resize-end' : 'docs-resize-start'"
+           @mousedown.prevent.stop="startDocsResize($event)" title="Drag to resize"></div>
+    </div>
+  </div>
+
+  <script>
+    // Apply saved theme before Alpine activates to avoid flash
+    (function() {
+      const saved = localStorage.getItem('fmc_theme');
+      if (saved === 'light') document.getElementById('fmc-root').dataset.theme = 'light';
+    })();
+
+    // Clipboard copy that works on plain-HTTP LAN access. navigator.clipboard only exists
+    // in a secure context (HTTPS / localhost); CORPUSfm is reached over http://<lan-ip>, so
+    // fall back to the legacy execCommand path (which is NOT gated on secure context).
+    async function copyToClipboard(text) {
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch (_) { /* fall through to legacy */ }
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try { ta.setSelectionRange(0, text.length); } catch (_) {}
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    // Global readiness store — readable from ANY Alpine component via $store.ready, so page-level
+    // controls (Jobs Run, ISV) gate the same way the nav does. Default-permissive; self-loads.
+    document.addEventListener('alpine:init', () => {
+      Alpine.store('ready', {
+        t1: true, t2: true, t3: true, loaded: false,
+        blocked(n) { return this.loaded && !this['t' + n]; },
+        async load() {
+          try {
+            const r = await fetch('/api/readiness');
+            const d = await r.json();
+            this.t1 = !!d.tier1_ready; this.t2 = !!d.tier2_ready; this.t3 = !!d.tier3_ready;
+            this.loaded = true;
+          } catch (_) { /* leave permissive */ }
+        },
+        init() { this.load(); },
+      });
+
+      // App-wide UNIFIED ACTIVITY feed (packet 1136 Stage 2) — the single client source of truth for the
+      // global chip, the nav badges, the Jobs "Running" cards, and (Stage 4) spinner state. Polls
+      // /api/queue (~1.5s) while ANY activity is in flight; stops when idle. Survives navigation/reload via
+      // attach(). It consumes d.activity (durable rows normalized to the activity-record contract + the
+      // ephemeral generation tasks), d.generation, and d.activity_sources — honoring PER-SOURCE observation
+      // validity: a source whose `.ok` is false is NOT observed this tick, so its last-known records are
+      // RETAINED and its disappearances are NOT reconciled (pin #1 — a failed poll is never completion).
+      Alpine.store('queue', {
+        running: null, queuedCount: 0, inFlightCount: 0, failedCount: 0, me: '', isAdmin: false,
+        // packet 075: targets queued OR running for index/summarize, so the catalog can color the
+        // Indexed/Summarized badge "in flight". Rebuilt each poll (clears itself when work drains).
+        pending: { index: {}, summarize: {} },
+        // Audit #3: the full last /api/queue payload — the Queue page binds to d.records (unchanged).
+        // importsActive keeps the poll alive during imports (the chip/badge stay enrichment-only via `active`).
+        data: null, importsActive: false,
+        // Unified-feed state (Stage 2). _durableRecords / _ephemeralRecords are the last-known halves, each
+        // updated ONLY when its source was successfully observed.
+        generation: '', sources: { durable: { ok: true }, ephemeral: { ok: true } },
+        _durableRecords: [], _ephemeralRecords: [],
+        // Per-item spinner state (Stage 4). `_items` is the live per-item tracking (id → {source, progress,
+        // silenceMs, soft}); `outcomes` is the resolved terminal per item (done/failed/cancelled/evicted/
+        // unknown_expired/finished). Each item carries its OWN clock via cfmReconcileItems, so one task's
+        // progress never masks another's stall, and a soft timeout is per item — never aggregate.
+        _items: {}, outcomes: {}, _lastGen: undefined,
+        _timer: null, _lastRunId: undefined, _inflight: false, _anyInFlight: false,
+        // Adaptive cadence (Stage 3): the ONE poll schedule is computed by the pure cfmCadence machine
+        // from each observation. `_cad` is its carried state; `softTimedOut` surfaces the progress-silence
+        // soft state (Stage 4 spinners) — it is NEVER a success signal.
+        _cad: { phase: 'idle', step: 0, silenceMs: 0, sig: null, softTimedOut: false },
+        _lastPollAt: 0,
+        get softTimedOut() { return !!this._cad.softTimedOut; },
+        get cadencePhase() { return this._cad.phase; },
+        get active() { return !!this.running || this.queuedCount > 0; },
+        // JobRun fold (R4): the running/queued job + file names, derived from the unified JobRun activity
+        // rows (they carry job_name/file_name) — replacing the retired /api/jobs/running duplicate.
+        get runningJobNames() {
+          return [...new Set(this._durableRecords
+            .filter(r => (r.kinds || []).includes('job-run') && (r.status === 'running' || r.status === 'queued'))
+            .map(r => r.job_name).filter(Boolean))];
+        },
+        get runningFileNames() {
+          return [...new Set(this._durableRecords
+            .filter(r => (r.kinds || []).includes('job-run') && (r.status === 'running' || r.status === 'queued'))
+            .map(r => r.file_name).filter(Boolean))];
+        },
+        _silenceTimeout() { return (window.CFM_CADENCE && window.CFM_CADENCE.SILENCE_TIMEOUT) || 90000; },
+        // Reconcile ONE observed source into the per-item spinner state (delegates to the pure
+        // cfmReconcileItems). `genChanged` drives the ephemeral evicted-vs-unknown_expired classification.
+        _trackSource(source, records, observed, elapsed, genChanged) {
+          const r = window.cfmReconcileItems(
+            { items: this._items, outcomes: this.outcomes }, source, records, observed, elapsed,
+            genChanged, this._silenceTimeout());
+          this._items = r.items; this.outcomes = r.outcomes;
+        },
+        // Per-item spinner state, bound by STABLE activity id:
+        //   a resolved terminal (from `outcomes`) · 'soft' (progress-silence) · 'active' (in flight) · null.
+        itemState(id) {
+          if (this.outcomes[id]) return this.outcomes[id];
+          const it = this._items[id];
+          return it ? (it.soft ? 'soft' : 'active') : null;
+        },
+        itemSoft(id) { const it = this._items[id]; return !!(it && it.soft); },
+        // The RUNNING enrichment item's soft state — the chip's soft ("taking longer / no update") signal.
+        get queueSoft() { const r = this.running; return !!(r && this.itemSoft(r.id)); },
+        _deriveDurable() {
+          // All durable-scoped derivations run off the last-known durable half.
+          const recs = this._durableRecords;
+          const enr = recs.filter(r => r.current === 'index' || r.current === 'summarize');
+          const runEnr = enr.find(r => r.status === 'running') || null;
+          this.running = runEnr
+            ? { id: runEnr.id, owner: runEnr.owner, kind: runEnr.current, targets: runEnr.uuid ? [runEnr.uuid] : [] }
+            : null;
+          this.queuedCount = enr.filter(r => r.status === 'queued').length;
+          this.importsActive = recs.some(r => (r.kinds || []).includes('import') && (r.status === 'running' || r.status === 'queued'));
+          this.inFlightCount = recs.filter(r => r.status === 'running' || r.status === 'queued').length;
+          // Per-artifact pending overlay carries the per-item spinner STATE ('active' | 'soft'), so a
+          // stuck artifact's badge shows the soft "no update" state independently of siblings still moving.
+          const pend = { index: {}, summarize: {} };
+          for (const r of enr) {
+            if ((r.status === 'running' || r.status === 'queued') && r.uuid)
+              pend[r.current][r.uuid] = this.itemSoft(r.id) ? 'soft' : 'active';
+          }
+          this.pending = pend;
+          const runId = this.running ? this.running.id : null;
+          // Running enrichment record changed (finished / a new one began) → refresh the catalog badges.
+          // NO success toast (Stage 2): a disappearance is a neutral terminal, not a success claim; real
+          // completions are announced by the HISTORY-based notification poll.
+          if (this._lastRunId !== undefined && runId !== this._lastRunId) {
+            try { window.dispatchEvent(new CustomEvent('cfm-index-batch-done', { detail: this.data })); } catch (_) {}
+          }
+          this._lastRunId = runId;
+        },
+        _inflightSig(records) {
+          // Progress SIGNATURE of the in-flight records (id:progress) — changes iff some item advanced.
+          return records.filter(x => x.status === 'running' || x.status === 'queued')
+            .map(x => x.id + ':' + (x.progress == null ? '' : x.progress)).sort().join('|');
+        },
+        async _poll() {
+          // Re-entrancy guard (packet 081): a slow awaited fetch can overlap the scheduled poll; an
+          // out-of-order response could flip state back and reconcile a spurious disappearance.
+          if (this._inflight) return;
+          this._inflight = true;
+          const elapsed = this._lastPollAt ? (Date.now() - this._lastPollAt) : 0;
+          this._lastPollAt = Date.now();
+          const visible = (typeof document === 'undefined') || document.visibilityState !== 'hidden';
+          // Bound the fetch (packet 1000 Phase 2): a HUNG /api/queue (a proxy holding the connection open
+          // during an FMS restart) would otherwise leave _inflight=true forever with no next poll
+          // scheduled — freezing the entire feed with no recovery but a reload. Abort → the catch below
+          // retains last-known + reschedules, exactly like any transient failure.
+          const _ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+          const _to = _ctrl ? setTimeout(() => { try { _ctrl.abort(); } catch (_) {} }, 25000) : null;
+          try {
+            const r = await fetch('/api/queue', { cache: 'no-store', signal: _ctrl ? _ctrl.signal : undefined });
+            // A non-OK response is NOT feed state (packet 1000/1067): a storage-outage 503 body has no
+            // activity. Treat it exactly like a transient failure — retain last-known, and let the cadence
+            // PAUSE the silence clock (a failed read is never silence) while it keeps polling to recover.
+            if (!r.ok) { this._scheduleFromObs({ ok: false, inFlight: this._anyInFlight, observed: false, sig: this._cad.sig, visible, elapsed }); return; }
+            const d = await r.json();
+            this.data = d;
+            this.me = d.me || ''; this.isAdmin = !!d.is_admin;
+            const activity = d.activity || [];
+            const gen = d.generation || '';
+            const src = d.activity_sources || { durable: { ok: true }, ephemeral: { ok: true } };
+            this.generation = gen; this.sources = src;
+            // PER-SOURCE observation validity: update a half (and reconcile its disappearances) ONLY when
+            // that source was successfully observed; otherwise RETAIN last-known and reconcile nothing.
+            const durableOk = !(src.durable && src.durable.ok === false);
+            const ephemeralOk = !(src.ephemeral && src.ephemeral.ok === false);
+            if (durableOk) {
+              this._durableRecords = activity.filter(x => x.ephemeral === false);
+              this.failedCount = d.failed_count || 0;   // durable-derived — retain on a failed durable read
+              this._trackSource('durable', this._durableRecords, true, elapsed, false);
+              this._deriveDurable();     // reads _items for the per-artifact soft state
+            }
+            if (ephemeralOk) {
+              this._ephemeralRecords = activity.filter(x => x.ephemeral === true);
+              const genChanged = this._lastGen !== undefined && this._lastGen !== gen;
+              this._trackSource('ephemeral', this._ephemeralRecords, true, elapsed, genChanged);
+              this._lastGen = gen;
+            }
+            // In-flight spans BOTH sources (retained or fresh) so an ephemeral terminal/eviction is still
+            // observed. `observed` = an in-flight record from a source we ACTUALLY read this tick — only
+            // that may age the silence clock (a failed source's retained work must not).
+            const durInFlight = this._durableRecords.some(x => x.status === 'running' || x.status === 'queued');
+            const ephInFlight = this._ephemeralRecords.some(x => x.status === 'running' || x.status === 'queued');
+            this._anyInFlight = durInFlight || ephInFlight;
+            const observed = (durableOk && durInFlight) || (ephemeralOk && ephInFlight);
+            const sig = this._inflightSig(
+              (durableOk ? this._durableRecords : []).concat(ephemeralOk ? this._ephemeralRecords : []));
+            // Fold page refreshes onto the cadence: emit ONE invalidation tick carrying the feed (NOT page
+            // result data — consumers refresh their OWN endpoints). Pages fold their pollers onto this.
+            try { window.dispatchEvent(new CustomEvent('cfm-activity', { detail: d })); } catch (_) {}
+            this._scheduleFromObs({ ok: true, inFlight: this._anyInFlight, observed: observed, sig: sig, visible, elapsed });
+          } catch (_) {
+            // One transient fetch failure (FMS blip, laptop resume, proxy reload) must NOT kill the poll
+            // permanently (packet 081). Retain last-known; the cadence pauses the clock and keeps polling.
+            this._scheduleFromObs({ ok: false, inFlight: this._anyInFlight, observed: false, sig: this._cad.sig, visible, elapsed });
+          } finally { if (_to) clearTimeout(_to); this._inflight = false; }
+        },
+        _scheduleFromObs(obs) {
+          // Advance the pure cadence machine and (re)schedule the single next poll from its delay.
+          this._cad = window.cfmCadence(this._cad, obs);
+          this._stopTimer();
+          this._timer = setTimeout(() => this._poll(), this._cad.delay);
+        },
+        _stopTimer() { if (this._timer) { clearTimeout(this._timer); this._timer = null; } },
+        // Page load / after enqueue — query + re-arm the poll while there's activity.
+        attach() { this._poll(); },
+        refresh() {
+          // Force a FRESH observation (packet 1000 Phase 2). If a scheduled poll is mid-flight it may have
+          // started BEFORE the caller staged new records (e.g. the import→feed handoff), so `_poll()` would
+          // no-op on the re-entrancy guard and the handoff could fall into the idle cadence (up to a
+          // heartbeat with neither the transfer indicator nor the queue chip showing the new work). Schedule
+          // a prompt re-poll so a fresh read lands right after the in-flight one.
+          if (this._inflight) { this._stopTimer(); this._timer = setTimeout(() => this._poll(), 200); return Promise.resolve(); }
+          return this._poll();
+        },
+      });
+    });
+
+    function fmShell() {
+      return {
+        // Non-blocking global TRANSFER indicator (packet 1136 Stage 2) — fed ONLY by upload's
+        // client-owned local transfer state via `cfm-transfer-start`/`cfm-transfer-end`. This replaces the
+        // retired imperative global `busy`/`fm-task-*` driver (whose only dispatcher was the upload, always
+        // noLock). It NEVER locks the screen and is NEVER driven by the server feed (a transfer is
+        // client-owned; server work shows on the chip/badges).
+        transferActive: false,
+        transferMsg: '',
+        offline: false,
+        darkMode: localStorage.getItem('fmc_theme') !== 'light',
+        _missedPolls: 0,
+        alertCount: 0,
+        updateAvailable: false,
+        updateVersion: '',
+        currentVersion: '{{ version }}',
+        updateNotice: null,          // informational post-update notice, shown once
+
+        // App-wide enrichment queue — the live state lives in the Alpine $store.queue (so the
+        // Artifacts page can read $store.queue.active to gate its buttons). The chip binds to it;
+        // init() kicks the store's self-attach poll.
+        get queue() { return this.$store.queue; },
+        get queueChipText() {
+            const q = this.$store.queue;
+            const r = q.running;
+            const tail = q.queuedCount > 0 ? (' (+' + q.queuedCount + ' queued)') : '';
+            if (!r) return q.queuedCount + ' queued';
+            const verb = r.kind === 'deindex' ? 'De-indexing'
+                       : r.kind === 'summarize' ? 'Summarizing' : 'Indexing';
+            // Soft (progress-silence) state: a VISIBLE "taking longer / no update" — never a success, and
+            // the item keeps spinning (it may still be alive; the server watchdog owns the real timeout).
+            // (No done/total fraction: durable enrichment records are per-artifact, so `running` carries
+            // no aggregate count — the queued tail below is the honest progress cue.)
+            if (q.queueSoft) return verb + ' — taking longer, no update' + tail;
+            return verb + '…' + tail;
+        },
+
+        // Documentation drawer (global, lazy-loaded, context-aware)
+        docsOpen: false,
+        docsArticles: [],
+        docsCurrent: '',
+        docsHistory: [],            // in-drawer back-stack of previously-viewed slugs (packet 033, #6)
+        docsTab: 'Documentation',   // active TOC tab; follows the opened article, defaults here
+        docsQuery: '',
+        docsLoaded: false,
+        docsWidth: 620,
+        // Drawer side: a per-device flip (localStorage 'start'|'end') overrides the
+        // server default injected from Settings ('{{ docs_drawer_side }}').
+        docsPlacement: (function () {
+          try { const ls = localStorage.getItem('cfm_docs_placement');
+                if (ls === 'start' || ls === 'end') return ls; } catch (_) {}
+          return '{{ docs_drawer_side }}' === 'left' ? 'start' : 'end';
+        })(),
+
+        init() {
+          this._startNotificationPoll();
+          this._startUpdateCheck();
+          this._loadUpdateNotice();
+          this._loadAlertCount();
+          this._applyDocsWidth();
+          // Re-attach the app-wide unified activity feed (survives nav/reload).
+          this.$store.queue.attach();
+          // Non-blocking global transfer indicator, fed by upload's client-owned local state (Stage 2).
+          // Kept OFF the server feed and OFF the silence-timeout — a transfer is client-owned aliveness.
+          window.addEventListener('cfm-transfer-start', (e) => {
+            this.transferActive = true;
+            this.transferMsg = (e && e.detail && e.detail.msg) || 'Uploading…';
+          });
+          window.addEventListener('cfm-transfer-end', () => {
+            this.transferActive = false; this.transferMsg = '';
+          });
+          // Visibility-aware cadence (Stage 3): when the tab returns to the foreground, poll the feed
+          // immediately so a backgrounded (throttled) cadence catches up at once.
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState !== 'hidden') this.$store.queue.refresh();
+          });
+          // Saving the docs-side preference in Settings updates the open drawer live.
+          window.addEventListener('cfm-docs-side', (e) => {
+            this.docsPlacement = e.detail === 'left' ? 'start' : 'end';
+          });
+          // Storage outage (packet 1067): a same-origin 503 storage signal (from any poller or action)
+          // flips us to the degraded state immediately — show the connectivity toast, don't wait for two
+          // missed heartbeats. A subsequent successful notification poll clears it. This, with the fetch
+          // wrapper NOT redirecting on the 503, is what stops the old 401→/login redirect-churn peg.
+          window.addEventListener('cfm-storage-outage', () => {
+            this._missedPolls = Math.max(this._missedPolls, 2);
+            this.offline = true;
+          });
+          // "Learn more →" links anywhere can open the docs drawer (route-context default,
+          // or an explicit slug in the event detail).
+          window.addEventListener('cfm-open-docs', (e) => this.openDocs(e && e.detail));
+          // Escape closes the docs drawer.
+          document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && this.docsOpen) this.docsOpen = false;
+          });
+        },
+
+        async _loadAlertCount() {
+          // Health signal in the nav so landing on Artifacts still surfaces alerts.
+          try {
+            const r = await fetch('/api/monitor/status');
+            const d = await r.json();
+            this.alertCount = d.alert_count || 0;
+          } catch (_) {}
+        },
+
+        // Nav/banner gating delegates to the global readiness store (also read by page components).
+        tierBlocked(n) { return this.$store.ready.blocked(n); },
+
+        // ── Documentation drawer ──────────────────────────────────────────────
+        async loadDocs() {
+          if (this.docsLoaded) return;
+          try {
+            const r = await fetch('/api/docs');
+            const d = await r.json();
+            this.docsArticles = d.articles || [];
+          } catch (_) {}
+          this.docsLoaded = true;
+        },
+        async openDocs(slug) {
+          // Honor a per-device flip if one was made on this browser.
+          try { const ls = localStorage.getItem('cfm_docs_placement');
+                if (ls === 'start' || ls === 'end') this.docsPlacement = ls; } catch (_) {}
+          this.docsOpen = true;
+          // An explicit target ("Learn more →" / pop-over help icon / in-article cross-link) may be
+          // "slug" or "slug#anchor" to deep-link a specific heading. Capture it BEFORE the async load
+          // so a late resume can never recompute it from the route: an explicit slug ALWAYS wins;
+          // only a bare open (no slug) uses the route-context default.
+          const raw = (typeof slug === 'string' && slug) ? slug : '';
+          const [want, anchor] = raw.split('#');
+          await this.loadDocs();
+          this.selectDoc(want || this._docContextSlug(), anchor);
+        },
+        // Select an article in the open drawer: switch to it if it's a known article (never silently
+        // jump elsewhere on an unknown slug), follow its tab, and scroll to an anchor when given.
+        selectDoc(slug, anchor = '') {
+          if (slug && this.docsArticles.some(a => a.slug === slug)) {
+            // Build the in-drawer back-stack: navigating to a DIFFERENT article remembers the
+            // one we're leaving so docsBack() can return to it (packet 033, #6).
+            if (this.docsCurrent && this.docsCurrent !== slug) this.docsHistory.push(this.docsCurrent);
+            this.docsCurrent = slug;
+            this.docsTab = this._sectionOf(slug);   // follow the opened article's tab
+          }
+          if (anchor) this._scrollDocAnchor(anchor);
+        },
+        // Back to the previous in-drawer article (pops the stack; never pushes → no loop).
+        docsBack() {
+          const prev = this.docsHistory.pop();
+          if (prev && this.docsArticles.some(a => a.slug === prev)) {
+            this.docsCurrent = prev;
+            this.docsTab = this._sectionOf(prev);
+          }
+        },
+        _sectionOf(slug) {
+          const a = this.docsArticles.find(x => x.slug === slug);
+          return (a && a.section) || 'Documentation';
+        },
+        get docsTabs() {
+          // Tabs follow authored article sections in server order: reference docs first, then guides.
+          const seen = [];
+          for (const a of this.docsArticles) {
+            const s = a.section || 'Documentation';
+            if (!seen.includes(s)) seen.push(s);
+          }
+          return seen;
+        },
+        selectDocsTab(t) {
+          this.docsTab = t;
+          const inTab = this.docsArticles.filter(a => (a.section || 'Documentation') === t);
+          if (inTab.length && !inTab.some(a => a.slug === this.docsCurrent)) this.docsCurrent = inTab[0].slug;
+        },
+        get docsVisibleGroups() {
+          // Searching spans all tabs (find anything, grouped by section); otherwise show the active tab.
+          if ((this.docsQuery || '').trim()) return this.docsGroups;
+          return this.docsGroups.filter(g => g.section === this.docsTab);
+        },
+        _scrollDocAnchor(anchor) {
+          // After the article paints, scroll its heading into view within the drawer.
+          this.$nextTick(() => {
+            requestAnimationFrame(() => {
+              const root = document.querySelector('.docs-drawer-article');
+              const el = root && root.querySelector('#' + (window.CSS && CSS.escape ? CSS.escape(anchor) : anchor));
+              if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+            });
+          });
+        },
+        onDocLinkClick(e) {
+          // A click on a link INSIDE a rendered article. Default is a full-page navigation to
+          // /docs/… which would unload the page and destroy any open pop-over's in-progress work.
+          // Keep internal doc links + in-page anchors IN the drawer; send everything else to a
+          // new tab so the current page (and its pop-over) is never replaced.
+          const a = e.target.closest('a');
+          if (!a) return;
+          if (a.target === '_blank') return;                 // deliberate new-tab escapes pass through
+          const href = a.getAttribute('href') || '';
+          if (!href) return;
+          if (href.startsWith('#')) {                         // same-article anchor → scroll in-drawer
+            e.preventDefault();
+            this._scrollDocAnchor(href.slice(1));
+            return;
+          }
+          // Internal doc link: ".../docs/<slug>[#anchor]" or a bare "<slug>.md[#anchor]".
+          const m = href.match(/\/docs\/([^/#?]+)(?:#([^?\s]+))?/) ||
+                    href.match(/^([\w.-]+)\.md(?:#([^?\s]+))?$/);
+          const slug = m && m[1], anchor = (m && m[2]) || '';
+          if (slug && this.docsArticles.some(x => x.slug === slug)) {
+            e.preventDefault();
+            this.openDocs(anchor ? slug + '#' + anchor : slug);
+            return;
+          }
+          e.preventDefault();                                 // external / unknown → new tab, never replace
+          window.open(a.href, '_blank', 'noopener');
+        },
+        _docContextSlug() {
+          // Context-aware default: map the current route to a relevant article, else the first.
+          const path = window.location.pathname || '';
+          // Route fragment → doc slug. Most specific first (first match wins). Grows with docs.
+          const map = {
+            '/artifacts': 'artifacts-catalog',
+            '/explorer': 'explorer',
+            '/diff': 'diff',
+            '/merge': 'merge',
+            '/isv': 'isv-workflow',
+            '/upload': 'importing',
+            '/jobs': 'jobs',
+            '/files': 'jobs',
+            '/runs': 'jobs',
+            '/tags': 'tags',
+          };
+          for (const frag in map) {
+            if (path.includes(frag) && this.docsArticles.some(a => a.slug === map[frag])) return map[frag];
+          }
+          return this.docsArticles.length ? this.docsArticles[0].slug : '';
+        },
+        _applyDocsWidth() {
+          try { this.docsWidth = parseInt(localStorage.getItem('cfm_docs_width') || '620', 10) || 620; } catch (_) {}
+          document.documentElement.style.setProperty('--docs-width', this.docsWidth + 'px');
+        },
+        startDocsResize(e) {
+          const max = Math.min(1100, window.innerWidth - 120);
+          const move = (ev) => {
+            // A right-side drawer grows from the right edge, so width = distance from it.
+            const w = this.docsPlacement === 'end' ? (window.innerWidth - ev.clientX) : ev.clientX;
+            this.docsWidth = Math.max(360, Math.min(max, w));
+            document.documentElement.style.setProperty('--docs-width', this.docsWidth + 'px');
+          };
+          const up = () => {
+            document.removeEventListener('mousemove', move);
+            document.removeEventListener('mouseup', up);
+            try { localStorage.setItem('cfm_docs_width', String(this.docsWidth)); } catch (_) {}
+          };
+          document.addEventListener('mousemove', move);
+          document.addEventListener('mouseup', up);
+        },
+        // Per-device flip from the drawer header; persists to localStorage so it
+        // overrides the server default on this browser.
+        toggleDocsPlacement() {
+          this.docsPlacement = this.docsPlacement === 'start' ? 'end' : 'start';
+          try { localStorage.setItem('cfm_docs_placement', this.docsPlacement); } catch (_) {}
+        },
+        get docsFiltered() {
+          const q = (this.docsQuery || '').toLowerCase().trim();
+          if (!q) return this.docsArticles;
+          return this.docsArticles.filter(a =>
+            a.title.toLowerCase().includes(q) ||
+            (a.html || '').replace(/<[^>]+>/g, ' ').toLowerCase().includes(q));
+        },
+        get docsGroups() {
+          // Group the (server-ordered) filtered list into [{section, items}] for a grouped TOC.
+          const groups = [];
+          for (const a of this.docsFiltered) {
+            const sec = a.section || 'Documentation';
+            if (!groups.length || groups[groups.length - 1].section !== sec)
+              groups.push({ section: sec, items: [] });
+            groups[groups.length - 1].items.push(a);
+          }
+          return groups;
+        },
+
+        toggleTheme() {
+          this.darkMode = !this.darkMode;
+          const theme = this.darkMode ? 'dark' : 'light';
+          localStorage.setItem('fmc_theme', theme);
+          const root = document.getElementById('fmc-root');
+          if (this.darkMode) delete root.dataset.theme;
+          else root.dataset.theme = 'light';
+        },
+
+        _lastAlertCount: -1,
+        _lastJobTs: '',
+
+        _startNotificationPoll() {
+          setInterval(() => this._pollNotifications(), 10000);
+        },
+
+        // ── Update-available notice (admin only) ──────────────────────────────
+        // Polls /api/settings/check-update every couple hours. The result is cached in
+        // localStorage with a timestamp so navigating between (fully reloaded) pages
+        // reflects the notice immediately without a fresh git fetch each time.
+        // True only when version `a` (e.g. "0.854") is strictly newer than `b`. Guards the badge
+        // so a stale cache (or any version <= current) never shows a bogus "update available".
+        _verGt(a, b) {
+          const p = v => String(v || '').split('.').map(n => parseInt(n, 10) || 0);
+          const x = p(a), y = p(b), len = Math.max(x.length, y.length);
+          for (let i = 0; i < len; i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d > 0; }
+          return false;
+        },
+        _startUpdateCheck() {
+          try {
+            const cachedVer = localStorage.getItem('cfm_upd_version') || '';
+            if (localStorage.getItem('cfm_upd_available') === '1' && this._verGt(cachedVer, this.currentVersion)) {
+              this.updateAvailable = true;
+              this.updateVersion = cachedVer;
+            } else if (localStorage.getItem('cfm_upd_available') === '1') {
+              // Stale: we've caught up to (or past) the cached "latest" — drop it + re-check live.
+              localStorage.setItem('cfm_upd_available', '0');
+              this._checkUpdate();
+            }
+          } catch (_) {}
+          const EVERY = 2 * 60 * 60 * 1000;   // a couple hours
+          const due = () => {
+            try { return Date.now() - parseInt(localStorage.getItem('cfm_upd_ts') || '0', 10) > EVERY; }
+            catch (_) { return true; }
+          };
+          if (due()) this._checkUpdate();
+          setInterval(() => { if (due()) this._checkUpdate(); }, EVERY);
+        },
+        async _checkUpdate() {
+          // PASSIVE, and it must stay that way (packet 1251, D2): no `?refresh`. This runs in every
+          // authenticated user's browser, so asking for a privileged observation here would start a
+          // root one-shot with a network fetch per poll per user, and the single-flight lock would
+          // turn two overlapping polls into an error. The badge is allowed to be a little stale; the
+          // Updates page is where someone deliberately looks.
+          try {
+            const r = await fetch('/api/settings/check-update', { cache: 'no-store' });
+            if (!r.ok) return;
+            const d = await r.json();
+            // Show only if the server flags it AND the latest really is newer than what we run
+            // (belt-and-suspenders against a version <= current ever lighting the badge).
+            const show = !!d.update_available && this._verGt(d.latest_version || '', this.currentVersion);
+            this.updateAvailable = show;
+            this.updateVersion = show ? (d.latest_version || '') : '';
+            try {
+              localStorage.setItem('cfm_upd_ts', String(Date.now()));
+              localStorage.setItem('cfm_upd_available', show ? '1' : '0');
+              localStorage.setItem('cfm_upd_version', d.latest_version || '');
+            } catch (_) {}
+          } catch (_) {}
+        },
+
+        // Informational post-update notice: shown once after an update (server gates it on a
+        // per-box dismissed-version), then dismissed. Distinct from the "update available" badge above.
+        async _loadUpdateNotice() {
+          try {
+            const r = await fetch('/api/settings/update-notice', { cache: 'no-store' });
+            if (!r.ok) return;
+            const d = await r.json();
+            if (d && d.text) this.updateNotice = d;
+          } catch (_) {}
+        },
+        async dismissUpdateNotice() {
+          this.updateNotice = null;
+          try { await fetch('/api/settings/update-notice/dismiss', { method: 'POST' }); } catch (_) {}
+        },
+
+        async _pollNotifications() {
+          try {
+            const r = await fetch('/api/status/notifications');
+            if (!r.ok) { this._recordMiss(); return; }
+            const d = await r.json();
+
+            // Connectivity restored
+            this._missedPolls = 0;
+            this.offline = false;
+
+            const prevAlerts = parseInt(localStorage.getItem('fmc_alert_count') || '-1');
+            if (d.alert_count > prevAlerts && prevAlerts >= 0) {
+              this._notify('CORPUSfm Alert', d.newest_alert || 'New alert');
+            }
+            localStorage.setItem('fmc_alert_count', String(d.alert_count));
+
+            const prevJobTs = localStorage.getItem('fmc_last_job_ts') || '';
+            if (d.latest_job_ts && d.latest_job_ts !== prevJobTs && prevJobTs !== '') {
+              const word = d.latest_job_status === 'ok' ? 'completed' : (d.latest_job_status || 'ran');
+              this._notify('CORPUSfm Job', `${d.latest_job_name} ${word}`);
+            }
+            if (d.latest_job_ts) localStorage.setItem('fmc_last_job_ts', d.latest_job_ts);
+          } catch (_) {
+            this._recordMiss();
+          }
+        },
+
+        _recordMiss() {
+          this._missedPolls++;
+          if (this._missedPolls >= 2) this.offline = true;
+        },
+
+        _notify(title, body) {
+          if (!('Notification' in window)) return;
+          if (Notification.permission === 'default') Notification.requestPermission();
+          if (Notification.permission !== 'granted') return;
+          new Notification(title, { body });
+        },
+      };
+    }
+  </script>
+
+
+  {# ── Artifact Picker dialog — shared across all pages (bespoke kit) ──────── #}
+  <div class="cfm-overlay" id="artifact-picker-dialog"
+       x-data="artifactPicker()"
+       @open-artifact-picker.window="openPicker($event.detail)"
+       x-show="show" x-cloak
+       @click.self="show = false" @keydown.escape.window="if (show) show = false">
+    <div class="cfm-dialog cfm-dialog--wide" role="dialog" aria-modal="true">
+      <div class="cfm-dialog-hdr">
+        <span class="cfm-dialog-title" x-text="title"></span>
+        {{ doc_help('artifacts-catalog#cards-and-selection') }}
+        <button type="button" class="cfm-iconbtn" @click="show = false" aria-label="Cancel" title="Cancel">✕</button>
+      </div>
+      <div class="cfm-dialog-body">
+        <div class="ap-search-row">
+          <input type="search" class="cfm-input cfm-spacer" x-model="q"
+                 @input.debounce.300ms="search()" placeholder="Search artifacts…">
+          <div class="cfm-dd" x-data="{ open:false }" @click.outside="open=false" x-show="allowedTypes.length !== 1">
+            <button type="button" class="cfm-dd-trigger" @click="open=!open" aria-label="Filter by type" aria-haspopup="listbox">
+              <span x-text="apTypeLabel(selectedType)"></span>
+              <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>
+            </button>
+            <div class="cfm-dd-menu" x-show="open" x-cloak>
+              <button type="button" class="cfm-dd-opt" :class="selectedType===''?'cfm-dd-opt--on':''" @click="selectedType=''; open=false; search()">All types</button>
+              <template x-for="opt in typeOptions" :key="opt.value">
+                <button type="button" class="cfm-dd-opt" :class="selectedType===opt.value?'cfm-dd-opt--on':''" @click="selectedType=opt.value; open=false; search()" x-text="opt.label"></button>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <div class="ap-results">
+          <template x-if="loading && results.length === 0">
+            <div class="ap-empty">Loading…</div>
+          </template>
+          <template x-if="!loading && results.length === 0">
+            <div class="ap-empty">No artifacts found.</div>
+          </template>
+          <template x-for="row in results" :key="row.uuid">
+            <div class="ap-row" :class="{'ap-row-selected': isSelected(row.uuid)}"
+                 @click="pickItem(row)">
+              <span class="ap-row-label" x-text="row.name"></span>
+              <span class="ap-row-meta">
+                <span class="ap-row-type" x-text="typeBadge(row.artifact_type)"></span>
+                <span class="ap-row-ts" x-text="fmtTs(row.timestamp)"></span>
+                <span class="ap-row-sol" x-show="row.tags && row.tags.length" x-text="(row.tags || []).join(', ')"></span>
+              </span>
+            </div>
+          </template>
+          <template x-if="hasMore && !loading">
+            <button type="button" class="ap-load-more" @click="loadMore()">Load more…</button>
+          </template>
+        </div>
+      </div>
+
+      <div class="cfm-dialog-ftr">
+        <span class="ap-sel-count cfm-muted" x-show="multiSelect"><span x-text="selected.length"></span> selected</span>
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn cfm-btn--sm" @click="show = false">Cancel</button>
+        <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary"
+                x-show="multiSelect" :disabled="selected.length === 0" @click="confirmPick()">
+          Add (<span x-text="selected.length"></span>)
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  function artifactPicker() {
+    return {
+      show:             false,
+      title:            '',
+      allowedTypes:     [],
+      requiresArtifact: false,
+      multiSelect:      false,
+      filterRootUuid:   '',
+      excludeUuid:   '',
+      excludeSet:       [],
+      _callback:        null,
+
+      q:            '',
+      selectedType: '',
+      results:      [],
+      page:         1,
+      hasMore:      false,
+      loading:      false,
+      selected:     [],
+      // Server-authored type registry (packet 040): value==display, never a hand-kept map.
+      registryTypes: [],
+
+      async _loadTypes() {
+        if (this.registryTypes.length) return;
+        try {
+          const r = await fetch('/api/library/artifact-types');
+          const d = await r.json();
+          this.registryTypes = d.types || [];
+        } catch (_) { this.registryTypes = []; }
+      },
+
+      // The dropdown options: the full registry, narrowed to allowedTypes when the caller
+      // constrained them (>1; a single allowed type hides the dropdown entirely).
+      get typeOptions() {
+        const allowed = this.allowedTypes || [];
+        if (allowed.length > 1) return this.registryTypes.filter(o => allowed.includes(o.value));
+        return this.registryTypes;
+      },
+
+      openPicker({ title, types, requiresArtifact, multiSelect, rootUuid, exclude, callback }) {
+        this._loadTypes();
+        this.title            = title || 'Select Artifact';
+        this.allowedTypes     = types || [];
+        this.requiresArtifact = !!requiresArtifact;
+        this.multiSelect      = !!multiSelect;
+        this.filterRootUuid   = rootUuid || '';
+        // `exclude` may be a single uuid (server-side param, legacy callers) or an array of
+        // uuids (filtered client-side — the membership editor passes its current members).
+        this.excludeUuid   = (typeof exclude === 'string') ? exclude : '';
+        this.excludeSet       = Array.isArray(exclude) ? exclude : [];
+        this._callback        = callback || null;
+        this.q                = '';
+        this.selectedType     = this.allowedTypes.length === 1 ? this.allowedTypes[0] : '';
+        this.results          = [];
+        this.page             = 1;
+        this.hasMore          = false;
+        this.selected         = [];
+        this.show             = true;
+        this.search();
+      },
+
+      async search() {
+        this.page = 1;
+        this.results = [];
+        await this._fetch(1);
+      },
+
+      async loadMore() {
+        if (!this.hasMore || this.loading) return;
+        await this._fetch(this.page + 1);
+      },
+
+      async _fetch(page) {
+        this.loading = true;
+        try {
+          const typeParam = this.allowedTypes.length === 1 ? this.allowedTypes[0] : this.selectedType;
+          const params = new URLSearchParams({
+            q:        this.q,
+            type:     typeParam,
+            page:     String(page),
+            per_page: '20',
+          });
+          if (this.requiresArtifact) params.set('requires_artifact', 'true');
+          if (this.filterRootUuid)   params.set('root_uuid', this.filterRootUuid);
+          if (this.excludeUuid)   params.set('exclude', this.excludeUuid);
+          const r = await fetch('/api/library/artifacts/search?' + params);
+          const d = await r.json();
+          let rows = d.rows || [];
+          if (this.excludeSet.length) rows = rows.filter(row => !this.excludeSet.includes(row.uuid));
+          this.results = page === 1 ? rows : [...this.results, ...rows];
+          this.page    = d.page;
+          this.hasMore = d.has_more;
+        } catch(_) {}
+        finally { this.loading = false; }
+      },
+
+      pickItem(row) {
+        if (!this.multiSelect) {
+          this.show = false;
+          if (this._callback) this._callback([row]);
+          return;
+        }
+        if (this.isSelected(row.uuid)) {
+          this.selected = this.selected.filter(s => s.uuid !== row.uuid);
+        } else {
+          this.selected = [...this.selected, row];
+        }
+      },
+
+      isSelected(uuid) {
+        return this.selected.some(s => s.uuid === uuid);
+      },
+
+      confirmPick() {
+        this.show = false;
+        if (this._callback) this._callback(this.selected);
+      },
+
+      typeBadge(type) {
+        return { SaveAsXML: 'SaveAsXML', AddonXML: '-AddonXML-', MergedXML: '~MergedXML~' }[type] || type;
+      },
+
+      // value == display (packet 040): the registry feeds the labels; '' is the All-types sentinel.
+      apTypeLabel(t) {
+        if (!t) return 'All types';
+        const o = (this.registryTypes || []).find(x => x.value === t);
+        return o ? o.label : t;
+      },
+
+      fmtTs(ts) {
+        try {
+          const [date, time] = ts.split('_');
+          return `${date} ${time.slice(0,2)}:${time.slice(2,4)}`;
+        } catch(_) { return ts || ''; }
+      },
+    };
+  }
+  </script>
+
+
+{# ══ First sign-in: confirm the MCP address (packet 1326) ═══════════════════════════════════════
+   ONE item, once per INSTALLATION, for a settings-gated user in server mode. The box asserts its own
+   MCP address at startup from locally DETECTED evidence, and everything binds to it — the OAuth
+   resource, the 401 challenge, every connection's audience, the address the MCP tab hands out — so the
+   first human who can judge it is offered the correction. Asking at install time would make operator
+   input a precondition, which the Unknowable-Install Principle forbids.
+
+   It ACTS: the address goes through the SAME `POST /api/settings/external-address` the Settings island
+   uses, so validation, the restart question and the post-restart wait are the shipped ones. Dismissal
+   is explicit — Escape and a click outside do NOT set the durable mark. #}
+{% if mode == 'server' and authenticated and g_admin %}
+  {# The focus trap is the shipped one (`window.cfmFocusTrap`), wired the way every other overlay wires
+     it. It matters more here than elsewhere: this modal is deliberately NOT dismissible by Escape or a
+     click outside, so without a trap a keyboard user tabs into controls hidden behind it (Codex F2). #}
+  <div class="cfm-overlay" id="initial-mcp-address" x-data="initialMcpAddress()" x-show="show" x-cloak
+       @keydown.escape.window.prevent
+       x-effect="show ? $nextTick(() => { _trap = window.cfmFocusTrap($refs.imaDlg) }) : (_trap && _trap())">
+    <div class="cfm-dialog" x-ref="imaDlg" role="dialog" aria-modal="true" aria-labelledby="ima-title"
+         style="max-width:44rem">
+      <div class="cfm-dialog-hdr">
+        <span class="cfm-dialog-title" id="ima-title">Confirm this server's MCP address</span>
+      </div>
+      <div class="cfm-dialog-body">
+        <p class="cfm-muted">MCP clients connect to CORPUSfm at this address, and every connection is
+          bound to it. This box chose one for itself at startup — it can see its own interfaces, but it
+          cannot know which address a client can actually reach.</p>
+
+        <div class="cfm-meta-grid cfm-mt-14">
+          <span class="cfm-meta-k">Serving now</span>
+          <span class="cfm-meta-v"><code x-text="addr.serving || '(none)'"></code>
+            <span class="cfm-muted" x-show="addr.serving">— clients connect at
+              <code x-text="(addr.serving || '') + '/mcp'"></code></span></span>
+          <template x-if="addr.detected && addr.detected !== addr.serving">
+            <span class="cfm-meta-k">Reached in this browser</span>
+          </template>
+          <template x-if="addr.detected && addr.detected !== addr.serving">
+            <span class="cfm-meta-v"><code x-text="addr.detected"></code>
+              <span class="cfm-muted">— the address this page arrived on</span></span>
+          </template>
+          {# An address saved earlier whose restart never completed. Stated, because the box is running
+             one identity and storing another, and neither the picker nor the selection may pretend
+             otherwise (Codex F1). #}
+          <template x-if="addr.pending && addr.value">
+            <span class="cfm-meta-k">Saved, not yet live</span>
+          </template>
+          <template x-if="addr.pending && addr.value">
+            <span class="cfm-meta-v"><code x-text="addr.value"></code>
+              <span class="cfm-muted">— takes effect when CORPUSfm restarts</span></span>
+          </template>
+        </div>
+
+        <p class="cfm-field-hint cfm-mt-12"
+           x-show="addr.certificate && addr.certificate.checked && !addr.certificate.covered">
+          <span class="cfm-badge cfm-badge--warn">Certificate</span>
+          Clients verify this box's certificate, and it does not cover
+          <code x-text="addr.certificate && addr.certificate.host"></code> — it names
+          <code x-text="((addr.certificate || {}).names || []).join(', ')"></code>.</p>
+
+        <div class="cfm-field cfm-mt-14">
+          <label class="cfm-field-label" for="ima-address">MCP address</label>
+          <template x-if="candidates.length">
+            <div class="cfm-mt-6 cfm-mb-6">
+              <template x-for="c in candidates" :key="c.base">
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-mb-6" style="margin-right:6px"
+                        :class="chosen === c.base ? 'cfm-btn--primary' : ''"
+                        @click="chosen = c.base">
+                  <code x-text="c.base"></code>
+                  <span class="cfm-muted cfm-ml-8" x-text="c.evidence"></span>
+                </button>
+              </template>
+            </div>
+          </template>
+          {# Free text stays: the picker cannot know a NAT front, a preferred name or a multi-homed
+             box's right answer (developer ruling). The value is the BASE — clients add /mcp. #}
+          <input id="ima-address" type="text" class="cfm-input" x-model="chosen"
+                 placeholder="https://this-host/corpusfm">
+          <p class="cfm-field-hint">The <code>https://</code> base another machine uses to reach this
+            CORPUSfm, including its web prefix. An internal/LAN address is fine.</p>
+        </div>
+
+        <p class="cfm-field-hint" x-show="warning" x-text="warning"></p>
+        <p class="cfm-inline-error" x-show="err" x-text="err"></p>
+        <p class="cfm-muted" x-show="busyMsg" x-text="busyMsg"></p>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <button type="button" class="cfm-btn" :disabled="!!busy" @click="openSettings()">Open Settings → MCP</button>
+        <span class="cfm-spacer"></span>
+        <button type="button" class="cfm-btn" :disabled="!!busy" @click="looksRight()">Looks right</button>
+        <button type="button" class="cfm-btn cfm-btn--primary"
+                :disabled="!!busy || !chosen.trim()"
+                @click="saveAndRestart()">Save and restart</button>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+{% if mode == 'server' and authenticated and g_admin %}
+<script>
+  function initialMcpAddress() {
+    return {
+      show: false, addr: {}, candidates: [], warning: '', err: '', busy: false, busyMsg: '', chosen: '',
+      _trap: null,
+      // Declared, not implied: Alpine evaluates `_trap = …` against the component's own data, and an
+      // undeclared property is a ReferenceError — the same defect settings.html once carried as
+      // `_trapSrv` (packet 1136). Undeclared, the trap would never be installed OR released.
+
+      // The status read is narrow on purpose: an ordinary page load must not pull the whole Settings
+      // payload to learn there is nothing to say. Nothing renders until it answers, so no flash.
+      async init() {
+        try {
+          const r = await fetch('{{ url_prefix }}/api/settings/initial-mcp-address', { cache: 'no-store' });
+          if (!r.ok) return;
+          const d = await r.json();
+          if (!d.show) return;                     // acknowledged, or the authority could not be read
+          this.addr = d.external_address || {};
+          this.candidates = d.candidates || [];
+          this.warning = d.reauthorize_warning || '';
+          // Preselect the STORED value when one is waiting to become live, otherwise what is served:
+          // the pending address is the administrator's own most recent decision (Codex F1).
+          this.chosen = (this.addr.pending && this.addr.value) || this.addr.serving
+                        || this.addr.value || '';
+          this.show = true;
+        } catch (e) { /* never block the app on this */ }
+      },
+
+      // Acknowledge WITHOUT changing the address. A failed write is not a dismissal: the pop-over
+      // stays open and says so, because the mark is what stops it coming back.
+      async _acknowledge() {
+        const r = await fetch('{{ url_prefix }}/api/settings/initial-mcp-address/dismiss', { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (!d.ok) throw new Error(d.error || 'Could not record that you have seen this.');
+      },
+
+      async looksRight() {
+        this.busy = true; this.err = '';
+        try { await this._acknowledge(); this.show = false; }
+        catch (e) { this.err = String(e.message || e); }
+        finally { this.busy = false; }
+      },
+
+      async openSettings() {
+        this.busy = true; this.err = '';
+        try { await this._acknowledge(); cfmGo('/settings#mcp'); }
+        catch (e) { this.err = String(e.message || e); this.busy = false; }
+      },
+
+      // ONE write path: the same endpoint the Settings island posts to. The server persists the
+      // address, then the acknowledgement, and only then schedules the restart — so a restart cannot
+      // race the mark and prompt this box again (packet 1326).
+      async saveAndRestart() {
+        this.busy = true; this.err = ''; this.busyMsg = 'Saving the address…';
+        try {
+          const r = await fetch('{{ url_prefix }}/api/settings/external-address', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ public_base_url: this.chosen.trim(), restart_now: true,
+                                   acknowledge_initial_prompt: true }) });
+          const d = await r.json();
+          if (!d.ok) { this.err = d.error || 'Could not save the address.'; this.busyMsg = ''; this.busy = false; return; }
+          if (d.restart_required && d.restart_scheduled) { await this._awaitRestart(); }
+          else { this.show = false; }
+        } catch (e) { this.err = String(e.message || e); this.busyMsg = ''; this.busy = false; }
+      },
+
+      // Wait for the NEW process, exactly as the Settings island does — the old one answers for a
+      // moment after the restart is scheduled, and treating that as proof shows the previous address.
+      async _awaitRestart(attempts = 30, delayMs = 2000) {
+        this.busyMsg = 'Restarting CORPUSfm to serve the new address…';
+        for (let i = 0; i < attempts; i++) {
+          await new Promise(res => setTimeout(res, delayMs));
+          try {
+            const r = await fetch('{{ url_prefix }}/api/settings/data', { cache: 'no-store' });
+            if (!r.ok) continue;
+            const ea = (await r.json()).external_address || {};
+            if (ea.serving && ea.pending === false) {
+              this.busyMsg = 'Now serving ' + ea.serving;
+              this.show = false; this.busy = false;
+              return true;
+            }
+          } catch (e) { /* mid-restart: not answering yet */ }
+        }
+        this.busyMsg = 'Saved; CORPUSfm is still restarting — reload in a moment.';
+        this.busy = false;
+        return false;
+      },
+    };
+  }
+</script>
+{% endif %}
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

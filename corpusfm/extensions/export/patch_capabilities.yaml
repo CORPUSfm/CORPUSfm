@@ -1,0 +1,886 @@
+# FMUpgradeTool capability ledger — empirically-mapped behaviors and limits.
+#
+# Single source of truth for what FMUpgradeTool can and cannot do, HOW each
+# claim was verified, and the tool version it was verified against. Two
+# consumers: a human reviewer reads this file; the patch-AI system prompt
+# renders render_capability_guidance() (capabilities.py) so generation respects
+# known limits instead of guessing.
+#
+# Behavior is TOOL-VERSION-SPECIFIC (like FM step IDs in mappings.yaml). Always
+# tag tool_version and re-verify on a new FMUpgradeTool build. A probe must
+# terminate in a change here: promote an open_question to an entry, refute an
+# entry, or refine the question. Keep `status` and `verified_via` honest —
+# "inferred" is not "verified".
+#
+# status_values:   verified | refuted | inferred | unknown
+# verified_via:    live-apply | inference | doc
+# category_values: apply-semantics | grammar | limitation | operational
+
+tool: FMUpgradeTool
+patch_format_version: "2.2.3.0"
+verified_tool_versions:
+  - "22.0.6.600"
+  - "26.0.1.68"   # FM Server 2026 (04-30-2026); re-probed 2026-06-14 — see fm2026-* entries
+
+entries:
+  - id: replace-targets-by-uuid
+    title: ReplaceAction targets by UUID, not by name
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-05-28"
+    behavior: >
+      A ReplaceAction matches the existing object by its FM UUID. A different
+      name in the ScriptReference renames the object in place, preserving inbound
+      UUID references from callers.
+    implication: >
+      generate_patch detects renames (same UUID across the added/removed sets)
+      and emits a single ReplaceAction instead of a broken Delete+Add.
+    ai_guidance: >
+      To rename or rewrite an existing object, target it by its id/UUID from
+      SCHEMA CONTEXT; never Delete+Add to rename (it breaks caller references).
+
+  - id: replace-objectlist-full-replacement
+    title: A script ReplaceAction ObjectList is a FULL replacement
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-05-28"
+    behavior: >
+      The ObjectList in a script ReplaceAction wholly replaces the script's
+      steps. An empty ObjectList wipes all steps.
+    implication: >
+      _build_replace always includes the complete StepsForScripts ObjectList.
+    ai_guidance: >
+      For a ReplaceAction on a script, always emit the COMPLETE new step list; a
+      partial list deletes every step you omit.
+
+  - id: script-folder-nesting
+    title: Script folders nest from positional open/script ordering
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-03"
+    behavior: >
+      An added folder-open <Script isFolder="True"> emitted before a script's
+      AddAction, in document order, nests that script into the folder. The tool
+      reconstructs membership from POSITION, not a parent id.
+    evidence: >
+      E1/E2 sweep on fms-server (Dev CORPUSfm_Addon_Development -> Var
+      CORPUSfm_Addon_DevVarient): resulting TestDummyScript.folder_path =
+      ['TestDummyFolder'].
+    implication: >
+      generate_patch (_emit_foldered_additions) emits added folder-opens before
+      their child scripts in document order.
+    ai_guidance: >
+      To add a script inside a NEW folder, emit the folder-open entry first,
+      then the script, in document order.
+
+  - id: script-folder-close-bounds
+    title: A close marker is required to BOUND a folder
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-03"
+    behavior: >
+      An unclosed folder runs to the end of the catalog. Without an
+      isFolder="Marker" close after its contents, a later added root-level item
+      is captured into the folder; with the close, the next item stays at root.
+    evidence: >
+      Bounding pair on fms-server (folder+script+[close?]+trailing-root-script):
+      without close, RootAfterScript.folder_path = ['TestDummyFolder']; with
+      close, [].
+    implication: >
+      _emit_foldered_additions emits the matching close marker after an added
+      folder's children.
+    ai_guidance: >
+      After a new folder's scripts, emit the folder-close marker
+      (isFolder="Marker", name "--") so the following items are not swallowed.
+
+  - id: preexisting-folder-insert-lands-at-root
+    title: A script added to a PRE-EXISTING folder lands at root
+    category: limitation
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-03"
+    behavior: >
+      AddAction appends to the catalog. A script added into a folder that
+      already exists in the target file lands at the catalog ROOT — there is no
+      patch-level way to re-insert it into an already-closed folder span.
+    implication: >
+      generate_patch emits the script (it is not lost) but cannot fold it into
+      the existing folder; coverage now flags it with a caveat reason (via
+      coverage_gate.preexisting_folder_caveat). Candidate for an fmClip fallback
+      (drop the snippet into the folder by hand).
+    ai_guidance: >
+      You CANNOT place a new script inside a folder that ALREADY EXISTS in the
+      target file. If the requested folder already exists, add the script at root
+      and note the limitation in a MISSING comment; never fabricate the nesting.
+
+  - id: account-delete-unsupported
+    title: Accounts cannot be deleted via patch
+    category: limitation
+    status: verified
+    verified_via: inference
+    tool_version: "22.0.6.600"
+    behavior: >
+      Account objects cannot be removed by a DeleteAction.
+    implication: >
+      coverage_gate blocks AccountsCatalog deletion (not_patchable); consumed by
+      _build_delete.
+    ai_guidance: >
+      Never emit a DeleteAction for an account; it is not supported.
+
+  - id: builtin-privset-delete-unsupported
+    title: Built-in privilege sets cannot be deleted
+    category: limitation
+    status: verified
+    verified_via: inference
+    tool_version: "22.0.6.600"
+    behavior: >
+      The four built-in privilege sets ([Full Access], [Data Entry Only],
+      [Read-Only Access], [No Access]) cannot be removed by a DeleteAction.
+    implication: >
+      coverage_gate blocks built-in privilege-set deletion; consumed by _build_delete.
+    ai_guidance: >
+      Never emit a DeleteAction for a built-in privilege set.
+
+  - id: validatepatch-requires-src-path
+    title: --validatePatch requires -src_path even for plaintext
+    category: operational
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    behavior: >
+      On 22.0.6.600, --validatePatch still requires a -src_path argument even
+      for an unencrypted patch.
+    implication: >
+      Validation tooling must supply a source .fmp12 path.
+
+  - id: linux-run-as-fmserver-home
+    title: On Linux, run as fmserver with a writable HOME/XDG_CACHE_HOME
+    category: operational
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    behavior: >
+      FMUpgradeTool must run as the fmserver user with a writable HOME and
+      XDG_CACHE_HOME (Fontconfig), and operates on a CLOSED .fmp12. Otherwise it
+      reports a misleading 802/20402 "File permission problem". corpusfm/corpusfm
+      (Full Access) suffices for --update.
+    implication: >
+      The apply path closes the file, copies it, and runs the tool as fmserver.
+
+  - id: field-addaction-applies
+    title: AddAction adds a field (with its BaseTable ReplaceAction) cleanly
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      A FieldsForTables AddAction (FieldCatalog + BaseTableReference + ObjectList
+      with the <Field>) adds a new field to an existing table; the accompanying
+      BaseTable ReplaceAction that generate_patch emits applies fine and existing
+      fields are preserved. Verified live on a playground (Probe 0): generated
+      patch from a real A/B diff, applied, hosted, the new field appears in OData
+      $metadata; all pre-existing fields intact.
+    implication: >
+      Field additions are a supported, generate_patch-able operation — extends the
+      verified set beyond scripts to fields.
+    ai_guidance: >
+      Adding fields is safe to express as a FieldsForTables AddAction.
+
+  - id: field-autoenter-and-calc-apply-and-function
+    title: Added auto-enter calc + calculation fields apply AND functionally work
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      An AddAction field carrying an <AutoEnter type="Calculated"> with a Get(UUID)
+      calc, and a separate fieldtype="Calculated" field (Upper(CreatedBy)), both
+      applied and FUNCTIONED after hosting: inserting a record sans the auto-enter
+      field returned it populated with a fresh UUID; the calc field computed
+      "HELLO" from CreatedBy="hello". Verified behaviorally over OData (Probes 1+2).
+      These are exactly the features OData/ODBC DDL CANNOT create — FMUpgradeTool
+      reaches the native schema, so it can.
+    implication: >
+      FMUpgradeTool can add the auto-enter/calculation fields OData can't. The
+      construction-template gap (docs/completeness-audit.md) is the only thing
+      standing between this and CORPUSfm authoring such fields.
+    ai_guidance: >
+      Auto-enter and calculation fields ARE expressible/applicable as field
+      AddActions — they are not a tool limitation, only an authoring-grammar gap.
+
+  - id: calc-ddrref-not-required
+    title: Hand-authored calc fields need only <Text>, not the DDRREF chunk hash
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      Real FM calc XML carries a <DDRREF kind="ChunkList" hash="..."> alongside the
+      <Calculation><Text>. The auto-enter and calc fields in Probes 1+2 were
+      authored with the <Text> (and a valid <TableOccurrenceReference> context) but
+      WITHOUT any DDRREF, and both applied and functioned — FM recompiles the calc
+      from the Text. The DDRREF is FM's compiled-chunk cache, not an input.
+    implication: >
+      A patch generator (or the AI) can author calc/auto-enter fields from the calc
+      text + a TO-context reference alone; it does NOT need to reproduce FM's
+      internal chunk hashes. Removes the biggest perceived obstacle to authoring
+      calc-bearing objects.
+    ai_guidance: >
+      When authoring a calculation, emit <Calculation><TableOccurrenceReference/>
+      <Text>…</Text></Calculation>; omit DDRREF.
+
+  - id: field-replace-typechange-nonfunctional
+    title: A field ReplaceAction that changes type (Normal -> Calculated) applies but does not function
+    category: limitation
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      Replacing an existing Normal field (by UUID) with a Calculated definition
+      (Probe 3) reported "Patch File Applied" but produced a NON-functional field:
+      it never returned the new calc value ("REPLACED_VALUE") — old records read a
+      stale value, new records read empty. Sharp contrast with the clean field
+      AddAction (Probes 1+2). The structure used was CORPUSfm's _build_replace
+      output: a bare <Field> inside <Replace type="Field" UUID="…"> with NO
+      FieldsForTables/BaseTableReference context (the prime suspect), so this is not
+      yet a proven hard tool limit.
+    implication: >
+      Do NOT rely on field ReplaceAction for type-changing edits. Prefer Add for new
+      behavior. Field rename/in-place edits (no type change) are still unprobed.
+    ai_guidance: >
+      Avoid expressing a Normal->Calculated change as a field ReplaceAction; it
+      applies silently but leaves the field non-functional.
+    follow_up: >
+      Re-probe field Replace WITH a FieldsForTables/FieldCatalog/BaseTableReference
+      wrapper, and a same-type Replace (e.g. change a calc's Text only), to separate
+      a CORPUSfm _build_replace structure bug from a genuine tool limitation.
+
+  - id: field-addaction-minimal-refs
+    title: Field AddActions need only id+name refs — no UUID, no BaseTable Replace, multi-field OK
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      A field AddAction applies and FUNCTIONS with the minimal form: BaseTableReference
+      and TableOccurrenceReference carry only id + name (NO UUID); the field AddAction
+      stands ALONE (no companion BaseTable ReplaceAction); multiple <Field> objects in
+      one ObjectList all land. Verified live (2026-06-04) on a clean playground: a two-
+      field patch (auto-enter Get(UUID) + a Upper(CreatedBy) calc, both id+name refs,
+      no DDRREF, no BaseTable Replace) applied → ProbeAuto auto-populated a UUID on
+      insert, ProbeCalc computed "HELLO". This SIMPLIFIES the earlier Probe-1/2 recipe
+      (which redundantly carried UUIDs + a BaseTable Replace).
+    implication: >
+      This minimal grammar IS the field construction template
+      (corpusfm/extensions/export/construction.py), surfaced into patch_ai's system
+      prompt. The AI authors field AddActions from id+name in SCHEMA CONTEXT — no UUID
+      enrichment of schema_context required. Closes the construction-template gap for
+      fields (docs/completeness-audit.md).
+    ai_guidance: >
+      To add a field, emit a FieldsForTables AddAction with id+name references only;
+      do not add a BaseTable ReplaceAction or any UUID/DDRREF.
+
+  - id: intra-patch-ordering-required
+    title: A referenced object MUST precede its referrer within the same patch
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      FMUpgradeTool processes AddActions in DOCUMENT ORDER and does not pre-resolve
+      forward references. Probe 4 (live): a patch adding a new TableOccurrence + a
+      Relationship that uses it — with the TO AddAction FIRST — produced a relationship
+      whose endpoints both resolved (PG_Two + Playground1). The SAME patch with the
+      Relationship FIRST and the TO second produced a relationship with a DANGLING
+      endpoint (['Playground1', '']) — the forward reference to the not-yet-added TO did
+      not resolve. So order is load-bearing. (This is Use Case 4's Q1.)
+    implication: >
+      When authoring a multi-object patch, emit the referenced object before any object
+      that references it: TO before its relationship; a called script before its caller;
+      a field before a script that sets it.
+    ai_guidance: >
+      Order AddActions referent-first. Never reference an object earlier in the patch
+      than where it is added.
+
+  - id: new-object-refs-by-name-generic-catalogs
+    title: Generic-catalog adds (TO, Relationship) apply; new in-patch objects bind by NAME
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      A generic catalog AddAction — <AddAction><TableOccurrenceCatalog><TableOccurrence
+      id="0" .../></TableOccurrenceCatalog></AddAction>, and likewise <RelationshipCatalog>
+      <Relationship id="0">…</Relationship></RelationshipCatalog> — applies and creates the
+      object (Probe 4). FMUpgradeTool REASSIGNS both the integer id (0 → real) AND the UUID
+      of a new object (the AAAA/BBBB UUIDs I supplied were replaced). So a later object in
+      the same patch references a just-added object by NAME (the TableOccurrenceReference
+      name= matched the new TO); id (still 0) and any supplied UUID are not the binding.
+      A TO references its base table via BaseTableSourceReference/BaseTableReference; a
+      Relationship uses LeftTable/RightTable (TableOccurrenceReference) + JoinPredicateList/
+      JoinPredicate(type="Equal")/LeftField+RightField (FieldReference id=<field id> + a
+      nested TableOccurrenceReference).
+    implication: >
+      Construction templates for relationships/TOs reference new in-patch objects by
+      name, supply id="0", and need not assign UUIDs. Combine with intra-patch-ordering
+      -required: emit the TO, then the relationship.
+    ai_guidance: >
+      Add a TableOccurrence with id="0" and a name; reference it from a later
+      relationship by that name (not by id or UUID). Emit the TO before the relationship.
+
+  - id: layout-add-object-hash-recomputed
+    title: A whole new LAYOUT (incl. a button→script) applies; object hashes are recomputed
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      Probe 5 (live, Playground1): a <AddAction><LayoutCatalog><Layout id="0" name=…>
+      …</Layout></LayoutCatalog></AddAction> creates a whole new layout. Each
+      <LayoutObject> carries a `hash` attribute that real exports compute; supplying a
+      32-char ALL-ZEROS placeholder applied fine and FM REPLACED it with a real hash on
+      open (fake 000…0 came back as A6791FD5…/D3CEC4AE…) — so the layout-object hash is
+      NOT an authoring input, exactly like calc DDRREFs. A Button LayoutObject
+      (type="Button" kind="10") whose <action><ScriptReference id name UUID/> targets an
+      EXISTING script applied and the button→script wiring survived in the hosted DB.
+      The layout's context is a <TableOccurrenceReference> (existing TO). The button's
+      <ScriptReference> needs only id + name — Probe L4 (live): supplying it with NO UUID
+      applied and FM RESOLVED the script and filled the UUID itself (came back
+      UUID="58F55335-…"). So, like fields/TOs, the bind is by id/name, not UUID.
+      validatePatch needs -src_account/-src_pwd (CORPUSfm/CORPUSfm here) or it errors 212;
+      --update is the real signal.
+    implication: >
+      Layout-object construction is feasible (it was the suspected blocker — the hash is
+      not). The AI can author a new layout with text + a script-running button using
+      placeholder hashes and no DDRREF. SCOPE: this ADDS a new layout. Injecting an
+      object into an EXISTING layout is a ReplaceAction of the whole object list
+      (replace-beyond-scripts, still unprobed).
+    ai_guidance: >
+      Build a new layout via LayoutCatalog AddAction; set every LayoutObject
+      hash="00000000000000000000000000000000"; a button's action ScriptReference uses the
+      existing script's id+name ONLY (no UUID — do not flag it missing); omit the action
+      <Calculation> unless passing a parameter; never emit a DDRREF. Do not try to add an
+      object to an existing layout.
+
+  - id: field-replace-sametype-ok-typechange-unhostable
+    title: Same-type field Replace works; a type-changing field Replace makes the file unhostable
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      Probe sweep (live, Playground1), both using the wrapped form
+      <ReplaceAction><FieldsForTables><FieldCatalog><BaseTableReference/><ObjectList>
+      <Field …><UUID>…</UUID>…</Field></ObjectList></FieldCatalog></FieldsForTables>:
+      (a) SAME-TYPE Replace (keep fieldtype="Normal", edit comment/options) applied AND
+      the file hosted cleanly. (b) TYPE-CHANGE Replace (Normal→Calculated) applied per the
+      tool (rc=0, "Patch File Applied") but the resulting file FAILED TO HOST — fmsadmin
+      open returned 10904 and OData 802 (unable to open file), reproducibly. This resolves
+      the earlier field-replace-typechange-nonfunctional anomaly: it is a TOOL LIMIT, not a
+      CORPUSfm bare-<Field> bug — the wrapper does not fix it and in fact yields an
+      unopenable file (worse than the prior bare-form "non-functional").
+    implication: >
+      Field Replace is usable to edit a field IN PLACE as long as fieldtype is unchanged.
+      NEVER change a field's type via Replace — emit a new field via AddAction instead
+      (already the field-template guidance; now with a hard reason: the file won't open).
+      ENFORCED: generate_patch (via coverage_gate) marks a fieldtype-changing field
+      Replace not_patchable and does not emit it.
+    ai_guidance: >
+      To edit an existing field, ReplaceAction is fine ONLY if you keep fieldtype the same.
+      To introduce a calculated/different-type field, AddAction a new field; never Replace
+      a Normal field into a Calculated one.
+
+  - id: delete-field-and-table-occurrence-ok
+    title: DeleteAction removes a field and a table occurrence cleanly
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      Probe sweep (live): <DeleteAction><ItemReference UUID="…" type="FieldReference">
+      <BaseTableReference id name/></ItemReference></DeleteAction> removed a field
+      (ModifiedBy gone, file hosts); the same with type="TableOccurrenceReference" (no
+      BaseTableReference) removed a table occurrence (the CORPUSfm TO gone, only the base
+      TO remained, file hosts). Targeting is by the object's FM UUID (the <UUID> child in
+      the export). Complements the existing delete restrictions (accounts + built-in
+      privilege sets blocked).
+    ai_guidance: >
+      Delete a field or table occurrence with a DeleteAction/ItemReference by its UUID
+      (fields also need a BaseTableReference). Do not attempt to delete accounts or
+      built-in privilege sets.
+
+  - id: layout-add-only-no-uuid-to-target
+    title: Layouts are add-only — the export carries no layout UUID to target Replace/Delete
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      Probe sweep (live): a SaveAsXML LayoutCatalog <Layout id name width> entry carries NO
+      UUID — not as an attribute and not as a direct <UUID> child (only its nested children
+      — TableOccurrenceReference, LayoutThemeReference, LayoutObjects — have UUIDs). Since
+      ReplaceAction/DeleteAction target by the object's own UUID, a layout cannot be
+      addressed: manual Replace/Delete attempts using a nested-object UUID applied (rc=0,
+      hosted) but were NO-OPs (the layout was unchanged / not removed). CORPUSfm's own
+      _build_replace/_build_delete already bail on layouts for lack of fm_uuid.
+    implication: >
+      Layouts are ADD-ONLY via patch. You cannot modify or delete an existing layout, and
+      you cannot inject an object into one (that would require a layout Replace). This is
+      the structural reason behind the layout-construction template's new-layout-only scope.
+      ENFORCED: generate_patch (via coverage_gate) marks any layout Replace/Delete
+      not_patchable with this structural reason.
+    ai_guidance: >
+      Only ADD layouts. Never try to Replace or Delete a layout, or to add an object onto
+      an existing layout — author a new layout instead.
+
+  - id: valuelist-add-ok
+    title: A value list adds via a generic-catalog AddAction
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      Probe sweep (live): <AddAction><ValueListCatalog><ValueList id="0" name="ProbeVL">
+      <Source value="Custom"/><TagList/></ValueList></ValueListCatalog></AddAction> applied
+      and the value list appeared in the hosted DB — same generic-catalog add pattern as
+      TOs/relationships (id="0", bind by name). Only a minimal Custom-source VL was probed;
+      the custom VALUES grammar and field-source VLs are not yet captured.
+    ai_guidance: >
+      Add a value list with a ValueListCatalog AddAction, id="0" and a name. (Custom values
+      and field-source bindings are not yet templated — keep it simple.)
+
+  - id: multi-object-patch-composes
+    title: A cross-disciplinary multi-object patch applies as one unit (capstone)
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      Capstone probe (live, Playground1): a SINGLE patch with four AddActions in
+      referent-first order — a new field (ProbeStatus), a new table occurrence
+      (ProbeApprovalTO, id=0), a relationship joining the base TO to the new TO by NAME,
+      and a new layout with a button running an existing script — applied (rc=0), the file
+      HOSTED, and ALL FOUR objects landed. The relationship's endpoints both resolved
+      (['ProbeApprovalTO','Playground1']) — no dangling — confirming intra-patch by-name
+      binding + referent-first ordering hold when many object types are combined. This is
+      the cross-disciplinary change the original AI-context behavioral probe could not do.
+    implication: >
+      The construction templates compose: the AI can emit one Patch (AI) covering fields +
+      TOs + relationships + layouts together, as long as it orders referents before
+      referrers. End-to-end generative reach for additive schema change is proven.
+    ai_guidance: >
+      You may combine field/TO/relationship/layout AddActions in one patch. Order them
+      referent-first (field & TO before the relationship that uses them; script before a
+      button that runs it). Bind new objects by name, id="0".
+
+  - id: script-step-hashes-recomputed
+    title: Script-step hashes are FM-recomputed; step structure applies, content is per-step-type
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      Probe (live, Playground1, step grammar sourced from the scriptstepsamples artifact):
+      a two-AddAction script add — <ScriptCatalog><Script id="0" name=…/></ScriptCatalog>
+      then <StepsForScripts><Script><ScriptReference id="0" name=…/><ObjectList>
+      <Step hash="000…0" index id name>…</Step>…</ObjectList></Script></StepsForScripts> —
+      applied and hosted. The new script landed with its 2 steps (id=89 comment, id=85 Allow
+      User Abort), and the per-step `hash` attribute came back as REAL values (my all-zeros
+      placeholders were RECOMPUTED by FM) — like layout-object hashes / DDRREFs, the step
+      hash is NOT an authoring input. The step structure (type id, index, enable) and the
+      Boolean parameter applied; HOWEVER a comment step's text authored as
+      <Parameter type="Comment"><Comment>text</Comment></Parameter> was LOST — step
+      user-content encoding is step-type-specific and was not reproduced by a naive guess.
+    implication: >
+      Script-step construction is feasible without computing any hash. But per-step
+      PARAMETER/content encoding varies by step type and must come from a verified template,
+      not invented — this is exactly what structure_catalog.steps_templates provides (real
+      step XML with typed placeholders). So: author steps from the step templates, fill the
+      user content, leave hash="000…0" (or omit), and FM recomputes the hash on apply.
+    ai_guidance: >
+      To author script steps, use the structure-catalog step templates for each step type
+      (they carry the correct ParameterValues encoding); set every Step hash to 32 zeros
+      (FM recomputes it) and do not hand-invent a step's parameter XML.
+
+  - id: dangling-cross-reference-silently-dropped
+    title: A reference to an object absent from BOTH files is applied silently as a no-op, not refused
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600"
+    date: "2026-06-04"
+    behavior: >
+      Probe (live, Playground1): a patch added a script "DanglingProbe" whose only step
+      was a Perform Script calling "GhostTarget999" — a script present in NEITHER the
+      source file NOR the patch. Two observations. (1) --validatePatch returned "Patch
+      File Validated" — validation is STRUCTURAL/XML-only and does NOT resolve references.
+      (2) --update returned rc=0 "Patch File Applied" and the file hosted; the DanglingProbe
+      script landed, but the unresolved ScriptReference was SILENTLY DROPPED — the step
+      came back as a no-op `Perform Script [ "" ]` (the <List> that held the reference is
+      empty), and NO phantom "GhostTarget999" script was created. So a dangling reference
+      neither errors nor is preserved nor fabricates a target — it just vanishes, leaving
+      broken/no-op logic in an otherwise-valid, hosted file.
+    implication: >
+      FMUpgradeTool does not guard against dangling cross-references: a structurally valid
+      patch can pass --validatePatch AND --update and still ship silently-broken logic.
+      Neither the tool nor validation is a referential-integrity check. CORPUSfm must catch
+      this BEFORE apply — which is exactly what the static coherence checker does
+      (corpusfm/extensions/export/patch_coherence.py: dangling_reference is an ERROR, since
+      the alternative is silent breakage, not a tool refusal). The checker is therefore NOT
+      redundant with validate; it covers what validate provably cannot.
+    ai_guidance: >
+      Never emit a reference (ScriptReference, FieldReference, TableOccurrenceReference, …)
+      to an object that exists in neither the base artifact nor the patch's own AddActions.
+      It will not error — it will silently vanish, producing a broken no-op. Every reference
+      must resolve in the base file or be added earlier in the same patch (referent-first).
+
+# Open questions — known-unknowns worth a probe. Keep this honest: a probe either
+# promotes one of these to an entry above (verified/refuted) or refines it. This
+# list IS the discovery frontier for the FMUpgradeTool capability map.
+  - id: fm2026-tool-version-baseline
+    title: FM2026 ships FMUpgradeTool 26.0.1.68 — interface backward-compatible
+    category: operational
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.1.68"
+    date: "2026-06-14"
+    behavior: >
+      FM Server 2026 ships FMUpgradeTool 26.0.1.68 (04-30-2026) at the same path
+      (_TOOL_CANDIDATES resolves: .../Database Server/bin/FMUpgradeTool, also /usr/bin).
+      --help shows the SAME subcommands + options as 22.0.6.600 (--update/--validatePatch/
+      --encryptPatch/--decryptPatch/--generateGUIDs/--regenerateGUIDs) plus a NEW
+      --generateDBFile subcommand and a new -plugin_folder option on --update.
+    implication: >
+      The existing apply machinery (apply_patch_with_helper_swap, dry_run, validate)
+      works on 2026 unchanged. --generateDBFile is unexplored. (Operational entry — no
+      ai_guidance; the patch-grammar entries below carry the AI-facing rules.)
+
+  - id: fm2026-patch-format-forward-compatible
+    title: 2.2.3.0 AND 2.3.0.0 patch envelopes both validate + apply on the 2026 tool
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.1.68"
+    date: "2026-06-14"
+    behavior: >
+      On a FM2026 (2.3.0.0-format) playground copy, a CORPUSfm-generated patch with
+      <FMUpgradeToolPatch version="2.2.3.0"> both --validatePatch ("Patch File Validated")
+      and --update ("Patch File Applied", output file created). A version="2.3.0.0" envelope
+      likewise validates + applies. So the patch envelope is forward-compatible; generate_patch
+      need not change for 2026 (it already emits 2.3.0.0 when the source artifact is 2.3.0.0).
+    implication: >
+      No generate_patch change required for FM2026 targets. patch_format_version stays a
+      per-artifact value (2.2.3.0 or 2.3.0.0); both are accepted.
+    ai_guidance: >
+      Either envelope version is accepted by the 2026 tool; match the target file's schema.
+
+  - id: fm2026-persistentstore-catalog-patchable
+    title: A PersistentStoreCatalog add-patch validates + applies (landing unverified)
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.1.68"
+    date: "2026-06-14"
+    behavior: >
+      A patch with an AddAction adding <PersistentStoreCatalog><PersistentStore name=… instanceID=…>
+      <Value type="Text"><StyledText><Data>…</Data>…> both --validatePatch and --update succeed
+      ("Patch File Applied"). The tool ACCEPTS the new FM2026 catalog in a patch (does not reject
+      it as unknown). NOT yet confirmed: that the entry semantically lands + reads back (needs
+      host + export — the deeper live-apply rigor used for the 22.x field entries).
+    implication: >
+      PersistentStoreCatalog is a candidate for generate_patch coverage; gate it patchable only
+      after a host+export landing check.
+    ai_guidance: >
+      PersistentStore entries appear patchable; treat as provisional until landing is verified.
+
+  - id: fm2026-ai-step-script-patchable
+    title: AI-step ParameterValues survive --update with FULL FIDELITY (host+export confirmed)
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.1.68"
+    date: "2026-06-15"
+    behavior: >
+      FULLY CONFIRMED via host+export read-back. A patch adding the real "AI Script Steps" script
+      (all 16 native-AI steps — Configure AI/RAG Account, Insert Embedding, Perform Semantic Find,
+      Generate Response, etc., each with full <ParameterValues>) was applied with --update to a copy
+      of CORPUSfm_Playground1 (a hosted 2.3.0.0 file that carries the CORPUSfm export addon), the
+      patched copy was hosted via the CORPUSfm_Sandbox slot + PKI, OData-exported (SaveAsXML), and
+      re-ingested. The script landed (87→88 items) AND every step kept its parameters: CORPUSfm's
+      analyze_ai_usage read back providers=[OpenAI], accounts=[Dummy Account, Dummy RAG Account],
+      models, and the hard-coded-API-key flag — i.e. accounts/models/providers/key literals all
+      survive --update + FM's re-export. NO silent-drop of AI-step parameters.
+    implication: >
+      AI-step patch generation is fully green: a configured AI script can be patched into a 2026
+      file and its account/model/prompt/key parameters land intact. Resolves the
+      fm2026-new-objects-landing-verification open question.
+    ai_guidance: >
+      AI-step scripts apply AND keep their parameters on 26.0.1.68 — accounts, models, providers,
+      and prompt/key literals all survive --update. Safe to author configured AI steps in a patch.
+
+  - id: fm2026-crossfile-script-steps-need-matching-explicit-id
+    title: Adding a script WITH steps cross-file needs a matching, non-colliding explicit id on both actions
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.1.68"
+    date: "2026-06-15"
+    behavior: >
+      A normalized script add is TWO AddActions — <ScriptCatalog><Script> (the shell) and
+      <StepsForScripts><Script><ScriptReference/><ObjectList> (the steps), linked by id. Applying a
+      script-with-steps into a DIFFERENT file than it came from, the OUTCOME depends entirely on the
+      ids (live-tested on CORPUSfm_Playground1, host+export read-back each time):
+        • Script id="0" + steps ScriptReference id="0"/stale-id/UUID  → script SHELL lands, ALL
+          STEPS DROP (empty script). FM reassigns the id="0" script's id on add, so the steps
+          ScriptReference no longer resolves to it.
+        • steps ScriptReference NAME-ONLY (no id)                     → SHELL lands, steps DROP.
+          FMUpgradeTool does NOT resolve StepsForScripts→Script by name.
+        • MATCHING explicit non-colliding id on BOTH (e.g. id="990001" on the catalog Script AND on
+          the steps ScriptReference) → ALL steps land with full fidelity. FMUpgradeTool RESPECTS a
+          stated non-zero AddAction id (does not always reassign) and links steps to the shell BY ID.
+      The same-file ISV flow works because the source script's id is carried on both actions and does
+      not collide with the target lineage; cross-file injection can collide, so the id must be remapped.
+    implication: >
+      CODE: generate_patch emits the source script's own id on both actions — correct for same-file
+      ISV upgrades, but for CROSS-FILE injection (roadmap #1/#2 origination) the added script must be
+      remapped to a guaranteed-free id on BOTH the ScriptCatalog Script and the StepsForScripts
+      ScriptReference, or the steps silently drop. id="0" and name-only are NOT viable for a
+      script-with-steps cross-file add.
+    ai_guidance: >
+      When a patch ADDS a script that has steps into a file the script did not come from, give the
+      script a single explicit id that is NOT used by any existing script in the target, and put that
+      SAME id on both the <Script> (in ScriptCatalog) and the <ScriptReference> (in StepsForScripts).
+      Do NOT use id="0" or a name-only ScriptReference for a script-with-steps add — the steps will
+      silently drop and the script lands empty.
+
+  - id: fm2026-update-rejects-clipboard-object-form
+    title: --update ignores the clipboard <CatalogReference/><Object> script form
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.1.68"
+    date: "2026-06-15"
+    behavior: >
+      A script AddAction in the clipboard/authoring-guide shape
+      <AddAction><CatalogReference type="ScriptCatalog"/><Object><Script id="0"><StepList>…</Script>
+      applied with --update without error but added NOTHING (item count unchanged, no script). The
+      tool's --update consumes the NORMALIZED catalog form (<ScriptCatalog><Script> + a separate
+      <StepsForScripts><Script><ObjectList>), not the self-contained Object/StepList clip form.
+    implication: >
+      Patch authoring for --update must use the normalized SaveAsXML catalog structure for scripts,
+      not the fmxmlsnippet/clipboard Object form. (The authoring-guide inline script example is not
+      applied by --update; field/TO/relationship/layout adds use their own catalog forms.)
+
+  - id: fm2026-generate-db-file-materializes
+    title: --generateDBFile builds a working .fmp12 directly from a SaveAsXML export
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.1.68"
+    date: "2026-06-15"
+    behavior: >
+      Resolves the fm2026-generate-db-file open question. `FMUpgradeTool --generateDBFile
+      -src_path <SaveAsXML.xml>` produces a .fmp12 next to the source (no -dest_path arg; -force
+      to overwrite) in ~1s — a 373 KB schema XML -> a 258 KB .fmp12. The input is a normal
+      FMSaveAsXML export (the same artifact CORPUSfm ingests), NOT a patch. Brand-new 2026
+      capability (absent in 22.x). The generated file HOSTS cleanly (NORMAL status) on FMS —
+      proven 2026-06-16 by host+open read-back (see fm2026-generate-db-file-minimal-envelope).
+    implication: >
+      FMUpgradeTool 2026 can MATERIALIZE a FileMaker file from a SaveAsXML headlessly. Directly
+      enables roadmap #1 (cross-file reconstruction stub -> buildable .fmp12) and #2 (fresh-file
+      origination -> a real file from a composed/assembled SaveAsXML) without FileMaker Pro.
+    ai_guidance: >
+      To turn a SaveAsXML into a .fmp12, use FMUpgradeTool --generateDBFile -src_path <xml>
+      (2026 only) — or the generate_db_file MCP tool. Output lands beside the source; verify by
+      hosting before relying on it.
+
+  - id: fm2026-generate-db-file-minimal-envelope
+    title: A minimal reconstruction-emitted SaveAsXML materializes + hosts NORMAL
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.1.68"
+    date: "2026-06-16"
+    behavior: >
+      --generateDBFile accepts a MINIMAL but complete FMSaveAsXML and produces a NORMAL-hosting
+      .fmp12. Proven live on fms-server: render_stub_saveasxml (the cross-file reconstruction
+      origination emitter) produced a 5,194-byte SaveAsXML carrying only a root
+      <FMSaveAsXML version="2.2.3.0" Has_DDR_INFO="True"> + one <Structure><AddAction> wrapping
+      BaseTableCatalog + TableOccurrenceCatalog + FieldsForTables (named fields only, fresh
+      UUIDs, no accounts/privileges/themes/layouts). --generateDBFile turned it into a
+      24,576-byte .fmp12 that fmsadmin opened to NORMAL status. So the full envelope FM exports
+      is NOT required — base tables + a Local TO each + named fields suffice to materialize a
+      hostable file. CAVEAT: OData/$metadata read-back of the materialized file returns 802 —
+      a freshly materialized file's default account carries no fmodata extended privilege, and
+      a reconstruction stub emits no AccountsCatalog by design (an explicit blind spot). The
+      file HOSTS; OData access needs the developer to add an account with fmodata.
+    implication: >
+      Roadmap #1 origination path is closed end-to-end: emit_reconstruction_stub(fmt="saveasxml")
+      -> generate_db_file(source_xml=...) materializes a hostable file from recovered tables/fields.
+      The materialized file is a SCAFFOLD (fresh UUIDs, no relink) — the developer rewires the
+      siblings by the recovered KEY names and adds accounts/privileges, exactly as the stub states.
+    ai_guidance: >
+      To materialize a missing/reconstructed file, call emit_reconstruction_stub(fmt="saveasxml")
+      then generate_db_file(source_xml=<that>). The result hosts but is not OData-readable until an
+      account with the fmodata extended privilege is added (reconstruction emits no accounts).
+
+  - id: fm2026-validatepatch-requires-src
+    title: Plaintext --validatePatch now requires -src_path on 26.0.1.68
+    category: operational
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.1.68"
+    date: "2026-06-15"
+    behavior: >
+      `--validatePatch -patch_path <plaintext.xml>` WITHOUT -src_path fails with "(807): Not a
+      valid FMP file"; adding -src_path <source.fmp12> returns "Patch File Validated". In 22.x
+      -src_path was documented as required only for ENCRYPTED patches; on 26.0.1.68 plaintext
+      validation also resolves against the source file.
+    implication: >
+      Any CORPUSfm path that calls --validatePatch on a 2026 target must pass -src_path even for
+      plaintext patches, or it spuriously fails with 807.
+
+  - id: fm2026-update-monolith-only
+    title: FMUpgradeTool consumes only a monolith SaveAsXML — split exports must be reassembled
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.1.68"
+    date: "2026-06-16"
+    behavior: >
+      --generateDBFile -src_path <Summary.xml> (the FM2026 split-catalog FMPReport manifest) RUNS
+      clean (exit 0) but produces NO file — the tool does not recognize the split manifest as a
+      source. --generateDBFile -src_path <one per-catalog file> DOES generate a file, but only with
+      that single catalog (each per-catalog file is a valid standalone one-catalog FMSaveAsXML).
+      Proven live on fms-server with PTLaunchPad's split export. So FMUpgradeTool understands only a
+      MONOLITH FMSaveAsXML, not the split format.
+    implication: >
+      Feed FMUpgradeTool a MONOLITH SaveAsXML (the default export — uncheck FM2026's "create a
+      separate XML file for each catalog"). CORPUSfm only ingests SaveAsXML + AddonXML; it does not
+      consume the split-catalog export format, so this is a no-op for normal CORPUSfm flows and a
+      caution for generate_db_file: pass a monolith, never a Summary.xml manifest or a single
+      per-catalog file.
+    ai_guidance: >
+      Never feed a Summary.xml manifest or a single per-catalog file to FMUpgradeTool expecting the
+      whole schema — it wants a monolith SaveAsXML.
+
+  - id: fm2026-persistentstore-materializes
+    title: A PersistentStore-bearing SaveAsXML materializes + hosts NORMAL
+    category: grammar
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.1.68"
+    date: "2026-06-16"
+    behavior: >
+      --generateDBFile on NewFile_2026's export (which carries a populated
+      <PersistentStore name="TestItem"><Value><Data>...</Data></PersistentStore>) produced a 274 KB
+      .fmp12 that fmsadmin opened to NORMAL status. So a PersistentStoreCatalog in the source XML
+      does not break materialization and the file hosts. (Direct byte-level read-back of the value
+      from the hosted file was not run — it needs the CORPUSfm export addon IN the file, which this
+      throwaway sample lacks; the value-survival question is inductively covered by
+      fm2026-ai-step-script-patchable, which proved rich <ParameterValues> survive --update with full
+      fidelity — a strictly harder case than a name->value PersistentStore.)
+    implication: >
+      PersistentStore content is materialization-safe. Combined with parse (mapped, tested) + apply
+      (validate+update rc=0) + the AI-step fidelity result, FM2026 PersistentStore support is closed
+      to the proportionate extent; a full read-back is gated only on an addon-bearing
+      PersistentStore-configured sample (low value, not manufactured).
+
+open_questions:
+  # intra-patch-ordering-dependency — RESOLVED 2026-06-04 (Probe 4): see entry
+  # intra-patch-ordering-required (referent must precede referrer; FM is order-sensitive).
+  - id: replace-beyond-scripts
+    question: >
+      Does UUID-targeted ReplaceAction behave identically for fields, layouts,
+      relationships, and value lists as it does for scripts?
+      MOSTLY RESOLVED (2026-06-04 probe sweep): BaseTable Replace OK (Probes 0-2).
+      FIELD same-type Replace OK; FIELD type-change Replace = TOOL LIMIT (unhostable
+      file) — see entry field-replace-sametype-ok-typechange-unhostable. LAYOUT
+      Replace is moot/impossible — the export carries no layout UUID to target (entry
+      layout-add-only-no-uuid-to-target). STILL OPEN: relationship Replace and
+      value-list Replace (the playground has none to target; would need to add one
+      first in a prior state). Delete: field + table-occurrence verified OK (entry
+      delete-field-and-table-occurrence-ok); relationship/VL delete still unprobed.
+  - id: preexisting-folder-reposition
+    question: >
+      Is the pre-existing-folder insert truly a hard wall, or is there a
+      Replace-the-folder / reposition path that nests into an existing folder?
+  # dangling-cross-reference — RESOLVED 2026-06-04: see entry
+  # dangling-cross-reference-silently-dropped (applied silently as a no-op, not refused).
+  - id: encryption-ear-interaction
+    question: >
+      How does --update interact with encrypted-at-rest (EAR) files and the
+      -src_pwd / encryption-password arguments?
+
+  # ── FM2026 (FileMaker Server 2026, schema 2.3.0.0) re-probe frontier ──────────
+  # The whole ledger above is verified ONLY against FMUpgradeTool 22.0.6.600 on a
+  # FileMaker Server 2025 host. The host was upgraded to FM Server 2026, which
+  # almost certainly ships a NEW FMUpgradeTool build. Behavior is tool-version-
+  # specific — EVERY entry above must be re-confirmed (or refuted) on the 2026
+  # tool before it can be trusted for 2026 targets. Re-run the existing probe
+  # sweep first (capstone + field/script/folder probes) on a 2026 playground, then
+  # the new-surface questions below. Add the 2026 build to verified_tool_versions
+  # once a probe confirms an entry there. See roadmap #4 + [[project_fm2026]].
+  - id: fm2026-new-objects-landing-verification
+    question: >
+      RESOLVED-PARTIAL (2026-06-14): PersistentStoreCatalog add-patches AND AI-step-bearing
+      script patches both --validatePatch + --update cleanly on 26.0.1.68 (see the
+      fm2026-persistentstore-catalog-patchable / fm2026-ai-step-script-patchable entries).
+      RESOLVED 2026-06-15: the AI-step param read-back is CONFIRMED — applied the 16-step
+      configured AI script into a copy of CORPUSfm_Playground1 (hosted 2.3.0.0 + CORPUSfm export
+      addon), hosted the patched copy via the CORPUSfm_Sandbox slot, OData-exported, re-ingested,
+      and analyze_ai_usage read back providers=[OpenAI] + accounts + models + the API-key flag —
+      every <ParameterValues> survived. See fm2026-ai-step-script-patchable. The probe also mapped
+      the cross-file step-linkage rule (fm2026-crossfile-script-steps-need-matching-explicit-id):
+      steps only attach when the catalog Script and the StepsForScripts ScriptReference share a
+      matching, non-colliding explicit id (id="0"/name-only drop the steps). PersistentStore
+      landing read-back is the only remaining sliver (lower value; the AI surface is the important one).
+      RESOLVED 2026-06-16 (proportionate close): a PersistentStore-bearing SaveAsXML (NewFile_2026's
+      populated <PersistentStore name="TestItem">) materializes via --generateDBFile into a 274 KB
+      .fmp12 that hosts NORMAL on FMS (fm2026-persistentstore-materializes). Combined with: parses
+      first-class (mapped, tested) + the add-patch applies validate+update rc=0 (existing) + the
+      AI-step probe proving the HARDER case (rich <ParameterValues> survive --update with full
+      fidelity), a simple name->value PersistentStore is inductively covered. A direct byte-level
+      value read-back would need an addon-bearing PersistentStore-configured file (none exists; the
+      CORPUSfm export addon is the only headless schema read path) — not worth manufacturing for this
+      explicitly-low-value sliver. Nothing actionable remains.
+  - id: fm2026-generate-db-file
+    question: >
+      RESOLVED 2026-06-15: --generateDBFile -src_path <SaveAsXML> materializes a working .fmp12
+      from a schema XML in ~1s (NOT from a patch — from a full SaveAsXML export). See the verified
+      entry fm2026-generate-db-file-materializes. Enables #1/#2 file materialization headlessly.
+      Hosting CONFIRMED 2026-06-16 (fm2026-generate-db-file-minimal-envelope: a minimal emitted
+      envelope hosts NORMAL). SPLIT-export-as-source RESOLVED 2026-06-16 (fm2026-update-monolith-only):
+      --generateDBFile does NOT consume the Summary.xml manifest (runs, produces no file); a single
+      per-catalog file generates only its one catalog. Pass a MONOLITH SaveAsXML — fully RESOLVED.
+  - id: fm2026-split-catalog-apply
+    question: >
+      RESOLVED 2026-06-16 (fm2026-update-monolith-only): FMUpgradeTool consumes only a MONOLITH
+      FMSaveAsXML. --generateDBFile on the Summary.xml manifest runs but produces nothing; on a
+      single per-catalog file it generates a file with only THAT catalog (each per-catalog file is
+      a valid one-catalog FMSaveAsXML). The split format is moot for the tool. (CORPUSfm itself
+      ingests only SaveAsXML + AddonXML — the split-catalog ingestion path was removed 2026-06-16,
+      so split exports are not a CORPUSfm input either.) The apply target was always the .fmp12.

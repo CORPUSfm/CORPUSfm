@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CORPUSfm — MCP sign-in</title>
+  <link rel="stylesheet" href="{{ url_prefix }}/static/style.css">
+  <link rel="stylesheet" href="{{ url_prefix }}/static/kit.css">
+  <script>
+    (function () {
+      if (localStorage.getItem('fmc_theme') === 'light') document.documentElement.dataset.theme = 'light';
+    })();
+  </script>
+</head>
+<body class="login-body">
+  <img class="login-wordmark wm-dark"  src="{{ url_prefix }}/static/corpusfm-wordmark-darkmode.svg"  alt="CORPUSfm">
+  <img class="login-wordmark wm-light" src="{{ url_prefix }}/static/corpusfm-wordmark-lightmode.svg" alt="CORPUSfm">
+  <div class="alert alert-error login-alert" style="max-width:28rem;margin:1rem auto;">{{ message }}</div>
+</body>
+</html>

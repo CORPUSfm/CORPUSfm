@@ -1,0 +1,1944 @@
+<!DOCTYPE html>
+<html lang="en" id="fmc-root">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="corpusfm-calculation-palette" content="__CORPUSFM_CALC_PALETTE__">
+<meta name="corpusfm-script-palette" content="__CORPUSFM_SCRIPT_PALETTE__">
+<meta name="corpusfm-syntax-palette-version" content="__CORPUSFM_PALETTE_VERSION__">
+<title>__CORPUSFM_TITLE__</title>
+<style>__CORPUSFM_CSS__</style>
+<script>(function(){try{var t=localStorage.getItem('fmc_theme');if(t==='light')document.getElementById('fmc-root').dataset.theme='light';}catch(e){}})()</script>
+</head>
+<body x-data="fmExplorer" x-init="init()" @keydown.window="handleKeydown($event)" :class="{'graph-fs': graphFullscreen}">
+
+<div id="splash">
+  <div id="splash-wordmark">__CORPUSFM_WORDMARK__</div>
+  <div id="splash-product">Explorer</div>
+  <div id="splash-sub">Preparing schema&hellip;</div>
+  <div id="splash-bar-wrap"><div id="splash-bar"></div></div>
+</div>
+
+<div id="hdr">
+  <div id="hdr-wordmark-dark">__CORPUSFM_NODE_ICON__</div>
+  <div id="hdr-wordmark-light">__CORPUSFM_HDR_WM_LIGHT__</div>
+  <h1>Explorer</h1>
+  <div class="meta" x-text="currentFileMeta"></div>
+  <div id="nav-btns">
+    <button class="nav-btn" type="button" x-show="canGoBack" @click="goBack()" title="Go back (Alt+←)">
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+      Back
+    </button>
+    <div style="position:relative">
+      <button type="button" class="nav-btn" @click="showRecent=!showRecent" title="Recently visited">
+        Recent
+        <svg class="nav-chevron" :class="{open: showRecent}" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div id="recent-dropdown" x-show="showRecent" @click.outside="showRecent=false">
+        <div x-show="recentItems.length===0" class="recent-none">No history yet.</div>
+        <template x-for="(h, i) in recentItems" :key="i">
+          <div class="recent-item" @click="navigateToHistory(h)"
+               x-text="(appData.files.length > 1 ? h.fk + ' › ' : '') + h.display"></div>
+        </template>
+      </div>
+    </div>
+  </div>
+  <div id="search-wrap">
+    <input type="text" placeholder="Search all sections…"
+           x-model="searchQuery" @input="doSearch()" @keydown.escape="clearSearch()"
+           x-ref="searchInput">
+    <button id="search-btn" x-show="searchQuery" @click="clearSearch()">✕ Clear</button>
+  </div>
+  <button class="icon-btn" type="button" @click="toggleTheme()"
+          :title="darkMode ? 'Switch to light mode' : 'Switch to dark mode'"
+          aria-label="Toggle light/dark mode">
+    <svg x-show="darkMode" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+    <svg x-show="!darkMode" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+  </button>
+  <button id="about-btn" class="icon-btn" type="button" x-show="!!currentFileObj.about"
+          @click="showAbout=true" title="About this snapshot">
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+  </button>
+  <button id="save-btn" class="icon-btn" type="button" onclick="_savePage()" title="Save As…">
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+  </button>
+</div>
+
+<div id="ws">
+  <div id="sidebar">
+    <div id="file-tabs">
+      <template x-for="(f, idx) in appData.files" :key="f.file_key">
+        <button class="file-btn" :class="{active: currentFileIdx===idx}"
+                @click="selectFile(idx)" x-text="f.metadata.fm_key"></button>
+      </template>
+    </div>
+    <div id="sec-tabs">
+      <template x-for="[key, label, count, dead_count] in currentFileObj.section_order" :key="key">
+        <button class="sec-btn" :class="{active: currentSection===key && !isSearching}"
+                @click="selectSection(key)">
+          <span class="sec-tile-count" x-text="count"></span>
+          <span class="sec-tile-name" x-text="label"></span>
+          <span class="sec-dead-badge" x-show="dead_count > 0" x-text="dead_count + ' unused'"></span>
+        </button>
+      </template>
+    </div>
+    <div id="item-filter" x-show="!isSearching">
+      <div class="filter-row">
+        <div class="filter-wrap">
+          <input type="text" placeholder="filter items… ( / )" x-model="filterQuery"
+                 x-ref="filterInput">
+          <button type="button" class="filter-clear" x-show="filterQuery"
+                  @click="filterQuery=''; $refs.filterInput.focus()"
+                  title="Clear filter">✕</button>
+        </div>
+        <button type="button" class="fold-btn"
+                x-show="Object.keys(folderChildren).length > 0 && !deadEndMode"
+                @click="expandAll()" title="Expand all">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <button type="button" class="fold-btn"
+                x-show="Object.keys(folderChildren).length > 0 && !deadEndMode"
+                @click="collapseAll()" title="Collapse all">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+        <button type="button" class="fold-btn" id="dead-end-btn" :class="{active: deadEndMode}"
+                x-show="currentSectionHasDeadEnds"
+                @click="deadEndMode=!deadEndMode; _pushHistory()"
+                title="Show/Hide unused"
+                :title="deadEndMode ? 'Hide unused' : 'Show unused'"
+                x-text="deadEndMode ? '★' : '☆'"></button>
+      </div>
+      <div class="sort-tabs" x-show="currentSortOptions.length > 0 && !deadEndMode" title="Sort the list">
+        <template x-for="[skey, slabel] in currentSortOptions" :key="skey">
+          <button type="button" class="sort-tab" :class="{active: sortMode===skey}"
+                  @click="sortMode=skey" x-text="slabel"></button>
+        </template>
+      </div>
+      <div class="sort-tabs" x-show="currentSection==='RelationshipCatalog' && !deadEndMode"
+           title="Flip every relationship's sides and re-sort by the new left side">
+        <button type="button" class="sort-tab" :class="{active: flipAll}"
+                @click="flipAll = !flipAll">⇄ Flip sides</button>
+      </div>
+    </div>
+    <div id="item-list" x-show="!isSearching">
+      <template x-for="node in displayItems" :key="(node.is_header ? 'h:'+node.header : node.name) + '_' + node.depth">
+        <button
+          :class="node.is_header ? 'tree-group-hdr'
+            : (node.is_separator ? 'sep-item'
+            : (node.is_folder
+              ? 'folder-btn'
+              : ((currentItem===node.name ? 'item-btn active' : 'item-btn') + (node.depth > 0 ? ' item-child' : '') + (node.dead_end ? ' dead-end' : ''))))"
+          :style="(node.is_separator) ? '' : ('padding-left:' + (.55 + node.depth * 1.1) + 'rem')"
+          :data-item="(node.is_header || node.is_separator) ? '' : node.name"
+          :disabled="!!(node.is_separator || node.is_header)"
+          @click="(node.is_separator || node.is_header) ? null : (node.is_folder ? toggleFolder(node.name) : selectItem(node.name))"
+          x-text="rowLabel(node)"
+        ></button>
+      </template>
+      <div x-show="displayItems.length===0" style="padding:.5rem;font-size:.78rem;color:var(--text-muted)">
+        No items match filter.
+      </div>
+    </div>
+  </div>
+  <div id="resize-h"></div>
+  <div id="main">
+    <!-- Search results panel -->
+    <div id="search-panel" x-show="isSearching">
+      <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.5rem"
+           x-text="searchResults.length + ' result' + (searchResults.length!==1?'s':'')"></div>
+      <template x-for="(hit, i) in searchResults" :key="i">
+        <div class="sr-item" @click="navigateTo(hit.section, hit.item)">
+          <div class="sr-sec" x-text="sectionLabel(hit.section)"></div>
+          <div class="sr-name" x-text="hit.display_name || hit.item"></div>
+          <div class="sr-snip" x-show="hit.snippet" x-text="hit.snippet"></div>
+        </div>
+      </template>
+      <div x-show="searchQuery.length>1 && searchResults.length===0" style="color:var(--text-muted);font-size:.85rem">
+        No results.
+      </div>
+      <div x-show="searchQuery.length<=1" style="color:var(--text-muted);font-size:.85rem">
+        Type 2+ characters to search.
+      </div>
+    </div>
+
+    <!-- Detail panel -->
+    <div id="detail" x-show="!isSearching" :class="{'graph-active': detailTab==='graph'}">
+
+      <!-- XRef left-edge tab (packet 1286): panel-toggle icon + vertical References·count label -->
+      <div id="xref-tab"
+           x-show="hasXRef && detailTab !== 'graph'"
+           @click="xrefOpen = !xrefOpen"
+           :class="{open: xrefOpen}"
+           :title="xrefOpen ? 'Close references' : 'Open references'">
+        <svg class="xref-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.5" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="2"/>
+          <line x1="10" y1="4" x2="10" y2="20"/>
+          <rect class="xref-tab-fill" x="4.2" y="5.2" width="4.6" height="13.6" rx="1"
+                fill="currentColor" stroke="none"/>
+        </svg>
+        <span class="xref-tab-label" x-show="!xrefOpen"
+              x-text="'References' + (xrefCount ? ' · ' + xrefCount : '')"></span>
+      </div>
+
+      <!-- XRef panel -->
+      <div id="detail-xref" x-show="hasXRef && xrefOpen && detailTab !== 'graph'">
+        <div class="xref-panel-hdr" x-text="currentDisplayName + ' · References'"></div>
+        <template x-if="currentXRef.calls?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('calls')" x-text="(isXRefCollapsed('calls')?'▶ ':'▼ ')+'Calls'"></h4>
+            <div x-show="!isXRefCollapsed('calls')">
+              <template x-for="s in currentXRef.calls" :key="xrefName(s)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('ScriptCatalog',s)" x-text="xrefName(s)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.called_by?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('called_by')" x-text="(isXRefCollapsed('called_by')?'▶ ':'▼ ')+'Called by'"></h4>
+            <div x-show="!isXRefCollapsed('called_by')">
+              <template x-for="s in currentXRef.called_by" :key="xrefName(s)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('ScriptCatalog',s)" x-text="xrefName(s)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.uses_fields?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('uses_fields')" x-text="(isXRefCollapsed('uses_fields')?'▶ ':'▼ ')+'Uses fields'"></h4>
+            <div x-show="!isXRefCollapsed('uses_fields')">
+              <template x-for="f in currentXRef.uses_fields" :key="xrefName(f)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('FieldsForTables',f)" x-text="xrefName(f)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.uses_value_lists?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('uses_value_lists')" x-text="(isXRefCollapsed('uses_value_lists')?'▶ ':'▼ ')+'Uses value lists'"></h4>
+            <div x-show="!isXRefCollapsed('uses_value_lists')">
+              <template x-for="v in currentXRef.uses_value_lists" :key="xrefName(v)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('ValueListCatalog',v)" x-text="xrefName(v)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.used_in_scripts?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('used_in_scripts')" x-text="(isXRefCollapsed('used_in_scripts')?'▶ ':'▼ ')+'Used in scripts'"></h4>
+            <div x-show="!isXRefCollapsed('used_in_scripts')">
+              <template x-for="s in currentXRef.used_in_scripts" :key="xrefName(s)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('ScriptCatalog',s)" x-text="xrefName(s)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.used_in_cfs?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('used_in_cfs')" x-text="(isXRefCollapsed('used_in_cfs')?'▶ ':'▼ ')+'Used in custom functions'"></h4>
+            <div x-show="!isXRefCollapsed('used_in_cfs')">
+              <template x-for="c in currentXRef.used_in_cfs" :key="xrefName(c)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('CustomFunctionsCatalog',c)" x-text="xrefName(c)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.calls_scripts?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('calls_scripts')" x-text="(isXRefCollapsed('calls_scripts')?'▶ ':'▼ ')+'Calls scripts'"></h4>
+            <div x-show="!isXRefCollapsed('calls_scripts')">
+              <template x-for="s in currentXRef.calls_scripts" :key="xrefName(s)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('ScriptCatalog',s)" x-text="xrefName(s)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.calls_cfs?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('calls_cfs')" x-text="(isXRefCollapsed('calls_cfs')?'▶ ':'▼ ')+'Calls custom functions'"></h4>
+            <div x-show="!isXRefCollapsed('calls_cfs')">
+              <template x-for="c in currentXRef.calls_cfs" :key="xrefName(c)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('CustomFunctionsCatalog',c)" x-text="xrefName(c)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.opened_by_scripts?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('opened_by_scripts')" x-text="(isXRefCollapsed('opened_by_scripts')?'▶ ':'▼ ')+'Opened by scripts'"></h4>
+            <div x-show="!isXRefCollapsed('opened_by_scripts')">
+              <template x-for="s in currentXRef.opened_by_scripts" :key="xrefName(s)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('ScriptCatalog',s)" x-text="xrefName(s)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.used_in_layouts?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('used_in_layouts')" x-text="(isXRefCollapsed('used_in_layouts')?'▶ ':'▼ ')+'Used in layouts'"></h4>
+            <div x-show="!isXRefCollapsed('used_in_layouts')">
+              <template x-for="l in currentXRef.used_in_layouts" :key="xrefName(l)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('LayoutCatalog',l)" x-text="xrefName(l)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.used_in_field_calcs?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('used_in_field_calcs')" x-text="(isXRefCollapsed('used_in_field_calcs')?'▶ ':'▼ ')+'Used in field calculations'"></h4>
+            <div x-show="!isXRefCollapsed('used_in_field_calcs')">
+              <template x-for="f in currentXRef.used_in_field_calcs" :key="xrefName(f)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('FieldsForTables',f)" x-text="xrefName(f)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.used_in_menus?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('used_in_menus')" x-text="(isXRefCollapsed('used_in_menus')?'▶ ':'▼ ')+'Used in custom menus'"></h4>
+            <div x-show="!isXRefCollapsed('used_in_menus')">
+              <template x-for="m in currentXRef.used_in_menus" :key="xrefName(m)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('CustomMenuCatalog',m)" x-text="xrefName(m)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.validates_fields?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('validates_fields')" x-text="(isXRefCollapsed('validates_fields')?'▶ ':'▼ ')+'Validates fields'"></h4>
+            <div x-show="!isXRefCollapsed('validates_fields')">
+              <template x-for="f in currentXRef.validates_fields" :key="xrefName(f)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('FieldsForTables',f)" x-text="xrefName(f)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.used_in_relationships?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('used_in_relationships')" x-text="(isXRefCollapsed('used_in_relationships')?'▶ ':'▼ ')+'Used in relationships'"></h4>
+            <div x-show="!isXRefCollapsed('used_in_relationships')">
+              <template x-for="r in currentXRef.used_in_relationships" :key="xrefName(r)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('RelationshipCatalog',r)" x-text="xrefName(r)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.related_tos?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('related_tos')" x-text="(isXRefCollapsed('related_tos')?'▶ ':'▼ ')+'Related table occurrences'"></h4>
+            <div x-show="!isXRefCollapsed('related_tos')">
+              <template x-for="t in currentXRef.related_tos" :key="xrefName(t)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('TableOccurrenceCatalog',t)"
+                   x-text="xrefName(t) + (t.via ? ' · via ' + t.via : '')"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.cross_calls?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('cross_calls')" x-text="(isXRefCollapsed('cross_calls')?'▶ ':'▼ ')+'External calls'"></h4>
+            <div x-show="!isXRefCollapsed('cross_calls')">
+              <template x-for="(c, ci) in currentXRef.cross_calls" :key="ci">
+                <a class="xref-link" href="#"
+                   @click.prevent="navigateTo('ScriptCatalog', c.script, c.file)"
+                   x-text="c.file + ' › ' + c.script"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.cross_files?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('cross_files')" x-text="(isXRefCollapsed('cross_files')?'▶ ':'▼ ')+'In other file'"></h4>
+            <div x-show="!isXRefCollapsed('cross_files')">
+              <template x-for="(cf, cfi) in currentXRef.cross_files" :key="cfi">
+                <div>
+                  <a class="xref-link" href="#"
+                     x-show="resolveFileKey(cf.file) !== null"
+                     @click.prevent="navigateToFileSection(cf.file, currentSection)"
+                     x-text="cf.file + ' →'"></a>
+                  <span class="xref-none"
+                        x-show="resolveFileKey(cf.file) === null"
+                        x-text="cf.file + ' (not loaded)'"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+        <!-- Structural shortcuts (#10) — table occurrence → fields folder + base table.
+             Resolvable targets are clickable; unresolvable ones render as inert
+             "Not Resolvable" chips that carry NO navigate binding (cannot dead-link). -->
+        <template x-if="currentStructLinks.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('struct')" x-text="(isXRefCollapsed('struct')?'▶ ':'▼ ')+'Structure'"></h4>
+            <div x-show="!isXRefCollapsed('struct')">
+              <template x-for="(sl, sli) in currentStructLinks" :key="sli">
+                <div>
+                  <a class="xref-link" href="#" x-show="sl.ok"
+                     @click.prevent="navStruct(sl)" x-text="sl.label + ' →'"></a>
+                  <span class="xref-none struct-noref" x-show="!sl.ok"
+                        :title="sl.reason || 'not resolvable'"
+                        x-text="sl.label + ' · Not Resolvable'"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+        <!-- Structural shortcuts (#11) — relationship → match keys / field folders /
+             table occurrences / base tables. Same resolve-or-inert rule, per target. -->
+        <template x-for="(grp, gk) in (currentStructGroups || {})" :key="gk">
+          <div class="xref-group" x-show="grp && grp.length">
+            <h4 @click="toggleXRef('struct_'+gk)"
+                x-text="(isXRefCollapsed('struct_'+gk)?'▶ ':'▼ ')+structGroupLabel(gk)"></h4>
+            <div x-show="!isXRefCollapsed('struct_'+gk)">
+              <template x-for="(sl, sli) in grp" :key="sli">
+                <div>
+                  <a class="xref-link" href="#" x-show="sl.ok"
+                     @click.prevent="navStruct(sl)" x-text="sl.label + ' →'"></a>
+                  <span class="xref-none struct-noref" x-show="!sl.ok"
+                        :title="sl.reason || 'not resolvable'"
+                        x-text="sl.label + ' · Not Resolvable'"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- XRef resize handle (packet 1133) — drag to resize the panel. Only present when the
+           panel is shown (same condition), so its drag JS never binds to a missing element. -->
+      <div id="resize-xref" x-show="hasXRef && xrefOpen && detailTab !== 'graph'"></div>
+
+      <!-- Scrollable content area -->
+      <div id="detail-scroll">
+      <div id="addon-no-map-banner"
+           x-show="currentFileObj?.metadata?.is_addon && !currentFileObj?.metadata?.has_name_map">
+        This addon snapshot was imported without a locale file — object names appear as UUIDs.
+        Re-import using the <code>.fmaddon</code> archive to see readable names.
+      </div>
+      <div x-show="!currentItem" id="empty">Select an item from the sidebar.</div>
+      <div id="detail-main" x-show="currentItem">
+        <div id="detail-header">
+          <h2 x-text="relHeaderText"></h2>
+        </div>
+        <div id="detail-body">
+          <div id="detail-code">
+            <div id="detail-tabs" x-show="currentItem">
+              <button class="dtab" :class="{active: detailTab==='rendered'}" @click="detailTab='rendered'">Rendered</button>
+              <button class="dtab" :class="{active: detailTab==='tree'}" @click="detailTab='tree'">Tree</button>
+              <button class="dtab" :class="{active: detailTab==='attrs'}" @click="detailTab='attrs'">Attributes</button>
+              <button class="dtab" :class="{active: detailTab==='raw'}" @click="detailTab='raw'">Raw</button>
+              <button class="dtab"
+                      x-show="currentSection==='LayoutCatalog' && !!currentItemData?.objects"
+                      :class="{active: detailTab==='objects'}"
+                      @click="detailTab='objects'">Objects</button>
+              <button class="dtab"
+                      x-show="currentSection==='LayoutCatalog' && !!currentItemData?.wireframe"
+                      :class="{active: detailTab==='wireframe'}"
+                      @click="detailTab='wireframe'">Wireframe</button>
+              <button class="dtab"
+                      x-show="currentSection==='RelationshipCatalog' && currentFileHasGraph"
+                      :class="{active: detailTab==='graph'}"
+                      @click="detailTab='graph'">Graph</button>
+            </div>
+            <div x-show="detailTab==='rendered' || (detailTab==='wireframe' && currentSection!=='LayoutCatalog')">
+              <div x-show="currentSteps" class="steps-list">
+                <template x-for="(step, si) in (currentSteps || [])" :key="si">
+                  <div x-show="isStepVisible(si)" class="step-row"
+                       :class="{'step-disabled': step.disabled, 'step-partial': step.partial, 'step-opener': step.block_role==='opener', 'step-closer': step.block_role==='closer', 'step-continue': step.block_role==='continue'}">
+                    <span class="step-num" aria-hidden="true" x-text="si+1"></span>
+                    <span class="step-ind" :style="'width:'+(step.depth*1.5)+'rem'"></span>
+                    <button x-show="step.block_role==='opener'" class="step-fold-btn"
+                            @click="toggleBlock(step.block_id)"
+                            x-text="isBlockCollapsed(step.block_id)?'▶':'▼'"></button>
+                    <span x-show="step.block_role!=='opener'" class="step-fold-ph"></span>
+                    <div class="step-content">
+                      <!-- Parameter-aware disclosure (packet 1312). Only literal/short parts reach
+                           the highlighter; pooled long values are resolved by explicit Show/Copy. -->
+                      <template x-if="step.has_long_values">
+                        <div class="step-line">
+                          <span class="step-txt"><span x-show="step.disabled">// </span><template x-for="(part, pi) in step.display_parts" :key="pi"><span><template x-if="part.kind!=='long'"><span x-html="fmStepHighlight(part.text)"></span></template><template x-if="part.kind==='long'"><span><span class="step-oversize-badge" x-text="part.marker"></span> <button type="button" class="step-exp-btn step-reveal-btn" :id="longButtonId(si,pi)" :aria-expanded="isLongShown(si,pi)" :aria-controls="longPanelId(si,pi)" @click="toggleLongValue(si,pi)" x-text="isLongShown(si,pi)?'Hide':'Show'"></button></span></template></span></template></span>
+                        </div>
+                      </template>
+                      <template x-if="!step.has_long_values && !step.oversize">
+                        <div class="step-line">
+                          <span class="step-txt" x-html="fmStepHighlight((step.disabled?'// ':'')+(isStepExpanded(si)?step.full_text:step.one_line))"></span>
+                          <button x-show="step.one_line!==step.full_text" class="step-exp-btn"
+                                  @click="toggleStep(si)" x-text="isStepExpanded(si)?'▴':'▾'"></button>
+                        </div>
+                      </template>
+                      <!-- Unstructured renderer fallbacks retain the safety marker and use the same
+                           bounded panel rather than inserting a multi-megabyte line into the page. -->
+                      <template x-if="!step.has_long_values && step.oversize">
+                        <div class="step-line"><span class="step-txt"><span x-html="fmStepHighlight((step.disabled?'// ':'')+step.one_line)"></span> <span class="step-oversize-badge" x-text="step.oversize"></span> <button type="button" class="step-exp-btn step-reveal-btn" :aria-expanded="isStepRevealed(si)" :aria-controls="fallbackPanelId(si)" @click="toggleStepReveal(si)" x-text="isStepRevealed(si)?'Hide':'Show'"></button></span></div>
+                      </template>
+                      <template x-for="(part, pi) in (step.display_parts || [])" :key="'panel-'+pi">
+                        <template x-if="part.kind==='long' && isLongShown(si,pi)">
+                          <section class="step-long-panel" :id="longPanelId(si,pi)" tabindex="-1">
+                            <div class="step-long-toolbar"><span x-text="part.marker"></span><span class="step-long-actions"><button type="button" @click="copyLongValue(si,pi,part.ref)" x-text="copyLabel(longKey(si,pi))"></button><button type="button" @click="hideLongValue(si,pi)">Hide</button></span></div>
+                            <pre class="step-long-value" x-text="longValue(part.ref)"></pre>
+                          </section>
+                        </template>
+                      </template>
+                      <template x-if="!step.has_long_values && step.oversize && isStepRevealed(si)">
+                        <section class="step-long-panel" :id="fallbackPanelId(si)" tabindex="-1">
+                          <div class="step-long-toolbar"><span x-text="step.oversize"></span><span class="step-long-actions"><button type="button" @click="copyText('fallback-'+si,step.full_text)" x-text="copyLabel('fallback-'+si)"></button><button type="button" @click="hideStepReveal(si)">Hide</button></span></div>
+                          <pre class="step-long-value" x-text="step.full_text"></pre>
+                        </section>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+              <pre x-show="!currentSteps" x-html="currentBodyHtml"
+                   :class="currentSection==='CustomFunctionsCatalog' ? 'calc-body' : ''"></pre>
+              <template x-if="(currentItemData?.field_calcs||[]).length">
+                <div class="field-calcs">
+                  <template x-for="fc in (currentItemData.field_calcs||[])" :key="fc.label">
+                    <div class="field-calc-block">
+                      <div class="field-calc-lbl" x-text="fc.label"></div>
+                      <div class="calc-codeblock">
+                        <pre class="calc-gutter" aria-hidden="true" x-text="fc.text.split('\n').map((_,i)=>i+1).join('\n')"></pre>
+                        <pre class="calc-code" x-html="fmHighlight(fc.text)"></pre>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+            <div x-show="detailTab==='tree'">
+              <template x-if="currentXmlSources.length > 1">
+                <div class="src-pill-bar">
+                  <template x-for="(src, si) in currentXmlSources" :key="si">
+                    <button type="button" class="src-pill" :class="{active: rawSourceIdx===si}"
+                            @click="rawSourceIdx=si" x-text="src.catalog"></button>
+                  </template>
+                </div>
+              </template>
+              <div x-html="currentXmlHtml"></div>
+            </div>
+            <div x-show="detailTab==='attrs'" x-html="currentAttrsHtml"></div>
+            <div x-show="detailTab==='raw'">
+              <template x-if="currentXmlSources.length > 1">
+                <div class="src-pill-bar">
+                  <template x-for="(src, si) in currentXmlSources" :key="si">
+                    <button type="button" class="src-pill" :class="{active: rawSourceIdx===si}"
+                            @click="rawSourceIdx=si" x-text="src.catalog"></button>
+                  </template>
+                </div>
+              </template>
+              <pre x-text="currentSelectedXml || '(no XML available)'"></pre>
+            </div>
+            <div x-show="detailTab==='objects' && currentSection==='LayoutCatalog'">
+              <div class="obj-inv-head" x-text="(currentItemData?.objects||[]).length + ' objects · document order = stacking (top draws in front)'"></div>
+              <table class="obj-inv">
+                <thead><tr><th>#</th><th>Type</th><th>Bound to</th><th>Label</th><th>Format</th><th>Behavior</th></tr></thead>
+                <tbody>
+                  <template x-for="(o, oi) in (currentItemData?.objects||[])" :key="oi">
+                    <tr>
+                      <td class="obj-z" x-text="o.z ?? oi"></td>
+                      <td class="obj-type" x-text="o.type"></td>
+                      <td class="obj-bind">
+                        <a x-show="o.field && o.field_item_id" class="obj-link"
+                           @click="navigateXRef('FieldsForTables', {name: o.field, id: o.field_item_id})"
+                           x-text="'⬚ '+(o.field_to ? o.field_to+'::'+o.field : o.field)"></a>
+                        <span x-show="o.field && !o.field_item_id" class="obj-bind-plain"
+                              x-text="'⬚ '+(o.field_to ? o.field_to+'::'+o.field : o.field)"></span>
+                        <a x-show="o.script" class="obj-link" @click="navigateXRef('ScriptCatalog', o.script)"
+                           x-text="'▶ '+o.script"></a>
+                        <span x-show="o.to" class="obj-to" x-text="'▦ '+o.to"></span>
+                        <span x-show="!o.field && !o.script && !o.to" class="obj-none">—</span>
+                      </td>
+                      <td class="obj-label" x-text="o.label || ''"></td>
+                      <td class="obj-fmt" x-text="o.fmt || ''"></td>
+                      <td class="obj-behav">
+                        <span x-show="o.hide" class="obj-badge obj-hide" :title="'Hides when: '+(o.hide||'')">⊘ hide-when</span>
+                        <span x-show="o.cond_format" class="obj-badge obj-cond" x-text="(o.cond_format||0)+' cond-fmt'"
+                              :title="(o.cond_format_calcs||[]).length ? 'Conditions:\n• '+(o.cond_format_calcs||[]).join('\n• ') : 'conditional formatting'"></span>
+                        <span x-show="o.tooltip" class="obj-badge obj-tip" :title="o.tooltip||''">tooltip</span>
+                        <span x-show="o.placeholder" class="obj-badge obj-ph" :title="o.placeholder||''">placeholder</span>
+                        <span x-show="(o.anchors||[]).length" class="obj-badge obj-anchor"
+                              x-text="'⚓ '+((o.anchors||[]).join(' + '))"
+                              :title="'Autosize anchoring — decoded from the FM per-object options bitmask ('+(o.options||0)+')'"></span>
+                        <span x-show="o.options && !(o.anchors||[]).length" class="obj-badge obj-opts"
+                              :title="'FM per-object options bitmask (non-anchor flags): '+(o.options||0)">opts</span>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <div x-show="detailTab==='wireframe' && currentSection==='LayoutCatalog'">
+              <div id="wf-toolbar">
+                <template x-for="t in wfObjectTypes" :key="t">
+                  <span class="wf-tog" :class="wfHiddenTypes[t] ? 'wf-off' : ''"
+                        @click="wfToggleType(t)">
+                    <span class="wf-swatch" :style="'background:'+wfTypeColor(t)"></span>
+                    <span x-text="t"></span>
+                  </span>
+                </template>
+              </div>
+              <div id="wf-svg-wrap" x-html="wfSvgHtml"></div>
+            </div>
+            <div id="graph-tab-content" x-show="detailTab==='graph' && currentSection==='RelationshipCatalog'" style="display:none">
+              <div id="graph-toolbar">
+                <div class="gtab-row">
+                  <button class="gtab" :class="{active:_graphTab==='cluster'}" @click="setGraphTab('cluster')">By Table</button>
+                  <button class="gtab" :class="{active:_graphTab==='fm'}" @click="setGraphTab('fm')">As Built</button>
+                  <button class="gtab" :class="{active:_graphTab==='force'}" @click="setGraphTab('force')">Discover</button>
+                </div>
+                <span class="graph-info" x-text="(currentFileObj.graph?.nodes?.length||0)+' TOs · '+(currentFileObj.graph?.edges?.length||0)+' relationships'"></span>
+                <button class="graph-btn" @click="fitGraph()" title="Fit to screen">⊞ Fit</button>
+                <button type="button" class="graph-btn" @click="toggleGraphFullscreen()"
+                        :title="graphFullscreen ? 'Exit full screen (Esc)' : 'Full screen'"
+                        x-text="graphFullscreen ? '⊟ Exit' : '⊞ Full'"></button>
+              </div>
+              <div id="graph-canvas-wrap">
+                <svg id="rel-graph"></svg>
+                <div id="graph-tooltip"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+      </div> <!-- end #detail-scroll -->
+    </div> <!-- end #detail -->
+  </div> <!-- end #ws -->
+
+<div id="kbd-overlay" x-show="showShortcuts" @click.self="showShortcuts=false" style="display:none">
+  <div id="kbd-panel">
+    <div id="kbd-hdr">
+      <h3>Keyboard shortcuts</h3>
+      <button type="button" class="about-close" @click="showShortcuts=false">✕</button>
+    </div>
+    <div id="kbd-body">
+      <table class="kbd-table">
+        <tbody>
+          <tr><td><kbd>/</kbd></td><td>Focus sidebar filter</td></tr>
+          <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>Previous / next section</td></tr>
+          <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Move between items</td></tr>
+          <tr><td><kbd>Alt</kbd> <kbd>←</kbd></td><td>Go back in history</td></tr>
+          <tr><td><kbd>u</kbd></td><td>Toggle unused / dead-end mode</td></tr>
+          <tr><td><kbd>1</kbd> – <kbd>5</kbd></td><td>Switch detail tab (Rendered · Tree · Attrs · Raw · Wireframe/Graph)</td></tr>
+          <tr><td><kbd>g</kbd></td><td>Toggle graph full-screen (when graph tab active)</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>Close overlay · clear filter · exit full-screen</td></tr>
+          <tr><td><kbd>?</kbd></td><td>Show / hide this reference</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div id="about-overlay" x-show="showAbout" @click.self="showAbout=false" style="display:none">
+  <div id="about-panel">
+    <div id="about-hdr">
+      <h3>About this snapshot</h3>
+      <button type="button" class="about-close" @click="showAbout=false">✕</button>
+    </div>
+    <div id="about-body">
+      <template x-if="currentFileObj.about">
+        <div>
+          <div class="about-row">
+            <span class="about-lbl">File</span>
+            <span x-text="currentFileObj.metadata?.label || currentFileObj.file_key || '—'"></span>
+          </div>
+          <div class="about-row">
+            <span class="about-lbl">FM version</span>
+            <span x-text="currentFileObj.metadata?.fm_version || '—'"></span>
+          </div>
+          <div class="about-row">
+            <span class="about-lbl">XML type</span>
+            <span x-text="currentFileObj.artifact_type || '—'"></span>
+          </div>
+          <div class="about-row">
+            <span class="about-lbl">Catalog</span>
+            <span x-text="currentFileObj.metadata?.schema_version || '—'"></span>
+          </div>
+          <div class="about-row">
+            <span class="about-lbl">Ingested</span>
+            <span x-text="currentFileObj.metadata?.timestamp_display || currentFileObj.metadata?.generated_at || '—'"></span>
+          </div>
+          <div class="about-row">
+            <span class="about-lbl">Ingested by build</span>
+            <span x-text="(currentFileObj.metadata?.ingest_build || '?') + ' · render v' + (currentFileObj.metadata?.render_version ?? '?')"></span>
+          </div>
+          <div class="about-row">
+            <span class="about-lbl">Explorer built by</span>
+            <span x-text="(currentFileObj.metadata?.app_version || '—') + ' · ' + (currentFileObj.metadata?.generated_at || '')"></span>
+          </div>
+          <div class="about-sep"></div>
+          <div class="about-section" x-show="(currentFileObj.about.sections_present||[]).length">
+            <div class="about-lbl">Sections present</div>
+            <div class="about-tags">
+              <template x-for="s in (currentFileObj.about.sections_present||[])" :key="s">
+                <span class="about-tag" x-text="s"></span>
+              </template>
+            </div>
+          </div>
+          <div class="about-section" x-show="(currentFileObj.about.sections_absent||[]).length">
+            <div class="about-lbl">Sections absent</div>
+            <div class="about-tags">
+              <template x-for="s in (currentFileObj.about.sections_absent||[])" :key="s">
+                <span class="about-tag about-tag-warn" x-text="s"></span>
+              </template>
+            </div>
+          </div>
+          <div class="about-section" x-show="(currentFileObj.about.unknown_step_ids||[]).length">
+            <div class="about-lbl">Unknown step IDs</div>
+            <div class="about-tags">
+              <template x-for="s in (currentFileObj.about.unknown_step_ids||[])" :key="s">
+                <span class="about-tag about-tag-warn" x-text="s"></span>
+              </template>
+            </div>
+          </div>
+          <div class="about-section" x-show="(currentFileObj.about.unresolved_uuids||[]).length">
+            <div class="about-lbl">Unresolved UUIDs</div>
+            <div class="about-tags">
+              <template x-for="s in (currentFileObj.about.unresolved_uuids||[])" :key="s">
+                <span class="about-tag about-tag-warn" x-text="s"></span>
+              </template>
+            </div>
+          </div>
+          <div class="about-section" x-show="(currentFileObj.about.miner_skipped||[]).length">
+            <div class="about-lbl">Miner skipped</div>
+            <div class="about-tags">
+              <template x-for="s in (currentFileObj.about.miner_skipped||[])" :key="s">
+                <span class="about-tag" x-text="s"></span>
+              </template>
+            </div>
+          </div>
+
+          <!-- Render-layer diagnostics -->
+          <div class="about-diag-hdr"
+               x-show="(currentFileObj.about.render_errors||[]).length || (currentFileObj.about.empty_renders||[]).length || (currentFileObj.about.unresolved_in_render||[]).length">
+            Processing diagnostics
+          </div>
+          <div class="about-section" x-show="(currentFileObj.about.render_errors||[]).length">
+            <div class="about-lbl">Render errors</div>
+            <div class="about-tags">
+              <template x-for="s in (currentFileObj.about.render_errors||[])" :key="s">
+                <span class="about-tag about-tag-err" x-text="s"></span>
+              </template>
+            </div>
+          </div>
+          <div class="about-section" x-show="(currentFileObj.about.unresolved_in_render||[]).length">
+            <div class="about-lbl">Unresolved refs in rendered text</div>
+            <div class="about-tags">
+              <template x-for="s in (currentFileObj.about.unresolved_in_render||[])" :key="s">
+                <span class="about-tag about-tag-warn" x-text="s"></span>
+              </template>
+            </div>
+          </div>
+          <div class="about-section" x-show="(currentFileObj.about.empty_renders||[]).length">
+            <div class="about-lbl">Steps rendered empty (had parameters)</div>
+            <div class="about-tags">
+              <template x-for="s in (currentFileObj.about.empty_renders||[])" :key="s">
+                <span class="about-tag about-tag-warn" x-text="s"></span>
+              </template>
+            </div>
+          </div>
+        </div>
+      </template>
+      <div x-show="!currentFileObj.about" class="about-na">No completeness data for this snapshot.</div>
+    </div>
+  </div>
+</div>
+
+<script>__CORPUSFM_FUSE_JS__</script>
+<script>
+var appData = __CORPUSFM_DATA_JSON__;
+var _SAVE_TPL_B64 = "__CORPUSFM_SAVE_TPL_B64__";
+
+async function _savePage() {
+  var filename = __CORPUSFM_FILENAME__;
+  var binStr = atob(_SAVE_TPL_B64);
+  var bytes = new Uint8Array(binStr.length);
+  for (var i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+  var tpl = new TextDecoder('utf-8').decode(bytes);
+  var dataJson = JSON.stringify(appData).replace(/<\//g, '<\\/');
+  var html = tpl.replace('var appData = __CORPUSFM_APPDATA__;', function() { return 'var appData = ' + dataJson + ';'; });
+  var blob = new Blob([html], {type: 'text/html; charset=utf-8'});
+  if (window.showSaveFilePicker) {
+    try {
+      var handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{description: 'HTML file', accept: {'text/html': ['.html']}}]
+      });
+      var writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+    }
+  }
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(url);}, 1000);
+}
+
+function _xmlToTable(xmlStr) {
+  if (!xmlStr || !xmlStr.trim()) return '<p style="color:#555;font-size:.8rem;padding:.4rem 0">No XML available.</p>';
+  var doc;
+  try {
+    doc = new DOMParser().parseFromString(xmlStr, 'application/xml');
+    if (doc.querySelector('parsererror')) return '<p style="color:#c55;font-size:.8rem">XML parse error.</p>';
+  } catch(e) { return '<p style="color:#c55">Error: '+e+'</p>'; }
+  function _esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  var rows = [];
+  var grp = 0;
+  function walk(el, depth) {
+    var g = grp++;
+    var pad = (depth * 1.1).toFixed(1)+'rem';
+    var attrs = Array.from(el.attributes||[]);
+    var txt='';
+    for (var j=0;j<el.childNodes.length;j++) {
+      if (el.childNodes[j].nodeType===3) txt+=el.childNodes[j].textContent;
+    }
+    txt=txt.trim();
+    var hasDetail = attrs.length>0 || !!txt;
+    rows.push('<tr data-xg-toggle="'+g+'" style="cursor:'+(hasDetail?'pointer':'default')+'">'
+      +'<td class="attr-etag" style="padding-left:'+pad+'">'
+      +(hasDetail?'<span class="xg-fold">▼</span> ':'<span class="xg-fold-ph"></span> ')
+      +'&lt;'+_esc(el.tagName)+'&gt;</td><td></td><td></td></tr>');
+    for (var i=0;i<attrs.length;i++) {
+      rows.push('<tr data-xg="'+g+'"><td></td>'
+        +'<td class="attr-akey">'+_esc(attrs[i].name)+'</td>'
+        +'<td class="attr-aval">'+_esc(attrs[i].value)+'</td></tr>');
+    }
+    if (txt) {
+      rows.push('<tr data-xg="'+g+'"><td></td>'
+        +'<td class="attr-txtlbl">text</td>'
+        +'<td class="attr-txtval">'+_esc(txt)+'</td></tr>');
+    }
+    var children=Array.from(el.children);
+    for (var k=0;k<children.length;k++) walk(children[k],depth+1);
+  }
+  walk(doc.documentElement,0);
+  return '<table class="attr-table"><thead><tr><th>Element</th><th>Attribute</th><th>Value</th></tr></thead><tbody>'+rows.join('')+'</tbody></table>';
+}
+
+var _xtUid = 0;
+function _xmlTree(xmlStr) {
+  if (!xmlStr || !xmlStr.trim()) return '<p style="color:#555;font-size:.8rem;padding:.4rem 0">No XML available.</p>';
+  var doc;
+  try {
+    doc = new DOMParser().parseFromString(xmlStr, 'application/xml');
+    if (doc.querySelector('parsererror')) return '<p style="color:#c55;font-size:.8rem">XML parse error.</p>';
+  } catch(e) { return '<p style="color:#c55">Error: '+e+'</p>'; }
+  function _esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  function walk(el, depth) {
+    var id = 'xt'+(_xtUid++);
+    var hasKids = el.children.length > 0;
+    var attrs = Array.from(el.attributes||[]);
+    var txt = '';
+    for (var j=0;j<el.childNodes.length;j++) {
+      if (el.childNodes[j].nodeType===3) txt+=el.childNodes[j].textContent;
+    }
+    txt=txt.trim();
+    var hasContent = hasKids || !!txt;
+    var pad=(depth*1.2).toFixed(1)+'rem';
+    var out='<div style="padding-left:'+pad+'">';
+    out+='<div class="xt-tag"'+(hasContent?' data-xtid="'+id+'" style="cursor:pointer"':'')+'>'+
+         '<span class="xt-fold"'+(hasContent?'':' style="visibility:hidden"')+'>▼</span>'+
+         '<span class="xt-name">&lt;'+_esc(el.tagName)+'&gt;</span></div>';
+    out+='<div id="'+id+'">';
+    for (var i=0;i<attrs.length;i++) {
+      out+='<div class="xt-attr"><span class="xt-akey">'+_esc(attrs[i].name)+'</span> '+
+           '<span class="xt-aval">'+_esc(attrs[i].value)+'</span></div>';
+    }
+    if (txt) out+='<div class="xt-text">'+_esc(txt)+'</div>';
+    for (var k=0;k<el.children.length;k++) out+=walk(el.children[k],depth+1);
+    out+='</div></div>';
+    return out;
+  }
+  return '<div class="xt-tree">'+walk(doc.documentElement,0)+'</div>';
+}
+
+__CORPUSFM_FMHL_JS__
+__CORPUSFM_GRAPH_JS__
+document.addEventListener('alpine:init', () => {
+  Alpine.data('fmExplorer', () => ({
+    currentFileIdx: 0,
+    currentSection: (appData.files[0].section_order[0] || [''])[0],
+    currentItem: null,
+    filterQuery: '',
+    searchQuery: '',
+    isSearching: false,
+    searchResults: [],
+    _fuseMap: {},
+    _collapsedFolders: {},
+    _xrefCollapsed: {},
+    _collapsedBlocks: {},
+    _expandedSteps: {},
+    _revealedSteps: {},   // per-step opt-in reveal of an oversize (LARGE_CONTENT) body — packet 1282
+    _shownLongValues: {}, // per-parameter disclosure; deliberately separate from block folding
+    _copyStatus: {},
+    xrefOpen: false,
+    detailTab: 'rendered',  // rendered | tree | attrs | raw | wireframe
+    wfHiddenTypes: {},
+    _history: [],
+    _histIdx: -1,
+    showRecent: false,
+    _graphCurrentFile: -1,
+    _graphTab: 'cluster',
+    _graphCache: {},
+    _graphRafCancel: null,
+    graphFullscreen: false,
+    deadEndMode: false,
+    darkMode: (function(){ try { return localStorage.getItem('fmc_theme') !== 'light'; } catch(e) { return true; } })(),
+    showAbout: false,
+    showShortcuts: false,
+    rawSourceIdx: 0,
+    sortMode: '',  // set per-section on open/switch; not persisted across sessions
+    flipAll: false,  // RelationshipCatalog: flip every relationship's sides + re-sort by the new left; reset on section/file switch
+    _SORT_CONFIG: {
+      FieldsForTables:           { def: 'name',   opts: [['custom','Custom'],['created','Creation'],['name','Name'],['type','Type']] },
+      ScriptCatalog:             { def: 'custom', opts: [['custom','Custom'],['created','Creation'],['name','Name']] },
+      LayoutCatalog:             { def: 'custom', opts: [['custom','Custom'],['created','Creation'],['name','Name']] },
+      CustomMenuCatalog:         { def: 'custom', opts: [['custom','Custom'],['name','Name']] },
+      ValueListCatalog:          { def: 'custom', opts: [['custom','Custom'],['created','Creation'],['name','Name'],['source','Source']] },
+      CustomFunctionsCatalog:    { def: 'custom', opts: [['custom','Custom'],['created','Creation'],['name','Name'],['avail','Availability']] },
+      RelationshipCatalog:       { def: 'left',   opts: [['left','Left']] },
+      BaseTableCatalog:          { def: 'custom', opts: [['custom','Custom'],['name','Name']] },
+      TableOccurrenceCatalog:    { def: 'name',   opts: [['name','Name']] },
+      AccountsCatalog:           { def: 'name',   opts: [['name','Name']] },
+      PrivilegeSetsCatalog:      { def: 'name',   opts: [['name','Name']] },
+      ExtendedPrivilegesCatalog: { def: 'name',   opts: [['name','Name']] },
+      ExternalDataSourceCatalog: { def: 'name',   opts: [['name','Name']] },
+      ThemeCatalog:              { def: 'name',   opts: [['name','Name']] },
+    },
+
+    toggleTheme() {
+      this.darkMode = !this.darkMode;
+      const theme = this.darkMode ? 'dark' : 'light';
+      try { localStorage.setItem('fmc_theme', theme); } catch(e) {}
+      const root = document.getElementById('fmc-root');
+      if (this.darkMode) delete root.dataset.theme;
+      else root.dataset.theme = 'light';
+    },
+
+    toggleXRef(key) {
+      this._xrefCollapsed = {...this._xrefCollapsed, [key]: !this._xrefCollapsed[key]};
+    },
+    isXRefCollapsed(key) {
+      return !!this._xrefCollapsed[key];
+    },
+
+    get currentFileObj() {
+      return appData.files[this.currentFileIdx] || {};
+    },
+    get currentFileMeta() {
+      const m = this.currentFileObj.metadata || {};
+      const parts = [m.fm_key || ''];
+      if (this.currentFileObj.artifact_type) parts.push(this.currentFileObj.artifact_type);
+      if (m.timestamp_display) parts.push(m.timestamp_display);
+      if (m.fm_version) parts.push(m.fm_version);
+      if (m.schema_version) parts.push('schema ' + m.schema_version);
+      return parts.join(' · ');
+    },
+    get sectionObj() {
+      return (this.currentFileObj.sections || {})[this.currentSection] || {};
+    },
+    get currentSectionHasDeadEnds() {
+      const so = this.currentFileObj.section_order || [];
+      for (const [key, , , dead_count] of so) {
+        if (key === this.currentSection) return (dead_count || 0) > 0;
+      }
+      return false;
+    },
+    get allItems() {
+      return this.sectionObj.item_names || [];
+    },
+    get folderChildren() {
+      return this.sectionObj.folder_children || {};
+    },
+
+    _defaultSort(section) {
+      return (this._SORT_CONFIG[section] || { def: 'custom' }).def;
+    },
+    get currentSortOptions() {
+      const c = this._SORT_CONFIG[this.currentSection];
+      return (c && c.opts.length > 1) ? c.opts : [];
+    },
+
+    // Reorder one level of siblings by the active sort. Ordering sorts return
+    // [{name}]; grouping sorts (type/source/avail) interleave [{header}] rows.
+    // Folders are kept and sorted by name; the sort applies within them via the
+    // tree recursion. Separators are dropped in non-Custom modes (they only mean
+    // something in document order).
+    _sortLevel(names, data) {
+      const mode = this.sortMode;
+      if (!mode || mode === 'custom') return names.map(n => ({ name: n }));
+      names = names.filter(n => !(data[n] || {}).is_separator);
+      const dn = (n) => ((data[n] || {}).display_name || n).toLowerCase();
+      const GROUP = { type: 'sort_type', source: 'sort_source', avail: 'sort_avail' };
+      if (mode in GROUP) {
+        const key = GROUP[mode];
+        const folders = [], leaves = [];
+        for (const n of names) ((data[n] || {}).is_folder ? folders : leaves).push(n);
+        folders.sort((a, b) => dn(a).localeCompare(dn(b)));
+        const groups = {};
+        for (const n of leaves) {
+          const g = (data[n] || {})[key] || '—';
+          (groups[g] = groups[g] || []).push(n);
+        }
+        const out = folders.map(n => ({ name: n }));
+        for (const g of Object.keys(groups).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))) {
+          out.push({ header: g });
+          groups[g].sort((a, b) => dn(a).localeCompare(dn(b)));
+          for (const n of groups[g]) out.push({ name: n });
+        }
+        return out;
+      }
+      const keyer = (n) => {
+        const d = data[n] || {};
+        if (mode === 'created') return [d.sort_created == null ? Infinity : d.sort_created, dn(n)];
+        // Relationships always sort by the leading (left) side; when flipped, the
+        // whole list leads with what was the right side, so it sorts there instead.
+        if (mode === 'left') {
+          const lead = this.flipAll ? (d.sort_right || '') : (d.sort_left || '');
+          return [String(lead).toLowerCase(), dn(n)];
+        }
+        return [dn(n)];
+      };
+      return names.slice().sort((a, b) => {
+        const ka = keyer(a), kb = keyer(b);
+        for (let i = 0; i < ka.length; i++) { if (ka[i] < kb[i]) return -1; if (ka[i] > kb[i]) return 1; }
+        return 0;
+      }).map(n => ({ name: n }));
+    },
+
+    get treeItems() {
+      const fc = this.folderChildren;
+      const data = this.sectionObj.item_data || {};
+      const defaultCollapsed = !!(this.sectionObj.default_collapsed);
+      const collapsed = this._collapsedFolders[this.currentSection] || {};
+      const isFolderOpen = (name) => name in collapsed ? !collapsed[name] : !defaultCollapsed;
+      const childSet = new Set(Object.values(fc).flat());
+      const result = [];
+      const self = this;
+      const addLevel = (names, depth) => {
+        for (const e of self._sortLevel(names, data)) {
+          if (e.header !== undefined) { result.push({ header: e.header, depth, is_header: true }); continue; }
+          const name = e.name;
+          const d = data[name] || {};
+          const isSep = !!d.is_separator;
+          result.push({ name, display_name: d.display_name || name, depth, is_folder: !!d.is_folder, is_separator: isSep, dead_end: !!d.dead_end });
+          if (!isSep && fc[name] && isFolderOpen(name)) addLevel(fc[name], depth + 1);
+        }
+      };
+      addLevel(this.allItems.filter(n => !childSet.has(n)), 0);
+      return result;
+    },
+
+    get displayItems() {
+      const q = this.filterQuery.toLowerCase();
+      const data = this.sectionObj.item_data || {};
+      if (this.deadEndMode) {
+        const fc = this.folderChildren;
+        const deadSet = new Set(
+          this.allItems.filter(n => { const d = data[n] || {}; return !d.is_folder && !d.is_separator && d.dead_end; })
+        );
+        const folderHasDead = (key) => {
+          for (const child of (fc[key] || [])) {
+            if (deadSet.has(child)) return true;
+            if (data[child]?.is_folder && folderHasDead(child)) return true;
+          }
+          return false;
+        };
+        const out = [];
+        const addNode = (name, depth) => {
+          const d = data[name] || {};
+          if (d.is_folder) {
+            const hasDead = folderHasDead(name);
+            if (!hasDead && !d.dead_end) return;
+            out.push({ name, display_name: d.display_name || name, depth, is_folder: true, is_separator: false, dead_end: !!d.dead_end });
+            if (hasDead) for (const child of (fc[name] || [])) addNode(child, depth + 1);
+          } else if (!d.is_separator && d.dead_end) {
+            out.push({ name, display_name: d.filter_text || d.display_name || name, depth, is_folder: false, is_separator: false, dead_end: true });
+          }
+        };
+        const childSet = new Set(Object.values(fc).flat());
+        for (const name of this.allItems) { if (!childSet.has(name)) addNode(name, 0); }
+        return out;
+      }
+      if (!q) return this.treeItems;
+      return this.allItems
+        .filter(n => {
+          const d = data[n] || {};
+          if (d.is_separator || d.is_folder) return false;
+          return (d.filter_text || d.display_name || n).toLowerCase().includes(q);
+        })
+        .map(n => {
+          const d = data[n] || {};
+          return { name: n, display_name: d.filter_text || d.display_name || n, depth: 0, is_folder: false, is_separator: false };
+        });
+    },
+
+    get currentItemData() {
+      if (!this.currentItem) return null;
+      return (this.sectionObj.item_data || {})[this.currentItem] || null;
+    },
+    get currentDisplayName() {
+      const d = this.currentItemData;
+      return (d && (d.filter_text || d.display_name)) || this.currentItem || '';
+    },
+
+    // ── Relationship side-flip (global) ──────────────────────────────────────
+    // FileMaker's stored LeftTable/RightTable is just authoring order, so the
+    // "⇄ Flip sides" tab flips EVERY relationship at once and re-sorts by the new
+    // leading side — scan by one side, flip, scan by the other.
+    // Sidebar row label — the single flip-aware place (covers browse/filter/dead-end paths).
+    rowLabel(node) {
+      if (node.is_header) return '— ' + node.header + ' —';
+      if (node.is_separator) return '';
+      let name = node.display_name || node.name;
+      const d = (this.sectionObj.item_data || {})[node.name] || {};
+      if (this.flipAll && d.sort_left && d.sort_right) name = `${d.sort_right} → ${d.sort_left}`;
+      return (node.is_folder ? (this.isFolderCollapsed(node.name) ? '▶ 📁 ' : '▼ 📁 ') : '') + name;
+    },
+    // FM JoinPredicate types; flipping sides inverts the inequalities. Equal,
+    // NotEqual and CartesianProduct are symmetric (left as-is).
+    _OP_FLIP: { Less: 'Greater', Greater: 'Less',
+                LessOrEqual: 'GreaterOrEqual', GreaterOrEqual: 'LessOrEqual' },
+    _relPredString(rel, flipped) {
+      const preds = rel.preds || [];
+      const fmt = (p) => flipped
+        ? `${rel.r}::${p.rf}  ${this._OP_FLIP[p.op] || p.op}  ${rel.l}::${p.lf}`
+        : `${rel.l}::${p.lf}  ${p.op}  ${rel.r}::${p.rf}`;
+      if (!preds.length) return flipped ? `${rel.r}  ↔  ${rel.l}` : `${rel.l}  ↔  ${rel.r}`;
+      let s = fmt(preds[0]);
+      if (preds.length > 1) s += `  (+${preds.length - 1} more)`;
+      return s;
+    },
+    get relHeaderText() {
+      const d = this.currentItemData;
+      if (this.currentSection === 'RelationshipCatalog' && d && d.rel) {
+        return this._relPredString(d.rel, this.flipAll);
+      }
+      return (d && d.summary) || this.currentDisplayName;
+    },
+    get currentBody() {
+      return this.currentItemData?.body || '';
+    },
+    get currentBodyHtml() {
+      var body = this.currentBody;
+      var sec = this.currentSection;
+      if (sec !== 'CustomFunctionsCatalog') {
+        return body.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      }
+      return fmHighlight(body);
+    },
+    get currentXmlSources() {
+      return this.currentItemData?.xml_sources || [];
+    },
+    get currentSelectedXml() {
+      const srcs = this.currentXmlSources;
+      if (!srcs.length) return this.currentItemData?.xml || '';
+      return (srcs[this.rawSourceIdx] || srcs[0])?.xml || '';
+    },
+    get currentXmlHtml() {
+      return _xmlTree(this.currentSelectedXml);
+    },
+    get currentAttrsHtml() {
+      return _xmlToTable(this.currentSelectedXml);
+    },
+    get currentSteps() {
+      return this.currentItemData?.steps || null;
+    },
+    get _hiddenStepIndices() {
+      const steps = this.currentSteps;
+      if (!steps || !steps.length) return new Set();
+      const hidden = new Set();
+      for (let b = 0; b < steps.length; b++) {
+        const s = steps[b];
+        if (s.block_role !== 'opener') continue;
+        if (!this._collapsedBlocks[s.block_id]) continue;
+        for (let i = b+1; i < steps.length; i++) {
+          hidden.add(i);
+          if (steps[i].block_id === s.block_id && steps[i].block_role === 'closer') break;
+        }
+      }
+      return hidden;
+    },
+    isStepVisible(si) {
+      return !this._hiddenStepIndices.has(si);
+    },
+    isBlockCollapsed(bid) {
+      return !!this._collapsedBlocks[bid];
+    },
+    toggleBlock(bid) {
+      this._collapsedBlocks = {...this._collapsedBlocks, [bid]: !this._collapsedBlocks[bid] };
+    },
+    isStepExpanded(si) {
+      // THREE-STATE (packet 1289): a key present in _expandedSteps is the user's explicit
+      // choice (true/false); an ABSENT key means the size-aware default — expanded for
+      // ordinary steps (full_text: real line breaks, untruncated; one_line is a lossy
+      // summary), collapsed for very long ones so a script reads as steps, not as a blob.
+      // Key PRESENCE is the test, not truthiness — otherwise a long step's first toggle
+      // moves the wrong way or can never expand.
+      if (Object.prototype.hasOwnProperty.call(this._expandedSteps, si)) {
+        return this._expandedSteps[si];
+      }
+      const s = (this.currentSteps || [])[si];
+      if (s && s.parameter_safe_inline) return true;
+      // STEP_COLLAPSE_CHARS: a DISPLAY threshold in JS characters (exactly 2000 stays
+      // expanded; 2001 collapses) — fixed by packet 1289; changing it is a new decision.
+      // Distinct from the 512 KiB byte threshold that drives the oversize safety marker.
+      return !(s && typeof s.full_text === 'string' && s.full_text.length > this.STEP_COLLAPSE_CHARS);
+    },
+    STEP_COLLAPSE_CHARS: 2000,
+    toggleStep(si) {
+      this._expandedSteps = {...this._expandedSteps, [si]: !this.isStepExpanded(si) };
+    },
+    isStepRevealed(si) {
+      return !!this._revealedSteps[si];
+    },
+    revealStep(si) {
+      this._revealedSteps = {...this._revealedSteps, [si]: true };
+      this.$nextTick(() => document.getElementById(this.fallbackPanelId(si))?.focus());
+    },
+    toggleStepReveal(si) {
+      if (this.isStepRevealed(si)) this.hideStepReveal(si);
+      else this.revealStep(si);
+    },
+    hideStepReveal(si) {
+      this._revealedSteps = {...this._revealedSteps, [si]: false };
+    },
+    longKey(si, pi) { return si + ':' + pi; },
+    longPanelId(si, pi) { return 'long-value-' + si + '-' + pi; },
+    longButtonId(si, pi) { return 'long-value-button-' + si + '-' + pi; },
+    fallbackPanelId(si) { return 'long-step-' + si; },
+    isLongShown(si, pi) { return !!this._shownLongValues[this.longKey(si, pi)]; },
+    showLongValue(si, pi) {
+      const key = this.longKey(si, pi);
+      this._shownLongValues = {...this._shownLongValues, [key]: true };
+      this.$nextTick(() => document.getElementById(this.longPanelId(si, pi))?.focus());
+    },
+    toggleLongValue(si, pi) {
+      if (this.isLongShown(si, pi)) this.hideLongValue(si, pi);
+      else this.showLongValue(si, pi);
+    },
+    hideLongValue(si, pi) {
+      const key = this.longKey(si, pi);
+      this._shownLongValues = {...this._shownLongValues, [key]: false };
+      this.$nextTick(() => document.getElementById(this.longButtonId(si, pi))?.focus());
+    },
+    longValue(ref) { return this.currentFileObj?.long_values?.[ref] || ''; },
+    copyLabel(key) {
+      const state = this._copyStatus[key];
+      return state === 'ok' ? 'Copied' : state === 'failed' ? 'Copy failed' : 'Copy full value';
+    },
+    async copyLongValue(si, pi, ref) {
+      await this.copyText(this.longKey(si, pi), this.longValue(ref));
+    },
+    async copyText(key, value) {
+      let copied = false;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(value);
+          copied = true;
+        }
+      } catch (_) {}
+      if (!copied) {
+        const ta = document.createElement('textarea');
+        ta.value = value;
+        ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;left:-2px;top:-2px;width:1px;height:1px;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { copied = document.execCommand('copy'); } catch (_) { copied = false; }
+        ta.remove();
+      }
+      this._copyStatus = {...this._copyStatus, [key]: copied ? 'ok' : 'failed'};
+      setTimeout(() => {
+        if (this._copyStatus[key]) this._copyStatus = {...this._copyStatus, [key]: ''};
+      }, 1800);
+      return copied;
+    },
+    get currentXRef() {
+      return this.currentItemData?.xref || {};
+    },
+    // Structural shortcuts (#10/#11): a table occurrence's list of {kind,label,ok,target,section}
+    // links, or a relationship's {match_keys,field_folders,table_occurrences,base_tables} groups.
+    // Targets are RESOLVED at generation time — an `ok:false` link carries no target and is
+    // rendered as an inert label (no nav binding), so it can never dead-link.
+    get currentStructLinks() {
+      return this.currentItemData?.struct_links || [];
+    },
+    get currentStructGroups() {
+      return this.currentItemData?.struct_groups || null;
+    },
+    get hasStruct() {
+      if (this.currentStructLinks.length) return true;
+      const g = this.currentStructGroups;
+      return !!(g && Object.values(g).some(v => Array.isArray(v) && v.length > 0));
+    },
+    navStruct(link) {
+      if (!link || !link.ok || !link.target || !link.section) return;
+      this.navigateTo(link.section, link.target);
+    },
+    structGroupLabel(key) {
+      return ({
+        match_keys: 'Match keys',
+        field_folders: 'Field folders',
+        table_occurrences: 'Table occurrences',
+        base_tables: 'Base tables',
+      })[key] || key;
+    },
+    get hasXRef() {
+      const x = this.currentXRef;
+      if (Object.values(x).some(v => Array.isArray(v) && v.length > 0)) return true;
+      return this.hasStruct;
+    },
+    // Total entries behind the tab (xref groups + struct links + struct groups) — the
+    // closed tab's "References · N" lure (packet 1286).
+    get xrefCount() {
+      let n = 0;
+      for (const v of Object.values(this.currentXRef)) if (Array.isArray(v)) n += v.length;
+      n += this.currentStructLinks.length;
+      const g = this.currentStructGroups;
+      if (g) for (const v of Object.values(g)) if (Array.isArray(v)) n += v.length;
+      return n;
+    },
+
+    get wfObjectTypes() {
+      const wf = this.currentItemData?.wireframe;
+      if (!wf) return [];
+      const seen = {};
+      wf.objects.forEach(o => { seen[o.type] = true; });
+      return Object.keys(seen).sort();
+    },
+
+    get wfSvgHtml() {
+      const wf = this.currentItemData?.wireframe;
+      if (!wf) return '';
+      const W = wf.width, H = wf.height;
+      const h = this.wfHiddenTypes;
+      function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+      const PC = {
+        'Header':'#4e9eff','TitleHeader':'#4e9eff','Body':'#50c878',
+        'Footer':'#aaaaaa','TitleFooter':'#aaaaaa',
+        'SubsummaryAbove':'#ff9500','SubsummaryBelow':'#ff9500',
+        'GrandSummary':'#ffd700','LeadingGrandSummary':'#ffd700','TrailingGrandSummary':'#ffd700',
+      };
+      const OC = {
+        'Field':'#4e9eff','Text':'#aaaaaa','Button':'#ff9500','Portal':'#50c878',
+        'TabControl':'#da70d6','SlideControl':'#7b68ee','Line':'#ff6b6b',
+        'Rectangle':'#ffd700','Oval':'#40e0d0','WebViewer':'#ff69b4',
+        'Chart':'#98fb98','ButtonBar':'#ffa07a','GroupObject':'#888888',
+      };
+      let svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+W+' '+H+'" width="100%" style="display:block;background:#111;border:1px solid #2a2d3a">';
+      for (const p of wf.parts) {
+        const c = PC[p.type] || '#888888';
+        const pw = Math.max(1,p.right-p.left), ph = Math.max(1,p.bottom-p.top);
+        svg += '<rect x="'+p.left+'" y="'+p.top+'" width="'+pw+'" height="'+ph+'" fill="'+c+'" fill-opacity="0.06" stroke="'+c+'" stroke-opacity="0.3" stroke-width="1"/>';
+        svg += '<text x="'+(p.left+4)+'" y="'+(p.top+11)+'" fill="'+c+'" fill-opacity="0.55" font-size="10" font-family="monospace">'+esc(p.type)+'</text>';
+      }
+      for (const o of wf.objects) {
+        if (h[o.type]) continue;
+        const c = o.fill || OC[o.type] || '#aaaaaa';
+        const fo = o.fill ? '0.35' : '0.18';
+        const ow = Math.max(1,o.right-o.left), oh = Math.max(1,o.bottom-o.top);
+        const tip = o.type+(o.name?' : '+o.name:'')+(o.style?' ['+o.style+']':'');
+        svg += '<g><title>'+esc(tip)+'</title>';
+        svg += '<rect x="'+o.left+'" y="'+o.top+'" width="'+ow+'" height="'+oh+'" fill="'+c+'" fill-opacity="'+fo+'" stroke="'+c+'" stroke-opacity="0.75" stroke-width="0.5"/>';
+        svg += '</g>';
+      }
+      svg += '</svg>';
+      return svg;
+    },
+
+    wfTypeColor(type) {
+      const C = {
+        'Field':'#4e9eff','Text':'#aaaaaa','Button':'#ff9500','Portal':'#50c878',
+        'TabControl':'#da70d6','SlideControl':'#7b68ee','Line':'#ff6b6b',
+        'Rectangle':'#ffd700','Oval':'#40e0d0','WebViewer':'#ff69b4',
+        'Chart':'#98fb98','ButtonBar':'#ffa07a','GroupObject':'#888888',
+      };
+      return C[type] || '#aaaaaa';
+    },
+
+    wfToggleType(type) {
+      this.wfHiddenTypes = {...this.wfHiddenTypes, [type]: !this.wfHiddenTypes[type]};
+    },
+
+    get currentFileHasGraph() {
+      return (this.currentFileObj.graph?.nodes?.length || 0) > 0;
+    },
+    _graphShow() {
+      const fi = this.currentFileIdx;
+      const svgEl = document.getElementById('rel-graph');
+      const gd = this.currentFileObj.graph;
+      if (!svgEl || !gd || !gd.nodes.length) return;
+      if (this._graphCurrentFile !== fi) {
+        if (this._graphRafCancel) { this._graphRafCancel(); this._graphRafCancel = null; }
+        const self = this;
+        _rgBuild(gd, svgEl, function(section, item) {
+          self.detailTab = 'rendered';
+          self.navigateTo(section, item);
+        });
+        this._graphCurrentFile = fi;
+      }
+      this._applyGraphLayout(this._graphTab);
+    },
+    setGraphTab(tab) {
+      if (this._graphRafCancel) { this._graphRafCancel(); this._graphRafCancel = null; }
+      this._graphTab = tab;
+      this.$nextTick(() => this._applyGraphLayout(tab));
+    },
+    _applyGraphLayout(tab) {
+      const fi = this.currentFileIdx;
+      const svgEl = document.getElementById('rel-graph');
+      const gd = this.currentFileObj.graph;
+      if (!svgEl || !gd) return;
+      const cacheKey = fi + '_' + tab;
+      const self = this;
+      if (tab === 'fm') {
+        const r = _rgLayoutFM(gd);
+        _rgApply(svgEl, r.positions);
+        _rgClearOverlay(svgEl);
+        _rgFit(svgEl, r.bounds);
+      } else if (tab === 'cluster') {
+        if (!this._graphCache[cacheKey]) {
+          const r = _rgLayoutCluster(gd);
+          this._graphCache = {...this._graphCache, [cacheKey]: r};
+        }
+        const c = this._graphCache[cacheKey];
+        _rgApply(svgEl, c.positions);
+        _rgBuildOverlay(svgEl, c.ovData);
+        _rgFit(svgEl, c.bounds);
+      } else if (tab === 'force') {
+        if (this._graphCache[cacheKey]) {
+          const c = this._graphCache[cacheKey];
+          _rgApply(svgEl, c.positions);
+          _rgClearOverlay(svgEl);
+          _rgFit(svgEl, c.bounds);
+        } else {
+          const clKey = fi + '_cluster';
+          const startPos = this._graphCache[clKey]
+            ? this._graphCache[clKey].positions
+            : _rgLayoutFM(gd).positions;
+          _rgApply(svgEl, startPos);
+          _rgClearOverlay(svgEl);
+          this._graphRafCancel = _rgLayoutForce(gd, startPos,
+            function(pm) { _rgApply(svgEl, pm); },
+            function(result) {
+              self._graphCache = {...self._graphCache, [cacheKey]: result};
+              self._graphRafCancel = null;
+              _rgFit(svgEl, result.bounds);
+            }
+          );
+        }
+      }
+    },
+    fitGraph() {
+      const svgEl = document.getElementById('rel-graph');
+      if (svgEl && svgEl._rgFitVb) {
+        const v = svgEl._rgFitVb;
+        const vb = svgEl._rgVb;
+        if (vb) { vb.x=v.x; vb.y=v.y; vb.w=v.w; vb.h=v.h; }
+        svgEl.setAttribute('viewBox', v.x+' '+v.y+' '+v.w+' '+v.h);
+      }
+    },
+
+    toggleGraphFullscreen() {
+      this.graphFullscreen = !this.graphFullscreen;
+      this.$nextTick(() => this.fitGraph());
+    },
+
+    sectionLabel(key) {
+      const order = this.currentFileObj.section_order || [];
+      const found = order.find(p => p[0] === key);
+      return found ? found[1] : key;
+    },
+
+    isFolderCollapsed(name) {
+      const secState = this._collapsedFolders[this.currentSection] || {};
+      if (name in secState) return secState[name];
+      return !!(this.sectionObj.default_collapsed);
+    },
+
+    toggleFolder(name) {
+      const sec = this.currentSection;
+      const curr = this._collapsedFolders[sec] || {};
+      this._collapsedFolders = {
+        ...this._collapsedFolders,
+        [sec]: { ...curr, [name]: !this.isFolderCollapsed(name) }
+      };
+    },
+
+    expandAll() {
+      if (this.sectionObj.default_collapsed) {
+        const all = {};
+        for (const k of Object.keys(this.folderChildren)) all[k] = false;
+        this._collapsedFolders = { ...this._collapsedFolders, [this.currentSection]: all };
+      } else {
+        this._collapsedFolders = { ...this._collapsedFolders, [this.currentSection]: {} };
+      }
+    },
+
+    collapseAll() {
+      const collapsed = {};
+      for (const k of Object.keys(this.folderChildren)) collapsed[k] = true;
+      this._collapsedFolders = { ...this._collapsedFolders, [this.currentSection]: collapsed };
+    },
+
+    _firstSelectableItem(key) {
+      const secs = this.currentFileObj.sections || {};
+      const items = (secs[key] || {}).item_names || [];
+      const data  = (secs[key] || {}).item_data  || {};
+      return items.find(n => !(data[n] || {}).is_separator && !(data[n] || {}).is_folder) || null;
+    },
+
+    _addHist(fileIdx, section, item) {
+      if (!item) return;
+      const last = this._history[this._histIdx];
+      if (last && last.fileIdx === fileIdx && last.section === section && last.item === item && last.deadEndMode === this.deadEndMode) return;
+      this._history = this._history.slice(0, this._histIdx + 1);
+      this._history.push({fileIdx, section, item, deadEndMode: this.deadEndMode});
+      if (this._history.length > 50) this._history = this._history.slice(-50);
+      this._histIdx = this._history.length - 1;
+    },
+    _pushHistory() {
+      this._addHist(this.currentFileIdx, this.currentSection, this.currentItem);
+    },
+
+    _navigateNoHistory(fileIdx, section, item, noRecord=false) {
+      if (fileIdx !== this.currentFileIdx) {
+        this.currentFileIdx = fileIdx;
+        this.filterQuery = '';
+      }
+      if (this.currentSection !== section) {
+        this.currentSection = section;
+        this.filterQuery = '';
+        if ((this.detailTab === 'wireframe' || this.detailTab === 'objects') && section !== 'LayoutCatalog') this.detailTab = 'rendered';
+        if (this.detailTab === 'graph' && section !== 'RelationshipCatalog') this.detailTab = 'rendered';
+      }
+      const fc = ((this.currentFileObj.sections || {})[section] || {}).folder_children || {};
+      const ancestors = [];
+      const findAncestors = (name) => {
+        for (const [folder, children] of Object.entries(fc)) {
+          if ((children || []).includes(name)) {
+            ancestors.push(folder);
+            findAncestors(folder);
+            break;
+          }
+        }
+      };
+      findAncestors(item);
+      if (ancestors.length) {
+        const curr = { ...(this._collapsedFolders[section] || {}) };
+        for (const f of ancestors) curr[f] = false;
+        this._collapsedFolders = { ...this._collapsedFolders, [section]: curr };
+      }
+      this.currentItem = item;
+      if (!noRecord) this._addHist(fileIdx, section, item);
+      this.$nextTick(() => {
+        const el = document.querySelector('#item-list [data-item="' + CSS.escape(item) + '"]');
+        if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      });
+    },
+
+    goBack() {
+      if (this._histIdx <= 0) return;
+      this._histIdx--;
+      const h = this._history[this._histIdx];
+      this.isSearching = false;
+      this.searchQuery = '';
+      this.searchResults = [];
+      this.deadEndMode = !!h.deadEndMode;
+      this._navigateNoHistory(h.fileIdx, h.section, h.item, true);
+    },
+
+    get canGoBack() {
+      return this._histIdx > 0;
+    },
+
+    get recentItems() {
+      const seen = new Set();
+      const result = [];
+      for (let i = this._history.length - 1; i >= 0; i--) {
+        const h = this._history[i];
+        if (!h.item) continue;
+        const key = h.fileIdx + '|' + h.section + '|' + h.item;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const f = appData.files[h.fileIdx] || {};
+        const d = ((f.sections || {})[h.section] || {}).item_data || {};
+        result.push({
+          fileIdx: h.fileIdx, section: h.section, item_key: h.item,
+          fk: f.file_key || '',
+          display: (d[h.item] || {}).display_name || h.item,
+        });
+        if (result.length >= 15) break;
+      }
+      return result;
+    },
+
+    navigateToHistory(h) {
+      this.graphFullscreen = false;
+      this.showRecent = false;
+      this.isSearching = false;
+      this.searchQuery = '';
+      this.searchResults = [];
+      this._pushHistory();
+      this._navigateNoHistory(h.fileIdx, h.section, h.item_key);
+    },
+
+    init() {
+      this._fuseMap = {};
+      for (let i = 0; i < appData.files.length; i++) {
+        this._fuseMap[i] = new Fuse(appData.files[i].search_index, {
+          keys: ['text'],
+          threshold: 0.35,
+          includeScore: true,
+          minMatchCharLength: 2,
+        });
+      }
+      this.currentItem = this._firstSelectableItem(this.currentSection);
+      this.sortMode = this._defaultSort(this.currentSection);
+      this._pushHistory();
+      try { const v = localStorage.getItem('fmc_xref_open'); if (v !== null) this.xrefOpen = v === 'true'; } catch(e) {}
+      this.$watch('xrefOpen', v => { try { localStorage.setItem('fmc_xref_open', v); } catch(e) {} });
+      this.$watch('currentItem', () => {
+        this._collapsedBlocks = {};
+        this._expandedSteps = {};
+        this._revealedSteps = {};
+        this._shownLongValues = {};
+        this._copyStatus = {};
+        this.rawSourceIdx = 0;
+      });
+      this.$watch('detailTab', (val) => {
+        if (val !== 'graph') {
+          if (this.graphFullscreen) this.graphFullscreen = false;
+          if (this._graphRafCancel) { this._graphRafCancel(); this._graphRafCancel = null; }
+        }
+        if (val === 'graph') this.$nextTick(() => this._graphShow());
+      });
+      this.$watch('darkMode', () => {
+        this._graphCurrentFile = -1;
+        if (this.detailTab === 'graph') this.$nextTick(() => this._graphShow());
+      });
+      this.$watch('currentFileIdx', () => {
+        if (this.detailTab === 'graph') {
+          if (!this.currentFileHasGraph) { this.detailTab = 'rendered'; return; }
+          this._graphShow();
+        }
+      });
+      this.$nextTick(() => {
+        const s = document.getElementById('splash');
+        if (s) { s.style.opacity = '0'; setTimeout(() => s.remove(), 320); }
+      });
+    },
+
+    selectFile(idx) {
+      if (idx === this.currentFileIdx) return;
+      this.graphFullscreen = false;
+      this._pushHistory();
+      this.currentFileIdx = idx;
+      this.filterQuery = '';
+      this.searchQuery = '';
+      this.searchResults = [];
+      this.isSearching = false;
+      const order = this.currentFileObj.section_order || [];
+      this.currentSection = (order[0] || [''])[0];
+      this.sortMode = this._defaultSort(this.currentSection);
+      this.flipAll = false;
+      this.currentItem = this._firstSelectableItem(this.currentSection);
+      this._addHist(this.currentFileIdx, this.currentSection, this.currentItem);
+    },
+
+    selectSection(key) {
+      this.graphFullscreen = false;
+      if ((this.detailTab === 'wireframe' || this.detailTab === 'objects') && key !== 'LayoutCatalog') this.detailTab = 'rendered';
+      if (this.detailTab === 'graph' && key !== 'RelationshipCatalog') this.detailTab = 'rendered';
+      this.currentSection = key;
+      this.sortMode = this._defaultSort(key);
+      this.flipAll = false;
+      this.filterQuery = '';
+      this.deadEndMode = false;
+      this.currentItem = this._firstSelectableItem(key);
+      this.$nextTick(() => {
+        const btn = document.querySelector('#sec-tabs .sec-btn.active');
+        if (btn) btn.scrollIntoView({ block: 'nearest' });
+      });
+    },
+
+    selectItem(name) {
+      this.graphFullscreen = false;
+      this._pushHistory();
+      this.currentItem = name;
+      // Objects supersedes the wireframe as the legible layout view — default to it
+      // for layouts (only auto-upgrading from the generic 'rendered' tab).
+      if (this.currentSection === 'LayoutCatalog' && this.detailTab === 'rendered'
+          && this.currentItemData?.objects) this.detailTab = 'objects';
+      this._addHist(this.currentFileIdx, this.currentSection, name);
+      this.$nextTick(() => {
+        const el = document.querySelector('#item-list [data-item="' + CSS.escape(name) + '"]');
+        if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      });
+    },
+
+    navigateToId(itemId) {
+      if (!itemId) return;
+      const sep = itemId.indexOf('/');
+      if (sep < 0) return;
+      const section = itemId.slice(0, sep);
+      this.navigateTo(section, itemId);
+    },
+
+    navigateXRef(section, xref_entry) {
+      if (!xref_entry) return;
+      if (typeof xref_entry === 'string') {
+        this.navigateTo(section, xref_entry);
+      } else if (xref_entry.id) {
+        this.navigateToId(xref_entry.id);
+      }
+    },
+
+    xrefName(xref_entry) {
+      if (!xref_entry) return '';
+      return typeof xref_entry === 'string' ? xref_entry : (xref_entry.name || '');
+    },
+
+    navigateTo(section, item, fileKey=null) {
+      this.graphFullscreen = false;
+      this.isSearching = false;
+      this.searchQuery = '';
+      this.searchResults = [];
+      this._pushHistory();
+      let fIdx = this.currentFileIdx;
+      if (fileKey) {
+        const i = appData.files.findIndex(f => f.file_key === fileKey);
+        if (i >= 0) fIdx = i;
+      }
+      this._navigateNoHistory(fIdx, section, item);
+    },
+
+    resolveFileKey(fileName) {
+      const norm = s => s.replace(/_addon$/, '').replace(/\\.fmp12$/i, '').toLowerCase();
+      const t = norm(fileName);
+      const f = appData.files.find(f => norm(f.file_key) === t);
+      return f ? f.file_key : null;
+    },
+
+    navigateToFileSection(fileName, section) {
+      const fileKey = this.resolveFileKey(fileName);
+      if (!fileKey) return;
+      const fIdx = appData.files.findIndex(f => f.file_key === fileKey);
+      if (fIdx < 0) return;
+      this.isSearching = false;
+      this.searchQuery = '';
+      this.searchResults = [];
+      this._pushHistory();
+      const secs = appData.files[fIdx].sections || {};
+      const items = (secs[section] || {}).item_names || [];
+      const data = (secs[section] || {}).item_data || {};
+      const firstItem = items.find(n => !(data[n] || {}).is_separator && !(data[n] || {}).is_folder) || null;
+      this._navigateNoHistory(fIdx, section, firstItem);
+    },
+
+    doSearch() {
+      this.isSearching = this.searchQuery.length > 0;
+      if (this.searchQuery.length < 2) { this.searchResults = []; return; }
+      const fuse = this._fuseMap[this.currentFileIdx];
+      if (!fuse) { this.searchResults = []; return; }
+      const raw = fuse.search(this.searchQuery, {limit: 100});
+      this.searchResults = raw.map(r => {
+        const entry = r.item;
+        let snippet = '';
+        const q = this.searchQuery.toLowerCase();
+        for (const line of (entry.text || '').split('\\n')) {
+          if (line.toLowerCase().includes(q)) {
+            const pos = line.toLowerCase().indexOf(q);
+            const start = Math.max(0, pos - 20);
+            snippet = (start ? '…' : '') + line.slice(start, start + 80);
+            if (start + 80 < line.length) snippet += '…';
+            break;
+          }
+        }
+        return {...entry, snippet};
+      });
+    },
+
+    clearSearch() {
+      this.searchQuery = '';
+      this.searchResults = [];
+      this.isSearching = false;
+    },
+
+    handleKeydown(e) {
+      const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+      if (e.key === 'Escape') {
+        if (this.showShortcuts) { this.showShortcuts = false; return; }
+        if (this.showAbout) { this.showAbout = false; return; }
+        if (this.graphFullscreen) { this.graphFullscreen = false; return; }
+        if (this.showRecent) { this.showRecent = false; return; }
+        if (this.filterQuery) {
+          this.filterQuery = '';
+          this.$refs.filterInput?.focus();
+        } else if (this.isSearching) {
+          this.clearSearch();
+        } else if (isInput) {
+          e.target.blur();
+        }
+        return;
+      }
+      if (isInput) return;
+      if ((e.key === 'Alt' || e.altKey) && e.key === 'ArrowLeft') {
+        e.preventDefault();
+        this.goBack();
+        return;
+      }
+      if (e.key === '/') {
+        e.preventDefault();
+        this.$refs.filterInput?.focus();
+        return;
+      }
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !this.isSearching) {
+        e.preventDefault();
+        const items = this.displayItems.filter(n => !n.is_separator && !n.is_folder);
+        if (!items.length) return;
+        const idx = items.findIndex(n => n.name === this.currentItem);
+        const next = e.key === 'ArrowDown'
+          ? (idx < items.length - 1 ? items[idx + 1] : items[0])
+          : (idx > 0 ? items[idx - 1] : items[items.length - 1]);
+        this.currentItem = next.name;
+        this.$nextTick(() => {
+          const el = document.querySelector('#item-list [data-item="' + CSS.escape(next.name) + '"]');
+          if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        });
+        return;
+      }
+      // [ / ] — previous / next section
+      if (e.key === '[' || e.key === ']') {
+        e.preventDefault();
+        const order = this.currentFileObj.section_order || [];
+        if (!order.length) return;
+        const idx = order.findIndex(([k]) => k === this.currentSection);
+        const next = e.key === ']'
+          ? order[(idx + 1) % order.length]
+          : order[(idx - 1 + order.length) % order.length];
+        if (next) { this._pushHistory(); this._navigateNoHistory(this.currentFileIdx, next[0], null); }
+        return;
+      }
+      // u — toggle dead-end (unused) mode
+      if (e.key === 'u') {
+        this.deadEndMode = !this.deadEndMode;
+        this._pushHistory();
+        return;
+      }
+      // 1–5 — switch detail tab (Rendered / Tree / Attrs / Raw / Wireframe|Graph)
+      if (e.key >= '1' && e.key <= '5' && this.currentItem) {
+        const tabs = ['rendered', 'tree', 'attrs', 'raw'];
+        if (this.currentSection === 'LayoutCatalog') { tabs.push('objects'); tabs.push('wireframe'); }
+        else if (this.currentSection === 'RelationshipCatalog') tabs.push('graph');
+        const t = tabs[parseInt(e.key) - 1];
+        if (t) this.detailTab = t;
+        return;
+      }
+      // g — toggle graph full-screen (only when graph tab active)
+      if (e.key === 'g' && this.detailTab === 'graph') {
+        this.graphFullscreen = !this.graphFullscreen;
+        return;
+      }
+      // ? — keyboard shortcut reference
+      if (e.key === '?') {
+        this.showShortcuts = !this.showShortcuts;
+        return;
+      }
+    },
+  }));
+});
+</script>
+<script>__CORPUSFM_ALPINE_JS__</script>
+<script>
+(function(){
+  // Optional drag handles: guard each binding so a missing handle (e.g. no xref
+  // resizer in a given build) never throws "addEventListener of null" — the error
+  // is otherwise silent in the UI but pollutes the console on every Explorer.
+  var sb=document.getElementById('sidebar'),rh=document.getElementById('resize-h');
+  if(sb && rh){
+    var hDrag=false,hSx=0,hSw=0;
+    rh.addEventListener('mousedown',function(e){
+      hDrag=true;hSx=e.clientX;hSw=sb.offsetWidth;
+      rh.classList.add('active');
+      document.body.style.cursor='col-resize';document.body.style.userSelect='none';
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove',function(e){
+      if(!hDrag)return;
+      sb.style.width=Math.max(160,hSw+(e.clientX-hSx))+'px';
+    });
+    document.addEventListener('mouseup',function(){
+      if(!hDrag)return;
+      hDrag=false;rh.classList.remove('active');
+      document.body.style.cursor='';document.body.style.userSelect='';
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    var tag = e.target.closest && e.target.closest('.xt-tag[data-xtid]');
+    if (tag) {
+      var c = document.getElementById(tag.dataset.xtid);
+      if (c) {
+        c.hidden = !c.hidden;
+        var fold = tag.querySelector('.xt-fold');
+        if (fold) fold.textContent = c.hidden ? '▶' : '▼';
+      }
+      return;
+    }
+    var row = e.target.closest && e.target.closest('tr[data-xg-toggle]');
+    if (row) {
+      var g = row.dataset.xgToggle;
+      var detail = row.closest('table') && row.closest('table').querySelectorAll('tr[data-xg="'+g+'"]');
+      if (!detail || !detail.length) return;
+      var hiding = detail[0].style.display !== 'none';
+      detail.forEach(function(r) { r.style.display = hiding ? 'none' : ''; });
+      var fold = row.querySelector('.xg-fold');
+      if (fold) fold.textContent = hiding ? '▶' : '▼';
+    }
+  });
+
+  var xrefPanel=document.getElementById('detail-xref'),rxref=document.getElementById('resize-xref');
+  if(xrefPanel && rxref){
+    var xDrag=false,xSx=0,xSw=0;
+    // Panel is LEFT-docked (tab | panel | handle | scroll), so dragging the handle RIGHT
+    // widens it: startWidth + Δ. Clamp [180,600] — 180 min so it can't collapse (the
+    // #xref-tab toggle handles hide); persist the width like fmc_xref_open.
+    var clampW=function(w){return Math.max(180,Math.min(600,w));};
+    try{var savedW=parseInt(localStorage.getItem('fmc_xref_width'),10);if(savedW>0)xrefPanel.style.width=clampW(savedW)+'px';}catch(e){}
+    rxref.addEventListener('mousedown',function(e){
+      xDrag=true;xSx=e.clientX;xSw=xrefPanel.offsetWidth;
+      rxref.classList.add('active');
+      document.body.style.cursor='col-resize';document.body.style.userSelect='none';
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove',function(e){
+      if(!xDrag)return;
+      xrefPanel.style.width=clampW(xSw+(e.clientX-xSx))+'px';
+    });
+    document.addEventListener('mouseup',function(){
+      if(!xDrag)return;
+      xDrag=false;rxref.classList.remove('active');
+      document.body.style.cursor='';document.body.style.userSelect='';
+      try{localStorage.setItem('fmc_xref_width',parseInt(xrefPanel.style.width,10));}catch(e){}
+    });
+  }
+
+})();
+</script>
+</body>
+</html>

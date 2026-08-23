@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% block title %}Tags — CORPUSfm{% endblock %}
+
+{# Tags — re-platform (bespoke kit; no Shoelace). Gallery of tag identity cards;
+   body-click jumps to the tag's records, a Detail button opens the tag detail
+   pop-over (rename / delete / jump). New-tag + cross-file membership are the
+   deferred Tags-feature batch (need backend support). See plan surface 11. #}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+<div x-data="tagsPage()">
+
+  <div class="cfm-page-hdr">
+    <h1>Tags</h1>
+    <div class="cfm-hdr-actions">
+      <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="openNew()">New tag</button>
+      {{ doc_help('tags', 'About Tags & filtering') }}
+    </div>
+  </div>
+  <p class="cfm-muted cfm-mt-6">Click a tag to view its records; Detail to edit.</p>
+
+  <template x-if="groups.length === 0 && !loading">
+    <p class="cfm-list-empty">No tags in use yet. Tag an artifact from the Artifacts page to create one.</p>
+  </template>
+
+  <template x-if="groups.length > 0">
+    <div class="cfm-grid" data-kbd-grid>
+      <template x-for="g in groups" :key="g.name">
+        <div class="cfm-card" @click="jump(g.name)" :title="'Jump to ' + g.name + ' records'">
+          <div class="cfm-card-icon cfm-card-icon--tag">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <path d="M2.5 9.5V3.5a1 1 0 0 1 1-1h6L17 9.9a1 1 0 0 1 0 1.4l-5.2 5.2a1 1 0 0 1-1.4 0L2.5 9.5z"/>
+              <circle cx="6.2" cy="6.2" r="1.1" fill="currentColor" stroke="none"/>
+            </svg>
+          </div>
+          <div class="cfm-card-name" x-text="g.name" :title="g.name"></div>
+          <div class="cfm-card-sub" x-text="g.count + ' record' + (g.count === 1 ? '' : 's')"></div>
+          <div class="cfm-card-foot">
+            <button type="button" class="cfm-btn cfm-btn--sm" @click.stop="openDetail(g)">Detail</button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </template>
+
+  {# ── Tag detail pop-over (overlay primitive) ─────────────────────────────── #}
+  <div class="cfm-overlay" x-show="detail" x-cloak
+       @click.self="closeDetail()" @keydown.escape.window="closeDetail()"
+       x-effect="detail ? $nextTick(() => { _trap = window.cfmFocusTrap($refs.tagDlg) }) : (_trap && _trap())">
+    <div class="cfm-dialog" x-ref="tagDlg" role="dialog" aria-modal="true">
+      <template x-if="detail">
+        <div class="cfm-dialog-contents">
+          <div class="cfm-dialog-hdr">
+            <span class="cfm-dialog-title" x-text="isNew ? 'New tag' : detail.name"></span>
+            {{ doc_help('tags#your-tags', 'About tags') }}
+            <button type="button" class="cfm-iconbtn" @click="closeDetail()" aria-label="Close" title="Close">✕</button>
+          </div>
+          <div class="cfm-dialog-body">
+            <label class="cfm-field-label" for="tag-rename">Name</label>
+            <input id="tag-rename" type="text" class="cfm-input" x-model="nameDraft" x-ref="nameInput">
+
+            <label class="cfm-field-label cfm-mt-14">Artifacts</label>
+            <template x-if="memberDraft.length === 0">
+              <p class="cfm-card-sub">No artifacts in this tag. Add some, or save it empty.</p>
+            </template>
+            <div class="cfm-member-list" x-show="memberDraft.length > 0">
+              <template x-for="m in memberDraft" :key="m.uuid">
+                <div class="cfm-member-row">
+                  <span class="cfm-member-name" x-text="m.display" :title="m.uuid"></span>
+                  <span class="cfm-muted" x-show="m.timestamp" x-text="fmtTs(m.timestamp)" style="font-size:11px"></span>
+                  <span class="cfm-badge cfm-badge--muted" x-show="m.type" x-text="m.type"></span>
+                  <button type="button" class="cfm-iconbtn cfm-iconbtn--sm"
+                          @click="removeMember(m.uuid)" aria-label="Remove" title="Remove">✕</button>
+                </div>
+              </template>
+            </div>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-mt-6" @click="openAddPicker()">Add artifacts</button>
+          </div>
+          <div class="cfm-dialog-ftr">
+            {# Jump-to-records lives on the tag CARD (body click); not here — a buffered
+               editor can't jump without discarding the draft + showing the saved set. #}
+            <span class="cfm-spacer"></span>
+            {# Destructive — separate, immediate, inline Confirm/Cancel (NOT part of Save) #}
+            <template x-if="!isNew && !confirmDel">
+              <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="confirmDel = true">Delete</button>
+            </template>
+            <template x-if="!isNew && confirmDel">
+              <span class="cfm-confirm">
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger"
+                        :disabled="!!delBusy" @click="doDelete()">Confirm?</button>
+                <button type="button" class="cfm-btn cfm-btn--sm"
+                        :disabled="!!delBusy" @click="confirmDel = false">Cancel</button>
+              </span>
+            </template>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary"
+                    :disabled="!!(nameDraft.trim() === '')"
+                    @click="saveCommit()">Save</button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function tagsPage() {
+  return {
+    groups: [], loading: false,
+    detail: null, isNew: false, nameDraft: '', memberDraft: [], confirmDel: false, _trap: null,
+    delBusy: false,                      // per-operation in-flight guard (packet 1186)
+
+    async init() { await this.load(); },
+    async load() {
+      this.loading = true;
+      try { const r = await fetch('/api/tags'); const d = await r.json(); this.groups = d.groups || []; }
+      catch (_) {} finally { this.loading = false; }
+    },
+
+    jump(name) { window.location = '{{ url_prefix }}/artifacts?tags=' + encodeURIComponent(name); },
+
+    fmtTs(ts) {
+      try {
+        const [date, time] = ts.split('_');
+        return `${date} ${time.slice(0,2)}:${time.slice(2,4)}`;
+      } catch(_) { return ts || ''; }
+    },
+
+    // Buffered editor: opening loads current members into the draft; Add/Remove/rename mutate
+    // ONLY the draft; nothing hits the backend until Save. Cancel/Esc/click-out discards.
+    openDetail(g) {
+      this.detail = { name: g.name, count: g.count };
+      this.isNew = false;
+      this.nameDraft = g.name;
+      this.memberDraft = (g.members || []).map(m => ({
+        uuid: m.uuid, display: m.display || m.uuid,
+        timestamp: m.timestamp || '', type: m.type || '',
+      }));
+      this.confirmDel = false;
+    },
+    openNew() {
+      this.detail = { name: '', count: 0 };
+      this.isNew = true;
+      this.nameDraft = '';
+      this.memberDraft = [];
+      this.confirmDel = false;
+      this.$nextTick(() => { try { this.$refs.nameInput && this.$refs.nameInput.focus(); } catch (_) {} });
+    },
+    closeDetail() { this.detail = null; this.isNew = false; this.confirmDel = false; this.memberDraft = []; },
+
+    removeMember(uuid) {
+      this.memberDraft = this.memberDraft.filter(m => m.uuid !== uuid);
+    },
+
+    openAddPicker() {
+      const tagName = this.nameDraft.trim() || (this.isNew ? 'new tag' : this.detail.name);
+      this.$dispatch('open-artifact-picker', {
+        title:       'Add to "' + tagName + '"',
+        multiSelect: true,
+        exclude:     this.memberDraft.map(m => m.uuid),
+        callback:    (rows) => {
+          for (const row of (rows || [])) {
+            if (!this.memberDraft.some(m => m.uuid === row.uuid)) {
+              this.memberDraft.push({
+                uuid: row.uuid, display: row.name || row.fm_file || row.uuid,
+                timestamp: row.timestamp || '', type: row.artifact_type || '',
+              });
+            }
+          }
+        },
+      });
+    },
+
+    async saveCommit() {
+      if (!this.detail) return;
+      const name = this.nameDraft.trim();
+      if (!name) return;
+      try {
+        const r = await fetch('/api/tags/commit', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            original_name: this.isNew ? '' : this.detail.name,
+            name,
+            members: this.memberDraft.map(m => m.uuid),
+          }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+          window.cfmNotify.success(`Saved '${d.name}' (${d.count} record${d.count === 1 ? '' : 's'})`);
+          this.closeDetail(); await this.load();
+        } else { window.cfmNotify.error(d.error || 'Save failed.'); }
+      } catch (e) { window.cfmNotify.error(String(e)); }
+    },
+
+    async doDelete() {
+      if (!this.detail || this.delBusy) return;   // BEFORE any await (packet 1186)
+      this.delBusy = true;
+      try {
+        const name = this.detail.name;      // inside the try — a throw must not escape the finally
+        const r = await fetch('/api/tags/' + encodeURIComponent(name), { method: 'DELETE' });
+        const d = await r.json();
+        if (d.ok) {
+          this.confirmDel = false;                // only on success — a failure keeps Confirm for a retry
+          window.cfmNotify.success(`'${name}' removed from ${d.removed} record${d.removed === 1 ? '' : 's'}`);
+          this.closeDetail(); await this.load();
+        } else { window.cfmNotify.error(d.error || 'Delete failed.'); }
+      } catch (e) { window.cfmNotify.error(String(e)); }
+      finally { this.delBusy = false; }
+    },
+  };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,451 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CfmExportScript>
+	<ScriptEntry>
+		<Script id="52" name="CFM.TOOLS.DeleteExportFileFromDocumentsFolder">
+			<UUID modifications="13" accountName="corpusfm" timestamp="2026-06-02T15:08:41">355CA7D2-3094-4276-B384-EC08EFE7E033</UUID>
+			<Options hidden="True" access="ReadWrite" SiriShortcutVisible="False" runwithfullaccess="False" compatibility="0">8</Options>
+			<TagList />
+		</Script>
+	</ScriptEntry>
+	<StepsEntry>
+		<Script>
+			<ScriptReference id="52" name="CFM.TOOLS.DeleteExportFileFromDocumentsFolder" UUID="355CA7D2-3094-4276-B384-EC08EFE7E033" />
+			<ObjectList membercount="31">
+				<Step hash="F98B688C558B0B1E7E767D20941074F2" index="0" id="89" name="# (comment)" enable="True">
+					<UUID>921DFEE0-A662-4456-8DBB-6F4A223AC5CE</UUID>
+					<OwnerID />
+					<Options>4</Options>
+					<DDRREF kind="StepText" hash="FCC722C6802420DFCF502325414BFEA3">_921DFEE0-A662-4456-8DBB-6F4A223AC5CE</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment value="CFM.TOOLS.DeleteDocumentsFile" />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="56A58816BD31BF4D352E94D40554ADC5" index="1" id="89" name="# (comment)" enable="True">
+					<UUID>46F71C49-F2C2-441F-9001-0F131F8FE498</UUID>
+					<OwnerID />
+					<Options>4</Options>
+					<DDRREF kind="StepText" hash="4D4EDAADA9B89C01DACA6F76CD0B6808">_46F71C49-F2C2-441F-9001-0F131F8FE498</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment value="Delete targeted file from documents directory on demand" />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="6C8BE123CEEAD7B66CF15C55FF334519" index="2" id="89" name="# (comment)" enable="True">
+					<UUID>637D151E-73B7-4894-AE8A-78F946036C1F</UUID>
+					<OwnerID />
+					<Options>4</Options>
+					<DDRREF kind="StepText" hash="049F8C6876033A7881AC5BA6A08C5576">_637D151E-73B7-4894-AE8A-78F946036C1F</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment value="Returns: &quot;ok&quot; or &quot;error: {response}&quot;" />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="14CBA1EE69B5469E020AA6185E50BA10" index="3" id="89" name="# (comment)" enable="True">
+					<UUID>579745DD-A741-4A39-AC08-075092C2B39F</UUID>
+					<OwnerID />
+					<Options>4</Options>
+					<DDRREF kind="StepText" hash="E5F08C6D35F1AE1DD11C9E6A57A67B32">_579745DD-A741-4A39-AC08-075092C2B39F</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment value="Parameters: { &quot;filename&quot;: &quot;...&quot; }" />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="184C0531939FE88475492004073198AC" index="4" id="89" name="# (comment)" enable="True">
+					<UUID>A9BFEAA5-11C0-49D4-AB03-727BFB272F4C</UUID>
+					<OwnerID />
+					<Options>4</Options>
+					<DDRREF kind="StepText" hash="E2269225FB2CBCE7BCA5801C07D09D2C">_A9BFEAA5-11C0-49D4-AB03-727BFB272F4C</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment value="====================" />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="50AE99149A71504C5D02443969340E81" index="5" id="89" name="# (comment)" enable="True">
+					<UUID>77C14C7F-AA7A-4DB0-BB8E-06F2C372212F</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="2198926BC487DB5BDD8346362F988C00">_77C14C7F-AA7A-4DB0-BB8E-06F2C372212F</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="5CFA6C28F21046D21496DB7ADEFA239D" index="6" id="89" name="# (comment)" enable="True">
+					<UUID>A42C5D84-847A-421C-983A-D0584B9AE3CE</UUID>
+					<OwnerID />
+					<Options>4</Options>
+					<DDRREF kind="StepText" hash="DC59C0A8727AB21A226E0D5FD94FA4BB">_A42C5D84-847A-421C-983A-D0584B9AE3CE</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment value="== SECURITY: disable this script step to use this script ==" />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="5DE0B907C4F5117DD631C5226CEE296B" index="7" id="89" name="# (comment)" enable="True">
+					<UUID>8D5F433A-3C11-4307-B21F-F953FD5C9BFE</UUID>
+					<OwnerID />
+					<Options>4</Options>
+					<DDRREF kind="StepText" hash="13DC4F76F4A119E15DAB1240A6FEBA76">_8D5F433A-3C11-4307-B21F-F953FD5C9BFE</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment value="== ENABLED BY DEFAUILT: for zero-admin configuration ==" />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="0BD5C0C6DE3CDA527215052BE5FCB52B" index="8" id="103" name="Exit Script" enable="False">
+					<UUID>A6B47542-9AC2-40B4-93F7-84D8ECA218E4</UUID>
+					<OwnerID />
+					<Options>16384</Options>
+					<DDRREF kind="StepText" hash="6C983AC9436B3EC8B3189070470E3748">_A6B47542-9AC2-40B4-93F7-84D8ECA218E4</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Calculation">
+							<Calculation datatype="1" position="0">
+								<Calculation>
+									<DDRREF kind="ChunkList" hash="DFBBB89FAA06D5D513307D3549EEB5FB">_A6B47542-9AC2-40B4-93F7-84D8ECA218E4_0</DDRREF>
+									<Text>//This script step is for your protection</Text>
+								</Calculation>
+							</Calculation>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="0C2A2A33D5CA2B243F28293EF07AE539" index="9" id="89" name="# (comment)" enable="True">
+					<UUID>B9B56ABF-6960-42C9-992C-40555264F811</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="58B5E46AF63FB35969B8AC9B47B49B5B">_B9B56ABF-6960-42C9-992C-40555264F811</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="BA4E2F6B61C61B9D4ED0D1315152FA6C" index="10" id="68" name="If" enable="True">
+					<UUID>CC63417C-EF2D-4400-B541-437389052DC2</UUID>
+					<OwnerID />
+					<Options>16384</Options>
+					<DDRREF kind="StepText" hash="039901E7D8E9098DB0DC07D513BCABA2">_CC63417C-EF2D-4400-B541-437389052DC2</DDRREF>
+					<ParameterValues membercount="2">
+						<Parameter type="Boolean">
+							<Boolean type="Collapsed" id="33554432" value="False" />
+						</Parameter>
+						<Parameter type="Calculation">
+							<Calculation datatype="7" position="0">
+								<Calculation>
+									<DDRREF kind="ChunkList" hash="DDFFADB82810680A2E904C2B5F4713FD">_CC63417C-EF2D-4400-B541-437389052DC2_0</DDRREF>
+									<Text>CFM.TOOLS.IsValidJSON ( Get ( ScriptParameter ) ) = True</Text>
+								</Calculation>
+							</Calculation>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="0DC003CDAE2BE8DE9C65040F9490931C" index="11" id="141" name="Set Variable" enable="True">
+					<UUID>FB21FB54-F5CB-42D3-821A-9855964B1C0E</UUID>
+					<OwnerID />
+					<Options>16388</Options>
+					<DDRREF kind="StepText" hash="FFDA866D7305ED5C9271A2809AAC06D8">_FB21FB54-F5CB-42D3-821A-9855964B1C0E</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Variable">
+							<value>
+								<Calculation datatype="1" position="1">
+									<Calculation>
+										<DDRREF kind="ChunkList" hash="63A6DA86749D505D73C89DFB892C4B1B">_FB21FB54-F5CB-42D3-821A-9855964B1C0E_1</DDRREF>
+										<Text>JSONGetElement ( Get ( ScriptParameter ) ; "filename" )</Text>
+									</Calculation>
+								</Calculation>
+							</value>
+							<Name value="$Filename" />
+							<repetition>
+								<Calculation datatype="1" position="2">
+									<Calculation>
+										<DDRREF kind="ChunkList" hash="A93F17BC54CA1958073B692697D5ED21">_FB21FB54-F5CB-42D3-821A-9855964B1C0E_2</DDRREF>
+										<Text>1</Text>
+									</Calculation>
+								</Calculation>
+							</repetition>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="FD7B5585EB491AE97EE6D2FEF01D0355" index="12" id="69" name="Else" enable="True">
+					<UUID>7231609C-7EA0-42CA-BAA3-D6D69E64E359</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="C41BE7A05C9FB7FCE60762E25EFB368B">_7231609C-7EA0-42CA-BAA3-D6D69E64E359</DDRREF>
+					<ParameterValues membercount="2">
+						<Parameter type="Boolean">
+							<Boolean type="Collapsed" id="33554432" value="False" />
+						</Parameter>
+						<Parameter type="Boolean">
+							<Boolean type="Collapsed" id="33554432" value="False" />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="B8A0AE7FA03A77F48B77A4DD5BA99F49" index="13" id="103" name="Exit Script" enable="True">
+					<UUID>8B5C4AED-03F6-4A20-8499-4F04FE69B1BE</UUID>
+					<OwnerID />
+					<Options>16384</Options>
+					<DDRREF kind="StepText" hash="8804DFF32BD2D90F8E1188E582DDFC00">_8B5C4AED-03F6-4A20-8499-4F04FE69B1BE</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Calculation">
+							<Calculation datatype="1" position="0">
+								<Calculation>
+									<DDRREF kind="ChunkList" hash="2EBBC23B07B6772B0C45CFDE63A0BF37">_8B5C4AED-03F6-4A20-8499-4F04FE69B1BE_0</DDRREF>
+									<Text>"error: bad parameter"</Text>
+								</Calculation>
+							</Calculation>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="38C855BC04B65F083DDC2D63AA5A95A8" index="14" id="70" name="End If" enable="True">
+					<UUID>E5222A55-3D5C-4D89-82A9-110D31F8C826</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="E52C8F0C2CB826A86E7560D7E99683B1">_E5222A55-3D5C-4D89-82A9-110D31F8C826</DDRREF>
+				</Step>
+				<Step hash="2FC49338141F18FC308C547085BDEA5E" index="15" id="89" name="# (comment)" enable="True">
+					<UUID>4D8FFCCC-907F-414F-BCC5-6CDA0AFB5577</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="350AB1210010ED9410880E9667B3217B">_4D8FFCCC-907F-414F-BCC5-6CDA0AFB5577</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="9F42E75A28E253F522F676E92900992C" index="16" id="68" name="If" enable="True">
+					<UUID>5A9153A2-01FB-47C8-9B78-E63363BF2A2B</UUID>
+					<OwnerID />
+					<Options>16384</Options>
+					<DDRREF kind="StepText" hash="CD29313728B30BD0E22A8357CA6B223B">_5A9153A2-01FB-47C8-9B78-E63363BF2A2B</DDRREF>
+					<ParameterValues membercount="2">
+						<Parameter type="Boolean">
+							<Boolean type="Collapsed" id="33554432" value="False" />
+						</Parameter>
+						<Parameter type="Calculation">
+							<Calculation datatype="7" position="0">
+								<Calculation>
+									<DDRREF kind="ChunkList" hash="DE479625308727F09E07EB4CFB67B92B">_5A9153A2-01FB-47C8-9B78-E63363BF2A2B_0</DDRREF>
+									<Text>Left ( $Filename ; "4" ) ≠ "Cfm_"
+or Right ( $Filename ; "4" ) ≠ ".xml"</Text>
+								</Calculation>
+							</Calculation>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="C7363D15E812BB83384C2953B4416057" index="17" id="103" name="Exit Script" enable="True">
+					<UUID>AF7F9E7F-52B1-4EF8-8259-0E316656148D</UUID>
+					<OwnerID />
+					<Options>16384</Options>
+					<DDRREF kind="StepText" hash="37F3DD993FB5B39309B22ABA0EDACC7C">_AF7F9E7F-52B1-4EF8-8259-0E316656148D</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Calculation">
+							<Calculation datatype="1" position="0">
+								<Calculation>
+									<DDRREF kind="ChunkList" hash="0F2566F574C2EBA5EAB61366B3B22185">_AF7F9E7F-52B1-4EF8-8259-0E316656148D_0</DDRREF>
+									<Text>"error: bad filename"</Text>
+								</Calculation>
+							</Calculation>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="B16298C7B88096FAD5E9BE5E86159D3B" index="18" id="70" name="End If" enable="True">
+					<UUID>A284A7D0-6BCB-4CC7-9336-848222870B4C</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="B1C33A62D2861558C6610E1D3E943615">_A284A7D0-6BCB-4CC7-9336-848222870B4C</DDRREF>
+				</Step>
+				<Step hash="641A00806503D9BDFB944A600B622F5D" index="19" id="89" name="# (comment)" enable="True">
+					<UUID>871535BA-C7FA-4205-B84F-7259AB485EAE</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="A5803D7226296131917B298C365CE7EA">_871535BA-C7FA-4205-B84F-7259AB485EAE</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="A369F9F1FE3B63C2BE1217C080B0DFE0" index="20" id="141" name="Set Variable" enable="True">
+					<UUID>D6141E1B-144F-4A60-9ABD-F1765F1351AA</UUID>
+					<OwnerID />
+					<Options>16388</Options>
+					<DDRREF kind="StepText" hash="42BCEB635C3A539F867D8E5E0B9DDDF8">_D6141E1B-144F-4A60-9ABD-F1765F1351AA</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Variable">
+							<value>
+								<Calculation datatype="1" position="1">
+									<Calculation>
+										<DDRREF kind="ChunkList" hash="74687378759F8E8E3CB2A87EB6B73265">_D6141E1B-144F-4A60-9ABD-F1765F1351AA_1</DDRREF>
+										<Text>"file:" &amp; Get ( DocumentsPath ) &amp; $Filename</Text>
+									</Calculation>
+								</Calculation>
+							</value>
+							<Name value="$Path" />
+							<repetition>
+								<Calculation datatype="1" position="2">
+									<Calculation>
+										<DDRREF kind="ChunkList" hash="A93F17BC54CA1958073B692697D5ED21">_D6141E1B-144F-4A60-9ABD-F1765F1351AA_2</DDRREF>
+										<Text>1</Text>
+									</Calculation>
+								</Calculation>
+							</repetition>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="A637E424C579D8B2DB81422A837010C5" index="21" id="89" name="# (comment)" enable="True">
+					<UUID>AED40243-BFF5-48A7-AC8C-A37065684B08</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="69D3971682FBFDABA7D8B8FAAF7C788D">_AED40243-BFF5-48A7-AC8C-A37065684B08</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="15AF603946FDB2B948DE2CFA7B71C0CB" index="22" id="197" name="Delete File" enable="True">
+					<UUID>428F1E15-10AD-491A-871B-8C43F518DC6D</UUID>
+					<OwnerID />
+					<Options>32</Options>
+					<DDRREF kind="StepText" hash="B9B91508C5106FE907698BD5ED360414">_428F1E15-10AD-491A-871B-8C43F518DC6D</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="UniversalPathList">
+							<UniversalPathList membercount="1">
+								<ObjectList>
+									<Location>$Path</Location>
+								</ObjectList>
+							</UniversalPathList>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="CB8F6B1C84FFB1E6B31FDEA22ECAC663" index="23" id="141" name="Set Variable" enable="True">
+					<UUID>BD42FEE2-B4C3-41D1-8167-8116D92D3FE5</UUID>
+					<OwnerID />
+					<Options>16388</Options>
+					<DDRREF kind="StepText" hash="C105FF6F11D7F3F327121E152C43ADC0">_BD42FEE2-B4C3-41D1-8167-8116D92D3FE5</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Variable">
+							<value>
+								<Calculation datatype="1" position="1">
+									<Calculation>
+										<DDRREF kind="ChunkList" hash="5E4048BA2AB4D1F04CEA9FB679B145E0">_BD42FEE2-B4C3-41D1-8167-8116D92D3FE5_1</DDRREF>
+										<Text>Get ( LastError )</Text>
+									</Calculation>
+								</Calculation>
+							</value>
+							<Name value="$LastError" />
+							<repetition>
+								<Calculation datatype="1" position="2">
+									<Calculation>
+										<DDRREF kind="ChunkList" hash="A93F17BC54CA1958073B692697D5ED21">_BD42FEE2-B4C3-41D1-8167-8116D92D3FE5_2</DDRREF>
+										<Text>1</Text>
+									</Calculation>
+								</Calculation>
+							</repetition>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="5EE4DB1BC2C6CB25D56A6C64791CE80F" index="24" id="89" name="# (comment)" enable="True">
+					<UUID>97066E68-7B22-4806-9C44-372FCEE53A01</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="8EC26484823818423E13613E400EB57D">_97066E68-7B22-4806-9C44-372FCEE53A01</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="12021D943414D90CCB0652CEE03407B7" index="25" id="68" name="If" enable="True">
+					<UUID>C96C5D31-13DE-4341-BF88-DB82357D2229</UUID>
+					<OwnerID />
+					<Options>16384</Options>
+					<DDRREF kind="StepText" hash="46A82F2AD3FE67A791E8226F6EEDEA85">_C96C5D31-13DE-4341-BF88-DB82357D2229</DDRREF>
+					<ParameterValues membercount="2">
+						<Parameter type="Boolean">
+							<Boolean type="Collapsed" id="33554432" value="False" />
+						</Parameter>
+						<Parameter type="Calculation">
+							<Calculation datatype="7" position="0">
+								<Calculation>
+									<DDRREF kind="ChunkList" hash="4C2BF39BF70B7EB2F5E3E9C06F60A330">_C96C5D31-13DE-4341-BF88-DB82357D2229_0</DDRREF>
+									<Text>$LastError = 0</Text>
+								</Calculation>
+							</Calculation>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="D2D8D1BFD08AA8DABCFE490ED3A428EA" index="26" id="103" name="Exit Script" enable="True">
+					<UUID>FF09C79D-2010-4739-B112-A8A555A1C7DD</UUID>
+					<OwnerID />
+					<Options>16384</Options>
+					<DDRREF kind="StepText" hash="678FBADE90F33CA32BE40BEB01AE5497">_FF09C79D-2010-4739-B112-A8A555A1C7DD</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Calculation">
+							<Calculation datatype="1" position="0">
+								<Calculation>
+									<DDRREF kind="ChunkList" hash="1BCB3EF234DB07165BC973E3A2A1FF0D">_FF09C79D-2010-4739-B112-A8A555A1C7DD_0</DDRREF>
+									<Text>"ok"</Text>
+								</Calculation>
+							</Calculation>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="738A17718AF7744EA1DC7F5388DBF8B1" index="27" id="69" name="Else" enable="True">
+					<UUID>9BD545B8-880A-43D2-8160-59A8E8DBFD11</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="65291BD3300D4AB1C902F3CF8A6014B5">_9BD545B8-880A-43D2-8160-59A8E8DBFD11</DDRREF>
+					<ParameterValues membercount="2">
+						<Parameter type="Boolean">
+							<Boolean type="Collapsed" id="33554432" value="False" />
+						</Parameter>
+						<Parameter type="Boolean">
+							<Boolean type="Collapsed" id="33554432" value="False" />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="585537667CDEB03015C403AF87BAB74E" index="28" id="103" name="Exit Script" enable="True">
+					<UUID>42FB21E5-E5BA-4C3C-84CE-DF176EC42B2D</UUID>
+					<OwnerID />
+					<Options>16384</Options>
+					<DDRREF kind="StepText" hash="20CA5A833E1CC0BC0092C8BD37F8A7CD">_42FB21E5-E5BA-4C3C-84CE-DF176EC42B2D</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Calculation">
+							<Calculation datatype="1" position="0">
+								<Calculation>
+									<DDRREF kind="ChunkList" hash="839D779BF5401A35CC2C8F75C87B9E3F">_42FB21E5-E5BA-4C3C-84CE-DF176EC42B2D_0</DDRREF>
+									<Text>"error: " &amp; $LastError</Text>
+								</Calculation>
+							</Calculation>
+						</Parameter>
+					</ParameterValues>
+				</Step>
+				<Step hash="F70A05EFFD8B38A624A0A389D1456822" index="29" id="70" name="End If" enable="True">
+					<UUID>19FD2A84-FB38-4F3C-A22C-A206C0877260</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="F7B9A25A75F34C920801E7D7DF21E868">_19FD2A84-FB38-4F3C-A22C-A206C0877260</DDRREF>
+				</Step>
+				<Step hash="332B3111D6A02DDAE4B4803F67B1D243" index="30" id="89" name="# (comment)" enable="True">
+					<UUID>68410656-D347-403F-900E-3E88C2A0C353</UUID>
+					<OwnerID />
+					<Options>0</Options>
+					<DDRREF kind="StepText" hash="0D1D08D77622BC288B8779226C151DCD">_68410656-D347-403F-900E-3E88C2A0C353</DDRREF>
+					<ParameterValues membercount="1">
+						<Parameter type="Comment">
+							<Comment />
+						</Parameter>
+					</ParameterValues>
+				</Step>
+			</ObjectList>
+		</Script>
+	</StepsEntry>
+</CfmExportScript>

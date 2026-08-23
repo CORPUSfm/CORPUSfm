@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Logs — CORPUSfm{% endblock %}
+
+{# Logs — re-platform review surface (bespoke kit; no Shoelace). Slimmed to JUST the
+   Application Log: the apply-loop metrics panel was cut (data still in
+   apply_metrics.jsonl) and Action history moved into the artifact detail pop-over.
+   See plan surface 7. #}
+
+{% block content %}
+{% from "_help.html" import doc_help %}
+<div class="logs-page" x-data="logsPage()" x-init="load()" @click="openDD = ''">
+
+  <div class="cfm-page-hdr">
+    <h1>Application Log</h1>
+    <div class="cfm-hdr-actions">
+      {{ doc_help('logs', 'About logs') }}
+      <button type="button" class="cfm-btn cfm-btn--sm" @click="load()">Refresh</button>
+    </div>
+  </div>
+
+  <div class="cfm-panel">
+    <p class="cfm-muted" x-show="!meta.exists">Log file not yet created.</p>
+    <template x-if="meta.exists">
+      <div class="cfm-log-meta">
+        <code x-text="meta.path"></code>
+        <span class="cfm-muted" x-text="`${meta.size_kb} KB · last modified ${meta.modified ? new Date(meta.modified).toLocaleString() : ''}`"></span>
+      </div>
+    </template>
+
+    <div class="cfm-filterbar cfm-filterbar--tight">
+      {# Lines — bespoke dropdown #}
+      <div class="cfm-dd" @click.stop>
+        <button type="button" class="cfm-dd-trigger" aria-label="Lines to show"
+                @click="openDD = (openDD === 'lines' ? '' : 'lines')">
+          <span x-text="'Lines: ' + lineCount"></span>
+          <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        <div class="cfm-dd-menu" x-show="openDD === 'lines'" x-cloak>
+          <template x-for="n in ['50','100','200','500','1000','2000','5000']" :key="n">
+            <button type="button" class="cfm-dd-opt" :class="{ 'cfm-dd-opt--on': lineCount === n }"
+                    @click="lineCount = n; openDD=''; load()" x-text="n"></button>
+          </template>
+        </div>
+      </div>
+      {# Level — bespoke dropdown #}
+      <div class="cfm-dd" @click.stop>
+        <button type="button" class="cfm-dd-trigger" aria-label="Log level"
+                @click="openDD = (openDD === 'level' ? '' : 'level')">
+          <span x-text="'Level: ' + levelFilter"></span>
+          <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        <div class="cfm-dd-menu" x-show="openDD === 'level'" x-cloak>
+          <template x-for="lv in ['ALL','WARNING','ERROR']" :key="lv">
+            <button type="button" class="cfm-dd-opt" :class="{ 'cfm-dd-opt--on': levelFilter === lv }"
+                    @click="levelFilter = lv; openDD=''; load()" x-text="lv"></button>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div x-show="errorMsg" class="cfm-inline-error" x-text="errorMsg"></div>
+
+  <template x-if="meta.exists">
+    <pre class="cfm-logviewer" x-text="logText || '(no matching entries)'"></pre>
+  </template>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function logsPage() {
+  return {
+    lineCount: '100', levelFilter: 'ALL', openDD: '',
+    meta: { exists: false, path: '', size_kb: 0, modified: '' },
+    logText: '', errorMsg: '',
+    async load() {
+      this.errorMsg = '';
+      try {
+        const r = await fetch(`/api/logs?lines=${this.lineCount}&level=${this.levelFilter}`);
+        const d = await r.json();
+        if (d.error) { this.errorMsg = d.error; return; }
+        this.meta = d;
+        this.logText = (d.lines || []).join('\n');
+      } catch (e) { this.errorMsg = String(e); }
+    },
+  };
+}
+</script>
+{% endblock %}

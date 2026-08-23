@@ -1,0 +1,1786 @@
+# FM Internal Structure Catalog for FMSaveAsXML version 2.2.3.0
+# Corresponds to FileMaker Pro 22.x
+#
+# Privacy boundary: this file contains ONLY FileMaker's own structural
+# vocabulary — element names, attribute names, type codes, and IDs.
+# No user content (field names, script names, formula text, TO names).
+#
+# Purpose: write-path reference for fmClip generation and AI consumers.
+# Each script step entry maps an internal ID to its display name and the
+# Parameter types its XML structure uses. Parallel to rendering.yaml
+# (display path) — this file serves the construction path.
+#
+# param_types: list of Parameter @type values used by this step.
+# Empty list means the step carries no Parameters (e.g. End If, Loop).
+#
+# Accumulated: new entries are added as unknown step IDs are observed
+# during ingestion. fm_version_first_seen records the FM version string
+# from the first file where this step ID was encountered.
+
+schema_version: "2.2.3.0"
+
+# ---------------------------------------------------------------------------
+# script_steps — complete known set for FM 22.x
+# ---------------------------------------------------------------------------
+script_steps:
+
+  # ─── Comment ───────────────────────────────────────────────────────────────
+  89:
+    name: "# (comment)"
+    param_types: [Comment]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="89" name="# (comment)" enable="True"><ParameterValues><Parameter type="Comment"><Comment value="{comment_text}" /></Parameter></ParameterValues></Step>
+
+  # ─── Variables & Fields ────────────────────────────────────────────────────
+  141:
+    name: "Set Variable"
+    param_types: [Variable, Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="141" name="Set Variable" enable="True"><ParameterValues><Parameter type="Variable"><Name value="{variable_name}" /><value><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></value></Parameter></ParameterValues></Step>
+
+  76:
+    name: "Set Field"
+    param_types: [FieldReference, Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="76" name="Set Field" enable="True"><ParameterValues><Parameter type="FieldReference"><FieldReference name="{field_name}" id="{_id}"><TableOccurrenceReference name="{to_name}" keyValue="{_key}" /></FieldReference></Parameter><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  147:
+    name: "Set Field By Name"
+    param_types: [Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="147" name="Set Field By Name" enable="True"><ParameterValues><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  77:
+    name: "Insert Calculated Result"
+    param_types: [Target, Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="7DC5AF02ED51DFA9817695CFB0616A42" index="50" id="77" name="Insert Calculated Result" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>4098</Options> <DDRREF kind="StepText" hash="ABA8079882FB54DDB98DFFC96625A1F4">_D6C2CF6A-4CFE-43CD-A2CE-644276930254</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean type="Select" id="4096" value="True" /> </Parameter> </ParameterValues> </Step>
+
+  91:
+    name: "Replace Field Contents"
+    param_types: [FieldReference]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="BD8790134AE09AA1B855EF321FC72579" index="63" id="91" name="Replace Field Contents" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>128</Options> <DDRREF kind="StepText" hash="B7146DE0A6C6781F27E39516F4BD5B0D">_600D17A5-C63C-4073-92F8-F4304EE56E38</DDRREF> <ParameterValues membercount="2"> <Parameter type="Boolean"> <Boolean type="With dialog" id="128" value="False" /> </Parameter> <Parameter type="replace"> <List name="Current contents" value="0"> <Boolean type="Skip auto-enter options" value="False" /> </List> </Parameter> </ParameterValues> </Step>
+
+  130:
+    name: "Set Selection"
+    param_types: [FieldReference]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="7221808583AFA029A96E7ECF5772BA52" index="46" id="130" name="Set Selection" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="EB5EA559040EBB67A81BA14DBA57008F">_FB1A12A2-3FA2-44A8-9B55-10E264228E27</DDRREF> <ParameterValues membercount="1"> <Parameter type="Select"> <Start /> <End /> </Parameter> </ParameterValues> </Step>
+
+  # ─── Control Flow ──────────────────────────────────────────────────────────
+  68:
+    name: "If"
+    param_types: [Calculation]
+    block_role: opener
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="68" name="If" enable="True"><ParameterValues><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  125:
+    name: "Else If"
+    param_types: [Calculation]
+    block_role: continue
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="125" name="Else If" enable="True"><ParameterValues><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  69:
+    name: "Else"
+    param_types: []
+    block_role: continue
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="69" name="Else" enable="True" />
+
+  70:
+    name: "End If"
+    param_types: []
+    block_role: closer
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="70" name="End If" enable="True" />
+
+  71:
+    name: "Loop"
+    param_types: []
+    block_role: opener
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="71" name="Loop" enable="True" />
+
+  72:
+    name: "Exit Loop If"
+    param_types: [Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="72" name="Exit Loop If" enable="True"><ParameterValues><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  73:
+    name: "End Loop"
+    param_types: []
+    block_role: closer
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="73" name="End Loop" enable="True" />
+
+  90:
+    name: "Halt Script"
+    param_types: []
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="90" name="Halt Script" enable="True" />
+
+  103:
+    name: "Exit Script"
+    param_types: [Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="103" name="Exit Script" enable="True"><ParameterValues><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  62:
+    name: "Pause/Resume Script"
+    param_types: [Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="62" name="Pause/Resume Script" enable="True"><ParameterValues><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  # ─── Scripts ───────────────────────────────────────────────────────────────
+  1:
+    name: "Perform Script"
+    param_types: [List, Parameter]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="1" name="Perform Script" enable="True"><ParameterValues><Parameter type="List"><List><ScriptReference name="{script_name}" id="{_id}" /></List></Parameter><Parameter type="Parameter"><Parameter><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></Parameter></ParameterValues></Step>
+
+  164:
+    name: "Perform Script on Server"
+    param_types: [List, Parameter]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="E878521EAC096F6D3641E414A5080F41" index="18" id="164" name="Perform Script on Server" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="0D0D62D26BBE4D2458DB5798AFF2684A">_420CCCAC-4BC7-44C1-B84D-FF0527D5FCD8</DDRREF> <ParameterValues membercount="3"> <Parameter type="List"> <List name="From list" value="1" /> </Parameter> <Parameter type="Parameter"> <Parameter /> </Parameter> <Parameter type="Boolean"> <Boolean type="Wait for completion" id="256" value="True" /> </Parameter> </ParameterValues> </Step>
+
+  210:
+    name: "Perform Script on Server with Callback"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="619AFD5B196207AD32CBBF0B4999DFCC" index="19" id="210" name="Perform Script on Server with Callback" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>2</Options> <DDRREF kind="StepText" hash="DDEAB4F6C94D46AD8536C70DFD43A863">_F5C57C50-4A4A-443B-9105-991537C08B69</DDRREF> <ParameterValues membercount="4"> <Parameter type="CallbackScriptState"> <List name="Continue" value="0" /> </Parameter> <Parameter type="CallbackScriptParameter" /> <Parameter type="List"> <List name="From list" value="1" /> </Parameter> <Parameter type="Parameter"> <Parameter /> </Parameter> </ParameterValues> </Step>
+
+  148:
+    name: "Install OnTimer Script"
+    param_types: [ScriptReference, Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="D301325C5FC9AFA23420D86139966CF0" index="13" id="148" name="Install OnTimer Script" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="A40EEFC1002F236B033521ED165B95D8">_06463B7D-5E85-4C93-B929-C75F30E88051</DDRREF> </Step>
+
+  # ─── Navigation ────────────────────────────────────────────────────────────
+  6:
+    name: "Go to Layout"
+    param_types: [LayoutReferenceContainer]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="6" name="Go to Layout" enable="True"><ParameterValues><Parameter type="LayoutReferenceContainer"><LayoutReferenceContainer><LayoutReference name="{layout_name}" id="{_id}" /></LayoutReferenceContainer></Parameter></ParameterValues></Step>
+
+  16:
+    name: "Go to Record/Request/Page"
+    param_types: [Records]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="16" name="Go to Record/Request/Page" enable="True"><ParameterValues><Parameter type="Records"><List name="Next" /></Parameter></ParameterValues></Step>
+
+  17:
+    name: "Go to Field"
+    param_types: [FieldReference]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="D5A7132EEAD2B856B6EF230D1878FB5B" index="31" id="17" name="Go to Field" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="1C0FEA7BD8FA972C1FC3E8015A91F624">_63130F88-00DD-4972-BF4E-1CD086032D4A</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean type="Select/perform" id="4096" value="False" /> </Parameter> </ParameterValues> </Step>
+
+  74:
+    name: "Go to Related Record"
+    param_types: [Related]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="0F8162001F963FB794687F116CC4E0AA" index="39" id="74" name="Go to Related Record" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="549BB395A22328122544316695C9552C">_EC1E3FE4-6D25-4281-8DFE-E4E04A2AFFDD</DDRREF> <ParameterValues membercount="1"> <Parameter type="Related"> <LayoutReferenceContainer value="1"> <Label>original layout</Label> </LayoutReferenceContainer> <Animation name="None" value="0" /> <Options /> </Parameter> </ParameterValues> </Step>
+
+  99:
+    name: "Go to Portal Row"
+    param_types: [Records]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="F929FD6C4AA7BE5D00C46E80606C12CF" index="36" id="99" name="Go to Portal Row" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>2</Options> <DDRREF kind="StepText" hash="33B774DA3B1B4E06F7B8066665D23766">_CF28E173-B735-4F6B-B210-F4543374EA35</DDRREF> <ParameterValues membercount="2"> <Parameter type="Boolean"> <Boolean type="Select" id="4096" value="False" /> </Parameter> <Parameter type="Portal"> <List name="First" value="1" /> </Parameter> </ParameterValues> </Step>
+
+  145:
+    name: "Go to Object"
+    param_types: [Object]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="5F82A43F6C623D3B4A961D9B46C3F0C1" index="35" id="145" name="Go to Object" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="4597D7C465601A2053414968D14BFB1B">_AB4B331E-F624-4BBE-B883-083355F8CF14</DDRREF> <ParameterValues membercount="1"> <Parameter type="Object"> <Name /> <repetition /> </Parameter> </ParameterValues> </Step>
+
+  4:
+    name: "Go to Next Field"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="4" name="Go to Next Field" enable="True" />
+
+  5:
+    name: "Go to Previous Field"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="5" name="Go to Previous Field" enable="True" />
+
+  # ─── Records ───────────────────────────────────────────────────────────────
+  7:
+    name: "New Record/Request"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="7" name="New Record/Request" enable="True" />
+
+  8:
+    name: "Duplicate Record/Request"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="8" name="Duplicate Record/Request" enable="True" />
+
+  9:
+    name: "Delete Record/Request"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="2791433DE240B7472F09A1F2443D141A" index="72" id="9" name="Delete Record/Request" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="A4705D80C35C50748471F9E7A83B9309">_6F86BBCF-A260-4C7A-A768-206D9E0E60A5</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean type="With dialog" id="128" value="True" /> </Parameter> </ParameterValues> </Step>
+
+  10:
+    name: "Delete All Records"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="164D4853A8D97C6798DEDE30D965F676" index="70" id="10" name="Delete All Records" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="7DEFBE077B95C682295574E88C9893C3">_D0A06D88-D511-4CF7-BD01-D5D9CCB57A8E</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean type="With dialog" id="128" value="True" /> </Parameter> </ParameterValues> </Step>
+
+  51:
+    name: "Revert Record/Request"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="C514B82F4660A59912BC0934A98D3476" index="78" id="51" name="Revert Record/Request" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>128</Options> <DDRREF kind="StepText" hash="3FEC127E1B91CD76172D451CDBD9A840">_9AD38BA2-77AA-43F9-AC60-561C07CEABE5</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean type="With dialog" id="128" value="False" /> </Parameter> </ParameterValues> </Step>
+
+  75:
+    name: "Commit Records/Requests"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="75" name="Commit Records/Requests" enable="True"><ParameterValues><Parameter type="Boolean"><Boolean type="Skip data entry validation" value="False" /></Parameter><Parameter type="Boolean"><Boolean type="With dialog" value="True" /></Parameter></ParameterValues></Step>
+
+  104:
+    name: "Delete Portal Row"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="D8165B88BA96A358FE8710F8CAB2EE95" index="71" id="104" name="Delete Portal Row" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="242B20DA20DE2986739F01C144AE4170">_7F53EA1D-2EBD-4F27-A908-24A5F03A1753</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean type="With dialog" id="128" value="True" /> </Parameter> </ParameterValues> </Step>
+
+  133:
+    name: "Open Record/Request"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="133" name="Open Record/Request" enable="True" />
+
+  98:
+    name: "Copy All Records/Requests"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="98" name="Copy All Records/Requests" enable="True" />
+
+  # ─── Find ──────────────────────────────────────────────────────────────────
+  22:
+    name: "Enter Find Mode"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="E2AB4A7FB5A5570924DFD3D3E1C59B16" index="29" id="22" name="Enter Find Mode" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>16777216</Options> <DDRREF kind="StepText" hash="23C8206E88EA55971D3C6D6B23FF26DC">_DEA55E53-0A1B-4D57-B399-0881A46A34A4</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean type="Pause" id="16777216" value="True" /> </Parameter> </ParameterValues> </Step>
+
+  28:
+    name: "Perform Find"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="28" name="Perform Find" enable="True" />
+
+  25:
+    name: "Omit Record"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="25" name="Omit Record" enable="True" />
+
+  26:
+    name: "Omit Multiple Records"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="51A0D9551E2C9CF96DF687A0B613ED2D" index="88" id="26" name="Omit Multiple Records" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>128</Options> <DDRREF kind="StepText" hash="84241CE897CED2D62ADF0307927358AD">_FECF22FE-88CA-4FA4-A0B0-A58ED85F175D</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean type="With dialog" id="128" value="False" /> </Parameter> </ParameterValues> </Step>
+
+  27:
+    name: "Show Omitted Only"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="27" name="Show Omitted Only" enable="True" />
+
+  23:
+    name: "Show All Records"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="23" name="Show All Records" enable="True" />
+
+  21:
+    name: "Unsort Records"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="21" name="Unsort Records" enable="True" />
+
+  126:
+    name: "Constrain Found Set"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="126" name="Constrain Found Set" enable="True" />
+
+  127:
+    name: "Extend Found Set"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="127" name="Extend Found Set" enable="True" />
+
+  150:
+    name: "Perform Quick Find"
+    param_types: [Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="150" name="Perform Quick Find" enable="True"><ParameterValues><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  155:
+    name: "Find Matching Records"
+    param_types: [List, FieldReference]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="155" name="Find Matching Records" enable="True"><ParameterValues membercount="2"><Parameter type="List"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="FieldReference"><FieldReference id="{_id}" name="{field_name}" UUID="{_uuid}"><repetition><Calculation datatype="1" position="{_id}"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></repetition><TableOccurrenceReference id="{_id}" name="{to_name}" UUID="{_uuid}" /></FieldReference></Parameter></ParameterValues></Step>
+
+  24:
+    name: "Modify Last Find"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="24" name="Modify Last Find" enable="True" />
+
+  # ─── Sort ──────────────────────────────────────────────────────────────────
+  39:
+    name: "Sort Records"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="F1A0568D177B22CF598C344E1775CDDC" index="94" id="39" name="Sort Records" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>128</Options> <DDRREF kind="StepText" hash="15F552EE96B46A8C8515CBBA96749796">_9F32AE40-5287-41A9-86A8-8753841EC702</DDRREF> <ParameterValues membercount="2"> <Parameter type="Boolean"> <Boolean type="With dialog" id="128" value="False" /> </Parameter> <Parameter type="Restore"> <Restore value="False" /> </Parameter> </ParameterValues> </Step>
+
+  154:
+    name: "Sort Records by Field"
+    param_types: [FieldReference]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="679DDD9479E7BC1A9B8830C442BB5421" index="95" id="154" name="Sort Records by Field" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>2</Options> <DDRREF kind="StepText" hash="D4E51A5C8EF0C264875C336B86CB52D9">_7E9F02D2-EAFC-4F9C-906C-76524A57AF0A</DDRREF> <ParameterValues membercount="1"> <Parameter type="List"> <List name="Ascending" value="1" /> </Parameter> </ParameterValues> </Step>
+
+  # ─── Display / UI ──────────────────────────────────────────────────────────
+  87:
+    name: "Show Custom Dialog"
+    param_types: [Message]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="146E7CFA50287EA750F596C43ECB4861" index="204" id="87" name="Show Custom Dialog" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="1E185104A2F4913F54233D37F52B38AE">_18403FE3-A536-45DC-B720-04833E19EC50</DDRREF> <ParameterValues membercount="3"> <Parameter type="Button1"> <Boolean type="Commit" value="False" /> </Parameter> <Parameter type="Button2"> <Boolean type="Commit" value="False" /> </Parameter> <Parameter type="Button3"> <Boolean type="Commit" value="False" /> </Parameter> </ParameterValues> </Step>
+
+  80:
+    name: "Refresh Window"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="80" name="Refresh Window" enable="True" />
+
+  79:
+    name: "Freeze Window"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="79" name="Freeze Window" enable="True" />
+
+  81:
+    name: "Scroll Window"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="E083292BA8142393F5DDDC23B578F5B8" index="104" id="81" name="Scroll Window" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>2</Options> <DDRREF kind="StepText" hash="8904F3EFAC92F1959FF4BFF1FC3704A0">_C908A649-C48D-41CC-92B2-1786EE99416F</DDRREF> <ParameterValues membercount="1"> <Parameter type="List"> <List name="Home" value="1" /> </Parameter> </ParameterValues> </Step>
+
+  31:
+    name: "Adjust Window"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="74567CD63A374523A67BCC2F44C12C45" index="97" id="31" name="Adjust Window" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>2</Options> <DDRREF kind="StepText" hash="00FFC9B3C9A2AA2F892AFA1522DDE093">_4E5530FB-E345-4AB7-B14B-11742FD468A8</DDRREF> <ParameterValues membercount="1"> <Parameter type="List"> <List name="Resize to Fit" value="1" /> </Parameter> </ParameterValues> </Step>
+
+  97:
+    name: "Set Zoom Level"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="7556624F249D03F84CF6772B89904ED9" index="107" id="97" name="Set Zoom Level" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>2</Options> <DDRREF kind="StepText" hash="A0C327C42EFC81D1F14DACB7AFF41977">_93C392F5-88A2-4ACD-BBD8-510775BAF17F</DDRREF> <ParameterValues membercount="2"> <Parameter type="Boolean"> <Boolean type="Lock" id="524288" value="False" /> </Parameter> <Parameter type="List"> <List name="100%" value="4" /> </Parameter> </ParameterValues> </Step>
+
+  29:
+    name: "Show/Hide Toolbars"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="8C072FB5987700BD8603B5798F0B9A5E" index="110" id="29" name="Show/Hide Toolbars" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>258</Options> <DDRREF kind="StepText" hash="14DE39D797D72C16BC25DD8AE5DF941C">_7F449D59-F22B-4426-9821-727A7FDD811D</DDRREF> <ParameterValues membercount="3"> <Parameter type="Boolean"> <Boolean type="Lock" id="524288" value="False" /> </Parameter> <Parameter type="Boolean"> <Boolean type="Include Edit Record Toolbar" id="256" value="True" /> </Parameter> <Parameter type="List"> <List name="Hide" value="2" /> </Parameter> </ParameterValues> </Step>
+
+  166:
+    name: "Show/Hide Menubar"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="441DEFA54DF96B250BFF396733EFBA33" index="108" id="166" name="Show/Hide Menubar" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>2</Options> <DDRREF kind="StepText" hash="59E632542AAFAB1595E68D4462BCE41D">_D67BE40B-ED85-4584-8EAA-41B6E8783167</DDRREF> <ParameterValues membercount="2"> <Parameter type="List"> <List name="Hide" value="2" /> </Parameter> <Parameter type="Boolean"> <Boolean type="Lock" id="524288" value="False" /> </Parameter> </ParameterValues> </Step>
+
+  92:
+    name: "Show/Hide Text Ruler"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="5E5748D9014D3C4A1E1C688CAAB59B12" index="109" id="92" name="Show/Hide Text Ruler" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>2</Options> <DDRREF kind="StepText" hash="E4EF1B70E4647498D03AB86A0E97A2E0">_9D86A247-ED7B-4CE3-9A0A-37ED3ED63D40</DDRREF> <ParameterValues membercount="1"> <Parameter type="List"> <List name="Show" value="1" /> </Parameter> </ParameterValues> </Step>
+
+  30:
+    name: "View As"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="30" name="View As" enable="True"><ParameterValues membercount="1"><Parameter type="List"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  115:
+    name: "Allow Formatting Bar"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="115" name="Allow Formatting Bar" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean id="131072" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  167:
+    name: "Refresh Object"
+    param_types: [Object]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="A11AEE8D62A949B91125B9DEA60C2DB2" index="196" id="167" name="Refresh Object" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="BCC3BC3E19D45CB3B9AE2D7627EB0801">_2A3A02FF-A9BC-4335-B578-2AF69E4EAD35</DDRREF> <ParameterValues membercount="1"> <Parameter type="Object"> <Name /> <repetition /> </Parameter> </ParameterValues> </Step>
+
+  180:
+    name: "Refresh Portal"
+    param_types: [Object]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="263AADBB9B9D2DC89D46CA4ADEE80580" index="197" id="180" name="Refresh Portal" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="10F8B2AC1D0EFFF2BE9FDFCE847D9B57">_6E1F6791-09EC-440F-A85F-8FBE4FB8DB76</DDRREF> <ParameterValues membercount="1"> <Parameter type="Object"> <Name /> </Parameter> </ParameterValues> </Step>
+
+  168:
+    name: "Set Layout Object Animation"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="28FC0F5707D2A2454B02907584167D1E" index="23" id="168" name="Set Layout Object Animation" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>196608</Options> <DDRREF kind="StepText" hash="46EFA40F207E01F185891C2697FF338D">_C608B6B5-04DA-4084-9CAB-840C514E91C5</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean id="131072" value="True" /> </Parameter> </ParameterValues> </Step>
+
+  169:
+    name: "Close Popover"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="169" name="Close Popover" enable="True" />
+
+  146:
+    name: "Set Web Viewer"
+    param_types: [Calculation, action]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="2CC82A44369590A224CA0E319BF7DA98" index="203" id="146" name="Set Web Viewer" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="C3CDDEB5973E1090147123D58068C038">_9406A424-C86A-427E-95D9-13FFB4D3F17A</DDRREF> <ParameterValues membercount="1"> <Parameter type="action"> <List name="" value="0" /> </Parameter> </ParameterValues> </Step>
+
+  # ─── Windows ───────────────────────────────────────────────────────────────
+  122:
+    name: "New Window"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="122" name="New Window" enable="True" />
+
+  121:
+    name: "Close Window"
+    param_types: [WindowReference]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="16487734662E39B875B7155E97AB6362" index="99" id="121" name="Close Window" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>-2147483648</Options> <DDRREF kind="StepText" hash="2BA03A386F9A46BA9B153D2B542EDC78">_57BC6BAD-5549-499D-8B8B-CF108663688B</DDRREF> <ParameterValues membercount="1"> <Parameter type="WindowReference"> <WindowReference> <Select kind="0" type="current" /> </WindowReference> </Parameter> </ParameterValues> </Step>
+
+  119:
+    name: "Move/Resize Window"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="119" name="Move/Resize Window" enable="True" />
+
+  123:
+    name: "Select Window"
+    param_types: [WindowReference]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="BA92F8D4C0128043A13369800E26C625" index="105" id="123" name="Select Window" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>-2147483648</Options> <DDRREF kind="StepText" hash="890BA6784B0C4434763C468FC32EC7DE">_9AD91D25-4994-4717-9184-D6F7CAE49E1E</DDRREF> <ParameterValues membercount="1"> <Parameter type="WindowReference"> <WindowReference> <Select kind="0" type="current" /> </WindowReference> </Parameter> </ParameterValues> </Step>
+
+  124:
+    name: "Set Window Title"
+    param_types: [Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="124" name="Set Window Title" enable="True"><ParameterValues><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  # ─── Error Handling ────────────────────────────────────────────────────────
+  85:
+    name: "Allow User Abort"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="31062DF7633E3A85EBC70D8CE4590696" index="0" id="85" name="Allow User Abort" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>65536</Options> <DDRREF kind="StepText" hash="1A04A6D694E6CC5AD53BEFC4FCACE514">_DF4FE897-6797-48C3-8DEB-26CB1E8136D6</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean id="131072" value="False" /> </Parameter> </ParameterValues> </Step>
+
+  86:
+    name: "Set Error Capture"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="CD3982FE6F2C451CAE6C2040FF0844D2" index="21" id="86" name="Set Error Capture" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>196608</Options> <DDRREF kind="StepText" hash="8CF2A1F13BA72E6ECC9B8D1539FCFE47">_57786FC0-67F0-4ED7-B61B-81EE8C0C0BD7</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean id="131072" value="True" /> </Parameter> </ParameterValues> </Step>
+
+  200:
+    name: "Set Error Logging"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="22D870D57769AF93C7A6C4D4073CF242" index="22" id="200" name="Set Error Logging" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="6D5429FC6C3103D0BE6F46A44B0422B8">_90CA3716-72A4-474B-9752-49F430B318DC</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean type="enabled" id="256" value="False" /> </Parameter> </ParameterValues> </Step>
+
+  # ─── Transactions ──────────────────────────────────────────────────────────
+  205:
+    name: "Open Transaction"
+    param_types: []
+    block_role: opener
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="205" name="Open Transaction" enable="True" />
+
+  206:
+    name: "Commit Transaction"
+    param_types: []
+    block_role: closer
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="206" name="Commit Transaction" enable="True" />
+
+  223:
+    name: "Set Revert Transaction on Error"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="BFA3D4592C3E00CA9633C85026A47507" index="24" id="223" name="Set Revert Transaction on Error" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>65536</Options> <DDRREF kind="StepText" hash="3DD7CAFA1AA4597C020FC919C8F7129F">_D24F93A1-5A9C-4734-AA23-2731AC4A7414</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean id="131072" value="False" /> </Parameter> </ParameterValues> </Step>
+
+  # ─── Files ─────────────────────────────────────────────────────────────────
+  33:
+    name: "Open File"
+    param_types: [DataSourceReference]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="7B40217A225E2242AFAF922463F0B305" index="122" id="33" name="Open File" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="4DB34EBA7236FEC2714F0FCABCC184E6">_3A0FE84C-C297-4A63-8D5B-859C08CE673C</DDRREF> <ParameterValues membercount="2"> <Parameter type="Boolean"> <Boolean type="Open hidden" id="256" value="False" /> </Parameter> <Parameter type="DataSourceReference"> <DataSourceReference id="{_id}" name="{data_source_name}" /> </Parameter> </ParameterValues> </Step>
+
+  34:
+    name: "Close File"
+    param_types: [DataSourceReference]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="28B13FCBD059AAF03C74C6A1D98CCB40" index="113" id="34" name="Close File" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="11D6FB0D4315A117CD6A2C48FC1B088B">_F2151A12-4DAB-4C24-9F55-5C6DFCE2C3DD</DDRREF> <ParameterValues membercount="1"> <Parameter type="DataSourceReference"> <DataSourceReference id="{_id}" name="{data_source_name}" /> </Parameter> </ParameterValues> </Step>
+
+  188:
+    name: "Get File Exists"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="188" name="Get File Exists" enable="True" />
+
+  189:
+    name: "Get File Size"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="189" name="Get File Size" enable="True" />
+
+  190:
+    name: "Create Data File"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="190" name="Create Data File" enable="True" />
+
+  191:
+    name: "Open Data File"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="191" name="Open Data File" enable="True" />
+
+  192:
+    name: "Write to Data File"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="192" name="Write to Data File" enable="True" />
+
+  193:
+    name: "Read from Data File"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="193" name="Read from Data File" enable="True" />
+
+  195:
+    name: "Set Data File Position"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="195" name="Set Data File Position" enable="True" />
+
+  196:
+    name: "Close Data File"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="196" name="Close Data File" enable="True" />
+
+  197:
+    name: "Delete File"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="197" name="Delete File" enable="True" />
+
+  # ─── Import / Export ───────────────────────────────────────────────────────
+  35:
+    name: "Import Records"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="35" name="Import Records" enable="True" />
+
+  36:
+    name: "Export Records"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="36" name="Export Records" enable="True" />
+
+  132:
+    name: "Export Field Contents"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="132" name="Export Field Contents" enable="True" />
+
+  144:
+    name: "Save Records as PDF"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="144" name="Save Records as PDF" enable="True" />
+
+  143:
+    name: "Save Records as Excel"
+    param_types: [Restore, Boolean, Options]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="143" name="Save Records as Excel" enable="True"><ParameterValues membercount="5"><Parameter type="Restore"><Restore value="True" /></Parameter><Parameter type="Boolean"><Boolean type="With dialog" id="128" value="{_dialog}" /></Parameter><Parameter type="UniversalPathList"><UniversalPathList fileType="XLXE" AutoOpen="True" membercount="1"><Excel name="Records being browsed" value="1"><Boolean type="Use field names as column names" value="True" /><Parameter type="Worksheet" /><Parameter type="Title" /><Parameter type="Subject" /><Parameter type="Author" /></Excel><ObjectList><Location>{variable_name}</Location></ObjectList></UniversalPathList></Parameter><Parameter type="Options"><Options><Save type="Records being browsed" value="1" useFieldNames="True" /></Options></Parameter><Parameter type="Boolean"><Boolean type="Create folders" id="512" value="False" /></Parameter></ParameterValues></Step>
+
+  3:
+    name: "Save a Copy as XML"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="3" name="Save a Copy as XML" enable="True" />
+
+  96:
+    name: "Save a Copy as Add-on Package"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="96" name="Save a Copy as Add-on Package" enable="True" />
+
+  41:
+    name: "Enter Preview Mode"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="41" name="Enter Preview Mode" enable="True" />
+
+  42:
+    name: "Print Setup"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="42" name="Print Setup" enable="True" />
+
+  43:
+    name: "Print"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="43" name="Print" enable="True" />
+
+  # ─── Insert ────────────────────────────────────────────────────────────────
+  61:
+    name: "Insert Text"
+    param_types: [Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="61" name="Insert Text" enable="True"><ParameterValues><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  131:
+    name: "Insert File"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="131" name="Insert File" enable="True" />
+
+  160:
+    name: "Insert from URL"
+    param_types: [URL]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="666AD8122D669064CB29153C356ACDFD" index="58" id="160" name="Insert from URL" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>4226</Options> <DDRREF kind="StepText" hash="03CEF998F330E183C8C1A6F2339A2A9C">_569276B4-40FB-4A84-815E-0A7F2896A999</DDRREF> <ParameterValues membercount="4"> <Parameter type="Boolean"> <Boolean type="Verify SSL Certificates" id="268435456" value="False" /> </Parameter> <Parameter type="Boolean"> <Boolean type="Select" id="4096" value="True" /> </Parameter> <Parameter type="Boolean"> <Boolean type="With dialog" id="128" value="False" /> </Parameter> <Parameter type="URL"> <URL autoEncode="True" /> </Parameter> </ParameterValues> </Step>
+
+  56:
+    name: "Insert Picture"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="56" name="Insert Picture" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Store only a reference" id="2048" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  # ─── Accounts / Security ───────────────────────────────────────────────────
+  134:
+    name: "Add Account"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="134" name="Add Account" enable="True" />
+
+  135:
+    name: "Delete Account"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="135" name="Delete Account" enable="True" />
+
+  136:
+    name: "Reset Account Password"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="136" name="Reset Account Password" enable="True" />
+
+  137:
+    name: "Enable Account"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="137" name="Enable Account" enable="True" />
+
+  138:
+    name: "Re-Login"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="138" name="Re-Login" enable="True" />
+
+  83:
+    name: "Change Password"
+    param_types: [Old, New, Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="83" name="Change Password" enable="True"><ParameterValues membercount="3"><Parameter type="Old"><Calculation datatype="1" position="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter><Parameter type="New"><Calculation datatype="1" position="1"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter><Parameter type="Boolean"><Boolean type="With dialog" id="128" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  116:
+    name: "Set Next Serial Value"
+    param_types: [FieldReference, Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="116" name="Set Next Serial Value" enable="True"><ParameterValues membercount="2"><Parameter type="FieldReference"><FieldReference id="{_id}" name="{field_name}" UUID="{_uuid}"><repetition><Calculation datatype="1" position="10"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></repetition><TableOccurrenceReference id="{_id}" name="{to_name}" UUID="{_uuid}" /></FieldReference></Parameter><Parameter type="Calculation"><Calculation datatype="1" position="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  # ─── Web / External ────────────────────────────────────────────────────────
+  111:
+    name: "Open URL"
+    param_types: [Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="111" name="Open URL" enable="True"><ParameterValues><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  175:
+    name: "Perform JavaScript in Web Viewer"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="175" name="Perform JavaScript in Web Viewer" enable="True" />
+
+  203:
+    name: "Execute FileMaker Data API"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="203" name="Execute FileMaker Data API" enable="True" />
+
+  211:
+    name: "Trigger Claris Connect Flow"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="211" name="Trigger Claris Connect Flow" enable="True" />
+
+  # ─── AI ────────────────────────────────────────────────────────────────────
+  212:
+    name: "Configure AI Account"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="212" name="Configure AI Account" enable="True" />
+
+  220:
+    name: "Generate Response from Model"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="220" name="Generate Response from Model" enable="True" />
+
+  # ─── Platform / Scripting ──────────────────────────────────────────────────
+  67:
+    name: "Perform AppleScript"
+    param_types: [Options]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="4E7CC75B1284E4FFB48AF8FE5EFF5221" index="194" id="67" name="Perform AppleScript" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="3276E46A9532C16BC5E3746942BA7531">_54A0A2F8-F94C-4590-9D30-0D2DEB73AE7E</DDRREF> <ParameterValues membercount="1"> <Parameter type="Options"> <Options type="Text" /> </Parameter> </ParameterValues> </Step>
+
+  57:
+    name: "Send Event"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="57" name="Send Event" enable="True" />
+
+  63:
+    name: "Send Mail"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="63" name="Send Mail" enable="True" />
+
+  65:
+    name: "Dial Phone"
+    param_types: [Boolean, Calculation]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="65" name="Dial Phone" enable="True"><ParameterValues membercount="2"><Parameter type="Boolean"><Boolean type="With dialog" id="128" value="{_dialog}" /></Parameter><Parameter type="Calculation"><Calculation datatype="1" position="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  157:
+    name: "Install Plug-In File"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="157" name="Install Plug-In File" enable="True" />
+
+  142:
+    name: "Install Menu Set"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="2B629DFBD27EFD45E4030ECF6D3F27E2" index="191" id="142" name="Install Menu Set" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>8</Options> <DDRREF kind="StepText" hash="EA539B12FA0D3CAFEEA9E558D3601413">_3C42846B-AC77-45F2-BE8A-EE9E66797AC1</DDRREF> <ParameterValues membercount="1"> <Parameter type="CustomMenuSet"> <CustomMenuSetReference id="{_id}" name="{menu_set_name}" UUID="FFE09340-30CF-4AEF-AB59-A601B69CFADF"> <Boolean type="Use as file default" id="512" value="False" /> </CustomMenuSetReference> </Parameter> </ParameterValues> </Step>
+
+  55:
+    name: "Enter Browse Mode"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step hash="A61F86D62821791B5CA1CB306AAB6DF9" index="28" id="55" name="Enter Browse Mode" enable="True"> <UUID>{_uuid}</UUID> <OwnerID /> <Options>0</Options> <DDRREF kind="StepText" hash="AE17E9E9438DD6B9DBBD4D25E4EFCD92">_9B6C5EC7-313D-4F9B-8D06-683F3E1B7CCB</DDRREF> <ParameterValues membercount="1"> <Parameter type="Boolean"> <Boolean type="Pause" id="16777216" value="False" /> </Parameter> </ParameterValues> </Step>
+
+  # ─── Misc ──────────────────────────────────────────────────────────────────
+  93:
+    name: "Beep"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="93" name="Beep" enable="True" />
+
+  44:
+    name: "Exit Application"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="44" name="Exit Application" enable="True" />
+
+  50:
+    name: "Select All"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="50" name="Select All" enable="True" />
+
+  47:
+    name: "Copy"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="47" name="Copy" enable="True" />
+
+  182:
+    name: "Truncate Table"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="182" name="Truncate Table" enable="True" />
+
+  183:
+    name: "Open Favorites"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="183" name="Open Favorites" enable="True" />
+
+  187:
+    name: "Configure Local Notification"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="187" name="Configure Local Notification" enable="True" />
+
+  208:
+    name: "Set Session Identifier"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="208" name="Set Session Identifier" enable="True" />
+
+  186:
+    name: "MBS"
+    param_types: [Calculation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="186" name="MBS" enable="True"><ParameterValues><Parameter type="Calculation"><Calculation override="0" top="0" bottom="0" left="0" right="0"><Calculation><Text>{calculation}</Text><ChunkList hash="{_hash}"><Chunk type="NoRef">{_chunk}</Chunk></ChunkList></Calculation></Calculation></Parameter></ParameterValues></Step>
+
+  # ─── Insert ─────────────────────────────────────────────────────────────────────
+  11:
+    name: "Insert from Index"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="11" name="Insert from Index" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Select" id="4096" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  12:
+    name: "Insert from Last Visited"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="12" name="Insert from Last Visited" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Select" id="4096" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  13:
+    name: "Insert Current Date"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="13" name="Insert Current Date" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Select" id="4096" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  14:
+    name: "Insert Current Time"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="14" name="Insert Current Time" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Select" id="4096" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  60:
+    name: "Insert Current User Name"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="60" name="Insert Current User Name" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Select" id="4096" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  158:
+    name: "Insert PDF"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="158" name="Insert PDF" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Store only a reference" id="2048" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  159:
+    name: "Insert Audio/Video"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="159" name="Insert Audio/Video" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Store only a reference" id="2048" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  161:
+    name: "Insert from Device"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="161" name="Insert from Device" enable="True"><ParameterValues membercount="1"><Parameter type="List"><List name="{_key}" value="{_id}"><Options type="{_key}"><Parameter type="Camera"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="Resolution"><List name="{_key}" value="{_id}" /></Parameter></Options></List></Parameter></ParameterValues></Step>
+
+  215:
+    name: "Insert Embedding"
+    param_types: []
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="215" name="Insert Embedding" enable="True" />
+
+  216:
+    name: "Insert Embedding in Found Set"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="216" name="Insert Embedding in Found Set" enable="True"><ParameterValues membercount="3"><Parameter type="Boolean"><Boolean id="8192" value="{_dialog}" /></Parameter><Parameter type="Boolean"><Boolean id="4096" value="{_dialog}" /></Parameter><Parameter type="Boolean"><Boolean id="1024" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+
+  # ─── Spelling ───────────────────────────────────────────────────────────────────
+  18:
+    name: "Check Selection"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="18" name="Check Selection" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Select" id="4096" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  19:
+    name: "Check Record"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="19" name="Check Record" enable="True" />
+
+  20:
+    name: "Check Found Set"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="20" name="Check Found Set" enable="True" />
+
+  106:
+    name: "Correct Word"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="106" name="Correct Word" enable="True" />
+
+  107:
+    name: "Spelling Options"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="107" name="Spelling Options" enable="True" />
+
+  108:
+    name: "Select Dictionaries"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="108" name="Select Dictionaries" enable="True" />
+
+  109:
+    name: "Edit User Dictionary"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="109" name="Edit User Dictionary" enable="True" />
+
+  209:
+    name: "Set Dictionary"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="209" name="Set Dictionary" enable="True"><ParameterValues membercount="1"><Parameter type="List"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+
+  # ─── Edit / Clipboard ───────────────────────────────────────────────────────────
+  45:
+    name: "Undo/Redo"
+    param_types: [Boolean, List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="45" name="Undo/Redo" enable="True"><ParameterValues membercount="2"><Parameter type="Boolean"><Boolean type="Collapsed" id="33554432" value="{_dialog}" /></Parameter><Parameter type="List"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  46:
+    name: "Cut"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="46" name="Cut" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Select" id="4096" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  48:
+    name: "Paste"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="48" name="Paste" enable="True"><ParameterValues membercount="2"><Parameter type="Boolean"><Boolean type="Select" id="4096" value="{_dialog}" /></Parameter><Parameter type="Boolean"><Boolean type="No style" id="512" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  49:
+    name: "Clear"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="49" name="Clear" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Select" id="4096" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  101:
+    name: "Copy Record/Request"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="101" name="Copy Record/Request" enable="True" />
+
+
+  # ─── File Management ────────────────────────────────────────────────────────────
+  37:
+    name: "Save a Copy as"
+    param_types: [List, Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="37" name="Save a Copy as" enable="True"><ParameterValues membercount="2"><Parameter type="List"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="Boolean"><Boolean type="Create folders" id="512" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  82:
+    name: "New File"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="82" name="New File" enable="True" />
+
+  95:
+    name: "Recover File"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="95" name="Recover File" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="With dialog" id="128" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  102:
+    name: "Flush Cache to Disk"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="102" name="Flush Cache to Disk" enable="True" />
+
+  139:
+    name: "Convert File"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="139" name="Convert File" enable="True"><ParameterValues membercount="4"><Parameter type="Boolean"><Boolean type="Verify SSL Certificates" id="268435456" value="{_dialog}" /></Parameter><Parameter type="Boolean"><Boolean type="Open File" id="256" value="{_dialog}" /></Parameter><Parameter type="Boolean"><Boolean type="Skip Indexes" id="512" value="{_dialog}" /></Parameter><Parameter type="Boolean"><Boolean type="With dialog" id="128" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  152:
+    name: "Save Records as Snapshot Link"
+    param_types: [List, Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="152" name="Save Records as Snapshot Link" enable="True"><ParameterValues membercount="2"><Parameter type="List"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="Boolean"><Boolean type="Create folders" id="512" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  181:
+    name: "Get Folder Path"
+    param_types: [Boolean, Variable]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="181" name="Get Folder Path" enable="True"><ParameterValues membercount="2"><Parameter type="Boolean"><Boolean type="Allow Folder Creation" id="256" value="{_dialog}" /></Parameter><Parameter type="Variable"><value /><Name value="" /><repetition /></Parameter></ParameterValues></Step>
+
+  194:
+    name: "Get Data File Position"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="194" name="Get Data File Position" enable="True" />
+
+  199:
+    name: "Rename File"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="199" name="Rename File" enable="True" />
+
+  225:
+    name: "Save Records as JSONL"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="225" name="Save Records as JSONL" enable="True"><ParameterValues membercount="2"><Parameter type="Boolean"><Boolean type="Format for fine-tuning" id="4096" value="{_dialog}" /></Parameter><Parameter type="Boolean"><Boolean type="Create folders" id="512" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+
+  # ─── Find / Replace ─────────────────────────────────────────────────────────────
+  128:
+    name: "Perform Find/Replace"
+    param_types: [Boolean, List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="128" name="Perform Find/Replace" enable="True"><ParameterValues membercount="9"><Parameter type="Boolean"><Boolean type="With dialog" id="128" value="{_dialog}" /></Parameter><Parameter type="perform"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="find" /><Parameter type="replace" /><Parameter type="direction"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="case"><Boolean type="Match case" value="{_dialog}" /></Parameter><Parameter type="whole"><Boolean type="Match whole words only" value="{_dialog}" /></Parameter><Parameter type="across"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="within"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  129:
+    name: "Open Find/Replace"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="129" name="Open Find/Replace" enable="True" />
+
+
+  # ─── Database Management ────────────────────────────────────────────────────────
+  38:
+    name: "Open Manage Database"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="38" name="Open Manage Database" enable="True" />
+
+  40:
+    name: "Relookup Field Contents"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="40" name="Relookup Field Contents" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="With dialog" id="128" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  84:
+    name: "Set Multi-User"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="84" name="Set Multi-User" enable="True"><ParameterValues membercount="1"><Parameter type="List"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  88:
+    name: "Open Script Workspace"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="88" name="Open Script Workspace" enable="True" />
+
+  94:
+    name: "Set Use System Formats"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="94" name="Set Use System Formats" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean id="131072" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  105:
+    name: "Open Settings"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="105" name="Open Settings" enable="True" />
+
+  112:
+    name: "Open Manage Value Lists"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="112" name="Open Manage Value Lists" enable="True" />
+
+  113:
+    name: "Open Sharing"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="113" name="Open Sharing" enable="True" />
+
+  114:
+    name: "Open File Options"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="114" name="Open File Options" enable="True" />
+
+  117:
+    name: "Execute SQL"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="117" name="Execute SQL" enable="True"><ParameterValues membercount="2"><Parameter type="Boolean"><Boolean type="With dialog" id="128" value="{_dialog}" /></Parameter><Parameter type="Boolean"><Boolean type="Create folders" id="512" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  118:
+    name: "Open Hosts"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="118" name="Open Hosts" enable="True" />
+
+  140:
+    name: "Open Manage Data Sources"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="140" name="Open Manage Data Sources" enable="True" />
+
+  149:
+    name: "Open Edit Saved Finds"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="149" name="Open Edit Saved Finds" enable="True" />
+
+  151:
+    name: "Open Manage Layouts"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="151" name="Open Manage Layouts" enable="True" />
+
+  156:
+    name: "Open Manage Containers"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="156" name="Open Manage Containers" enable="True" />
+
+  165:
+    name: "Open Manage Themes"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="165" name="Open Manage Themes" enable="True" />
+
+  172:
+    name: "Open Upload to Host"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="172" name="Open Upload to Host" enable="True" />
+
+  207:
+    name: "Revert Transaction"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="207" name="Revert Transaction" enable="True"><ParameterValues membercount="2"><Parameter type="Boolean"><Boolean type="Condition" id="256" value="{_dialog}" /></Parameter><Parameter type="Boolean"><Boolean type="Error Code" id="512" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+
+  # ─── UI / Window ────────────────────────────────────────────────────────────────
+  32:
+    name: "Open Help"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="32" name="Open Help" enable="True" />
+
+  64:
+    name: "Send DDE Execute"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="64" name="Send DDE Execute" enable="True" />
+
+  66:
+    name: "Speak"
+    param_types: [Voice, Wait]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="66" name="Speak" enable="True"><ParameterValues membercount="2"><Parameter type="Voice"><Voice id="{_id}" value="{_id}" /></Parameter><Parameter type="Wait"><Boolean value="{_dialog}" type="Wait" /></Parameter></ParameterValues></Step>
+
+  120:
+    name: "Arrange All Windows"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="120" name="Arrange All Windows" enable="True"><ParameterValues membercount="1"><Parameter type="List"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  174:
+    name: "Enable Touch Keyboard"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="174" name="Enable Touch Keyboard" enable="True"><ParameterValues membercount="1"><Parameter type="List"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  228:
+    name: "Go to List of Records"
+    param_types: [LayoutReferenceContainer, Animation]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="228" name="Go to List of Records" enable="True"><ParameterValues membercount="2"><Parameter type="LayoutReferenceContainer"><LayoutReferenceContainer value="{_id}"><Label>{_key}</Label></LayoutReferenceContainer></Parameter><Parameter type="Animation"><Animation name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+
+  # ─── Mobile / Device ────────────────────────────────────────────────────────────
+  185:
+    name: "Configure Region Monitor Script"
+    param_types: [Monitor]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="185" name="Configure Region Monitor Script" enable="True"><ParameterValues membercount="1"><Parameter type="Monitor"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  201:
+    name: "Configure NFC Reading"
+    param_types: [action]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="201" name="Configure NFC Reading" enable="True"><ParameterValues membercount="1"><Parameter type="action"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  202:
+    name: "Configure Machine Learning Model"
+    param_types: [operation]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="202" name="Configure Machine Learning Model" enable="True"><ParameterValues membercount="1"><Parameter type="operation">{_key}</Parameter></ParameterValues></Step>
+
+
+  # ─── AVPlayer ───────────────────────────────────────────────────────────────────
+  177:
+    name: "AVPlayer Play"
+    param_types: [Source]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="177" name="AVPlayer Play" enable="True"><ParameterValues membercount="1"><Parameter type="Source"><Source type="LayoutObject"><Name /><repetition /></Source></Parameter></ParameterValues></Step>
+
+  178:
+    name: "AVPlayer Set Playback State"
+    param_types: [List]
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="178" name="AVPlayer Set Playback State" enable="True"><ParameterValues membercount="1"><Parameter type="List"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  179:
+    name: "AVPlayer Set Options"
+    param_types: []
+    fm_version_first_seen: "22.0"
+    xml_template: |
+      <Step id="179" name="AVPlayer Set Options" enable="True" />
+
+
+  # ─── AI / ML (FM 2024+) ─────────────────────────────────────────────────────────
+  213:
+    name: "Fine-Tune Model"
+    param_types: [FineTuneDataSource]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="213" name="Fine-Tune Model" enable="True"><ParameterValues membercount="1"><Parameter type="FineTuneDataSource"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  214:
+    name: "Perform SQL Query by Natural Language"
+    param_types: [Boolean, TableOccurrences, LLMTablesSelection, LLMAction, LLMOptionsSelection]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="214" name="Perform SQL Query by Natural Language" enable="True"><ParameterValues membercount="5"><Parameter type="Boolean"><Boolean type="Stream" id="4096" value="{_dialog}" /></Parameter><Parameter type="TableOccurrences" /><Parameter type="LLMTablesSelection"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="LLMAction"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="LLMOptionsSelection"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  217:
+    name: "Set AI Call Logging"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="217" name="Set AI Call Logging" enable="True"><ParameterValues membercount="3"><Parameter type="Boolean"><Boolean type="enabled" id="131072" value="{_dialog}" /></Parameter><Parameter type="Boolean"><Boolean type="Verbose" id="512" value="{_dialog}" /></Parameter><Parameter type="Boolean"><Boolean type="Truncate Messages" id="1024" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  218:
+    name: "Perform Semantic Find"
+    param_types: [Query, Records, Boolean]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="218" name="Perform Semantic Find" enable="True"><ParameterValues membercount="3"><Parameter type="Query"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="Records"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="Boolean"><Boolean type="Return count" id="256" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+  219:
+    name: "Perform RAG Action"
+    param_types: [RAGDataSource, RAGAction]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="219" name="Perform RAG Action" enable="True"><ParameterValues membercount="2"><Parameter type="RAGDataSource"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="RAGAction"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  221:
+    name: "Perform Find by Natural Language"
+    param_types: [LLMAction]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="221" name="Perform Find by Natural Language" enable="True"><ParameterValues membercount="1"><Parameter type="LLMAction"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  222:
+    name: "Configure Regression Model"
+    param_types: [Boolean, LLMTrainAlgorithm, LLMTrainActions]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="222" name="Configure Regression Model" enable="True"><ParameterValues membercount="3"><Parameter type="Boolean"><Boolean type="Skip empty or invalid records" id="4096" value="{_dialog}" /></Parameter><Parameter type="LLMTrainAlgorithm"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="LLMTrainActions"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  226:
+    name: "Configure Prompt Template"
+    param_types: [TemplateType, ModelProvider, List]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="226" name="Configure Prompt Template" enable="True"><ParameterValues membercount="3"><Parameter type="TemplateType"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="ModelProvider"><List name="{_key}" value="{_id}" /></Parameter><Parameter type="List"><List name="{_key}" value="{_id}" /></Parameter></ParameterValues></Step>
+
+  227:
+    name: "Configure RAG Account"
+    param_types: [Boolean]
+    fm_version_first_seen: "22.0.6"
+    xml_template: |
+      <Step id="227" name="Configure RAG Account" enable="True"><ParameterValues membercount="1"><Parameter type="Boolean"><Boolean type="Verify SSL Certificates" id="268435456" value="{_dialog}" /></Parameter></ParameterValues></Step>
+
+# ---------------------------------------------------------------------------
+# field_types — base table field type codes
+# ---------------------------------------------------------------------------
+field_types:
+  Normal:
+    label: "Normal"
+  Summary:
+    label: "Summary"
+  Calculation:
+    label: "Calculation"
+  External:
+    label: "External (container)"
+  Global:
+    label: "Global"
+
+# ---------------------------------------------------------------------------
+# field_result_types — field data type codes
+# ---------------------------------------------------------------------------
+field_result_types:
+  Text:
+    label: "Text"
+  Number:
+    label: "Number"
+  Date:
+    label: "Date"
+  Time:
+    label: "Time"
+  Timestamp:
+    label: "Timestamp"
+  Container:
+    label: "Container"
+
+# ---------------------------------------------------------------------------
+# layout_object_types — FM layout object type values
+# ---------------------------------------------------------------------------
+layout_object_types:
+  FieldObj:
+    label: "Field"
+  TextObj:
+    label: "Text"
+  ButtonObj:
+    label: "Button"
+  ButtonBarObj:
+    label: "Button Bar"
+  PortalObj:
+    label: "Portal"
+  GroupObj:
+    label: "Group"
+  TabObj:
+    label: "Tab Control"
+  SlideObj:
+    label: "Slide Control"
+  LineObj:
+    label: "Line"
+  RectObj:
+    label: "Rectangle"
+  OvalObj:
+    label: "Oval"
+  ImageObj:
+    label: "Image"
+  WebViewerObj:
+    label: "Web Viewer"
+  ChartObj:
+    label: "Chart"
+  PopoverObj:
+    label: "Popover"
+  FilmStripObj:
+    label: "Film Strip"
+
+# ---------------------------------------------------------------------------
+# script_trigger_names — FM event trigger name values
+# Used in ScriptTrigger @trigger attribute and EventList > Event @name attr.
+# ---------------------------------------------------------------------------
+script_trigger_names:
+  # File-level triggers
+  OnFirstWindowOpen:
+    label: "On First Window Open"
+    scope: file
+  OnLastWindowClose:
+    label: "On Last Window Close"
+    scope: file
+  OnWindowOpen:
+    label: "On Window Open"
+    scope: window
+  OnWindowClose:
+    label: "On Window Close"
+    scope: window
+  # Layout-level triggers
+  OnLayoutEnter:
+    label: "On Layout Enter"
+    scope: layout
+  OnLayoutExit:
+    label: "On Layout Exit"
+    scope: layout
+  OnLayoutKeystroke:
+    label: "On Layout Keystroke"
+    scope: layout
+  OnLayoutSizeChange:
+    label: "On Layout Size Change"
+    scope: layout
+  OnModeEnter:
+    label: "On Mode Enter"
+    scope: layout
+  OnModeExit:
+    label: "On Mode Exit"
+    scope: layout
+  OnRecordCommit:
+    label: "On Record Commit"
+    scope: layout
+  OnRecordLoad:
+    label: "On Record Load"
+    scope: layout
+  OnRecordRevert:
+    label: "On Record Revert"
+    scope: layout
+  # Object-level triggers
+  OnObjectEnter:
+    label: "On Object Enter"
+    scope: object
+  OnObjectExit:
+    label: "On Object Exit"
+    scope: object
+  OnObjectKeystroke:
+    label: "On Object Keystroke"
+    scope: object
+  OnObjectModify:
+    label: "On Object Modify"
+    scope: object
+  OnObjectSave:
+    label: "On Object Save"
+    scope: object
+  OnObjectValidate:
+    label: "On Object Validate"
+    scope: object
+  OnPanelSwitch:
+    label: "On Panel Switch"
+    scope: object
+  OnGestureTap:
+    label: "On Gesture Tap"
+    scope: object
+  OnGestureDoubleTap:
+    label: "On Gesture Double Tap"
+    scope: object
+  OnGestureSwipeLeft:
+    label: "On Gesture Swipe Left"
+    scope: object
+  OnGestureSwipeRight:
+    label: "On Gesture Swipe Right"
+    scope: object
+  OnGestureSwipeUp:
+    label: "On Gesture Swipe Up"
+    scope: object
+  OnGestureSwipeDown:
+    label: "On Gesture Swipe Down"
+    scope: object
+  OnTimer:
+    label: "On Timer"
+    scope: object
+
+# ---------------------------------------------------------------------------
+# relationship_operators — operator codes used in Relationship/Criteria
+# ---------------------------------------------------------------------------
+relationship_operators:
+  "=":
+    label: "equal"
+    symbol: "="
+  "≠":
+    label: "not equal"
+    symbol: "≠"
+  "<":
+    label: "less than"
+    symbol: "<"
+  "≤":
+    label: "less than or equal"
+    symbol: "≤"
+  ">":
+    label: "greater than"
+    symbol: ">"
+  "≥":
+    label: "greater than or equal"
+    symbol: "≥"
+  "×":
+    label: "cartesian product"
+    symbol: "×"
+
+# ---------------------------------------------------------------------------
+# parameter_types — Parameter @type values used across all steps
+# These are FM's own internal enum values — structural vocabulary.
+# ---------------------------------------------------------------------------
+parameter_types:
+  - Boolean
+  - Calculation
+  - Comment
+  - DataSourceReference
+  - FieldReference
+  - LayoutReferenceContainer
+  - List
+  - Message
+  - New
+  - Object
+  - Old
+  - Options
+  - Parameter
+  - Records
+  - Related
+  - ScriptReference
+  - Target
+  - URL
+  - Variable
+  - Voice
+  - Wait
+  - WindowReference
+  - across
+  - action
+  - Animation
+  - Camera
+  - case
+  - direction
+  - find
+  - FineTuneDataSource
+  - LLMAction
+  - LLMOptionsSelection
+  - LLMTablesSelection
+  - LLMTrainActions
+  - LLMTrainAlgorithm
+  - ModelProvider
+  - Monitor
+  - operation
+  - perform
+  - Query
+  - RAGAction
+  - RAGDataSource
+  - replace
+  - Resolution
+  - Source
+  - TableOccurrences
+  - TemplateType
+  - whole
+  - within
+
+# ---------------------------------------------------------------------------
+# container_grammar — how FM encodes FOLDER hierarchy inside catalog lists.
+# Format-level (file-independent) structural vocabulary. A foldering catalog is
+# a FLAT, ORDERED sequence of <Script>-shaped elements; folder membership is
+# POSITIONAL (an item belongs to the open folder it sits inside), NOT a parent
+# id/reference on the item. This is exactly how FM's own SaveAsXML export is
+# structured, and how the ingest pipeline reconstructs folder_path.
+# ---------------------------------------------------------------------------
+container_grammar:
+  folder_role_attr: "isFolder"      # the attribute on a catalog element that carries its folder role
+  folder_open_value: "True"         # isFolder="True"  → opens a folder; subsequent siblings nest inside it
+  folder_close_value: "Marker"      # isFolder="Marker" (FM renders name="--") → closes the nearest open folder
+  membership: "positional"          # no parent-id on items; nesting is the span between an open and its matching close
+  applies_to:                       # catalogs verified to use this grammar (FM 22)
+    - ScriptCatalog
+  add_implication: >
+    A script that lives in a folder is THREE ordered catalog entries:
+    <Script isFolder="True"> (open) · the <Script> itself · <Script isFolder="Marker"> (close).
+    To add a foldered object via an FMUpgradeToolPatch, emit all three in order;
+    an Add of the bare object alone lands at the catalog ROOT (folder lost).
+    VERIFIED live 2026-06-03 (FMUpgradeTool 22.0.6.600): the tool reconstructs
+    nesting from this ordering on --update. The folder-open emitted before a
+    script nests it; the close marker is required to BOUND the folder so a later
+    added root item (or a second new folder) does not get swallowed.
