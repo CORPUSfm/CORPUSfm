@@ -109,6 +109,30 @@ def sh(cmd: list[str], timeout: int = 30) -> tuple[int, str]:
         return 1, repr(exc)
 
 
+def application_identity() -> tuple[Path, str, str]:
+    """Resolve the application authority and its product version, not the installer's history."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("application_checkout", ROOT / "application_checkout.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    app_root = module.APPLICATION_ROOT
+    rc, commit = sh(["git", "-C", str(app_root), "rev-parse", "HEAD"])
+    if rc != 0 or len(commit) != 40:
+        raise RuntimeError("the application checkout HEAD could not be resolved exactly")
+    release_build = app_root / "release-build.txt"
+    declared = release_build.read_text(encoding="utf-8").strip() if release_build.is_file() else ""
+    if not declared.isdigit() or declared.startswith("0"):
+        raise RuntimeError("the public application has no valid release-build.txt identity")
+    version = f"0.{declared}"
+    return app_root, commit, version
+
+
+def default_release_dir(version: str) -> Path:
+    public = (ROOT / "release-build.txt").is_file()
+    base = "outputs" if public else "dist"
+    return ROOT / base / "server" / "series-2" / "releases" / version
+
+
 def check_prereqs(linux_host: str, windows_host: str) -> list[tuple[str, bool, str]]:
     """Non-mutating prerequisite probes for a release gate."""
     out: list[tuple[str, bool, str]] = []
@@ -159,16 +183,16 @@ def main() -> int:
     ap.add_argument("--linux-host", default="fms-server")
     ap.add_argument("--windows-host", default="winfms2026")
     ap.add_argument("--report", default="docs/installer-release-gate-report.md")
+    ap.add_argument("--package-release-dir", default="",
+                    help="Use an already-built Series 2 release directory (validated before box contact).")
     args = ap.parse_args()
 
-    try:
-        release_build = (ROOT / "release-build.txt").read_text(encoding="utf-8").strip()
-    except OSError:
-        release_build = ""
-    version = (f"0.{release_build}" if release_build.isdigit()
-               and not release_build.startswith("0") else "0.?")
-
     if not args.live:
+        try:
+            _app_root, _app_commit, version = application_identity()
+        except RuntimeError as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return 2
         print(f"Installer release gate — PLAN (version {version}; no box touched)\n")
         ok = True
         for name, passed, detail in check_prereqs(args.linux_host, args.windows_host):
@@ -193,10 +217,29 @@ def main() -> int:
         print(f"REFUSED: set {ENV_FM_ADMIN_PASS} and {ENV_CFM_ADMIN_PASS} in the environment "
               "(never on argv). No box was touched.", file=sys.stderr)
         return 2
+    try:
+        app_root, app_commit, version = application_identity()
+    except RuntimeError as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 2
+
+    release_dir = Path(args.package_release_dir).expanduser().resolve() if args.package_release_dir \
+        else default_release_dir(version)
+    if not (release_dir / "release.json").is_file():
+        rc, output = sh([
+            "bash", str(ROOT / "installer/package-installer.sh"),
+            "--application-checkout", str(app_root), "--application-commit", app_commit,
+        ], timeout=1800)
+        if rc != 0:
+            print("REFUSED: the exact candidate package could not be built. No box was touched.",
+                  file=sys.stderr)
+            print(Secrets([fm_pw, cfm_pw]).redact(output), file=sys.stderr)
+            return 2
 
     live = _live_module()
     return live.run_live_gate(
-        root=ROOT, version=version, linux_host=args.linux_host, windows_host=args.windows_host,
+        root=ROOT, version=version, expected_commit=app_commit, release_dir=release_dir,
+        linux_host=args.linux_host, windows_host=args.windows_host,
         report=ROOT / args.report, secrets=Secrets([fm_pw, cfm_pw]),
         fm_pw=fm_pw, cfm_pw=cfm_pw,
         sections=REPORT_SECTIONS, pat_checks=PUBLIC_SOURCE_CHECKS, health_checks=HEALTH_CHECKS,

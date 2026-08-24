@@ -4,6 +4,8 @@ wrong-box refusal."""
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("rg", ROOT / "scripts/installer_release_gate.py")
 rg = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(rg)
+_live_spec = importlib.util.spec_from_file_location("rg_live", ROOT / "scripts/_release_gate_live.py")
+rg_live = importlib.util.module_from_spec(_live_spec); _live_spec.loader.exec_module(rg_live)
 LIVE_SRC = (ROOT / "scripts/_release_gate_live.py").read_text(encoding="utf-8")
 RG_SRC = (ROOT / "scripts/installer_release_gate.py").read_text(encoding="utf-8")
 
@@ -39,7 +43,8 @@ def test_checks_cover_the_v01018_lessons():
 
 
 def test_public_gate_version_comes_from_the_release_build_not_short_git_history():
-    assert '(ROOT / "release-build.txt").read_text' in RG_SRC
+    assert 'app_root / "release-build.txt"' in RG_SRC
+    assert "the public application has no valid release-build.txt identity" in RG_SRC
     assert '"rev-list", "--count"' not in RG_SRC
 
 
@@ -114,3 +119,49 @@ def test_plan_mode_writes_skeleton_without_box_mutation(tmp_path):
     for s in rg.REPORT_SECTIONS:
         assert f"## {s}" in body
     assert "PLAN (no box touched)" in body
+
+
+def test_live_lanes_use_verified_zips_and_current_fixed_roots():
+    assert "installer-files.sha256" in LIVE_SRC
+    assert "sha256sum -c" in LIVE_SRC and "Get-FileHash -Algorithm SHA256" in LIVE_SRC
+    assert '"sudo /opt/CORPUSfm/uninstall.sh --yes"' in LIVE_SRC
+    assert "C:\\\\Program Files\\\\CORPUSfm\\\\uninstall.ps1" in LIVE_SRC
+    assert "C:\\\\Program Files\\\\CORPUSfm" in LIVE_SRC
+    assert 'str(root / "installer/linux/install.sh")' not in LIVE_SRC
+    assert 'str(root / "installer/windows/install.ps1")' not in LIVE_SRC
+
+
+def test_live_lanes_do_not_send_retired_credential_flags_or_passwords_on_argv():
+    for retired in ("--fm-admin-pass", "--admin-pass", "-FmAdminPass", "-AdminPass"):
+        assert retired not in LIVE_SRC
+    assert "stdin_text=secret_input" in LIVE_SRC
+    assert "stdin_text=answers" in LIVE_SRC
+
+
+def test_package_identity_binds_version_commit_zip_and_sidecar(tmp_path):
+    linux = tmp_path / "linux.zip"
+    windows = tmp_path / "windows.zip"
+    linux.write_bytes(b"linux-package")
+    windows.write_bytes(b"windows-package")
+    platforms = {}
+    for name, path in (("linux", linux), ("windows", windows)):
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        (tmp_path / f"{path.name}.sha256").write_text(f"{digest}  {path.name}\n", encoding="ascii")
+        platforms[name] = {"file": path.name, "sha256": digest}
+    commit = "a" * 40
+    (tmp_path / "release.json").write_text(json.dumps({
+        "application_version": "0.2656", "commit": commit, "platforms": platforms,
+    }), encoding="utf-8")
+
+    lin, win, (_body, ok) = rg_live._package_identity(tmp_path, "0.2656", commit)
+    assert ok and lin == (linux, tmp_path / "linux.zip.sha256")
+    assert win == (windows, tmp_path / "windows.zip.sha256")
+    _lin, _win, (body, wrong) = rg_live._package_identity(tmp_path, "0.2656", "b" * 40)
+    assert not wrong and "exact candidate commit" in body
+
+
+def test_version_authority_is_the_application_not_the_installer_history():
+    assert "application_identity()" in RG_SRC
+    assert 'app_root / "release-build.txt"' in RG_SRC
+    assert '"rev-list", "--count"' not in RG_SRC
+    assert '["git", "-C", str(ROOT), "rev-list", "--count", "HEAD"]' not in RG_SRC

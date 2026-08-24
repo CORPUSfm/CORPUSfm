@@ -505,11 +505,11 @@
     "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
     "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
     "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
-    "release-build.txt": "235ac8cd8b3893ad5777120fff91cd4aad51323366f98d116eff8010e0c67ec2",
+    "release-build.txt": "f79933dc96a73512b18a3dd239b43a1d6d21603872cc49c3cab3a799352e6426",
     "requirements.txt": "f8a942c59c3ebe3eadfaee1d09ad7601998aa50f71c1e41587cfdad57371155f",
-    "scripts/_release_gate_live.py": "08e9a2319599d219abe250634cba6a1c5b0a5067c2112fd2c4e12a7fe30cdb9b",
+    "scripts/_release_gate_live.py": "1df73473418fefda3bd886d0069c07d4a944c56e82fbb8e5ecb47280d3b20ed5",
     "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
-    "scripts/installer_release_gate.py": "4a2f542a96ef53e057fd1d2ebe0ab1c3c5842c0ef474e29f20a9cd3b3e02ba29",
+    "scripts/installer_release_gate.py": "c96e7c90c36dd928362eb5bb701b1ce385b8c1b44c05e5e14f4b1db06d81b107",
     "scripts/write-doc-routes.mjs": "dc314c90797efb253ccbce0fb9bee210e7487533c409056914dea0adf408c2e7",
     "src/app.tsx": "b24e4cedbd195e9436c059becdc6a70a3ff7d5304c8d15321672a5cecda80631",
     "src/docs-page.tsx": "4bef75eefc5361e0aba177be5f02e1c074161863fcd6d0d551fd4b573a45277a",
@@ -551,7 +551,7 @@
     "tests/test_installer_provider_order.py": "bc5189c39536982ec2319a35124615df8efeddd70ff8f4bd54ee7ae1f2d0eda4",
     "tests/test_installer_provider_walks.py": "1a65c67e70ecaa8a575229ea4c8861936a446e183be72d43d5f361fed044e76d",
     "tests/test_installer_ps_logging.py": "e7e03100187bbd3f82f7f887dbcedccdea9ac945c082f3d419f45623a9df2693",
-    "tests/test_installer_release_gate.py": "6aa3a47f22d5c7d09404730c3141262007328af50cd307934ab4321eea5d24ef",
+    "tests/test_installer_release_gate.py": "125f4dd4d1452ccb993f04341896e2e777e6c5d5e8fc702df271b2dfc71db848",
     "tests/test_installer_services_proxy.py": "e4d630f9214bdd31caf8ba32e95107e562c24ea9825d27e518f3013fd215e95b",
     "tests/test_installer_sim.py": "5f619c9bc2a1243864e66145fad347d849ba4f487310f9ff8346d76263a8d1d3",
     "tests/test_installer_source_update_credentials.py": "8936b76d240f641593de89dc4a8a044b8bfd18c6e8177230bf2e9bcdcbeb9711",
@@ -2924,8 +2924,8 @@
   },
   "projection": {
     "contract_version": 2,
-    "installer_patch_authored_against": "c243e8d9518e2171303ce7f400aa42c73cd33fdf",
-    "installer_patch_sha256": "5e8528681406b422940b936e5b07df7b5741321eb89d57c69f8066a21f137921",
+    "installer_patch_authored_against": "8102d807b012d12a30fb760ca3c500f195f1f02e",
+    "installer_patch_sha256": "b98c83af79c22e6a216f3113796b37f2d672d9d19836c8ec992d50db6ed19f39",
     "path_policy": {
       "explicit_exclusions": [
         "**/__pycache__/**",
@@ -2951,15 +2951,15 @@
       "unselected_source_paths": "excluded"
     },
     "profile": "public",
-    "profile_sha256": "f213d9f69a2997f812e63270bf181d3478ea2913c1b57fd10fec055e116968e4",
+    "profile_sha256": "50840b95037c4f2b8f1218c5176f199751a6255ff03ace87bd3d20cd754a9f97",
     "profile_version": 1
   },
-  "release_build": 2656,
+  "release_build": 2662,
   "schema_version": 2,
   "source_commits": {
     "addon_assets": "f13a333d704ba51ff4bbe00e9cac1b79ba2588f9",
-    "application": "5570c6a047da86144f1734320065207ce6ebf846",
+    "application": "d832d190e345c8885247fa43814261a85a8677b6",
     "database_assets": "853339aaadad8e80e5f36a92879ef8a33491aa35",
-    "installer": "c243e8d9518e2171303ce7f400aa42c73cd33fdf"
+    "installer": "8102d807b012d12a30fb760ca3c500f195f1f02e"
   }
 }
