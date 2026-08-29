@@ -100,6 +100,34 @@ def list_admin_databases(host: str, username: str, password: str, *, verify_ssl:
             pass
 
 
+def list_admin_hosted_databases(host: str, username: str, password: str, *, verify_ssl: bool = False,
+                                timeout: int = 30) -> list:
+    """The remote server's hosted files as `HostedDatabase` PROJECTIONS (packet 1330).
+
+    Beside `list_admin_databases`, which keeps returning filenames for the remote-server Test. Without
+    this the Jobs gallery could see a LOCAL file's runtime status but never a remote one, so a closed
+    file on a configured remote server stayed amber/Automatable — the reported defect, surviving on the
+    other adapter (found by Codex review, 2026-08-26).
+
+    Same single authenticate/list/logout sequence; no additional Admin API session."""
+    from corpusfm.server import fms_admin_pki as pki
+    try:
+        token = pki.authenticate_basic(host, username, password, verify_ssl=verify_ssl)
+    except RuntimeError as exc:
+        raise FMSError(str(exc)) from exc
+    except requests.RequestException as exc:
+        raise FMSError(f"Could not reach the Admin API at {host}: {exc}") from exc
+    try:
+        return [d for d in pki.list_hosted_databases(host, token, verify_ssl=verify_ssl) if d.filename]
+    except requests.RequestException as exc:
+        raise FMSError(f"Admin API list-databases failed: {exc}") from exc
+    finally:
+        try:
+            pki.logout(host, token, verify_ssl=verify_ssl)
+        except Exception:
+            pass
+
+
 # ── High-level pull helpers ───────────────────────────────────────────────────
 
 def pull_fms_local(source: JobSource, credentials: dict, *, timeout: float = 300.0) -> bytes:
@@ -366,7 +394,7 @@ def probe_export_script(host: str, database: str, credentials: dict, *, verify_s
     """Readiness probe (Stage 3): call SaveToDocumentsFolder and report the outcome WITHOUT
     raising. Proves addon-present + creds-valid + OData-reachable in one call. Cleans up the
     file FM writes on success. Returns a structured dict for file_readiness.classify_probe:
-        {ok: bool, http_status: int|None, result: str, error: str}
+        {ok: bool, http_status: int|None, fm_code: str, result: str, error: str}
     Does not read the (potentially multi-MB) export back — readiness only needs the verdict.
     """
     username = credentials.get("username", "")
@@ -375,9 +403,20 @@ def probe_export_script(host: str, database: str, credentials: dict, *, verify_s
     try:
         resp = requests.post(url, auth=(username, password), verify=verify_ssl, timeout=120)
     except requests.RequestException as exc:
-        return {"ok": False, "http_status": None, "result": "", "error": str(exc)}
+        return {"ok": False, "http_status": None, "fm_code": "", "result": "", "error": str(exc)}
     if resp.status_code != 200:
-        return {"ok": False, "http_status": resp.status_code, "result": "", "error": f"HTTP {resp.status_code}"}
+        # Keep FileMaker's OWN error code (packet 1330-02). The HTTP status cannot discriminate:
+        # measured on a live box, a closed file, a file with OData disabled, a wrong password and a
+        # non-existent file ALL answer 501 with FM 802. The code in the body is the actual diagnosis
+        # and was being thrown away.
+        fm_code = ""
+        try:
+            err = (resp.json() or {}).get("error") or {}
+            fm_code = str(err.get("code") or "").strip()
+        except Exception:
+            fm_code = ""
+        return {"ok": False, "http_status": resp.status_code, "fm_code": fm_code, "result": "",
+                "error": f"HTTP {resp.status_code}" + (f" (FileMaker {fm_code})" if fm_code else "")}
     try:
         result = _extract_script_result(resp)
     except Exception as exc:

@@ -484,20 +484,55 @@
       document.querySelectorAll('.cfm-dd-menu'),
       function (e) { return getComputedStyle(e).display !== 'none'; });
   }
+  //: Each menu's last known visibility, so the observer below can act on the EDGE rather than on
+  //  every mutation. A WeakMap because it must not keep a removed menu alive.
+  var _cfmMenuVisible = new WeakMap();
+
+  function _cfmOnMenuStyleChanged(menu) {
+    var nowVisible = getComputedStyle(menu).display !== 'none';
+    if (!nowVisible) { _cfmMenuVisible.set(menu, false); return; }
+    if (_cfmMenuVisible.get(menu) === true) return;      // already placed; this is our own write
+    // Record BEFORE placing: `_cfmPositionMenu` writes minWidth/left/top to the same `style`
+    // attribute we observe, so the resulting records must take the already-visible path above.
+    _cfmMenuVisible.set(menu, true);
+    _cfmPositionMenu(menu);
+  }
+
   function _cfmInitDropdownPositioning() {
-    // Opens are always a click on the trigger; Alpine toggles `open` (and x-show
-    // flips display) before our rAF runs, so the menu is measurable by then.
-    document.addEventListener('click', function (ev) {
-      var t = ev.target.closest && ev.target.closest('.cfm-dd-trigger');
-      if (!t) return;
-      requestAnimationFrame(function () {
-        var dd = t.closest('.cfm-dd'); if (!dd) return;
-        var menu = dd.querySelector('.cfm-dd-menu');
-        if (menu && getComputedStyle(menu).display !== 'none') _cfmPositionMenu(menu);
-      });
+    // WHY VISIBILITY, NOT THE CLICK (packet 1331). Placement has to happen AFTER Alpine's `x-show`
+    // has flipped `display`, and a click listener cannot promise that. It is defeated two ways: a
+    // consumer's `@click.stop` never reaches `document` (logs and runs both stop it, and their menus
+    // opened at the parked `top: -9999px`), and moving the listener to the capture phase schedules
+    // its rAF BEFORE Alpine schedules the one that flips display, so it measures a hidden menu.
+    // Observing the style attribute is immune to both, because it fires ON the change itself.
+    //
+    // THE FEEDBACK GUARD IS LOAD-BEARING: the positioner writes to the very attribute this observer
+    // watches, so acting on every visible-menu mutation would schedule its own next callback. The
+    // hidden -> visible EDGE, recorded before placing, is what stops that.
+    var obs = new MutationObserver(function (records) {
+      var seen = [];
+      for (var i = 0; i < records.length; i++) {
+        var el = records[i].target;
+        if (!el || !el.classList || !el.classList.contains('cfm-dd-menu')) continue;
+        if (seen.indexOf(el) === -1) seen.push(el);      // one layout read per menu per batch
+      }
+      for (var j = 0; j < seen.length; j++) _cfmOnMenuStyleChanged(seen[j]);
     });
+    obs.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['style'] });
+
+    // Seed menus that already exist, so initialization ORDER is not an implicit contract: a menu
+    // rendered visible before this ran is placed once here rather than waiting for a mutation.
+    var existing = document.querySelectorAll('.cfm-dd-menu');
+    for (var k = 0; k < existing.length; k++) {
+      var m = existing[k];
+      var vis = getComputedStyle(m).display !== 'none';
+      _cfmMenuVisible.set(m, vis);
+      if (vis) _cfmPositionMenu(m);
+    }
+
     // Keep a glued menu attached while its container scrolls (capture = catch the
-    // dialog body too) or the window resizes.
+    // dialog body too) or the window resizes. Reflow is deliberately NOT edge-suppressed: an
+    // already-open menu must be re-anchored, which is the one case the observer must not handle.
     function reflow() { _cfmVisibleMenus().forEach(_cfmPositionMenu); }
     window.addEventListener('scroll', reflow, true);
     window.addEventListener('resize', reflow);

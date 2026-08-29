@@ -35,6 +35,10 @@ from corpusfm.artifact import (
     XRefRecord,
     make_item_id,
 )
+from corpusfm.core.identity import (
+    ID_KIND, UUID_KIND, CatalogIdentity, build_indexes, identity_key, owner_identity,
+    owner_identity_from_xml, reference_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,20 +195,26 @@ def _elem_attrs(xml_str: str) -> dict:
         return {}
 
 
-def _fm_uuid(xml_str: str) -> str:
-    if not xml_str:
-        return ""
-    try:
-        elem = ET.fromstring(xml_str)
-    except ET.ParseError:
-        return ""
-    # Some element types carry UUID as an attribute; others (ScriptCatalog,
-    # CustomFunctionsCatalog, FieldsForTables, etc.) store it as a child
-    # <UUID> element whose text is the GUID.
-    if "UUID" in elem.attrib:
-        return elem.attrib["UUID"]
-    uuid_el = elem.find("UUID")
-    return uuid_el.text.strip() if uuid_el is not None and uuid_el.text else ""
+def _fm_uuid(xml_str: str, section: str = "") -> str:
+    """The UUID a catalog item asserts, or "" — one rule, shared with the xref graph."""
+    identity = owner_identity_from_xml(section, xml_str)
+    return identity.value if identity is not None and identity.kind == UUID_KIND else ""
+
+
+def _script_body(result, section_key: str, xml_str: str, display: str) -> str:
+    """The step body belonging to THIS catalog item.
+
+    Joined on the item's own identity. `step_xml` is keyed by display name, and FM
+    permits duplicate script names, so a name lookup hands both twins the surviving
+    body — measured in MicroK12_dev, where one script's 59 steps vanished and the
+    other's 51 were rendered for both and mined under the wrong UUID. The name view
+    stays as the fallback for a fragment that asserts no identity.
+    """
+    key = identity_key(owner_identity_from_xml(section_key, xml_str))
+    by_identity = getattr(result, "step_xml_by_identity", None) or {}
+    if key and key in by_identity:
+        return by_identity[key]
+    return (result.step_xml or {}).get(display, "")
 
 
 def _compute_folder_paths(xml_section: dict) -> dict:
@@ -366,7 +376,7 @@ def _stage_structure_mine(state: PipelineState) -> None:
 
         fields_section = (state.result.section_xml or {}).get("FieldsForTables", {})
         state.structure_snapshot = mine(
-            step_xml=state.result.step_xml or {},
+            step_xml=(state.result.step_xml_by_identity or state.result.step_xml or {}),
             fields_section_xml=fields_section,
             catalog=catalog,
         )
@@ -393,7 +403,85 @@ def _stage_dead_ends(state: PipelineState) -> None:
 
 _SCRIPT_SECTIONS = frozenset({"ScriptCatalog"})
 _CF_SECTIONS = frozenset({"CustomFunctionsCatalog"})
+
+#: Sections a STRUCTURED reference can name. A catalog index is built for each so a
+#: reference resolves by UUID (else id) rather than through a display name.
+_RESOLVABLE_SECTIONS: tuple = (
+    "ScriptCatalog", "LayoutCatalog", "ValueListCatalog", "TableOccurrenceCatalog",
+    "BaseTableCatalog", "CustomMenuCatalog", "CustomMenuSetCatalog",
+    "PrivilegeSetsCatalog", "AccountsCatalog", "ExternalDataSourceCatalog",
+    "CustomFunctionsCatalog", "RelationshipCatalog",
+)
 _VL_SECTIONS = frozenset({"ValueListCatalog"})
+
+
+def _plan_logical_items(section_xml: dict) -> tuple[dict, list]:
+    """Decide one artifact item id per LOGICAL catalog object, before assembly.
+
+    Returns ``(alias, content_key, diagnostics)``. `alias` maps EVERY ``(section, xml_key)`` —
+    including the fragments that coalesce away — to the id its logical object will
+    carry, so a reference through any fragment's key still lands on one item.
+
+    FileMaker projects a rename as a second catalog fragment carrying the same UUID.
+    Assembly used to collide on the second and escape to ``Section/<xml_key>``,
+    producing two artifact items for one layout: measured 8 in MicroK12_dev, with 111
+    stored edge endpoints landing on the escape ids rather than the UUID id.
+
+    CORRECTION (packet 1353). The 4 groups this once also claimed in
+    CMP_Operations_UI_rev2, with 76 endpoints, were NOT renames: CMP has zero
+    repeated-UUID groups inside its AddAction node. They appeared only because the
+    parser paired a ModifyAction fragment by display name and wrote its UUID onto a
+    second key. They no longer occur, and the rule below is unaffected — grouping by
+    UUID is right on either reading. 1349 is not reopened; only its CMP evidence is.
+
+    Rules, in order:
+      * a non-empty UUID groups fragments — one item at the existing
+        ``Section/<UUID>`` id, so every id that exists today is byte-identical;
+      * an id-bearing item with no UUID gets ``Section/id:<id>`` only when that id has
+        exactly ONE owner in its section. Two DISTINCT objects sharing an id are not
+        revisions: both stay visible under their xml_key, and the id is diagnosed and
+        excluded rather than one of them being silently merged away;
+      * folders, markers, separators and anything asserting no identity keep the
+        existing name-derived id with the xml_key escape. They are not
+        structured-reference targets.
+    """
+    alias: dict = {}
+    content_key: dict = {}     # item_id -> the xml_key whose XML the item carries
+    diagnostics: list = []
+    for section_key, xml_section in (section_xml or {}).items():
+        by_uuid: dict = {}
+        by_id: dict = {}
+        for xml_key, xml_str in xml_section.items():
+            if not xml_str or _folder_type(xml_str):
+                continue
+            identity = owner_identity_from_xml(section_key, xml_str)
+            if identity is None:
+                continue
+            (by_uuid if identity.kind == UUID_KIND else by_id).setdefault(
+                identity.value, []).append(xml_key)
+
+        for uuid, keys in by_uuid.items():
+            item_id = f"{section_key}/{uuid}"
+            for key in keys:
+                alias[(section_key, key)] = item_id
+            # The LAST fragment supplies the current name, but not the content: a
+            # ModifyAction projection is a partial redefinition, and in 5 of the 8
+            # MicroK12_dev rename groups it is SMALLER than the AddAction fragment it
+            # follows (Scripts_AccessLog 1,819 bytes vs Dev_AccessLog 1,203). Taking
+            # the last wholesale discarded the full layout body. Content comes from
+            # the fullest fragment; the name is applied afterwards.
+            if len(keys) > 1:
+                content_key[item_id] = max(keys, key=lambda k: len(xml_section.get(k) or ""))
+
+        for id_value, keys in by_id.items():
+            if len(keys) == 1:
+                alias[(section_key, keys[0])] = f"{section_key}/id:{id_value}"
+            else:
+                diagnostics.append(
+                    f"{section_key}/id:{id_value} claimed by {len(keys)} items: "
+                    + ", ".join(sorted(keys))
+                )
+    return alias, content_key, diagnostics
 
 
 def _stage_assemble_items(state: PipelineState) -> None:
@@ -408,7 +496,17 @@ def _stage_assemble_items(state: PipelineState) -> None:
     for ep_key, ep_xml in (result.section_xml or {}).get("ExtendedPrivilegesCatalog", {}).items():
         ext_privs_xml[_display_name(ep_key)] = ep_xml
 
-    # (section_key, display_name) → item_id, built as we go for xref resolution
+    # One id per LOGICAL object, decided before assembly; `alias` also routes the
+    # fragments that coalesce away, so a reference through any of their keys resolves.
+    alias, content_key, alias_diagnostics = _plan_logical_items(result.section_xml)
+    state.unresolved_uuids.extend(alias_diagnostics)
+    # item_id -> (display name, xml_key) of the LAST fragment of a coalesced group
+    coalesced_name: dict = {}
+
+    # (section_key, display_name) → item_id, built as we go for xref resolution.
+    # LEGACY: a display name is not a reference (FM permits duplicates), so this is
+    # for the formula boundary and for graph maps that have not yet been re-keyed —
+    # never for a structured reference that carries a UUID or an id.
     name_to_id: dict = {}
     items: dict = {}
 
@@ -439,14 +537,25 @@ def _stage_assemble_items(state: PipelineState) -> None:
             else:
                 name = display
 
-            fm_uuid_val = _fm_uuid(xml_str)
-            item_id = make_item_id(section_key, fm_uuid_val, name)
-
-            # Resolve collision for non-UUID items that share the same safe-name
-            if item_id in items:
-                item_id = f"{section_key}/{xml_key}"
+            fm_uuid_val = _fm_uuid(xml_str, section_key)
+            item_id = alias.get((section_key, xml_key))
+            if item_id is None:
+                item_id = make_item_id(section_key, fm_uuid_val, name)
+                # A folder/marker/separator or an identity-less item sharing a
+                # safe-name: keep both visible under their own keys.
+                if item_id in items:
+                    item_id = f"{section_key}/{xml_key}"
+                alias[(section_key, xml_key)] = item_id
 
             name_to_id[(section_key, display)] = item_id
+            rep = content_key.get(item_id)
+            if rep is not None:
+                # A coalesced group: every fragment contributes its current name in
+                # document order (last wins), only the fullest contributes content.
+                coalesced_name[item_id] = (name, xml_key)
+                if xml_key != rep:
+                    continue
+
             folder_path = folder_paths.get(xml_key, [])
             if result.is_addon and name_map:
                 folder_path = [name_map.get(fp, fp) for fp in folder_path]
@@ -467,7 +576,7 @@ def _stage_assemble_items(state: PipelineState) -> None:
             # self-heal that consumed these was retired in packet 1062).
             sources = [XmlSource(catalog=section_key, xml=xml_str)]
             if section_key in _SCRIPT_SECTIONS:
-                sxml = result.step_xml.get(display, "")
+                sxml = _script_body(result, section_key, xml_str, display)
                 if sxml:
                     sources.append(XmlSource(catalog="StepsForScripts", xml=sxml))
             elif section_key in _CF_SECTIONS:
@@ -490,7 +599,7 @@ def _stage_assemble_items(state: PipelineState) -> None:
             elif section_key == "PrivilegeSetsCatalog":
                 rk["ext_privs_xml"] = ext_privs_xml
 
-            steps_xml = (result.step_xml.get(display, "")
+            steps_xml = (_script_body(result, section_key, xml_str, display)
                          if section_key in _SCRIPT_SECTIONS and not is_fld else "")
             rendered = assemble_rendered_text(
                 section_key, name, xml_str, rk=rk, steps_xml=steps_xml,
@@ -499,10 +608,12 @@ def _stage_assemble_items(state: PipelineState) -> None:
 
             # Dead-end flag — folders are always False; real items use is_dead_end()
             # which covers Scripts, CFs, Value Lists, Fields, and Layouts (Phase 3+).
+            # Keyed on xml_key, not the display name: FM permits duplicate script and
+            # layout names, and a name lookup reported the LIVE twin dead (packet 1348).
             dead_end = False
             de = state.dead_ends
             if de is not None and not is_fld:
-                dead_end = de.is_dead_end(section_key, display)
+                dead_end = de.is_dead_end(section_key, xml_key)
 
             items[item_id] = ArtifactItem(
                 item_id=item_id,
@@ -522,7 +633,126 @@ def _stage_assemble_items(state: PipelineState) -> None:
                           and _field_has_calc(xml_str)),
             )
 
+    # The latest logical name, applied to the item that carries the fullest content.
+    for item_id, (name, xml_key) in coalesced_name.items():
+        item = items.get(item_id)
+        if item is not None:
+            item.name, item.xml_key = name, xml_key
+
     state.items = items
+
+    # ── Structured-reference resolution (packet 1349-C) ───────────────────────
+    # A reference carrying a UUID or an id resolves through the catalog index and
+    # the logical-item alias. It never goes through the display-name dictionary,
+    # because a name is not a reference.
+    _catalog_indexes = build_indexes(result.section_xml, _RESOLVABLE_SECTIONS)
+    _uuid_to_item = {(it.section, it.fm_uuid): iid
+                     for iid, it in items.items() if it.fm_uuid and not it.is_folder}
+
+    def _item_for_identity(section: str, identity) -> str | None:
+        index = _catalog_indexes.get(section)
+        if index is None or identity is None:
+            return None
+        resolution = index.resolve(identity)
+        if not resolution.resolved:
+            return None
+        candidates = {alias.get((section, key)) for key in resolution.xml_keys}
+        candidates.discard(None)
+        return candidates.pop() if len(candidates) == 1 else None
+
+    def _item_for_reference(section: str, ref) -> str | None:
+        """The logical item a structured reference element names, or None."""
+        if ref is None:
+            return None
+        return _item_for_identity(section, reference_identity(section, ref))
+
+    def _item_for_uuid(section: str, uuid: str) -> str | None:
+        """A target the graph already resolved to a UUID — no name round trip."""
+        return _uuid_to_item.get((section, uuid)) if uuid else None
+
+    #: (section, display name) → item id, ONLY where exactly one logical item owns
+    #: that name. For the formula boundary, where FM supplies no identity — never a
+    #: last-write-wins dictionary.
+    # (base table, field id) -> field item. A field id is unique only WITHIN its base
+    # table — 108 duplicated field-id groups in MicroK12_dev, 7 in CMP — so a bare
+    # (FieldsForTables, id) lookup is invalid and this is the only id route a
+    # structured field reference may take.
+    _field_by_context: dict = {}
+    for iid, it in items.items():
+        if it.section != "FieldsForTables" or it.is_folder or "::" not in it.xml_key:
+            continue
+        fid = (it.attributes or {}).get("id", "")
+        if fid:
+            _field_by_context.setdefault((it.xml_key.split("::", 1)[0], fid), []).append(iid)
+    _field_by_context = {k: v[0] for k, v in _field_by_context.items() if len(v) == 1}
+
+    _unique_name_to_id: dict = {}
+    for iid, it in items.items():
+        if it.is_folder:
+            continue
+        nkey = (it.section, _display_name(it.xml_key))
+        _unique_name_to_id[nkey] = None if nkey in _unique_name_to_id else iid
+    _unique_name_to_id = {k: v for k, v in _unique_name_to_id.items() if v}
+
+    def _text_target(section: str, name: str) -> str | None:
+        """Resolve a target FileMaker named as TEXT — the only sanctioned name match.
+
+        Formula bodies and ExecuteSQL carry no identifier, so their targets have
+        nothing but a name. Everything else is a STRUCTURED reference and resolves by
+        identity.
+
+        This is deliberately the sole reader of `_unique_name_to_id`, and
+        `tests/test_structured_references_never_resolve_by_name.py` fails the build if
+        another one appears. The previous guard keyed on the assigned variable being
+        `to_id`, which the original wrong-object defect also spelled — it would have
+        approved it (Codex confirmation round 2).
+        """
+        return _unique_name_to_id.get((section, name)) if name else None
+
+    def detail_src(detail: dict) -> dict:
+        """The SOURCE end of a detail record, in the shape `_detail_identity` reads."""
+        return {"uuid": detail.get("src_uuid", ""), "id": detail.get("src_id", "")}
+
+    def _detail_identity(section: str, detail: dict):
+        """The identity a detail record offers — UUID first, else id."""
+        uuid = (detail.get("uuid") or "").strip()
+        if uuid:
+            return CatalogIdentity(section, UUID_KIND, uuid)
+        ref_id = (detail.get("id") or "").strip()
+        return CatalogIdentity(section, ID_KIND, ref_id) if ref_id else None
+
+    _unresolved_seen: set = set()
+
+    def _resolve_detail_target(section: str, detail: dict) -> str | None:
+        """The item a STRUCTURED reference names — by UUID, else by id, never by name.
+
+        An offered identity is authoritative: if it does not match, the answer is
+        nothing. A structured reference that offers NO identity resolves to nothing
+        either, and is diagnosed — falling back to a display name is exactly how a
+        duplicate silently selects the wrong object, and this packet's outcome
+        forbids it. Only the formula boundary is name-matched, and it does not come
+        through here.
+        """
+        return _item_for_identity(section, _detail_identity(section, detail))
+
+    def _note_identity(section: str, detail: dict) -> None:
+        identity = _detail_identity(section, detail)
+        offered = f"{identity.kind}:{identity.value}" if identity else "no-identity"
+        entry = f"{section}/{offered}"
+        if entry not in _unresolved_seen:
+            _unresolved_seen.add(entry)
+            state.unresolved_uuids.append(entry)
+
+    def _note_unresolved(section: str, ref) -> None:
+        """One bounded line per distinct unresolved structured reference."""
+        if ref is None:
+            return
+        identity = reference_identity(section, ref)
+        offered = f"{identity.kind}:{identity.value}" if identity else "no-identity"
+        entry = f"{section}/{offered}"
+        if entry not in _unresolved_seen:
+            _unresolved_seen.add(entry)
+            state.unresolved_uuids.append(entry)
 
     # Build XRefRecord list from XRefGraph
     xref = state.xref_graph
@@ -531,105 +761,152 @@ def _stage_assemble_items(state: PipelineState) -> None:
     def _resolved_name(raw: str) -> str:
         return name_map.get(raw, raw) if result.is_addon else raw
 
-    # Script → script (ScriptReference), enriched with control flow + parameter data
-    # flow (rung-4): `via` carries the parameter the call passes, `cond` the nearest
-    # enclosing guard ("" = unconditional). Emitted from script_call_details (distinct
-    # called/param/guard triples); falls back to the flat script_calls list otherwise.
-    _call_details = getattr(xref, "script_call_details", None) or {}
-
     def _trim(s: str, n: int) -> str:
         s = " ".join((s or "").split())
         return (s[:n] + "…") if len(s) > n else s
 
-    for sname, called_list in (getattr(xref, "script_calls", None) or {}).items():
-        from_id = name_to_id.get(("ScriptCatalog", sname))
-        if not from_id:
-            state.miner_skipped.append(f"ScriptCatalog/{sname}")
-            continue
-        details = _call_details.get(sname)
-        triples = details if details else [(c, "", "") for c in called_list]
-        for called, param, guard in triples:
-            to_id = name_to_id.get(("ScriptCatalog", called))
-            if to_id:
-                records.append(XRefRecord(
-                    from_id=from_id, from_name=_resolved_name(sname),
-                    to=to_id, to_name=_resolved_name(called),
-                    type="ScriptReference",
-                    via=_trim(param, 80), cond=_trim(guard, 100),
-                ))
-            else:
-                state.unresolved_uuids.append(f"ScriptCatalog/{called}")
+    # ── Every script edge, projected from the identity-bearing detail stream ──
+    # (packet 1349-C2). The graph's script maps are keyed by DISPLAY NAME, which FM
+    # permits to repeat, so projecting through them put every duplicate's edges on
+    # whichever twin was indexed last and gave the other none. Measured: 17
+    # ScriptReference and 46 script→field edges in MicroK12_dev touch a
+    # duplicate-named script, and 9 more in CMP_Operations_UI_rev2.
+    #
+    # `via` on a ScriptReference carries the parameter the call passes and `cond` the
+    # nearest enclosing guard ("" = unconditional) — the rung-4 control/data flow.
+    _field_written: set = set()
 
-    # Addon field items carry the RESOLVED name (e.g. ESAQUEUE::UUID); name_to_id is
-    # keyed by the raw xml_key display, so resolve against the item names directly.
-    _field_name_to_id = {it.name: iid for iid, it in items.items()
-                         if it.section == "FieldsForTables"}
+    def _field_display(name: str) -> str:
+        """The "BaseTable::Field" label for a mined "TO::Field" reference."""
+        if "::" not in name:
+            return name
+        to_name_part, field_name = name.split("::", 1)
+        return f"{to_base.get(to_name_part, to_name_part)}::{field_name}"
 
-    # Script → field (FieldReference) via TO→BaseTable resolution, with data-flow
-    # direction: a field a script WRITES (mutating-step target) vs one it READS
-    # (operand or calculation dependency). One edge per (script, field); write wins
-    # when a field is both. This is the rung-4 data-effects substrate.
-    script_writes = getattr(xref, "script_writes_fields", None) or {}
-    for sname, field_refs in (getattr(xref, "script_uses_fields", None) or {}).items():
-        from_id = name_to_id.get(("ScriptCatalog", sname))
+    def _formula_field_target(name: str):
+        """A field named in FORMULA TEXT — matched by name, because FileMaker puts no
+        identifier there. A structured reference must not come through here."""
+        if "::" not in name:
+            return None, name
+        field_key = _field_display(name)
+        to_id = _text_target("FieldsForTables", field_key)
+        if to_id is None and result.is_addon and name_map:
+            to_id, field_key = _resolve_addon_field_ref(name, name_map, _field_name_to_id)
+        return to_id, field_key
+
+    def _structured_field_target(detail: dict):
+        """A field named by a STRUCTURED <FieldReference>.
+
+        UUID first. An id may be used ONLY through the reference's own table
+        occurrence, resolved to its local base table, because a field id is unique
+        only within a base table. No context, an external source, a missing field or
+        any ambiguity refuses. The display name is never consulted — a reference
+        offering UUID A with a stale name pointing at B used to emit an edge to B.
+        """
+        label = _field_display(detail.get("name", ""))
+        uuid = (detail.get("uuid") or "").strip()
+        if uuid:
+            resolved = _item_for_uuid("FieldsForTables", uuid)
+            # Label the object we RESOLVED, not the text the reference carried: a
+            # stale name belongs to a different field and would mislabel the edge.
+            return resolved, (items[resolved].xml_key if resolved in items else label)
+        field_id = (detail.get("id") or "").strip()
+        if not field_id:
+            return None, label
+        ctx = _item_for_identity("TableOccurrenceCatalog", _detail_identity(
+            "TableOccurrenceCatalog",
+            {"uuid": detail.get("ctx_uuid", ""), "id": detail.get("ctx_id", "")}))
+        if ctx is None or ctx not in items:
+            return None, label
+        base = to_base.get(items[ctx].name)
+        resolved = _field_by_context.get((base, field_id)) if base else None
+        return resolved, (items[resolved].xml_key if resolved in items else label)
+
+    for detail in (getattr(xref, "script_edge_details", None) or ()):
+        # The SOURCE resolves by identity too. It used to fall back to the owner
+        # reference's display name, which attached a script's calls to a same-named
+        # sibling — the very error this packet exists to remove, on the other end of
+        # the edge (Codex confirmation of packet 1349).
+        src_uuid = detail.get("src", "")
+        from_id = _item_for_identity("ScriptCatalog", _detail_identity(
+            "ScriptCatalog", {"uuid": src_uuid, "id": detail.get("src_id", "")}))
         if not from_id:
+            state.miner_skipped.append(
+                f"ScriptCatalog/{src_uuid or ('id:' + detail.get('src_id', '') if detail.get('src_id') else 'no-identity')}")
             continue
-        written = set(script_writes.get(sname, ()))
-        for to_ref in field_refs:
-            if "::" not in to_ref:
+        from_name = _resolved_name(items[from_id].name if from_id in items else "")
+        edge_type = detail.get("type", "")
+        section = detail.get("section", "")
+        target_name = detail.get("name", "")
+        kind = detail.get("kind", "uuid")
+
+        if edge_type == "DynamicDispatch":
+            records.append(XRefRecord(
+                from_id=from_id, from_name=from_name, to="", to_name=target_name,
+                type="DynamicDispatch", via="dynamic"))
+            continue
+
+        if edge_type == "SQLQuery":
+            # FM SQL names a table occurrence as text; an unresolved one keeps its
+            # raw name and an empty target, which is an honest limit, not a dangling
+            # structured edge (FileMaker_Tables and friends never resolve).
+            to_id = _text_target("TableOccurrenceCatalog", target_name) or ""
+            records.append(XRefRecord(
+                from_id=from_id, from_name=from_name, to=to_id, to_name=target_name,
+                type="SQLQuery", mode="read", via="sql"))
+            continue
+
+        if edge_type == "FieldReference":
+            to_id, field_key = (_formula_field_target(target_name) if kind == "formula-name"
+                                else _structured_field_target(detail))
+            if not to_id:
+                if kind != "formula-name":
+                    _note_identity(section, detail)
                 continue
-            to_name_part, field_name = to_ref.split("::", 1)
-            base = to_base.get(to_name_part, to_name_part)
-            field_key = f"{base}::{field_name}"
-            to_id = name_to_id.get(("FieldsForTables", field_key))
-            if to_id is None and result.is_addon and name_map:
-                to_id, field_key = _resolve_addon_field_ref(to_ref, name_map, _field_name_to_id)
-            if to_id:
-                records.append(XRefRecord(
-                    from_id=from_id, from_name=_resolved_name(sname),
-                    to=to_id, to_name=field_key,
-                    type="FieldReference",
-                    mode="write" if to_ref in written else "read",
-                ))
-            else:
-                state.unresolved_uuids.append(f"FieldsForTables/{to_ref}")
-
-    # Script → table via ExecuteSQL — the SQL blind spot, made a visible edge.
-    # FM SQL names table-occurrence names; resolve to the TO when known, otherwise
-    # keep the raw SQL name (FM system tables like FileMaker_Tables won't resolve).
-    for sname, sql_tables in (getattr(xref, "script_sql_tables", None) or {}).items():
-        from_id = name_to_id.get(("ScriptCatalog", sname))
-        if not from_id:
-            continue
-        for tbl in sql_tables:
-            to_id = name_to_id.get(("TableOccurrenceCatalog", tbl), "")
+            mode = detail.get("mode", "read")
+            if mode == "write":
+                _field_written.add((from_id, to_id))
             records.append(XRefRecord(
-                from_id=from_id, from_name=_resolved_name(sname),
-                to=to_id, to_name=tbl,
-                type="SQLQuery", mode="read", via="sql",
-            ))
-
-    # Script dynamic/opaque dispatch — runtime-computed targets a static graph can't
-    # resolve (Perform Script by computed name, Set Field By Name, Insert from URL).
-    # Surfaced as edges (no target) so a workflow can declare the honest limit.
-    for sname, notes in (getattr(xref, "script_dynamic_dispatch", None) or {}).items():
-        from_id = name_to_id.get(("ScriptCatalog", sname))
-        if not from_id:
+                from_id=from_id, from_name=from_name, to=to_id, to_name=field_key,
+                type="FieldReference", mode=mode))
             continue
-        for note in notes:
+
+        to_id = _resolve_detail_target(section, detail)
+        if not to_id:
+            _note_identity(section, detail)
+            continue
+        if edge_type == "ScriptReference":
+            # Label the object resolved, not the reference's text: FileMaker blanks
+            # the name on a reference it cannot resolve, and a stale one names another
+            # script entirely.
             records.append(XRefRecord(
-                from_id=from_id, from_name=_resolved_name(sname),
-                to="", to_name=note,
-                type="DynamicDispatch", via="dynamic",
-            ))
+                from_id=from_id, from_name=from_name,
+                to=to_id, to_name=_resolved_name(items[to_id].name if to_id in items
+                                                 else target_name), type="ScriptReference",
+                via=_trim(detail.get("via", ""), 80),
+                cond=_trim(detail.get("cond", ""), 100)))
+        else:
+            records.append(XRefRecord(
+                from_id=from_id, from_name=from_name,
+                to=to_id, to_name=_resolved_name(items[to_id].name if to_id in items
+                                                 else target_name), type=edge_type,
+                via=detail.get("via", "")))
+
+    # One edge per (script, field): a field a script WRITES outranks one it merely
+    # READS, which the detail stream cannot decide because reads and writes are found
+    # in different steps.
+    if _field_written:
+        records = [r for r in records
+                   if not (r.type == "FieldReference" and r.mode == "read"
+                           and (r.from_id, r.to) in _field_written)]
 
     # CF → CF (CustomFunctionReference in formula text)
     for cf_name, called_list in (getattr(xref, "cf_calls_cf", None) or {}).items():
-        from_id = name_to_id.get(("CustomFunctionsCatalog", cf_name))
+        from_id = alias.get(("CustomFunctionsCatalog", cf_name))
         if not from_id:
             continue
         for called in called_list:
-            to_id = name_to_id.get(("CustomFunctionsCatalog", called))
+            to_id = _text_target("CustomFunctionsCatalog", called)
             if to_id:
                 records.append(XRefRecord(
                     from_id=from_id, from_name=_resolved_name(cf_name),
@@ -638,23 +915,22 @@ def _stage_assemble_items(state: PipelineState) -> None:
                 ))
 
     # Relationship → field (join predicates)
-    for rel_name, field_refs in (getattr(xref, "relationship_uses_field", None) or {}).items():
-        from_id = name_to_id.get(("RelationshipCatalog", rel_name))
-        if not from_id:
+    # Projected from the identity-bearing detail stream, not from the name-keyed map:
+    # a join predicate names its fields structurally, so a stale name would select the
+    # wrong field exactly as it did for script steps (Codex review of packet 1349).
+    for detail in (getattr(xref, "relationship_join_details", None) or ()):
+        from_id = alias.get(("RelationshipCatalog", detail.get("src_key", "")))
+        if not from_id or from_id not in items:
             continue
-        for to_ref in field_refs:
-            if "::" not in to_ref:
-                continue
-            to_name_part, field_name = to_ref.split("::", 1)
-            base = to_base.get(to_name_part, to_name_part)
-            field_key = f"{base}::{field_name}"
-            to_id = name_to_id.get(("FieldsForTables", field_key))
-            if to_id:
-                records.append(XRefRecord(
-                    from_id=from_id, from_name=_resolved_name(rel_name),
-                    to=to_id, to_name=field_key,
-                    type="RelationshipJoin",
-                ))
+        to_id, field_key = _structured_field_target(detail)
+        if not to_id:
+            _note_identity("FieldsForTables", detail)
+            continue
+        records.append(XRefRecord(
+            from_id=from_id, from_name=_resolved_name(detail.get("src_name", "")),
+            to=to_id, to_name=field_key,
+            type="RelationshipJoin",
+        ))
 
     # Relationship → TO↔TO adjacency (rung-2 topology). The relationship catalog
     # renders its predicate, but TO-to-TO reachability — the spine of how FM data
@@ -673,9 +949,10 @@ def _stage_assemble_items(state: PipelineState) -> None:
         if left is None or right is None:
             continue
         ln, rn = left.get("name", ""), right.get("name", "")
-        lid = name_to_id.get(("TableOccurrenceCatalog", ln))
-        rid = name_to_id.get(("TableOccurrenceCatalog", rn))
+        lid = _item_for_reference("TableOccurrenceCatalog", left)
+        rid = _item_for_reference("TableOccurrenceCatalog", right)
         if not (lid and rid):
+            _note_unresolved("TableOccurrenceCatalog", left if not lid else right)
             continue
         rel_id = _display_name(rel_key)
         for a_id, a_n, b_id, b_n in ((lid, ln, rid, rn), (rid, rn, lid, ln)):
@@ -700,19 +977,19 @@ def _stage_assemble_items(state: PipelineState) -> None:
             return None, ""
         to_part, field_part = to_ref.split("::", 1)
         field_key = f"{to_base.get(to_part, to_part)}::{field_part}"
-        to_id = name_to_id.get(("FieldsForTables", field_key))
+        to_id = _text_target("FieldsForTables", field_key)
         if to_id is None:
             resolved = _field_ref_uuid_to_key.get(field_part)  # addon: name-suffix UUID → field xml_key
             if resolved is None:
                 resolved = _uuid_to_name.get(field_part)       # legacy: field <UUID> → "BaseTable::FieldName"
             if resolved:
-                to_id = name_to_id.get(("FieldsForTables", resolved))
+                to_id = _text_target("FieldsForTables", resolved)
                 field_key = resolved
         return to_id, field_key
 
     # CF → field (cf_uses_fields, parsed from the function body)
     for cf_name, field_refs in (getattr(xref, "cf_uses_fields", None) or {}).items():
-        from_id = name_to_id.get(("CustomFunctionsCatalog", cf_name))
+        from_id = alias.get(("CustomFunctionsCatalog", cf_name))
         if not from_id:
             continue
         for to_ref in field_refs:
@@ -738,7 +1015,7 @@ def _stage_assemble_items(state: PipelineState) -> None:
 
     # Field calculation → field (a calc/auto-enter/validation reads other fields)
     for field_xml_key, field_refs in (getattr(xref, "field_calc_uses_fields", None) or {}).items():
-        from_id = name_to_id.get(("FieldsForTables", field_xml_key))
+        from_id = alias.get(("FieldsForTables", field_xml_key))
         if not from_id:
             continue
         for to_ref in field_refs:
@@ -762,11 +1039,11 @@ def _stage_assemble_items(state: PipelineState) -> None:
 
     # Field calculation → custom function (parenthesized CF calls)
     for field_xml_key, cf_names in (getattr(xref, "field_calc_calls_cf", None) or {}).items():
-        from_id = name_to_id.get(("FieldsForTables", field_xml_key))
+        from_id = alias.get(("FieldsForTables", field_xml_key))
         if not from_id:
             continue
         for cf_name in cf_names:
-            to_id = name_to_id.get(("CustomFunctionsCatalog", cf_name))
+            to_id = _text_target("CustomFunctionsCatalog", cf_name)
             if to_id and (from_id, to_id) not in _field_cf_pairs:
                 _field_cf_pairs.add((from_id, to_id))
                 records.append(XRefRecord(
@@ -777,15 +1054,13 @@ def _stage_assemble_items(state: PipelineState) -> None:
 
     # Layout → field (UUID-based, structural FieldReference elements)
     for layout_uuid, field_uuid_list in (getattr(xref, "layout_uses_field_uuids", None) or {}).items():
+        from_id = _item_for_uuid("LayoutCatalog", layout_uuid)
         layout_name = _uuid_to_name.get(layout_uuid, "")
-        from_id = name_to_id.get(("LayoutCatalog", layout_name))
         if not from_id:
             continue
         for field_uuid in field_uuid_list:
             field_key = _uuid_to_name.get(field_uuid, "")  # already "BaseTable::FieldName"
-            if not field_key:
-                continue
-            to_id = name_to_id.get(("FieldsForTables", field_key))
+            to_id = _item_for_uuid("FieldsForTables", field_uuid)
             if to_id:
                 records.append(XRefRecord(
                     from_id=from_id, from_name=_resolved_name(layout_name),
@@ -793,74 +1068,46 @@ def _stage_assemble_items(state: PipelineState) -> None:
                     type="LayoutField",
                 ))
 
-    # Layout → VL (UUID-based, structural ValueListReference elements)
-    for layout_uuid, vl_uuid_list in (getattr(xref, "layout_uses_vl_uuids", None) or {}).items():
-        layout_name = _uuid_to_name.get(layout_uuid, "")
-        from_id = name_to_id.get(("LayoutCatalog", layout_name))
-        if not from_id:
+    # ── Value list edges, from the identity-bearing detail stream (packet 1358) ──
+    # ONE projection for all four contexts. The four UUID-keyed maps this replaces could
+    # not carry a value list referenced by ID alone — the combined id map keeps neither the
+    # source section nor the edge kind — so such an edge was silently absent while dead-end
+    # analysis, which already resolves UUID-or-id, called the same value list live. Section
+    # is part of identity: `LayoutCatalog/id:7` and `ValueListCatalog/id:7` are unrelated
+    # objects, and only the source section decides which one a reference meant.
+    for detail in (getattr(xref, "value_list_edge_details", None) or ()):
+        section = detail.get("src_section", "")
+        # The source resolves by its OWN catalog identity, else by the exact parser key —
+        # never by its display name. A value list, a layout and a script may share both.
+        if section == "ScriptCatalog":
+            from_id = _item_for_identity("ScriptCatalog", _detail_identity("ScriptCatalog", detail_src(detail)))
+        elif detail.get("src_uuid"):
+            from_id = _item_for_uuid(section, detail["src_uuid"])
+        else:
+            from_id = alias.get((section, detail.get("src_key", "")))
+        if not from_id or from_id not in items:
+            _note_identity(section, detail_src(detail))
             continue
-        for vl_uuid in vl_uuid_list:
-            vl_name = _uuid_to_name.get(vl_uuid, "")
-            if not vl_name:
-                continue
-            to_id = name_to_id.get(("ValueListCatalog", vl_name))
-            if to_id:
-                records.append(XRefRecord(
-                    from_id=from_id, from_name=_resolved_name(layout_name),
-                    to=to_id, to_name=_resolved_name(vl_name),
-                    type="LayoutValueList",
-                ))
 
-    # Field → VL (FieldsForTables validation: "In Value List")
-    for vl_uuid, field_uuid_list in (getattr(xref, "vl_used_in_field_uuids", None) or {}).items():
-        vl_name = _uuid_to_name.get(vl_uuid, "")
-        vl_id = name_to_id.get(("ValueListCatalog", vl_name))
-        if not vl_id:
+        to_id = _resolve_detail_target("ValueListCatalog", detail)
+        if not to_id:
+            # `id="-1"` never reaches here — the miner treats FileMaker's no-selection
+            # sentinel as no offered target, so it is an absence, not a failed lookup.
+            _note_identity("ValueListCatalog", detail)
             continue
-        for field_uuid in field_uuid_list:
-            field_name = _uuid_to_name.get(field_uuid, "")
-            field_id = name_to_id.get(("FieldsForTables", field_name))
-            if field_id:
-                records.append(XRefRecord(
-                    from_id=field_id, from_name=field_name,
-                    to=vl_id, to_name=_resolved_name(vl_name),
-                    type="FieldValidation",
-                ))
 
-    # Relationship → VL (portal sort-by-value-list order)
-    for vl_uuid, rel_key_list in (getattr(xref, "vl_used_in_relationship_ids", None) or {}).items():
-        vl_name = _uuid_to_name.get(vl_uuid, "")
-        vl_id = name_to_id.get(("ValueListCatalog", vl_name))
-        if not vl_id:
-            continue
-        for rel_xml_key in rel_key_list:
-            rel_id = name_to_id.get(("RelationshipCatalog", rel_xml_key))
-            if rel_id:
-                records.append(XRefRecord(
-                    from_id=rel_id, from_name=rel_xml_key,
-                    to=vl_id, to_name=_resolved_name(vl_name),
-                    type="RelationshipSort",
-                ))
-
-    # Script → VL (Sort Records / Sort Portal steps sorted by value list)
-    for vl_uuid, script_name_list in (getattr(xref, "vl_used_in_script_names", None) or {}).items():
-        vl_name = _uuid_to_name.get(vl_uuid, "")
-        vl_id = name_to_id.get(("ValueListCatalog", vl_name))
-        if not vl_id:
-            continue
-        for script_name in script_name_list:
-            script_id = name_to_id.get(("ScriptCatalog", script_name))
-            if script_id:
-                records.append(XRefRecord(
-                    from_id=script_id, from_name=_resolved_name(script_name),
-                    to=vl_id, to_name=_resolved_name(vl_name),
-                    type="ScriptSort",
-                ))
+        records.append(XRefRecord(
+            from_id=from_id, from_name=_resolved_name(items[from_id].name),
+            to=to_id, to_name=_resolved_name(items[to_id].name if to_id in items
+                                             else detail.get("name", "")),
+            type=detail.get("kind", "LayoutValueList"),
+        ))
 
     # Layout → field (formula-based: hide-object, conditional formatting, etc.)
-    for layout_name, field_refs in (getattr(xref, "layout_formula_field_refs", None) or {}).items():
-        from_id = name_to_id.get(("LayoutCatalog", layout_name))
-        if not from_id:
+    for layout_key, field_refs in (getattr(xref, "layout_formula_field_refs", None) or {}).items():
+        from_id = alias.get(("LayoutCatalog", layout_key))
+        layout_name = _display_name(layout_key)
+        if not from_id or from_id not in items:
             continue
         for to_ref in field_refs:
             if "::" not in to_ref:
@@ -868,7 +1115,7 @@ def _stage_assemble_items(state: PipelineState) -> None:
             to_name_part, field_name = to_ref.split("::", 1)
             base = to_base.get(to_name_part, to_name_part)
             field_key = f"{base}::{field_name}"
-            to_id = name_to_id.get(("FieldsForTables", field_key))
+            to_id = _text_target("FieldsForTables", field_key)
             if to_id:
                 records.append(XRefRecord(
                     from_id=from_id, from_name=_resolved_name(layout_name),
@@ -877,12 +1124,13 @@ def _stage_assemble_items(state: PipelineState) -> None:
                 ))
 
     # Layout → CF (formula-based: layout conditions calling custom functions)
-    for layout_name, cf_names in (getattr(xref, "layout_formula_cf_calls", None) or {}).items():
-        from_id = name_to_id.get(("LayoutCatalog", layout_name))
-        if not from_id:
+    for layout_key, cf_names in (getattr(xref, "layout_formula_cf_calls", None) or {}).items():
+        from_id = alias.get(("LayoutCatalog", layout_key))
+        layout_name = _display_name(layout_key)
+        if not from_id or from_id not in items:
             continue
         for cf_name in cf_names:
-            to_id = name_to_id.get(("CustomFunctionsCatalog", cf_name))
+            to_id = _text_target("CustomFunctionsCatalog", cf_name)
             if to_id:
                 records.append(XRefRecord(
                     from_id=from_id, from_name=_resolved_name(layout_name),
@@ -891,9 +1139,10 @@ def _stage_assemble_items(state: PipelineState) -> None:
                 ))
 
     # Custom menu → field (formula-based)
-    for menu_name, field_refs in (getattr(xref, "menu_formula_field_refs", None) or {}).items():
-        from_id = name_to_id.get(("CustomMenuCatalog", menu_name))
-        if not from_id:
+    for menu_key, field_refs in (getattr(xref, "menu_formula_field_refs", None) or {}).items():
+        from_id = alias.get(("CustomMenuCatalog", menu_key))
+        menu_name = _display_name(menu_key)
+        if not from_id or from_id not in items:
             continue
         for to_ref in field_refs:
             if "::" not in to_ref:
@@ -901,7 +1150,7 @@ def _stage_assemble_items(state: PipelineState) -> None:
             to_name_part, field_name = to_ref.split("::", 1)
             base = to_base.get(to_name_part, to_name_part)
             field_key = f"{base}::{field_name}"
-            to_id = name_to_id.get(("FieldsForTables", field_key))
+            to_id = _text_target("FieldsForTables", field_key)
             if to_id:
                 records.append(XRefRecord(
                     from_id=from_id, from_name=_resolved_name(menu_name),
@@ -910,12 +1159,13 @@ def _stage_assemble_items(state: PipelineState) -> None:
                 ))
 
     # Custom menu → CF (formula-based)
-    for menu_name, cf_names in (getattr(xref, "menu_formula_cf_calls", None) or {}).items():
-        from_id = name_to_id.get(("CustomMenuCatalog", menu_name))
-        if not from_id:
+    for menu_key, cf_names in (getattr(xref, "menu_formula_cf_calls", None) or {}).items():
+        from_id = alias.get(("CustomMenuCatalog", menu_key))
+        menu_name = _display_name(menu_key)
+        if not from_id or from_id not in items:
             continue
         for cf_name in cf_names:
-            to_id = name_to_id.get(("CustomFunctionsCatalog", cf_name))
+            to_id = _text_target("CustomFunctionsCatalog", cf_name)
             if to_id:
                 records.append(XRefRecord(
                     from_id=from_id, from_name=_resolved_name(menu_name),
@@ -941,42 +1191,40 @@ def _stage_assemble_items(state: PipelineState) -> None:
         for trig in elem.iter("ScriptTrigger"):
             via = trig.get("action") or trig.get("name") or trig.get("event") or "trigger"
             for sr in trig.iter("ScriptReference"):
-                if sr.get("name"):
-                    out.append((sr.get("name"), via))
+                out.append((sr, via))
         for tag in ("Button", "ButtonObj"):
             for parent in elem.iter(tag):
                 for sr in parent.iter("ScriptReference"):
-                    if sr.get("name"):
-                        out.append((sr.get("name"), "button"))
+                    out.append((sr, "button"))
         return out
 
     def _menu_script_refs(elem) -> list:
-        return [(sr.get("name"), "menu command")
-                for sr in elem.iter("ScriptReference") if sr.get("name")]
+        return [(sr, "menu command") for sr in elem.iter("ScriptReference")]
 
     def _emit_entry_edges(section_key: str, edge_type: str, finder) -> None:
         for xml_key, xml_str in (result.section_xml or {}).get(section_key, {}).items():
             if not xml_str:
                 continue
-            from_id = name_to_id.get((section_key, _display_name(xml_key)))
-            if not from_id:
+            from_id = alias.get((section_key, xml_key))
+            if not from_id or from_id not in items:
                 continue
             try:
                 elem = _ET.fromstring(xml_str)
             except _ET.ParseError:
                 continue
             seen: set = set()
-            for sname, via in finder(elem):
-                if (sname, via) in seen:
+            for ref, via in finder(elem):
+                to_id = _item_for_reference("ScriptCatalog", ref)
+                if not to_id or (to_id, via) in seen:
+                    if not to_id:
+                        _note_unresolved("ScriptCatalog", ref)
                     continue
-                seen.add((sname, via))
-                to_id = name_to_id.get(("ScriptCatalog", sname))
-                if to_id:
-                    records.append(XRefRecord(
-                        from_id=from_id, from_name=_resolved_name(_display_name(xml_key)),
-                        to=to_id, to_name=_resolved_name(sname),
-                        type=edge_type, via=via,
-                    ))
+                seen.add((to_id, via))
+                records.append(XRefRecord(
+                    from_id=from_id, from_name=_resolved_name(_display_name(xml_key)),
+                    to=to_id, to_name=_resolved_name(ref.get("name", "")),
+                    type=edge_type, via=via,
+                ))
 
     _emit_entry_edges("LayoutCatalog", "LayoutScript", _layout_script_refs)
     _emit_entry_edges("CustomMenuCatalog", "MenuScript", _menu_script_refs)
@@ -1008,9 +1256,9 @@ def _stage_assemble_items(state: PipelineState) -> None:
                 if action in _FILE_TRIGGER_ACTIONS:
                     sr = el.find(".//ScriptReference")
                     sname = sr.get("name", "") if sr is not None else ""
-                    to_id = name_to_id.get(("ScriptCatalog", sname)) if sname else None
-                    if to_id and (sname, action) not in file_seen:
-                        file_seen.add((sname, action))
+                    to_id = _item_for_reference("ScriptCatalog", sr)
+                    if to_id and (to_id, action) not in file_seen:
+                        file_seen.add((to_id, action))
                         records.append(XRefRecord(
                             from_id="", from_name=result.label or "File",
                             to=to_id, to_name=_resolved_name(sname),
@@ -1034,8 +1282,8 @@ def _stage_assemble_items(state: PipelineState) -> None:
                  "ValueList": ("ValueListCatalog", "ValueListReference")}
     for ps_key, ps_xml in (result.section_xml or {}).get("PrivilegeSetsCatalog", {}).items():
         ps_name = _display_name(ps_key)
-        from_id = name_to_id.get(("PrivilegeSetsCatalog", ps_name))
-        if not (from_id and ps_xml):
+        from_id = alias.get(("PrivilegeSetsCatalog", ps_key))
+        if not (from_id and from_id in items and ps_xml):
             continue
         try:
             ps_el = _ET.fromstring(ps_xml)
@@ -1048,12 +1296,14 @@ def _stage_assemble_items(state: PipelineState) -> None:
                 ref = entry.find(ref_tag)
                 if not access or access == "NoAccess" or ref is None:
                     continue
-                to_id = name_to_id.get((section_key, ref.get("name", "")))
+                to_id = _item_for_reference(section_key, ref)
                 if to_id:
                     records.append(XRefRecord(
                         from_id=from_id, from_name=_resolved_name(ps_name),
                         to=to_id, to_name=_resolved_name(ref.get("name", "")),
                         type="PrivilegeAccess", via=access))
+                else:
+                    _note_unresolved(section_key, ref)
         # Table — reachable if View != NoAccess; write if any of Edit/Create/Delete grant.
         for tbl in ps_el.iter("Table"):
             ref = tbl.find("BaseTableReference")
@@ -1065,7 +1315,7 @@ def _stage_assemble_items(state: PipelineState) -> None:
             view = _acc("View")
             if not view or view == "NoAccess":
                 continue
-            to_id = name_to_id.get(("BaseTableCatalog", ref.get("name", "")))
+            to_id = _item_for_reference("BaseTableCatalog", ref)
             if to_id:
                 can_write = any(_acc(c) not in ("", "NoAccess") for c in ("Edit", "Create", "Delete"))
                 records.append(XRefRecord(
@@ -1077,8 +1327,8 @@ def _stage_assemble_items(state: PipelineState) -> None:
     for ac_key, ac_xml in (result.section_xml or {}).get("AccountsCatalog", {}).items():
         if not ac_xml:
             continue
-        from_id = name_to_id.get(("AccountsCatalog", _display_name(ac_key)))
-        if not from_id:
+        from_id = alias.get(("AccountsCatalog", ac_key))
+        if not from_id or from_id not in items:
             continue
         try:
             psr = _ET.fromstring(ac_xml).find(".//PrivilegeSetReference")
@@ -1086,7 +1336,7 @@ def _stage_assemble_items(state: PipelineState) -> None:
             psr = None
         if psr is None:
             continue
-        to_id = name_to_id.get(("PrivilegeSetsCatalog", psr.get("name", "")))
+        to_id = _item_for_reference("PrivilegeSetsCatalog", psr)
         if to_id:
             records.append(XRefRecord(
                 from_id=from_id, from_name=_resolved_name(_display_name(ac_key)),
@@ -1095,47 +1345,125 @@ def _stage_assemble_items(state: PipelineState) -> None:
 
     # ── Trigger cascades (rung-4): navigation → the destination's enter-trigger ──
     # A Go to Layout fires the destination layout's OnLayoutEnter trigger — a hidden
-    # workflow continuation a flat call graph misses. Emit the navigation itself
-    # (ScriptNavigate) and, where the destination has an enter-trigger, the implied
-    # call (TriggerCascade script→triggered-script). Derived from the LayoutScript
-    # entry edges already in `records`.
+    # workflow continuation a flat call graph misses. The navigation itself is already
+    # an edge (ScriptNavigate, from the identity-bearing detail stream above); this
+    # derives the IMPLIED call from those records, so the two can never disagree about
+    # where a script navigates.
     _ENTER_EVENTS = {"OnLayoutEnter", "OnRecordLoad"}
-    enter_triggers: dict = {}   # layout name → [(script_id, script_name)]
+    # Keyed on the layout's ITEM ID, not its display name: FM permits duplicate layout
+    # names, and a name join would fire one layout's enter-trigger for its twin.
+    enter_triggers: dict = {}   # layout item_id → [(script_id, script_name)]
     for r in records:
         if r.type == "LayoutScript" and r.via in _ENTER_EVENTS:
-            enter_triggers.setdefault(r.from_name, []).append((r.to, r.to_name))
-    for sname, lnames in (getattr(xref, "script_navigates_layouts", None) or {}).items():
-        from_id = name_to_id.get(("ScriptCatalog", sname))
-        if not from_id:
-            continue
-        for lname in lnames:
-            lid = name_to_id.get(("LayoutCatalog", lname))
-            if lid:
-                records.append(XRefRecord(
-                    from_id=from_id, from_name=_resolved_name(sname),
-                    to=lid, to_name=_resolved_name(lname),
-                    type="ScriptNavigate", via="Go to Layout"))
-            for trig_id, trig_name in enter_triggers.get(_resolved_name(lname), ()):
-                if trig_id and trig_id != from_id:
-                    records.append(XRefRecord(
-                        from_id=from_id, from_name=_resolved_name(sname),
-                        to=trig_id, to_name=trig_name,
-                        type="TriggerCascade", via=f"OnLayoutEnter@{lname}"))
+            enter_triggers.setdefault(r.from_id, []).append((r.to, r.to_name))
+    _cascade_seen: set = set()
+    for r in [rec for rec in records if rec.type == "ScriptNavigate"]:
+        for trig_id, trig_name in enter_triggers.get(r.to, ()):
+            key = (r.from_id, trig_id)
+            if not trig_id or trig_id == r.from_id or key in _cascade_seen:
+                continue
+            _cascade_seen.add(key)
+            records.append(XRefRecord(
+                from_id=r.from_id, from_name=r.from_name,
+                to=trig_id, to_name=trig_name,
+                type="TriggerCascade", via=f"OnLayoutEnter@{r.to_name}"))
 
-    # ── Relationship traversal (rung-2 C): the TO context a script lands the user
-    # in via Go to Related Record. "Where they end up", as opposed to which layout
-    # is shown — a workflow's data context after navigation.
-    for sname, tnames in (getattr(xref, "script_navigates_tos", None) or {}).items():
-        from_id = name_to_id.get(("ScriptCatalog", sname))
+    # ── Layout-embedded navigation (packet 1347) ──────────────────────────────
+    # Packet 1340 mined a button's Go to Layout / Go to Related Record into the graph
+    # but never projected it, so everything reading the PERSISTED xref layer received
+    # none of it. Sources resolve through the exact catalog key, never the display
+    # name: FM permits duplicate layout names, and a name lookup would attach one
+    # layout's navigation to whichever twin was indexed last. Targets resolve by
+    # identity (packet 1348) or by a TO name that identifies exactly one occurrence.
+    # An endpoint that does not resolve uniquely records a miner diagnostic and emits
+    # nothing — never an empty `to`.
+    # From the ALIAS, not from items: a coalesced fragment keeps no item of its own,
+    # and its navigation must still resolve to the logical layout it belongs to.
+    _key_to_id = {key: iid for (sec, key), iid in alias.items()
+                  if sec == "LayoutCatalog" and iid in items and not items[iid].is_folder}
+    _uuid_to_layout_id = {it.fm_uuid: iid for iid, it in items.items()
+                          if it.section == "LayoutCatalog" and it.fm_uuid and not it.is_folder}
+    _to_by_name: dict = {}
+    for iid, it in items.items():
+        if it.section != "TableOccurrenceCatalog" or it.is_folder:
+            continue
+        nm = _display_name(it.xml_key)
+        _to_by_name[nm] = None if nm in _to_by_name else iid   # duplicate name → refuse
+    _to_by_name = {k: v for k, v in _to_by_name.items() if v}
+
+    # One bounded diagnostic per distinct unresolved endpoint: a layout with many
+    # buttons pointing at one missing occurrence must not append one line per button.
+    _nav_unresolved: set = set()
+
+    def _nav_note(entry: str) -> None:
+        if entry not in _nav_unresolved:
+            _nav_unresolved.add(entry)
+            state.unresolved_uuids.append(entry)
+
+    def _layout_source(src_key: str):
+        from_id = _key_to_id.get(src_key)
+        if not from_id and f"LayoutCatalog/{src_key}" not in _nav_unresolved:
+            _nav_unresolved.add(f"LayoutCatalog/{src_key}")
+            state.miner_skipped.append(f"LayoutCatalog/{src_key}")
+        return from_id
+
+    _nav_seen: set = set()
+
+    def _emit_layout_edge(from_id, src_key, to_id, to_name, edge_type, via):
+        key = (from_id, to_id, edge_type, via)
+        if key in _nav_seen:
+            return
+        _nav_seen.add(key)
+        records.append(XRefRecord(
+            from_id=from_id, from_name=_resolved_name(_display_name(src_key)),
+            to=to_id, to_name=_resolved_name(to_name),
+            type=edge_type, via=via))
+
+    for detail in (getattr(xref, "layout_navigation_details", None) or ()):
+        src_key, _src_uuid, tgt_uuid, tgt_name, step_name = detail[:5]
+        tgt_id = detail[5] if len(detail) > 5 else ""
+        from_id = _layout_source(src_key)
         if not from_id:
             continue
-        for tname in tnames:
-            tid = name_to_id.get(("TableOccurrenceCatalog", tname))
-            if tid:
-                records.append(XRefRecord(
-                    from_id=from_id, from_name=_resolved_name(sname),
-                    to=tid, to_name=_resolved_name(tname),
-                    type="ScriptNavigateTO", via="Go to Related Record"))
+        to_id = _item_for_identity("LayoutCatalog", _detail_identity(
+            "LayoutCatalog", {"uuid": tgt_uuid, "id": tgt_id}))
+        if not to_id:
+            _nav_note(f"LayoutCatalog/{tgt_uuid or (f'id:{tgt_id}' if tgt_id else tgt_name)}")
+            continue
+        _emit_layout_edge(from_id, src_key, to_id, tgt_name or _display_name(src_key),
+                          "LayoutNavigation", step_name)
+
+    def _to_target(to_name: str, to_uuid: str, to_id_attr: str) -> str | None:
+        """A table-occurrence destination, by identity where FM gave one.
+
+        The name route survives only as a last resort, and only when exactly one
+        occurrence carries that name — `<Table Missing>` and a duplicate both refuse.
+        """
+        return _resolve_detail_target("TableOccurrenceCatalog", {
+            "uuid": to_uuid, "id": to_id_attr, "name": to_name})
+
+    for src_key, to_name, to_uuid, to_id_attr in (
+            getattr(xref, "layout_context_details", None) or ()):
+        from_id = _layout_source(src_key)
+        if not from_id:
+            continue
+        to_id = _to_target(to_name, to_uuid, to_id_attr)
+        if not to_id:
+            _nav_note(f"TableOccurrenceCatalog/{to_uuid or to_id_attr or to_name}")
+            continue
+        # No `via`: this is the direct show-records-from binding, not a Step.
+        _emit_layout_edge(from_id, src_key, to_id, to_name, "LayoutContextTO", "")
+
+    for src_key, to_name, step_name, to_uuid, to_id_attr in (
+            getattr(xref, "layout_to_navigation_details", None) or ()):
+        from_id = _layout_source(src_key)
+        if not from_id:
+            continue
+        to_id = _to_target(to_name, to_uuid, to_id_attr)
+        if not to_id:
+            _nav_note(f"TableOccurrenceCatalog/{to_uuid or to_id_attr or to_name}")
+            continue
+        _emit_layout_edge(from_id, src_key, to_id, to_name, "LayoutNavigateTO", step_name)
 
     state.xref_records = records
 

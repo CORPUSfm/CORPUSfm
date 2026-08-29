@@ -1863,7 +1863,14 @@ class PosixExecutor(UninstallExecutor):
                        detail=f"{unit} is absent and its definition is gone")
 
     def _remove_account(self, operation, *, runner) -> Outcome:
-        """The exact recorded account, with a read-back. Never a lookup by a familiar name."""
+        """The exact recorded account, with a read-back. Never a lookup by a familiar name.
+
+        The runtime root is intentionally owned by this account while the services run.  Reclaim
+        that one fixed root *before* deleting the account: the launcher may cross a credential
+        boundary after this operation, and a later lifecycle invocation can no longer resolve the
+        deleted name to prove that the numeric owner was ours.  Chown-before-userdel also makes an
+        interruption between the account checkpoint and terminal cleanup safely resumable.
+        """
         before = _posix_account_exists(operation.account)
         if before is None:
             return Outcome(resource=operation.resource, operation=operation.tag,
@@ -1873,6 +1880,11 @@ class PosixExecutor(UninstallExecutor):
             return Outcome(resource=operation.resource, operation=operation.tag,
                            result=EXEC_ALREADY_ABSENT, checkpointable=True,
                            detail=f"{operation.account!r} does not resolve")
+        reclaim_refusal = _reclaim_posix_runtime_before_account_removal(
+            self._layout, operation.account)
+        if reclaim_refusal:
+            return Outcome(resource=operation.resource, operation=operation.tag,
+                           result=EXEC_FAILED, detail=reclaim_refusal)
         run = _run([self.USERDEL, operation.account], runner=runner)
         after = _posix_account_exists(operation.account)
         if after is None:
@@ -1916,6 +1928,36 @@ def _posix_account_exists(account: str):
         return False
     except Exception:                                                     # noqa: BLE001
         return None
+
+
+def _reclaim_posix_runtime_before_account_removal(layout, account: str) -> str:
+    """Return an empty string after root reclaims the fixed run root, else a refusal detail.
+
+    The lifecycle layout supplies the path; the typed account operation supplies the name.  No
+    caller supplies either target.  The terminal helper performs the inode/link/mode/owner checks
+    and the chown read-back used by final cleanup, so the two boundaries cannot drift apart.
+    """
+    run_root = Path(layout.lock_file).parent
+    st = _lstat_or_none(run_root)
+    if st is None:
+        return f"the fixed runtime root {run_root} is absent while its lifecycle lock is held"
+    if st.st_uid == 0:
+        return ""
+    try:
+        import pwd
+        service_uid = pwd.getpwnam(account).pw_uid
+    except KeyError:
+        return f"{account!r} stopped resolving before its runtime root could be reclaimed"
+    except Exception as exc:                                              # noqa: BLE001
+        return f"the account database could not identify {account!r}: {type(exc).__name__}"
+    try:
+        # Delayed to avoid a module-load cycle: uninstall_terminal imports the POSIX purge
+        # primitives from this module, while this operation reuses its one authority transition.
+        from .uninstall_terminal import _claim_posix_run_root
+        _claim_posix_run_root(run_root, st, service_uid=service_uid)
+    except LifecycleError as exc:
+        return str(exc)
+    return ""
 
 
 __all__ = [

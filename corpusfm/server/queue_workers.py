@@ -322,15 +322,24 @@ _host_lock = None
 
 
 def _worker_host_lock_path():
-    """The stable, service-writable lock path — config home (``~/.corpusfm/``), same for any second
-    web process on this box. Overridable via ``CORPUSFM_WORKER_LOCK`` (tests point it at a temp file)."""
+    """The stable, service-writable lock path, in the application's **runtime** directory — the same
+    path for any second web process on this box. Overridable via ``CORPUSFM_WORKER_LOCK`` (tests point
+    it at a temp file).
+
+    A runtime lock, not durable state (packet 1333): it means nothing across a reboot, so it belongs in
+    ``app_paths.run_dir()`` rather than beside persistent records. The old derivation used the install
+    marker's directory, which the installer deliberately keeps root-owned — so on every published
+    installation this detector could not even be evaluated, and said so on each start. Its fail-OPEN
+    behaviour below is unchanged and is still correct: the DEPLOYMENT owns one-web-process, and this
+    lock only DETECTS a hand-launched second instance (packet 1204).
+    """
     import os
     from pathlib import Path
     override = os.environ.get("CORPUSFM_WORKER_LOCK")
     if override:
         return Path(override)
-    from corpusfm.install import marker_path
-    return marker_path().parent / "worker-host.lock"
+    from corpusfm.lifecycle import app_paths
+    return app_paths.run_dir() / "worker-host.lock"
 
 
 def _acquire_worker_host(retry_seconds: float) -> bool:

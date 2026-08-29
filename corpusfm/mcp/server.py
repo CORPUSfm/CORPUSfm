@@ -1,6 +1,6 @@
 """corpusfm MCP server — mode-aware tool registration.
 
-App mode (77 tools — the non-server code path; co-located server is the only real deployment):
+App mode (79 tools — the non-server code path; co-located server is the only real deployment):
   list_artifacts      — list stored artifacts in the archive (optional tag filter)
   get_artifact_types  — the artifact TYPES the catalog holds and what each one supports
   delete_source       — delete an artifact's retained source XML to reclaim storage
@@ -29,6 +29,7 @@ App mode (77 tools — the non-server code path; co-located server is the only r
   apply_patch         — step 2/2: execute a planned apply (token-gated, reversible, backed up)
   compare             — diff two archive artifacts, return summary
   render_section      — human-readable content of one section from an artifact
+  get_layout_data_bindings — which table occurrences ONE layout binds to, with why, plus an explicit completeness verdict (read-only schema analysis; no data-plane call)
   get_raw_xml         — raw XML for a named item (AI inspection; supplemental sources via source_catalog)
   get_script_steps    — a script's steps in FM order: index/id/name/enabled + rendered + (opt) raw step XML
   list_registrations  — list git export registrations
@@ -72,6 +73,7 @@ App mode (77 tools — the non-server code path; co-located server is the only r
   update_check        — explicit read-only observation through the shared Settings-updater authority (asks the fixed elevated one-shot to refresh refs with an impossible consent; the service performs no git operation): the exact current/target head + version, head_build_version + stamp_repair (OBSERVED ONLY — a stale runtime build stamp on a current checkout; there is no in-app repair, an installer run rewrites it), behind count, privacy-safe classification booleans, apply_allowed, and the installer handoff when elevated work is required
   update_apply        — mutating wrapper: requires expected_head from update_check as a refusal-only consent pin, then TRIGGERS the fixed elevated one-shot, which resolves origin/main itself and refuses target_changed / unclean_tree / origin_mismatch / not_fast_forward / needs_installer / import_probe_failed. The service performs no git operation. Drops the MCP connection — reconnect + update_status
   update_status       — read-only durable status/reconciliation: reads the request record and lazily promotes restart_scheduled → restarted once the running version matches the applied update (mismatch is a named non-success, never a silent one)
+  get_data_access_recipe — how to reach ONE hosted file's data: permitted transports, reachability, the external OData base, TOs and per-field cost signals, with blockers in plain language. A MAP — no record, no credential, no query (`fms_api` gate + the default-off FMS-admin switch)
   fms_list_databases  — list hosted DBs + status (Admin API via PKI; `fms_api` gate)
   fms_list_clients    — list connected clients (`fms_api` gate)
   fms_list_schedules  — list FMS schedules (`fms_api` gate)
@@ -85,7 +87,7 @@ enable_fms_admin_mcp_tools switch (default off — hidden from tools/list + refu
 plan_*→execute_* two-step for every mutating op. Server-process restarts are deliberately excluded
 (the Admin API has no restart endpoint; that stays a CLI/installer concern).
 
-Server mode adds 7 more tools (84 total; registered only in server mode):
+Server mode adds 7 more tools (86 total; registered only in server mode):
   list_jobs           — list jobs (name, uuid, owner file, schedule, last run) — filterable by file
   run_job             — trigger a named job (pulls fresh XML from FMS); returns run_id
   get_job_run         — exact per-run status/outcome by run_id (active queue → HISTORY, no "latest")
@@ -552,6 +554,7 @@ _TOOL_GATES: dict = {
     "execute_promote_generated_db": "patching",
     "reimport_after_patch": "patching",
     # fms_api — broad FileMaker Server control (also behind the enable_fms_admin_mcp_tools switch)
+    "get_data_access_recipe": "fms_api",
     "fms_list_databases": "fms_api",
     "fms_list_clients": "fms_api",
     "fms_list_schedules": "fms_api",
@@ -562,6 +565,7 @@ _TOOL_GATES: dict = {
     "plan_fms_message_clients": "fms_api",
     "execute_fms_message_clients": "fms_api",
     # automation — jobs / monitoring (server mode only)
+    "get_layout_data_bindings": "library_mcp",
     "list_jobs": "automation",
     "run_job": "automation",
     "get_job_run": "automation",
@@ -574,6 +578,7 @@ _TOOL_GATES: dict = {
 # The broad FMS-admin surface, gated a SECOND time by the server-wide enable_fms_admin_mcp_tools
 # switch (default off): hidden from tools/list and refused at call time unless an admin enables it.
 _FMS_TOOLS = frozenset({
+    "get_data_access_recipe",
     "fms_list_databases", "fms_list_clients", "fms_list_schedules",
     "plan_fms_control_database", "execute_fms_control_database",
     "plan_fms_disconnect_client", "execute_fms_disconnect_client",
@@ -2694,6 +2699,193 @@ def render_section(
         names_only=names_only, max_chars=max_chars,
     )
 
+
+
+
+@mcp.tool()
+def get_data_access_recipe(database_name: str, table_occurrence: str = "",
+                           limit: int = 100, offset: int = 0) -> str:
+    """How to reach ONE hosted file's data — the map, never the data (packet 1336).
+
+    Returns: which data transports that file actually permits, whether it is reachable right now, the
+    externally usable OData base URL, the table occurrences to address, per-field cost signals, and any
+    blocking condition in plain language.
+
+    **No record and no credential pass through this tool.** You bring your own account; FileMaker's
+    privilege model stays the only authority on what it may read. Nothing is sampled, queried or stored.
+
+    database_name:     the hosted file. A `.fmp12` suffix is optional; matching is case-insensitive
+                       against ONE fresh Admin API inventory. No match refuses `not_hosted`; more than
+                       one normalized match is refused as ambiguous rather than chosen by order.
+    table_occurrence:  when given, returns THAT TO's fields instead of every TO's — so a caller that
+                       already knows its TO gets a complete usable recipe in one call.
+    limit/offset:      paginate the TO list (capped at 100). A 286-TO solution is ordinary, so an
+                       unbounded field dump would be a token-loss defect.
+
+    Co-located FileMaker Server only. Requires the `fms_api` gate AND the default-off FMS-admin switch.
+    """
+    import json as _json
+    from corpusfm.server import data_access_recipe as R
+    from corpusfm.server import fms_admin_pki as pki
+
+    _require_fms_admin_enabled()
+    try:
+        cfg, verify = _fms_admin_pki_ctx()
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+    wanted = (database_name or "").strip()
+    if not wanted:
+        return "ERROR: a database name is required."
+    bare = wanted[:-6] if wanted.lower().endswith(".fmp12") else wanted
+
+    # ONE bounded live inventory transaction: authenticate, list once, release in `finally`. There is
+    # no per-file probe and no second Admin call — and no prior Jobs refresh is available to MCP, so
+    # "right now" has to be read now or not claimed.
+    token = pki.authenticate(cfg["host"], cfg["name"], cfg["private_pem"], verify_ssl=verify)
+    try:
+        inventory = pki.list_hosted_databases(cfg["host"], token, verify_ssl=verify)
+    except Exception as exc:
+        return f"ERROR reading the FileMaker Server inventory: {exc}"
+    finally:
+        try:
+            pki.logout(cfg["host"], token, verify_ssl=verify)
+        except Exception:
+            pass
+
+    matches = [d for d in inventory if d.name.lower() == bare.lower()]
+    if not matches:
+        return (f"not_hosted: '{wanted}' is not hosted on this FileMaker Server. "
+                f"({len(inventory)} file(s) are.)")
+    if len(matches) > 1:
+        return (f"ERROR: '{wanted}' matches {len(matches)} hosted files after normalizing the "
+                ".fmp12 suffix. An ambiguous name is refused rather than chosen by order.")
+    record = matches[0]
+
+    from corpusfm.app.web.deployment import external_base_url
+    artifact, meta = _newest_schema_artifact_for(record.filename)
+
+    recipe = R.compose(record, external_base=external_base_url(), artifact=artifact,
+                       artifact_meta=meta, table_occurrence=(table_occurrence or None),
+                       limit=limit, offset=offset)
+
+    lines = [f"{recipe.database} — {'open' if recipe.open else 'not open'} "
+             f"(FileMaker Server status: {recipe.status or 'not reported'})"]
+    lines.append("  data transports permitted: " +
+                 (", ".join(sorted(recipe.transports)) or "none"))
+    if recipe.other_privileges:
+        lines.append("  other extended privileges observed: " + ", ".join(recipe.other_privileges))
+    if recipe.odata_base:
+        lines.append(f"  OData base: {recipe.odata_base}   (verify TLS: {recipe.verify_tls})")
+    if recipe.schema:
+        lines.append(f"  schema snapshot: {recipe.schema.get('artifact_type')} "
+                     f"ingested {recipe.schema.get('ingested_utc')} — "
+                     f"{recipe.schema.get('note')}")
+    if recipe.table_occurrences:
+        shown = ", ".join(recipe.table_occurrences[:12])
+        more = "" if recipe.total <= len(recipe.table_occurrences) else f" (+{recipe.withheld} more)"
+        lines.append(f"  table occurrences ({recipe.total}): {shown}{more}")
+    if recipe.fields:
+        lines.append(f"  fields on '{recipe.table_occurrences[0]}': {len(recipe.fields)}")
+    for b in recipe.blockers:
+        lines.append(f"  BLOCKER: {b}")
+    lines.append("  This is a map. No record or credential passed through CORPUSfm.")
+    return "\n".join(lines) + "\n\n" + _json.dumps(recipe.to_dict(), indent=2, default=str)
+
+
+def _newest_schema_artifact_for(filename: str):
+    """The newest stored SCHEMA artifact whose canonical identity matches `filename` exactly.
+
+    Inventory proves hosting; it never proves schema. Returning the artifact's identity and ingestion
+    time is what makes the TO/field catalog honestly a snapshot rather than a claim about the live file.
+    """
+    try:
+        from corpusfm.storage import get_backend
+        backend = get_backend()
+        metas = [m for m in backend.iter_artifact_metas()
+                 if (m.file_name or "").lower() == filename.lower()
+                 and (m.artifact_type or "") in ("SaveAsXML", "Merged")]
+        if not metas:
+            return None, None
+        newest = max(metas, key=lambda m: m.timestamp or "")
+        return backend.load_artifact(newest.uuid), newest
+    except Exception:
+        return None, None
+
+@mcp.tool()
+def get_layout_data_bindings(artifact_path: str, layout: str,
+                             limit: int = 100, offset: int = 0) -> str:
+    """Which table occurrences does ONE layout bind to, and is that list complete?
+
+    All FileMaker data access goes through table occurrences, so "what would I pull to get what this
+    layout shows" is a TO question. This answers it from the stored schema artifact — read-only, no
+    data-plane call, no credential, no record.
+
+    artifact_path: archive-relative or absolute path (same format as compare/render_section).
+    layout:        the layout's exact name; an ambiguous name is refused rather than guessed.
+    limit/offset:  paginate the unique TO entries (limit capped at 100), ordered by first document
+                   occurrence with the name as a stable tie-break.
+
+    Returns human-readable text followed by complete structured JSON. `complete` is true only when the
+    XML parsed, no unrecognised object form was seen, every structural TO reference was classified, and
+    no dynamic TO-bearing expression was found — so pagination can never make a partial page look like
+    the whole binding set.
+
+    It does NOT infer relationship paths, choose a preferred TO, construct a query, or claim that a
+    bound TO is readable by any account. FileMaker and the caller's own credential remain the authority
+    on access.
+    """
+    import json as _json
+    from corpusfm.core.layout_bindings import analyze_layout_bindings
+
+    limit = max(1, min(int(limit or 100), 100))
+    offset = max(0, int(offset or 0))
+    try:
+        artifact = _load_artifact(artifact_path)
+    except Exception as exc:
+        return f"ERROR loading artifact: {exc}"
+
+    wanted = (layout or "").strip()
+    if not wanted:
+        return "ERROR: a layout name is required."
+    candidates = [i for i in artifact.items.values()
+                  if i.section == "LayoutCatalog" and not getattr(i, "is_folder", False)]
+    exact = [i for i in candidates if i.name == wanted]
+    if not exact:
+        exact = [i for i in candidates if i.name.lower() == wanted.lower()]
+    if not exact:
+        return f"ERROR: layout '{wanted}' not found in this artifact."
+    if len(exact) > 1:
+        return (f"ERROR: '{wanted}' matches {len(exact)} layouts in this artifact. "
+                "An ambiguous name is refused rather than guessed.")
+    item = exact[0]
+
+    report = analyze_layout_bindings(getattr(item, "xml_str", "") or "")
+    if report.parse_error:
+        return f"ERROR: layout '{item.name}' could not be parsed: {report.parse_error}"
+
+    total = len(report.bindings)
+    page = report.bindings[offset:offset + limit]
+    payload = report.to_dict()
+    payload["bindings"] = [b.to_dict() for b in page]
+    payload.update({"layout": item.name, "total": total, "returned": len(page),
+                    "withheld": max(0, total - offset - len(page)),
+                    "next_offset": (offset + len(page)) if (offset + len(page)) < total else None})
+
+    lines = [f"Layout '{item.name}' binds to {total} table occurrence(s)"
+             f"{'' if total == len(page) else f' (showing {len(page)} from offset {offset})'}:"]
+    for b in page:
+        why = ", ".join(b.reasons)
+        eg = f"  [{'; '.join(b.examples)}]" if b.examples else ""
+        lines.append(f"  {b.name} — {why}{eg}")
+    if not report.complete:
+        lines.append("")
+        lines.append("INCOMPLETE — this list may not be every binding:")
+        for u in report.unexamined_constructs[:3]:
+            lines.append(f"  unrecognised object form <{u.get('tag')}> at position {u.get('position')}")
+        for d in report.dynamic_references[:3]:
+            lines.append(f"  dynamic reference: {d}")
+    return "\n".join(lines) + "\n\n" + _json.dumps(payload, indent=2)
 
 def _render_section_body(section_key, artifact_label, in_section, *,
                          names_only=False, max_chars=_DEFAULT_MAX_CHARS):

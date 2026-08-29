@@ -395,6 +395,35 @@ def update_user_gates(uid: str, gates, *, backend=None) -> None:
     e.update(_USER, uid, jor)
 
 
+#: The last update target this user chose to skip (packet 1341). A top-level, non-secret operational
+#: field on the USER record — deliberately NOT a personal preference: it is never offered through
+#: `clean_prefs`, `/api/account/prefs`, or the account UI, because a user does not "prefer" a skipped
+#: commit. One scalar per user is naturally bounded: skipping a later head overwrites the earlier
+#: value, and a DIFFERENT registered target re-arms the prompt.
+_SKIPPED_UPDATE_HEAD = "SkippedUpdateHead"
+
+
+def skipped_update_head(uid: str, *, backend=None) -> str:
+    """The head this user last skipped, or "". Absent on every record written before packet 1341."""
+    e = _engine(backend)
+    r = _row_for(e, uid) if e is not None else None
+    if r is None:
+        return ""
+    return str(r.jor.get(_SKIPPED_UPDATE_HEAD) or "")
+
+
+def set_skipped_update_head(uid: str, head: str, *, backend=None) -> None:
+    """Record the head this user skipped. Raises when the user cannot be read, so the caller can keep
+    the prompt open rather than report a skip it did not persist."""
+    e = _engine(backend)
+    r = _row_for(e, uid) if e is not None else None
+    if r is None:
+        raise ValueError("User not found.")
+    jor = dict(r.jor)
+    jor[_SKIPPED_UPDATE_HEAD] = str(head or "")
+    e.update(_USER, uid, jor)
+
+
 def set_user_active(uid: str, active: bool, *, backend=None) -> None:
     e = _engine(backend)
     r = _row_for(e, uid) if e is not None else None

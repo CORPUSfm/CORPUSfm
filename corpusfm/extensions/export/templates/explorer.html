@@ -188,7 +188,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('calls')" x-text="(isXRefCollapsed('calls')?'▶ ':'▼ ')+'Calls'"></h4>
             <div x-show="!isXRefCollapsed('calls')">
-              <template x-for="s in currentXRef.calls" :key="xrefName(s)">
+              <template x-for="s in currentXRef.calls" :key="xrefKey(s)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('ScriptCatalog',s)" x-text="xrefName(s)"></a>
               </template>
             </div>
@@ -198,7 +198,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('called_by')" x-text="(isXRefCollapsed('called_by')?'▶ ':'▼ ')+'Called by'"></h4>
             <div x-show="!isXRefCollapsed('called_by')">
-              <template x-for="s in currentXRef.called_by" :key="xrefName(s)">
+              <template x-for="s in currentXRef.called_by" :key="xrefKey(s)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('ScriptCatalog',s)" x-text="xrefName(s)"></a>
               </template>
             </div>
@@ -208,7 +208,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('uses_fields')" x-text="(isXRefCollapsed('uses_fields')?'▶ ':'▼ ')+'Uses fields'"></h4>
             <div x-show="!isXRefCollapsed('uses_fields')">
-              <template x-for="f in currentXRef.uses_fields" :key="xrefName(f)">
+              <template x-for="f in currentXRef.uses_fields" :key="xrefKey(f)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('FieldsForTables',f)" x-text="xrefName(f)"></a>
               </template>
             </div>
@@ -218,7 +218,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('uses_value_lists')" x-text="(isXRefCollapsed('uses_value_lists')?'▶ ':'▼ ')+'Uses value lists'"></h4>
             <div x-show="!isXRefCollapsed('uses_value_lists')">
-              <template x-for="v in currentXRef.uses_value_lists" :key="xrefName(v)">
+              <template x-for="v in currentXRef.uses_value_lists" :key="xrefKey(v)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('ValueListCatalog',v)" x-text="xrefName(v)"></a>
               </template>
             </div>
@@ -228,7 +228,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('used_in_scripts')" x-text="(isXRefCollapsed('used_in_scripts')?'▶ ':'▼ ')+'Used in scripts'"></h4>
             <div x-show="!isXRefCollapsed('used_in_scripts')">
-              <template x-for="s in currentXRef.used_in_scripts" :key="xrefName(s)">
+              <template x-for="s in currentXRef.used_in_scripts" :key="xrefKey(s)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('ScriptCatalog',s)" x-text="xrefName(s)"></a>
               </template>
             </div>
@@ -238,7 +238,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('used_in_cfs')" x-text="(isXRefCollapsed('used_in_cfs')?'▶ ':'▼ ')+'Used in custom functions'"></h4>
             <div x-show="!isXRefCollapsed('used_in_cfs')">
-              <template x-for="c in currentXRef.used_in_cfs" :key="xrefName(c)">
+              <template x-for="c in currentXRef.used_in_cfs" :key="xrefKey(c)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('CustomFunctionsCatalog',c)" x-text="xrefName(c)"></a>
               </template>
             </div>
@@ -248,7 +248,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('calls_scripts')" x-text="(isXRefCollapsed('calls_scripts')?'▶ ':'▼ ')+'Calls scripts'"></h4>
             <div x-show="!isXRefCollapsed('calls_scripts')">
-              <template x-for="s in currentXRef.calls_scripts" :key="xrefName(s)">
+              <template x-for="s in currentXRef.calls_scripts" :key="xrefKey(s)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('ScriptCatalog',s)" x-text="xrefName(s)"></a>
               </template>
             </div>
@@ -258,8 +258,38 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('calls_cfs')" x-text="(isXRefCollapsed('calls_cfs')?'▶ ':'▼ ')+'Calls custom functions'"></h4>
             <div x-show="!isXRefCollapsed('calls_cfs')">
-              <template x-for="c in currentXRef.calls_cfs" :key="xrefName(c)">
+              <template x-for="c in currentXRef.calls_cfs" :key="xrefKey(c)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('CustomFunctionsCatalog',c)" x-text="xrefName(c)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.navigates_to_layouts?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('navigates_to_layouts')" x-text="(isXRefCollapsed('navigates_to_layouts')?'▶ ':'▼ ')+'Navigates to layouts'"></h4>
+            <div x-show="!isXRefCollapsed('navigates_to_layouts')">
+              <template x-for="l in currentXRef.navigates_to_layouts" :key="xrefKey(l)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('LayoutCatalog',l)" x-text="xrefName(l)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.opened_by_layouts?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('opened_by_layouts')" x-text="(isXRefCollapsed('opened_by_layouts')?'▶ ':'▼ ')+'Opened by layouts'"></h4>
+            <div x-show="!isXRefCollapsed('opened_by_layouts')">
+              <template x-for="l in currentXRef.opened_by_layouts" :key="xrefKey(l)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('LayoutCatalog',l)" x-text="xrefName(l)"></a>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="currentXRef.shows_records_from?.length">
+          <div class="xref-group">
+            <h4 @click="toggleXRef('shows_records_from')" x-text="(isXRefCollapsed('shows_records_from')?'▶ ':'▼ ')+'Shows records from'"></h4>
+            <div x-show="!isXRefCollapsed('shows_records_from')">
+              <template x-for="t in currentXRef.shows_records_from" :key="xrefKey(t)">
+                <a class="xref-link" href="#" @click.prevent="navigateXRef('TableOccurrenceCatalog',t)" x-text="xrefName(t)"></a>
               </template>
             </div>
           </div>
@@ -268,7 +298,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('opened_by_scripts')" x-text="(isXRefCollapsed('opened_by_scripts')?'▶ ':'▼ ')+'Opened by scripts'"></h4>
             <div x-show="!isXRefCollapsed('opened_by_scripts')">
-              <template x-for="s in currentXRef.opened_by_scripts" :key="xrefName(s)">
+              <template x-for="s in currentXRef.opened_by_scripts" :key="xrefKey(s)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('ScriptCatalog',s)" x-text="xrefName(s)"></a>
               </template>
             </div>
@@ -278,7 +308,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('used_in_layouts')" x-text="(isXRefCollapsed('used_in_layouts')?'▶ ':'▼ ')+'Used in layouts'"></h4>
             <div x-show="!isXRefCollapsed('used_in_layouts')">
-              <template x-for="l in currentXRef.used_in_layouts" :key="xrefName(l)">
+              <template x-for="l in currentXRef.used_in_layouts" :key="xrefKey(l)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('LayoutCatalog',l)" x-text="xrefName(l)"></a>
               </template>
             </div>
@@ -288,7 +318,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('used_in_field_calcs')" x-text="(isXRefCollapsed('used_in_field_calcs')?'▶ ':'▼ ')+'Used in field calculations'"></h4>
             <div x-show="!isXRefCollapsed('used_in_field_calcs')">
-              <template x-for="f in currentXRef.used_in_field_calcs" :key="xrefName(f)">
+              <template x-for="f in currentXRef.used_in_field_calcs" :key="xrefKey(f)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('FieldsForTables',f)" x-text="xrefName(f)"></a>
               </template>
             </div>
@@ -298,7 +328,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('used_in_menus')" x-text="(isXRefCollapsed('used_in_menus')?'▶ ':'▼ ')+'Used in custom menus'"></h4>
             <div x-show="!isXRefCollapsed('used_in_menus')">
-              <template x-for="m in currentXRef.used_in_menus" :key="xrefName(m)">
+              <template x-for="m in currentXRef.used_in_menus" :key="xrefKey(m)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('CustomMenuCatalog',m)" x-text="xrefName(m)"></a>
               </template>
             </div>
@@ -308,7 +338,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('validates_fields')" x-text="(isXRefCollapsed('validates_fields')?'▶ ':'▼ ')+'Validates fields'"></h4>
             <div x-show="!isXRefCollapsed('validates_fields')">
-              <template x-for="f in currentXRef.validates_fields" :key="xrefName(f)">
+              <template x-for="f in currentXRef.validates_fields" :key="xrefKey(f)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('FieldsForTables',f)" x-text="xrefName(f)"></a>
               </template>
             </div>
@@ -318,7 +348,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('used_in_relationships')" x-text="(isXRefCollapsed('used_in_relationships')?'▶ ':'▼ ')+'Used in relationships'"></h4>
             <div x-show="!isXRefCollapsed('used_in_relationships')">
-              <template x-for="r in currentXRef.used_in_relationships" :key="xrefName(r)">
+              <template x-for="r in currentXRef.used_in_relationships" :key="xrefKey(r)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('RelationshipCatalog',r)" x-text="xrefName(r)"></a>
               </template>
             </div>
@@ -328,7 +358,7 @@
           <div class="xref-group">
             <h4 @click="toggleXRef('related_tos')" x-text="(isXRefCollapsed('related_tos')?'▶ ':'▼ ')+'Related table occurrences'"></h4>
             <div x-show="!isXRefCollapsed('related_tos')">
-              <template x-for="t in currentXRef.related_tos" :key="xrefName(t)">
+              <template x-for="t in currentXRef.related_tos" :key="xrefKey(t)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('TableOccurrenceCatalog',t)"
                    x-text="xrefName(t) + (t.via ? ' · via ' + t.via : '')"></a>
               </template>
@@ -1711,6 +1741,21 @@ document.addEventListener('alpine:init', () => {
     xrefName(xref_entry) {
       if (!xref_entry) return '';
       return typeof xref_entry === 'string' ? xref_entry : (xref_entry.name || '');
+    },
+
+    // Alpine's loop key must be unique within a list, and a DISPLAY NAME is not:
+    // FileMaker permits duplicate script and layout names, and a real export puts
+    // two of them in one xref group (measured in MicroK12_dev: nine such groups —
+    // seven field panels listing both `deprecated - Create New Box` scripts, one
+    // script listing both `Display Message` scripts, one table occurrence listing
+    // both `Dev_Shipments` layouts). Their ids already differ and navigateXRef
+    // already follows `id`, so this is render identity only — but two entries
+    // sharing a key is where Alpine drops or reuses a node. Keyed solely by `id`:
+    // concatenating the name would put mutable presentation back into identity.
+    xrefKey(xref_entry) {
+      if (!xref_entry) return '';
+      if (typeof xref_entry === 'string') return xref_entry;
+      return xref_entry.id || xref_entry.name || '';
     },
 
     navigateTo(section, item, fileKey=null) {

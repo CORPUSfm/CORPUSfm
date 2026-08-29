@@ -9,7 +9,18 @@ gitpython
 psutil
 pytest
 croniter
-fastmcp
+# Floor, not a pin: tests/test_oauth_version_contract.py requires the
+# AuthorizationCode.subject / AccessToken.subject|claims surfaces that landed in
+# 3.4.2, so the requirement is declared rather than left implicit.
+#
+# CORRECTED 2026-08-27: this comment first said "a fresh install without this
+# floor resolved to 3.3.1". That was wrong. The 3.3.1 measurement came from a
+# review run in the base Conda environment, which CLAUDE.md forbids — not from a
+# fresh resolve. The floor stays because declaring what a guard test needs is
+# right on its own terms, not because that incident showed the resolver drifting.
+# The installer repository owns the exact platform locks; this file is the
+# application's dependency input.
+fastmcp>=3.4.2
 pyinstaller
 cryptography
 defusedxml

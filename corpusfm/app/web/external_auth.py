@@ -129,6 +129,10 @@ def establish_session(request, user, *, auth_method: str) -> None:
     request.session["user_id"] = user.id
     request.session["issued_at"] = now
     request.session["seen"] = now
+    # One post-login opportunity to offer the waiting-update prompt (packet 1341). Consumed by the
+    # first authenticated shell load whether it shows or suppresses, so the prompt cannot reappear
+    # by navigating; the next REAL sign-in creates a new one.
+    request.session["update_prompt_opportunity"] = True
     from corpusfm.server import audit as _a
     _audit(_a.AUTH_SSO_LOGIN, user.username, {"auth_method": auth_method})
 

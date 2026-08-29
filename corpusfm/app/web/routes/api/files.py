@@ -258,22 +258,32 @@ def _jobs_by_file(server_ref: str = "local") -> dict[str, list]:
     return out
 
 
-def _discover_for_server(server_ref: str) -> set:
-    """The live hosted-file names for a server context (bare, no .fmp12). Local → the co-located Admin
-    API PKI (``discover_files``); a remote SERVER record → its fmsadmin Admin-API list (packet 1015).
-    Raises on failure (bad creds / unreachable / no PKI) so the caller can distinguish 'scan failed'
-    from 'host empty'."""
+def _discover_for_server(server_ref: str) -> dict:
+    """The live hosted-file INVENTORY for a server context, keyed by bare name (no .fmp12).
+
+    ``{name: closed}`` where ``closed`` is True / False / **None when FMS reported no runtime status**
+    (packet 1330). None is not closed: an absent status asserts nothing rather than painting a live
+    file gray. Local → the co-located Admin API PKI (``discover_files``); a remote SERVER record → its
+    fmsadmin Admin-API list (packet 1015). Raises on failure (bad creds / unreachable / no PKI) so the
+    caller can distinguish 'scan failed' from 'host empty'. One authenticate/list/logout either way —
+    no additional Admin API session."""
     if server_ref in ("", "local"):
         from corpusfm.server.file_discovery import discover_files
-        return {d.name for d in discover_files()}
+        return {d.name: d.closed for d in discover_files()}
     from corpusfm.server import remote_servers
-    from corpusfm.server.fms_client import list_admin_databases
+    from corpusfm.server.fms_client import list_admin_hosted_databases
     from corpusfm.server.file_discovery import strip_ext
     srv = remote_servers.get_server_by_id(server_ref)
     if srv is None:
         raise RuntimeError("Unknown remote server.")
-    return {strip_ext(n) for n in list_admin_databases(
-        srv.host, srv.account, srv.password, verify_ssl=srv.verify_ssl) if n}
+    inventory = {}
+    for rec in list_admin_hosted_databases(srv.host, srv.account, srv.password,
+                                           verify_ssl=srv.verify_ssl):
+        name = strip_ext(rec.filename)
+        if not name:
+            continue
+        inventory[name] = None if rec.open is None else (not rec.open)
+    return inventory
 
 
 def _base_file_rows(*, live: bool, server_ref: str = "local") -> "tuple[list[dict], str]":
@@ -283,9 +293,13 @@ def _base_file_rows(*, live: bool, server_ref: str = "local") -> "tuple[list[dic
     Admin API) unioned with the job-having files. is_self is a local-only, name-derived label."""
     from corpusfm.server.file_discovery import is_self_name
     is_local = server_ref in ("", "local")
-    names: dict[str, bool] = {}     # name -> missing
+    #: name -> (missing, closed). The two are INDEPENDENT facts, composed only on a successful live
+    #: scan: `missing` means a job target is absent from the inventory, `closed` means a present
+    #: record reported a non-open runtime status. A missing row is never also inferred closed, and a
+    #: page-load or failed-scan row asserts neither (packet 1330).
+    names: dict = {}
     for fn in _jobs_by_file(server_ref).keys():
-        names.setdefault(fn, False)   # page load: presence unknown → assume present (no Admin API)
+        names.setdefault(fn, (False, None))  # page load: presence unknown → assume present (no Admin API)
     err = ""
     if live:
         # Distinguish a scan that SUCCEEDED (even if it returned zero files → the host genuinely has
@@ -293,20 +307,22 @@ def _base_file_rows(*, live: bool, server_ref: str = "local") -> "tuple[list[dic
         # authoritative: a job-having file not in it is `missing`. A failed scan leaves status
         # unasserted (don't false-flag missing on a blip) but surfaces the reason to the user.
         scan_ok = False
-        discovered: set = set()
+        discovered: dict = {}
         try:
             discovered = _discover_for_server(server_ref)
             scan_ok = True     # a scan that RAN — even if it returned zero files (host genuinely empty)
         except Exception as exc:
             err = str(exc)     # bad fmsadmin creds / unreachable / no PKI — tell the user
         if scan_ok:
-            for n in discovered:
-                names[n] = False
+            for n, closed in discovered.items():
+                names[n] = (False, closed)
             for n in list(names):
-                names[n] = n not in discovered   # job-having file not hosted → missing (even if host empty)
+                if n not in discovered:
+                    names[n] = (True, None)   # not hosted → missing, and never also inferred closed
     rows = sorted(
-        ({"name": n, "missing": missing, "is_self": (is_local and is_self_name(n))}
-         for n, missing in names.items()),
+        ({"name": n, "missing": missing, "closed": bool(closed),
+          "is_self": (is_local and is_self_name(n))}
+         for n, (missing, closed) in names.items()),
         key=lambda r: r["name"].lower())
     return rows, err
 

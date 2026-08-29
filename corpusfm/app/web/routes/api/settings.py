@@ -458,8 +458,11 @@ async def save_external_address(request: Request) -> JSONResponse:
 
 @router.get("/settings/update-notice", dependencies=[Depends(require_auth)])
 def get_update_notice() -> JSONResponse:
-    """The post-update notice for THIS build if it hasn't been dismissed (packet 1062). Shows to every
-    authenticated user once after an update; the shell polls it. ``{}`` when there's nothing to show."""
+    """The post-update ACTION WARNING for THIS build if it hasn't been dismissed.
+
+    ``{}`` when there is nothing to warn about — which is most updates. Since packet 1359 the toast is
+    raised only when the crossed release window recommends re-ingestion, and it is NOT the durable
+    update narrative: that stays in About and in the `corpusfm update-notice` CLI."""
     from corpusfm.server import update_notice
     return JSONResponse(update_notice.current_notice() or {})
 
@@ -498,44 +501,150 @@ def check_update(refresh: bool = False) -> JSONResponse:
         from corpusfm.updater import RELEASES_PAGE_URL, _repo_root
 
         res = update_service.check(refresh=bool(refresh))
-        return JSONResponse({
-            "update_available": res.update_available,
-            "latest_version": res.target_version,
-            "current_version": res.current_version,
-            "current_head": res.current_head,
-            # The EXACT inspected target. It is what the browser must hand back as `expected_head`,
-            # because the elevated updater treats that value as the administrator's consent to one
-            # specific commit and refuses anything else.
-            "target_head": res.target_head,
-            "head_build_version": res.head_build_version,
-            "stamp_repair": res.stamp_repair,
-            "releases_url": RELEASES_PAGE_URL,
-            "checked": res.checked,
-            "error": res.error,
-            "error_class": res.error_class,   # "credentials" / "network" / "" — friendly-state selector
-            "error_detail": res.error_detail, # raw git tail; diagnostic only, not the primary UI message
-            "source": res.source,
-            "behind": res.behind,
-            "schema_change": res.schema_change,
-            "installer_change": res.installer_change,
-            "installer_reason": res.installer_reason,
-            "repo_dir": str(_repo_root()),
-            # Installer ownership lives outside this checkout. This is an operator handoff,
-            # never a path to retired application-side installer sources.
-            "upgrade_command": _upgrade_command(),
-            # Additive (packet 1251): how this result was obtained, and whether the checkout has
-            # diverged from origin/main — which is a refusal, not an available update.
-            "observation": res.observation,
-            "diverged": res.diverged,
-        })
+        return JSONResponse(_update_projection(res))
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+def _update_projection(res) -> dict:
+    """The ONE mapping of an update-service result to a JSON body (packet 1341).
+
+    `/settings/check-update` and `/settings/update-prompt` both project the same result. Factored so
+    they cannot disagree about `target_head`, `schema_change`, `installer_change` or the installer
+    guidance — a prompt that showed a different target from the page that applies it would be worse
+    than no prompt.
+    """
+    from corpusfm.updater import RELEASES_PAGE_URL, _repo_root
+    return {
+        "update_available": res.update_available,
+        "latest_version": res.target_version,
+        "current_version": res.current_version,
+        "current_head": res.current_head,
+        # The EXACT inspected target. It is what the browser must hand back as `expected_head`,
+        # because the elevated updater treats that value as the administrator's consent to one
+        # specific commit and refuses anything else.
+        "target_head": res.target_head,
+        "head_build_version": res.head_build_version,
+        "stamp_repair": res.stamp_repair,
+        "releases_url": RELEASES_PAGE_URL,
+        "checked": res.checked,
+        "error": res.error,
+        "error_class": res.error_class,   # "credentials" / "network" / "" — friendly-state selector
+        "error_detail": res.error_detail, # raw git tail; diagnostic only, not the primary UI message
+        "source": res.source,
+        "behind": res.behind,
+        "schema_change": res.schema_change,
+        "installer_change": res.installer_change,
+        "installer_reason": res.installer_reason,
+        "repo_dir": str(_repo_root()),
+        # Installer ownership lives outside this checkout. This is an operator handoff,
+        # never a path to retired application-side installer sources.
+        "upgrade_command": _upgrade_command(),
+        # Additive (packet 1251): how this result was obtained, and whether the checkout has
+        # diverged from origin/main — which is a refusal, not an available update.
+        "observation": res.observation,
+        "diverged": res.diverged,
+    }
 
 
 def _upgrade_command() -> str:
     """The canonical handoff for work the code-only updater cannot perform."""
     from corpusfm.server.update_service import operator_command
     return operator_command()
+
+
+
+@router.get("/settings/update-prompt", dependencies=_ADMIN)
+def update_prompt(request: Request) -> JSONResponse:
+    """Should this administrator be shown the waiting-update pop-over? (packet 1341)
+
+    PASSIVE: it delegates to `update_service.check(refresh=False)` — the same classification of refs
+    already on disk that the sidebar poll uses — and never triggers the privileged observation. The
+    two-hour `UpdateObserver` clock and the explicit *Check for updates* button are untouched.
+
+    Admin shells populate the update badge from THIS response rather than making a second check.
+    """
+    from corpusfm.app.web import update_prompt as policy
+    from corpusfm.app.web import users as users_mod
+    from corpusfm.app.web.auth import current_user
+    from corpusfm.server import update_service
+
+    # Consume the one opportunity FIRST. It is spent by this shell load whether the prompt shows,
+    # suppresses, or the check itself fails — an error path that left it unconsumed handed the same
+    # sign-in another chance to prompt (Codex review, 2026-08-26).
+    opportunity = bool(request.session.pop("update_prompt_opportunity", False))
+    try:
+        res = update_service.check(refresh=False)
+        projection = _update_projection(res)
+    except Exception as exc:
+        return JSONResponse({"show": False, "reason": "error", "error": str(exc)}, status_code=500)
+
+    u = current_user(request)
+
+    skipped = ""
+    if u is not None:
+        try:
+            skipped = users_mod.skipped_update_head(u.id)
+        except Exception:
+            skipped = ""
+
+    reason = policy.decide(
+        is_admin=bool(u is not None and u.has_gate("settings")),
+        update_available=bool(projection.get("update_available")),
+        target_head=str(projection.get("target_head") or ""),
+        skipped_head=skipped,
+        opportunity=opportunity,
+        acknowledged_1326=policy.initial_prompt_outstanding(),
+        busy=policy.restart_sensitive_work(),
+    )
+    body = dict(projection)
+    body["show"] = reason == policy.SHOW
+    body["reason"] = reason
+    body["installer_required"] = policy.installer_required(projection)
+    return JSONResponse(body)
+
+
+@router.post("/settings/update-prompt/skip", dependencies=_ADMIN)
+async def skip_update_prompt(request: Request) -> JSONResponse:
+    """Record that this administrator skipped THIS update (packet 1341).
+
+    Writes only when the displayed head is still the waiting target — a moved or absent target writes
+    nothing and says so, so a skip can never silence a different update. Storage uncertainty keeps the
+    pop-over open with an error rather than reporting a skip it did not persist.
+    """
+    from corpusfm.app.web import users as users_mod
+    from corpusfm.app.web.auth import current_user
+    from corpusfm.server import update_service
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    claimed = str((body or {}).get("expected_head") or "").strip()
+    if not claimed:
+        return JSONResponse({"ok": False, "error": "expected_head is required."}, status_code=400)
+
+    try:
+        res = update_service.check(refresh=False)          # a FRESH passive classification
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    if not res.update_available or not res.target_head:
+        return JSONResponse({"ok": False, "reason": "no_update",
+                             "error": "There is no waiting update to skip."}, status_code=409)
+    if res.target_head != claimed:
+        return JSONResponse({"ok": False, "reason": "target_changed",
+                             "error": "The waiting update changed while the prompt was open. "
+                                      "Nothing was skipped."}, status_code=409)
+
+    u = current_user(request)
+    if u is None:
+        return JSONResponse({"ok": False, "error": "Not authenticated."}, status_code=401)
+    try:
+        users_mod.set_skipped_update_head(u.id, claimed)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"The skip could not be saved: {exc}"},
+                            status_code=503)
+    return JSONResponse({"ok": True, "skipped_head": claimed})
 
 
 @router.post("/settings/apply-update", dependencies=_ADMIN)
@@ -582,6 +691,19 @@ def apply_update(request: Request) -> JSONResponse:
     # resolved tip differs. This route performs no update (packet 1246-03-03); it triggers the fixed
     # elevated operation and reports what root recorded.
     expected_head = (request.query_params.get("expected_head") or "").strip() or None
+    # Work-in-flight preflight (packet 1341), immediately before delegation. This is the packet's
+    # required CLICK-TIME recheck, not a new apply mechanism and not a queue drain: work that starts
+    # after this instant is outside the exclusion contract. The exact-head consent pin below remains
+    # the authority on the target race.
+    from corpusfm.app.web import update_prompt as _policy
+    _busy = _policy.restart_sensitive_work()
+    if _busy is None or _busy:
+        return JSONResponse(
+            {"ok": False, "reason": "work_in_flight",
+             "error": ("A queue worker is holding a record right now, so a restart would interrupt it. "
+                       "Try again in a moment." if _busy else
+                       "Whether work is in flight could not be determined, so the update was not "
+                       "started.")}, status_code=409)
     try:
         r = update_service.apply(expected_head=expected_head, actor=actor)
         if r.ok:

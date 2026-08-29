@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from corpusfm.core.identity import (UUID_KIND, identity_key, owner_identity,
+                                    owner_identity_from_xml)
 from corpusfm.formula import analyze
 
 if TYPE_CHECKING:
@@ -95,6 +97,190 @@ _LOOP_MARK = "(loop)"
 # Navigation steps that move to a layout → fire the destination's OnLayoutEnter
 # trigger (the basis for trigger cascades: a hidden workflow continuation).
 _NAV_STEPS = frozenset({"Go to Layout", "Go to Related Record", "New Window"})
+
+#: Destinations FileMaker resolves at runtime. A step naming one of these has a real destination that
+#: this catalog cannot know, so no target is invented — it becomes a bounded diagnostic instead.
+#: FileMaker serialises the mode two ways and `_container_mode` reads both: as a `type` attribute on the
+#: `LayoutReferenceContainer`, and as a `<Label>` child with no `type` at all. Reading only the first is
+#: what left 417 steps reporting no navigation and no limit (packet 1357).
+_ORIGINAL_LAYOUT_MODES = frozenset({"original layout", "current layout", "original", "current"})
+_CALCULATED_LAYOUT_MODES = frozenset({"calculation", "calculated", "layout name by calculation",
+                                      "layout number by calculation"})
+
+#: Which modes make a step's LAYOUT destination unknowable, per step. The label is NOT uniformly
+#: dynamic, and treating it that way would have been the mirror of the defect it fixes:
+#:   * `Go to Layout` / `New Window` — "original layout" IS the destination, chosen at runtime;
+#:   * `Go to Related Record` — "original layout" means the layout does not change, so the destination
+#:     is known. Only a genuinely calculated layout is unknowable there.
+#: `Go to List of Records` is absent from `_NAV_STEPS` and so never reaches here; its value-1 mode is
+#: already encoded by the emitter as `CurrentLayout`.
+_DYNAMIC_LAYOUT_MODES_BY_STEP = {
+    "Go to Layout":         _ORIGINAL_LAYOUT_MODES | _CALCULATED_LAYOUT_MODES,
+    "New Window":           _ORIGINAL_LAYOUT_MODES | _CALCULATED_LAYOUT_MODES,
+    "Go to Related Record": _CALCULATED_LAYOUT_MODES,
+}
+
+
+def _container_mode(container) -> str:
+    """What ONE `<LayoutReferenceContainer>` says its destination is.
+
+    Returns the mode as FileMaker words it — `"original layout"`, `"calculated"`, … — or `""` when the
+    container names a layout outright or says nothing at all. Structural, in this order: a named layout
+    wins; then the `type` attribute; then the direct `<Label>`; then a `<Calculation>` INSIDE this
+    container, which is a computed destination however it is labelled.
+    """
+    if container.find("LayoutReference") is not None:
+        return ""
+    token = (container.get("type") or "").strip().lower()
+    if not token:
+        label = container.find("Label")
+        token = (label.text or "").strip().lower() if label is not None and label.text else ""
+    if token == "layoutreference":
+        return ""
+    if token in _ORIGINAL_LAYOUT_MODES or token in _CALCULATED_LAYOUT_MODES:
+        return token
+    # A DIRECT child only. Measured across the corpus, a container holds exactly one of
+    # `<Calculation>`, `<Label>`, `<LayoutReference>` or nothing — a window name's calculation is a
+    # sibling of this container, not inside it, and must not be read as a computed layout.
+    return "calculated" if container.find("Calculation") is not None else ""
+
+
+def _mine_layout_navigation(els, xml_key, lname, layout_uuid, id_index, context_tos, navigates_tos,
+                            dynamic_nav, navigates_layouts, navigated_by,
+                            nav_details, ctx_details, to_details) -> None:
+    """Navigation embedded in ONE layout's objects (packet 1340).
+
+    `els` is every projection of that one layout — its authoritative AddAction body first,
+    then any supplemental ModifyAction projections (packet 1353). They are mined together,
+    under one set of de-duplication sets, because they describe the same layout: mining
+    them in separate calls emitted every shared destination twice.
+
+    SEMANTIC, from `<Step>` elements — never by harvesting every descendant reference tag. That
+    boundary is what keeps the layout's OWN header `<LayoutReference>` out: it is not inside a Step,
+    so it is never examined as navigation and no layout self-references through it.
+
+    The five reachability maps are name- or UUID-keyed and retain destinations only, so they cannot
+    say which Step produced an edge or which of two same-named layouts produced it. The three detail
+    lists (packet 1347) carry the exact source `xml_key` and the Step name alongside, so the
+    ingestion pipeline can project these edges without re-parsing layout XML into a second miner.
+    """
+    seen_l: set = set()
+    seen_t: set = set()
+    seen_d: set = set()
+    seen_detail: set = set()
+    seen_ctx: set = set()
+    for el in els:
+        ctx = el.find("TableOccurrenceReference")          # direct child = show-records-from
+        if ctx is not None and ctx.get("name") and ctx.get("name") not in seen_ctx:
+            seen_ctx.add(ctx.get("name"))
+            context_tos[lname] = [ctx.get("name")]
+            ctx_details.append([xml_key, ctx.get("name"), ctx.get("UUID", ""), ctx.get("id", "")])
+        for step in el.iter("Step"):
+            nav = step_navigation(step)
+            step_name = step.get("name") or "?"
+            if nav["dynamic"]:
+                if step_name not in seen_d:
+                    seen_d.add(step_name)
+                    dynamic_nav[lname].append(step_name)
+            for to_uuid, to_id, to_name in nav["tos"]:
+                if to_name not in seen_t:
+                    seen_t.add(to_name)
+                    navigates_tos[lname].append(to_name)
+                key = ("to", to_uuid or to_id or to_name, step_name)
+                if key not in seen_detail:
+                    seen_detail.add(key)
+                    to_details.append([xml_key, to_name, step_name, to_uuid, to_id])
+            if not layout_uuid:
+                continue                                   # no identity → no reachability claim
+            for target_uuid, target_id, target_name in nav["layouts"]:
+                # UUID, else the offered id through the catalog — never the display name.
+                # A name match here made the REACHABILITY map disagree with the emitted
+                # edge: a name-only reference marked its destination live while producing
+                # no record, and an id-only reference produced the record while leaving
+                # the destination dead (Codex confirmation of packet 1349).
+                resolved = target_uuid or (id_index.get(target_id) or "" if target_id else "")
+                # A self-loop must never rescue an otherwise unreachable layout, even from an explicit
+                # button. Excluded from the REACHABILITY indexes, not merely deduplicated.
+                if resolved and resolved != layout_uuid and resolved not in seen_l:
+                    seen_l.add(resolved)
+                    navigates_layouts[layout_uuid].append(resolved)
+                    navigated_by[resolved].append(layout_uuid)
+                # The DETAIL keeps whatever the reference offered, including a bare id.
+                # Discarding it left the empty-UUID/id route working for script navigation
+                # and not for layout-embedded navigation (Codex review of packet 1349).
+                if not (target_uuid or target_id) or resolved == layout_uuid:
+                    continue
+                key = ("layout", target_uuid or f"id:{target_id}", step_name)
+                if key not in seen_detail:
+                    seen_detail.add(key)
+                    nav_details.append([xml_key, layout_uuid, target_uuid, target_name,
+                                        step_name, target_id])
+
+
+def step_navigation(step) -> dict:
+    """What ONE `<Step>` navigates to. Pure; shared by the script scan and the layout scan.
+
+    Returns ``{"layouts": [(uuid, id, name)], "tos": [(uuid, id, name)], "dynamic": bool}``.
+    Identities travel with the destination so a caller never has to re-derive one
+    from a display name (packet 1349).
+
+    Two rules that look like details and are not:
+
+    * a `TableOccurrenceReference` **nested inside a `FieldReference`** describes the step's OPERAND
+      field, not the destination — harvesting it would call a field's own context a navigation target;
+    * a computed / original / current destination invents nothing. `dynamic` is set so a caller can
+      report the limit honestly rather than silently returning an empty answer — and it is set
+      PER STEP (`_DYNAMIC_LAYOUT_MODES_BY_STEP`), because "original layout" means the destination is
+      chosen at runtime for a Go to Layout and means the layout does not change for a Go to Related
+      Record.
+    """
+    if (step.get("name") or "") not in _NAV_STEPS:
+        return {"layouts": [], "tos": [], "dynamic": False}
+
+    layouts, tos, seen_l, seen_t = [], [], set(), set()
+    for lr in step.iter("LayoutReference"):
+        uuid, ref_id, name = lr.get("UUID", ""), lr.get("id", ""), lr.get("name", "")
+        # `id` counts toward identity: FileMaker blanks BOTH the UUID and the name on
+        # a reference it cannot resolve itself, and keying on `uuid or name` dropped
+        # those before any caller saw them.
+        key = uuid or ref_id or name
+        if key and key not in seen_l:
+            seen_l.add(key)
+            layouts.append((uuid, ref_id, name))
+
+    field_to_ids = {id(t) for fr in step.iter("FieldReference")
+                    for t in fr.iter("TableOccurrenceReference")}
+    for tr in step.iter("TableOccurrenceReference"):
+        if id(tr) in field_to_ids:
+            continue
+        tname = tr.get("name", "")
+        tkey = tr.get("UUID", "") or tr.get("id", "") or tname
+        if tkey and tkey not in seen_t:
+            seen_t.add(tkey)
+            tos.append((tr.get("UUID", ""), tr.get("id", ""), tname))
+
+    # The blanket "any Calculation anywhere in an otherwise empty step" fallback is retired: a New
+    # Window's name or bound calculation is not evidence that its LAYOUT destination is computed.
+    modes = _DYNAMIC_LAYOUT_MODES_BY_STEP.get(step.get("name") or "", frozenset())
+    dynamic = any(_container_mode(c) in modes for c in step.iter("LayoutReferenceContainer"))
+    return {"layouts": layouts, "tos": tos, "dynamic": dynamic}
+
+
+def _layout_nav_projections(result, xml_key: str, layout_uuid: str) -> list:
+    """The supplemental ModifyAction projections belonging to ONE layout entry.
+
+    Keyed by the identity the projection asserted, which is the body's identity — so a
+    projection reaches the layout it names and no other, even where two layouts share a
+    display name (packet 1353).
+    """
+    nav = getattr(result, "layout_nav_xml", None)
+    if not nav:
+        return []
+    if layout_uuid:
+        return nav.get(f"{UUID_KIND}:{layout_uuid}", [])
+    body = (result.section_xml or {}).get("LayoutCatalog", {}).get(xml_key, "")
+    ident = owner_identity_from_xml("LayoutCatalog", body)
+    return nav.get(identity_key(ident), []) if ident is not None else []
 
 
 def _first_calc_text(el) -> str:
@@ -193,6 +379,23 @@ class XRefGraph:
     script_uses_layout_uuids: dict = dc_field(default_factory=dict)      # script_UUID → [layout_UUIDs]
     layout_used_in_script_uuids: dict = dc_field(default_factory=dict)   # layout_UUID → [script_UUIDs]
 
+    # Layout → layout / TO, mined SEMANTICALLY from navigation Steps embedded in layout objects
+    # (a button's Go to Layout / Go to Related Record). Packet 1340: the same step inside a SCRIPT was
+    # already an edge, so a layout reachable only from a button looked unreferenced to dead-end
+    # analysis. Context and motion are kept apart — a layout's own show-records-from TO is not a
+    # navigation destination.
+    layout_navigates_layout_uuids: dict = dc_field(default_factory=dict)    # src layout_UUID → [target UUIDs]
+    layout_navigated_by_layout_uuids: dict = dc_field(default_factory=dict) # target UUID → [src layout_UUIDs]
+    layout_context_tos: dict = dc_field(default_factory=dict)               # layout name → [its header TO]
+    layout_navigates_tos: dict = dc_field(default_factory=dict)             # layout name → [TOs it navigates to]
+    layout_dynamic_navigation: dict = dc_field(default_factory=dict)        # layout name → [step names]
+    # Packet 1347 — the same navigation, with the provenance the maps above discard: the exact
+    # source layout xml_key (a display name can name several layouts) and the Step that produced
+    # the edge. The ingestion pipeline projects XRefRecords from these, not from the maps.
+    layout_navigation_details: list = dc_field(default_factory=list)   # [src_key, src_uuid, tgt_uuid, tgt_name, step, tgt_id]
+    layout_context_details: list = dc_field(default_factory=list)      # [src_key, to_name, to_uuid, to_id]
+    layout_to_navigation_details: list = dc_field(default_factory=list)  # [src_key, to_name, step, to_uuid, to_id]
+
     # Layout → script (ScriptTrigger events and button actions in LayoutCatalog XML)
     layout_triggers_script_uuids: dict = dc_field(default_factory=dict)       # layout_UUID → [script_UUIDs]
     script_triggered_by_layout_uuids: dict = dc_field(default_factory=dict)   # script_UUID → [layout_UUIDs]
@@ -204,6 +407,9 @@ class XRefGraph:
     cf_calls_cf: dict = dc_field(default_factory=dict)                  # cf_name → [cf names it calls]
     cf_called_by_cf: dict = dc_field(default_factory=dict)              # cf_name → [cf names that call it]
     relationship_uses_field: dict = dc_field(default_factory=dict)      # rel_name → ["TO::Field", ...]
+    # Packet 1349 correction — the same join predicates with the identities the map
+    # above discards, so the artifact projects them without a name match.
+    relationship_join_details: list = dc_field(default_factory=list)
     field_used_in_relationships: dict = dc_field(default_factory=dict)  # "TO::Field" → [rel_names]
 
     # ── Layout UUID reverse indexes (Phase 3) ─────────────────────────────────
@@ -218,7 +424,18 @@ class XRefGraph:
     # references to a VL UUID from exactly one XML source type.
     vl_used_in_field_uuids: dict = dc_field(default_factory=dict)        # vl_UUID → [field_UUIDs] (validation)
     vl_used_in_relationship_ids: dict = dc_field(default_factory=dict)   # vl_UUID → [rel_xml_keys] (portal sort)
-    vl_used_in_script_names: dict = dc_field(default_factory=dict)       # vl_UUID → [script_names] (sort steps)
+    vl_used_in_script_names: dict = dc_field(default_factory=dict)       # vl_UUID → ["uuid:…"/"id:…"/"name:…"]
+
+    # Packet 1358-C. The four maps above are keyed by the target's UUID, so a value list
+    # referenced by ID ALONE reaches none of them and the artifact loses the edge — while
+    # dead-end analysis, which already resolves UUID-or-id, still calls that value list
+    # live. The two layers then disagreed about one structured reference. These records
+    # carry what a map cannot: the SOURCE's section and identity, the target's offered
+    # identity, and the edge kind, so the projection resolves each end by identity and
+    # emits exactly one edge. One flat, ordered, JSON-round-trippable list; the artifact
+    # projection reads THIS, never the name- or UUID-keyed maps.
+    #   {kind, src_section, src_uuid, src_id, src_key, uuid, id, name}
+    value_list_edge_details: list = dc_field(default_factory=list)
 
     # ── Layout formula indexes (Phase 3, name-keyed) ──────────────────────────
     # Derived by running the formula parser on every <Calculation><Text> slot in
@@ -284,6 +501,29 @@ class XRefGraph:
     # shows — it is the related-record table occurrence the user ends up in.
     script_navigates_tos: dict = dc_field(default_factory=dict)  # script → [TO names]
 
+    # Packet 1349-C2 — the same script edges with the identities the maps above
+    # discard. Every record carries the SOURCE script's UUID and, for a structured
+    # target, the UUID/id the reference offered. `kind` says how the target may be
+    # matched: "uuid" for a structured reference, "formula-name" where FileMaker
+    # supplies only text, "dynamic" for a destination it computes at runtime.
+    # One flat, ordered, JSON-round-trippable list; the artifact projection reads
+    # THIS, never the name-keyed maps.
+    script_edge_details: list = dc_field(default_factory=list)
+
+    # ── id-keyed reachability (packet 1348) ───────────────────────────────────
+    # A structured reference that offers NO UUID may still name its target by id
+    # — measured in an FM 2026 FMDeveloperTool export, where ten
+    # `<LayoutReference UUID="" id="4">` elements inside script steps produced no
+    # edge at all. These indexes are the id half of "UUID, else id, never name";
+    # a reference that DOES carry a UUID never reaches them, because an id
+    # belonging to a different object is a wrong answer, not a weaker one.
+    # Fields are deliberately absent: a field id is unique only within its base
+    # table, so an id route for fields needs a resolved table context first.
+    script_called_by_ids: dict = dc_field(default_factory=dict)          # script id → [caller UUIDs]
+    layout_used_in_script_ids: dict = dc_field(default_factory=dict)     # layout id → [script UUIDs]
+    script_triggered_by_layout_ids: dict = dc_field(default_factory=dict)  # script id → [layout UUIDs]
+    value_list_used_in_field_ids: dict = dc_field(default_factory=dict)  # VL id → [source keys]
+
     def to_dict(self) -> dict:
         import dataclasses
         return dataclasses.asdict(self)
@@ -307,10 +547,43 @@ _UUID_CATALOG_SECTIONS: tuple[str, ...] = (
 )
 
 
-def _extract_item_uuid(el: ET.Element) -> str:
-    """Return the FM UUID from a catalog item's <UUID> child element, or ''."""
-    uuid_el = el.find("UUID")
-    return uuid_el.text.strip() if uuid_el is not None and uuid_el.text else ""
+def _script_fragments(result: "ParseResult") -> list:
+    """Every StepsForScripts fragment as (owner UUID, owner id, owner name, xml).
+
+    `ParseResult.step_xml` is keyed by display name and FM permits duplicates, so it
+    drops a twin's body and mis-attributes the survivor. Every fragment carries an
+    owner <ScriptReference> with a UUID, so the identity view is complete; the name
+    is read back off that same reference. Falls back to the name view for a parse
+    that produced no identity view at all.
+    """
+    by_identity = getattr(result, "step_xml_by_identity", None) or {}
+    if not by_identity:
+        return [("", "", name, xml) for name, xml in (result.step_xml or {}).items()]
+    out = []
+    for key, xml_str in by_identity.items():
+        uuid = key.split(":", 1)[1] if key.startswith(f"{UUID_KIND}:") else ""
+        name = ref_id = ""
+        try:
+            ref = ET.fromstring(xml_str).find("ScriptReference")
+            if ref is not None:
+                name, ref_id = ref.get("name", ""), ref.get("id", "")
+        except ET.ParseError:
+            pass
+        out.append((uuid, ref_id, name, xml_str))
+    return out
+
+
+def _extract_item_uuid(el: ET.Element, section: str = "") -> str:
+    """Return the FM UUID a catalog item asserts, or ''.
+
+    Delegates to the identity resolver so the ModifyAction fragment form — no root
+    `name`, identity on a direct child owner reference — is seen. Before packet
+    1348 those fragments returned '' and dropped out of every UUID-keyed index:
+    165 layouts across two real exports, contributing no reachability edges and
+    skipped entirely by dead-end analysis.
+    """
+    identity = owner_identity(section, el)
+    return identity.value if identity is not None and identity.kind == UUID_KIND else ""
 
 
 def _build_uuid_indexes(
@@ -339,10 +612,10 @@ def _build_uuid_indexes(
                 el = ET.fromstring(xml_str)
             except ET.ParseError:
                 continue
-            uuid = _extract_item_uuid(el)
+            uuid = _extract_item_uuid(el, section)
             if not uuid:
                 continue
-            name = el.get("name") or xml_key
+            name = el.get("name") or _display_name(xml_key)
             uuid_to_name[uuid] = name
             section_map[xml_key] = uuid
         if section_map:
@@ -358,7 +631,7 @@ def _build_uuid_indexes(
             el = ET.fromstring(xml_str)
         except ET.ParseError:
             continue
-        uuid = _extract_item_uuid(el)
+        uuid = _extract_item_uuid(el, "FieldsForTables")
         if not uuid:
             continue
         uuid_to_name[uuid] = xml_key   # "BaseTable::FieldName" for display
@@ -393,12 +666,21 @@ def _build_uuid_reverse_indexes(
     field_used_in_script_uuids: dict[str, list[str]] = defaultdict(list)
     script_uses_layout_uuids:   dict[str, list[str]] = defaultdict(list)
     layout_used_in_script_uuids: dict[str, list[str]] = defaultdict(list)
+    # id-keyed halves (packet 1348) — filled only when a reference offers no UUID.
+    script_called_by_ids:        dict[str, list[str]] = defaultdict(list)
+    layout_used_in_script_ids:   dict[str, list[str]] = defaultdict(list)
 
     # ── Step XML: script→script, script→field, script→layout ─────────────────
-    for xml_key, xml_str in (result.step_xml or {}).items():
-        source_uuid = script_uuids.get(xml_key, "")
-        if not source_uuid or not xml_str:
+    # The source is only the LABEL on these edges; the reverse indexes below are
+    # keyed on the TARGET's identity and are read by their keys alone. Gating the
+    # whole scan on the source carrying a UUID therefore discarded every edge out
+    # of a UUID-less script — including the target's own inbound evidence.
+    for source_uuid, _source_id, script_name, xml_str in _script_fragments(result):
+        if not xml_str:
             continue
+        if not source_uuid:
+            source_uuid = script_uuids.get(script_name, "")
+        source_label = source_uuid or script_name
         try:
             el = ET.fromstring(xml_str)
         except ET.ParseError:
@@ -407,71 +689,162 @@ def _build_uuid_reverse_indexes(
         seen_scripts: set[str] = set()
         seen_fields:  set[str] = set()
         seen_layouts: set[str] = set()
+        seen_script_ids: set[str] = set()
+        seen_layout_ids: set[str] = set()
 
         for step in el.iter("Step"):
             if step.get("name", "") in _SCRIPT_REF_STEPS:
                 for ref in step.iter("ScriptReference"):
                     called_uuid = ref.get("UUID", "")
-                    if called_uuid and called_uuid not in seen_scripts:
-                        seen_scripts.add(called_uuid)
-                        script_calls_uuids[source_uuid].append(called_uuid)
-                        script_called_by_uuids[called_uuid].append(source_uuid)
+                    if called_uuid:
+                        if called_uuid not in seen_scripts:
+                            seen_scripts.add(called_uuid)
+                            if source_uuid:
+                                script_calls_uuids[source_uuid].append(called_uuid)
+                            script_called_by_uuids[called_uuid].append(source_label)
+                        continue
+                    called_id = (ref.get("id") or "").strip()
+                    if called_id and called_id not in seen_script_ids:
+                        seen_script_ids.add(called_id)
+                        script_called_by_ids[called_id].append(source_label)
 
             for ref in step.iter("FieldReference"):
                 field_uuid = ref.get("UUID", "")
                 if field_uuid and field_uuid not in seen_fields:
                     seen_fields.add(field_uuid)
-                    script_uses_field_uuids[source_uuid].append(field_uuid)
-                    field_used_in_script_uuids[field_uuid].append(source_uuid)
+                    if source_uuid:
+                        script_uses_field_uuids[source_uuid].append(field_uuid)
+                    field_used_in_script_uuids[field_uuid].append(source_label)
 
             for ref in step.iter("LayoutReference"):
                 layout_uuid = ref.get("UUID", "")
-                if layout_uuid and layout_uuid not in seen_layouts:
-                    seen_layouts.add(layout_uuid)
-                    script_uses_layout_uuids[source_uuid].append(layout_uuid)
-                    layout_used_in_script_uuids[layout_uuid].append(source_uuid)
+                if layout_uuid:
+                    if layout_uuid not in seen_layouts:
+                        seen_layouts.add(layout_uuid)
+                        if source_uuid:
+                            script_uses_layout_uuids[source_uuid].append(layout_uuid)
+                        layout_used_in_script_uuids[layout_uuid].append(source_label)
+                    continue
+                layout_id = (ref.get("id") or "").strip()
+                if layout_id and layout_id not in seen_layout_ids:
+                    seen_layout_ids.add(layout_id)
+                    layout_used_in_script_ids[layout_id].append(source_label)
 
     # ── Layout catalog: layout→script, layout→field, layout→VL ──────────────────
     layout_triggers_script_uuids:     dict[str, list[str]] = defaultdict(list)
     script_triggered_by_layout_uuids: dict[str, list[str]] = defaultdict(list)
+    script_triggered_by_layout_ids:   dict[str, list[str]] = defaultdict(list)
     layout_uses_field_uuids:          dict[str, list[str]] = defaultdict(list)
     field_used_in_layout_uuids:       dict[str, list[str]] = defaultdict(list)
     layout_uses_vl_uuids:             dict[str, list[str]] = defaultdict(list)
     vl_used_in_layout_uuids:          dict[str, list[str]] = defaultdict(list)
+    layout_navigates_layout_uuids:    dict[str, list[str]] = defaultdict(list)
+    layout_navigated_by_layout_uuids: dict[str, list[str]] = defaultdict(list)
+    layout_context_tos:               dict[str, list[str]] = defaultdict(list)
+    layout_navigates_tos:             dict[str, list[str]] = defaultdict(list)
+    layout_dynamic_navigation:        dict[str, list[str]] = defaultdict(list)
+    layout_navigation_details:        list = []
+    layout_context_details:           list = []
+    layout_to_navigation_details:     list = []
+    #: name → uuid, used ONLY when a reference carries no UUID. A duplicate display name resolves to
+    #: nothing rather than to a guess — an ambiguous target is not a target.
+    #: layout catalog id → the UUIDs claiming it. Repeated fragments of ONE logical
+    #: layout share its id as well as its UUID, so an id is ambiguous only when
+    #: DISTINCT objects claim it — the same rule CatalogIndex applies. Collapsing on
+    #: the second occurrence marked a coalesced destination dead while its edge was
+    #: emitted correctly (Codex confirmation round 2).
+    _layout_ids: dict = {}
+    for xml_key, xml_str in (result.section_xml or {}).get("LayoutCatalog", {}).items():
+        uuid = layout_uuids.get(xml_key, "")
+        if not uuid:
+            continue
+        try:
+            own_id = (ET.fromstring(xml_str).get("id") or "").strip()
+        except ET.ParseError:
+            own_id = ""
+        if own_id:
+            _layout_ids.setdefault(own_id, set()).add(uuid)
+    layout_id_to_uuid = {i: next(iter(u)) for i, u in _layout_ids.items() if len(u) == 1}
+    #: identities whose supplemental projections have been mined. One logical layout may
+    #: hold TWO catalog keys (FileMaker projects a rename that way), and its projections
+    #: belong to the object, not to each key — mining them per key would double every
+    #: edge they contribute.
+    _mined_projections: set = set()
 
     for xml_key, xml_str in (result.section_xml or {}).get("LayoutCatalog", {}).items():
         layout_uuid = layout_uuids.get(xml_key, "")
-        if not layout_uuid or not xml_str:
+        if not xml_str:
             continue
         try:
             el = ET.fromstring(xml_str)
         except ET.ParseError:
             continue
 
+        # The NAME-keyed navigation surfaces do not need a UUID and must not be gated on one
+        # (packet 1340). Measured: a real customer layout carries its UUID only as an attribute on
+        # its header `<LayoutReference>`, with no `<UUID>` child — so the UUID guard skipped it
+        # entirely, and the layout the developer reported produced nothing at all. The UUID-keyed
+        # reachability edges below still require one, because a reachability claim without an
+        # identity is not a claim.
+        # The body first, then this layout's supplemental ModifyAction projections
+        # (packet 1353) — one call, so a destination both carry is emitted once and every
+        # edge attributes to the same source key. Measured: the projections add no
+        # destination the body lacks; what they add is the runtime-computed destination
+        # the body serialises in a form the dynamic test does not read. Mined against the
+        # first key claiming the identity, because one logical layout may hold two keys.
+        nav_ident = layout_uuid or xml_key
+        projections = ([] if nav_ident in _mined_projections
+                       else _layout_nav_projections(result, xml_key, layout_uuid))
+        _mined_projections.add(nav_ident)
+        els = [el]
+        for nav_xml in projections:
+            try:
+                els.append(ET.fromstring(nav_xml))
+            except ET.ParseError:
+                continue
+
+        _mine_layout_navigation(
+            els, xml_key, _display_name(xml_key), layout_uuid, layout_id_to_uuid,
+            layout_context_tos, layout_navigates_tos, layout_dynamic_navigation,
+            layout_navigates_layout_uuids, layout_navigated_by_layout_uuids,
+            layout_navigation_details, layout_context_details, layout_to_navigation_details)
+
+        layout_label = layout_uuid or xml_key
+
         seen_scripts: set[str] = set()
         seen_fields:  set[str] = set()
         seen_vls:     set[str] = set()
 
+        seen_script_ids: set[str] = set()
         for ref in el.iter("ScriptReference"):
             script_uuid = ref.get("UUID", "")
-            if script_uuid and script_uuid not in seen_scripts:
-                seen_scripts.add(script_uuid)
-                layout_triggers_script_uuids[layout_uuid].append(script_uuid)
-                script_triggered_by_layout_uuids[script_uuid].append(layout_uuid)
+            if script_uuid:
+                if script_uuid not in seen_scripts:
+                    seen_scripts.add(script_uuid)
+                    if layout_uuid:
+                        layout_triggers_script_uuids[layout_uuid].append(script_uuid)
+                    script_triggered_by_layout_uuids[script_uuid].append(layout_label)
+                continue
+            script_id = (ref.get("id") or "").strip()
+            if script_id and script_id not in seen_script_ids:
+                seen_script_ids.add(script_id)
+                script_triggered_by_layout_ids[script_id].append(layout_label)
 
         for ref in el.iter("FieldReference"):
             field_uuid = ref.get("UUID", "")
             if field_uuid and field_uuid not in seen_fields:
                 seen_fields.add(field_uuid)
-                layout_uses_field_uuids[layout_uuid].append(field_uuid)
-                field_used_in_layout_uuids[field_uuid].append(layout_uuid)
+                if layout_uuid:
+                    layout_uses_field_uuids[layout_uuid].append(field_uuid)
+                field_used_in_layout_uuids[field_uuid].append(layout_label)
 
         for ref in el.iter("ValueListReference"):
             vl_uuid = ref.get("UUID", "")
             if vl_uuid and vl_uuid not in seen_vls:
                 seen_vls.add(vl_uuid)
-                layout_uses_vl_uuids[layout_uuid].append(vl_uuid)
-                vl_used_in_layout_uuids[vl_uuid].append(layout_uuid)
+                if layout_uuid:
+                    layout_uses_vl_uuids[layout_uuid].append(vl_uuid)
+                vl_used_in_layout_uuids[vl_uuid].append(layout_label)
 
     # ── Value list references (all contexts) ─────────────────────────────────
     # FM value lists are referenced from four distinct locations:
@@ -480,15 +853,28 @@ def _build_uuid_reverse_indexes(
     #   RelationshipCatalog — portal sort-by-value-list order definitions
     #   step_xml         — Sort Records / Sort Portal steps sorted by value list order
     value_list_used_in_field_uuids: dict[str, list[str]] = defaultdict(list)
+    value_list_used_in_field_ids:   dict[str, list[str]] = defaultdict(list)
     vl_used_in_field_uuids:        dict[str, list[str]] = defaultdict(list)
     vl_used_in_relationship_ids:   dict[str, list[str]] = defaultdict(list)
     vl_used_in_script_names:       dict[str, list[str]] = defaultdict(list)
+    value_list_edge_details:       list = []
 
-    def _scan_for_vl_uuids(xml_str: str, ref_id: str, extra: dict | None = None) -> None:
-        """Add every ValueListReference.UUID found in xml_str to the mixed index.
+    #: FileMaker's no-value-list sentinel. A control that selects none writes `id="-1"`, which is
+    #: an explicit ABSENCE, not a target that failed to resolve — so it earns neither an edge nor
+    #: an unresolved-reference warning. Measured: the 4 UUID-less references in the repository
+    #: corpus are all this.
+    NO_VALUE_LIST = "-1"
 
-        If extra is given it also receives the same (vl_uuid → ref_id) entries,
-        allowing per-source tracking alongside the combined index.
+    def _scan_for_vl_uuids(xml_str: str, ref_id: str, extra: dict | None = None, *,
+                           kind: str = "", src_section: str = "", src_uuid: str = "",
+                           src_id: str = "", src_key: str = "") -> None:
+        """Index every ValueListReference in xml_str, and record it as an edge detail.
+
+        The maps keep their existing shape for their existing consumers. The detail list is
+        the one the artifact projection reads: it keeps the SOURCE's section and identity
+        alongside the target's, which is what lets an id-only reference resolve at all —
+        `LayoutCatalog/id:7` and `ValueListCatalog/id:7` are unrelated objects, and a map
+        keyed by the target alone cannot say which section asked (packet 1358).
         """
         if not xml_str:
             return
@@ -497,29 +883,62 @@ def _build_uuid_reverse_indexes(
         except ET.ParseError:
             return
         seen: set[str] = set()
+        seen_ids: set[str] = set()
+        seen_detail: set[str] = set()
         for ref in el.iter("ValueListReference"):
             vl_uuid = ref.get("UUID", "")
-            if vl_uuid and vl_uuid not in seen:
-                seen.add(vl_uuid)
-                value_list_used_in_field_uuids[vl_uuid].append(ref_id)
-                if extra is not None:
-                    extra[vl_uuid].append(ref_id)
+            vl_id = (ref.get("id") or "").strip()
+            offered = vl_uuid or (vl_id if vl_id and vl_id != NO_VALUE_LIST else "")
+            if kind and offered and offered not in seen_detail:
+                seen_detail.add(offered)
+                value_list_edge_details.append({
+                    "kind": kind, "src_section": src_section, "src_uuid": src_uuid,
+                    "src_id": src_id, "src_key": src_key,
+                    "uuid": vl_uuid, "id": "" if vl_uuid else vl_id,
+                    "name": ref.get("name", ""),
+                })
+            if vl_uuid:
+                if vl_uuid not in seen:
+                    seen.add(vl_uuid)
+                    value_list_used_in_field_uuids[vl_uuid].append(ref_id)
+                    if extra is not None:
+                        extra[vl_uuid].append(ref_id)
+                continue
+            if vl_id and vl_id not in seen_ids:
+                seen_ids.add(vl_id)
+                value_list_used_in_field_ids[vl_id].append(ref_id)
 
+    # The SOURCE identity is only a label on the edge; whether the source carries
+    # a UUID must not decide whether the target is seen as referenced. Gating the
+    # scan on it hid every value list bound to a control on a UUID-less layout.
     for xml_key, xml_str in (result.section_xml or {}).get("FieldsForTables", {}).items():
-        field_uuid = field_uuids.get(xml_key, "")
-        if field_uuid:
-            _scan_for_vl_uuids(xml_str, field_uuid, vl_used_in_field_uuids)
+        _scan_for_vl_uuids(xml_str, field_uuids.get(xml_key, "") or xml_key, vl_used_in_field_uuids,
+                           kind="FieldValidation", src_section="FieldsForTables",
+                           src_uuid=field_uuids.get(xml_key, ""), src_key=xml_key)
 
     for xml_key, xml_str in (result.section_xml or {}).get("LayoutCatalog", {}).items():
-        layout_uuid = layout_uuids.get(xml_key, "")
-        if layout_uuid:
-            _scan_for_vl_uuids(xml_str, layout_uuid)  # mixed dict only; layout already in vl_used_in_layout_uuids
+        # mixed dict only; layout already in vl_used_in_layout_uuids
+        _scan_for_vl_uuids(xml_str, layout_uuids.get(xml_key, "") or xml_key,
+                           kind="LayoutValueList", src_section="LayoutCatalog",
+                           src_uuid=layout_uuids.get(xml_key, ""), src_key=xml_key)
 
     for xml_key, xml_str in (result.section_xml or {}).get("RelationshipCatalog", {}).items():
-        _scan_for_vl_uuids(xml_str, xml_key, vl_used_in_relationship_ids)
+        _scan_for_vl_uuids(xml_str, xml_key, vl_used_in_relationship_ids,
+                           kind="RelationshipSort", src_section="RelationshipCatalog",
+                           src_key=xml_key)
 
-    for xml_key, xml_str in (result.step_xml or {}).items():
-        _scan_for_vl_uuids(xml_str, xml_key, vl_used_in_script_names)
+    for src_uuid, src_id, script_name, xml_str in _script_fragments(result):
+        # The source label is the script's UUID where it has one: FM permits
+        # duplicate script names, so a name would attach two scripts' sort orders
+        # to whichever was indexed last (packet 1349-C3).
+        # An IDENTITY string, not a name: the projection used to fall through to the
+        # display name here, which is the one source path the round-3 audit missed
+        # (Codex confirmation round 2).
+        label = (f"uuid:{src_uuid}" if src_uuid
+                 else (f"id:{src_id}" if src_id else f"name:{script_name}"))
+        _scan_for_vl_uuids(xml_str, label, vl_used_in_script_names,
+                           kind="ScriptSort", src_section="ScriptCatalog",
+                           src_uuid=src_uuid, src_id=src_id, src_key=script_name)
 
     return {
         "script_calls_uuids":               dict(script_calls_uuids),
@@ -528,17 +947,62 @@ def _build_uuid_reverse_indexes(
         "field_used_in_script_uuids":       dict(field_used_in_script_uuids),
         "script_uses_layout_uuids":         dict(script_uses_layout_uuids),
         "layout_used_in_script_uuids":      dict(layout_used_in_script_uuids),
+        "layout_navigates_layout_uuids":    dict(layout_navigates_layout_uuids),
+        "layout_navigated_by_layout_uuids": dict(layout_navigated_by_layout_uuids),
+        "layout_context_tos":               dict(layout_context_tos),
+        "layout_navigates_tos":             dict(layout_navigates_tos),
+        "layout_dynamic_navigation":        dict(layout_dynamic_navigation),
+        "layout_navigation_details":        layout_navigation_details,
+        "layout_context_details":           layout_context_details,
+        "layout_to_navigation_details":     layout_to_navigation_details,
         "layout_triggers_script_uuids":     dict(layout_triggers_script_uuids),
         "script_triggered_by_layout_uuids": dict(script_triggered_by_layout_uuids),
         "value_list_used_in_field_uuids":   dict(value_list_used_in_field_uuids),
         "vl_used_in_field_uuids":           dict(vl_used_in_field_uuids),
         "vl_used_in_relationship_ids":      dict(vl_used_in_relationship_ids),
         "vl_used_in_script_names":          dict(vl_used_in_script_names),
+        "value_list_edge_details":          list(value_list_edge_details),
         "layout_uses_field_uuids":          dict(layout_uses_field_uuids),
         "field_used_in_layout_uuids":       dict(field_used_in_layout_uuids),
         "layout_uses_vl_uuids":             dict(layout_uses_vl_uuids),
         "vl_used_in_layout_uuids":          dict(vl_used_in_layout_uuids),
+        "script_called_by_ids":             dict(script_called_by_ids),
+        "layout_used_in_script_ids":        dict(layout_used_in_script_ids),
+        "script_triggered_by_layout_ids":   dict(script_triggered_by_layout_ids),
+        "value_list_used_in_field_ids":     dict(value_list_used_in_field_ids),
     }
+
+
+def field_calc_locality(xml_key: str, calc: "ET.Element") -> str | None:
+    """The locality a field's own calculation evaluates in.
+
+    A field calculation — auto-enter, validation, or a stored calc — has TWO
+    locality facts, and they are not interchangeable (developer, 2026-08-27):
+
+      * the **base table** the field lives in, always recoverable from the
+        catalog key, and
+      * the **context table occurrence** chosen on the calculation, which says
+        which occurrence relationships are traversed from.
+
+    Measured across MicroK12_dev, SeedDB and PTLaunchPad: every calculation that
+    carries a context TO carries one that is an occurrence of the field's OWN base
+    table — 459/459, 253/253 and 254/254, no exceptions. So the two never disagree
+    about WHICH table; the context TO is the more precise of the two, and the base
+    table is the fallback for the calculations that carry no context at all (31 of
+    490 in MicroK12).
+
+    Their NAMES do differ — 106 times in MicroK12, e.g. a TO `Labels` over a base
+    table `NavigationLabels` — but because the pipeline maps a TO name to its base
+    table anyway, **no current analysis can tell the two apart**: removing the
+    context-TO branch changes no result on any measured export. The context TO is
+    returned in preference because it is FileMaker's own model and is the fact a
+    future relationship-aware analysis would need; the base table is what makes the
+    31-of-490 no-context calculations resolve at all.
+    """
+    ctx = calc.find("TableOccurrenceReference")
+    if ctx is not None and (ctx.get("name") or "").strip():
+        return ctx.get("name").strip()
+    return xml_key.split("::", 1)[0] if "::" in xml_key else None
 
 
 def _build_formula_indexes(result: "ParseResult") -> dict:
@@ -549,6 +1013,13 @@ def _build_formula_indexes(result: "ParseResult") -> dict:
     and CF calls (intersected with known CF names).
 
     Custom menu formulas have no implicit TO — menus must use explicit TO::Field.
+
+    Keyed by the catalog's exact xml_key, not the display name (packet 1349-C3).
+    Measured across 100 exports, LayoutCatalog and ScriptCatalog are the ONLY
+    reference-target sections that carry genuinely duplicated names — which is what
+    FileMaker permits — and a duplicate-named layout's formula refs collapsed onto
+    one twin. The TARGETS here stay name-matched by construction: a formula names
+    its field or function as text and FileMaker puts no identifier there.
     """
     _cf_keys = list((result.section_xml or {}).get("CustomFunctionsCatalog", {}).keys())
     known_cf_names: set[str] = {k.lower() for k in _cf_keys}
@@ -562,7 +1033,7 @@ def _build_formula_indexes(result: "ParseResult") -> dict:
     for xml_key, xml_str in (result.section_xml or {}).get("LayoutCatalog", {}).items():
         if not xml_str:
             continue
-        layout_name = _display_name(xml_key)
+        layout_name = xml_key
         try:
             el = ET.fromstring(xml_str)
         except ET.ParseError:
@@ -598,7 +1069,7 @@ def _build_formula_indexes(result: "ParseResult") -> dict:
     for xml_key, xml_str in (result.section_xml or {}).get("CustomMenuCatalog", {}).items():
         if not xml_str:
             continue
-        menu_name = _display_name(xml_key)
+        menu_name = xml_key
         try:
             el = ET.fromstring(xml_str)
         except ET.ParseError:
@@ -700,8 +1171,9 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
     script_call_details:      dict[str, list[tuple]] = defaultdict(list)
     script_navigates_layouts: dict[str, list[str]] = defaultdict(list)
     script_navigates_tos:     dict[str, list[str]] = defaultdict(list)
+    script_edge_details:      list = []
 
-    for script_name, xml_str in result.step_xml.items():
+    for _src_uuid, _src_id, script_name, xml_str in _script_fragments(result):
         try:
             script_el = ET.fromstring(xml_str)
         except ET.ParseError:
@@ -717,6 +1189,29 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
         nav_to_seen:  set[str] = set()
         cond_stack:   list = []        # control-flow guard stack (If/Else/Loop)
         detail_seen:  set = set()      # distinct (called, param, guard)
+        edge_seen:    set = set()
+
+        def _edge(edge_type, section="", uuid="", ref_id="", name="",
+                  mode="", via="", cond="", kind="uuid", ctx_uuid="", ctx_id="", ctx_name=""):
+            """One identity-bearing record for the artifact projection.
+
+            The maps above are keyed by the script's DISPLAY NAME, which FM permits
+            to repeat, so projecting through them lands every duplicate's edges on
+            whichever twin was indexed last. These records carry the source UUID.
+            """
+            key = (edge_type, section, uuid, ref_id, name, mode, via, cond, ctx_uuid, ctx_id)
+            if key in edge_seen:
+                return
+            edge_seen.add(key)
+            script_edge_details.append({
+                "src": _src_uuid, "src_id": _src_id, "src_name": script_name,
+                "type": edge_type, "section": section,
+                "uuid": uuid, "id": ref_id, "name": name,
+                "mode": mode, "via": via, "cond": cond, "kind": kind,
+                # A field id is unique only within its base table, so an id-only field
+                # target needs its TO context before it can be resolved at all.
+                "ctx_uuid": ctx_uuid, "ctx_id": ctx_id, "ctx_name": ctx_name,
+            })
 
         def _use(field_ref: str):
             if field_ref not in seen_uses:
@@ -749,7 +1244,22 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
             if step_name in _SCRIPT_REF_STEPS:
                 guard = _current_guard(cond_stack)
                 param = _perform_param(step)
-                step_refs = [r.get("name", "") for r in step.iter("ScriptReference") if r.get("name")]
+                step_refs = []
+                offered_target = False
+                for r in step.iter("ScriptReference"):
+                    # An identity is emitted whatever the display name says, for the
+                    # same reason as fields: FileMaker blanks the name on a reference
+                    # it cannot itself resolve, and skipping those reported a real
+                    # structured call as a computed one. A reference offering only a
+                    # name is emitted too, so the projection can REFUSE it by name
+                    # and say so, rather than dropping it silently.
+                    if r.get("UUID", "") or r.get("id", ""):
+                        offered_target = True
+                    if r.get("UUID", "") or r.get("id", "") or r.get("name"):
+                        _edge("ScriptReference", "ScriptCatalog", r.get("UUID", ""),
+                              r.get("id", ""), r.get("name", ""), via=param, cond=guard)
+                    if r.get("name"):
+                        step_refs.append(r.get("name", ""))
                 for called in step_refs:
                     if called not in seen_scripts:
                         seen_scripts.add(called)
@@ -759,34 +1269,46 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
                     if key not in detail_seen:
                         detail_seen.add(key)
                         script_call_details[script_name].append((called, param, guard))
-                if not step_refs:   # Perform Script with a computed target → dynamic
+                # Computed only when the step offered NO structured target identity.
+                if not (step_refs or offered_target):
                     note = f"{step_name} (computed target)"
+                    _edge("DynamicDispatch", name=note, via="dynamic", kind="dynamic")
                     if note not in dyn_seen:
                         dyn_seen.add(note)
                         script_dynamic_dispatch[script_name].append(note)
 
             if step_name in _DYNAMIC_DISPATCH_STEPS:
                 note = f"{step_name} ({_DYNAMIC_DISPATCH_STEPS[step_name]})"
+                _edge("DynamicDispatch", name=note, via="dynamic", kind="dynamic")
                 if note not in dyn_seen:
                     dyn_seen.add(note)
                     script_dynamic_dispatch[script_name].append(note)
 
             if step_name in _NAV_STEPS:
-                for lr in step.iter("LayoutReference"):
-                    lname = lr.get("name", "")
+                # ONE navigation reader, shared with the layout scan (packet 1340), so the two cannot
+                # disagree about what a Go to Related Record targets — including the rule that a TO
+                # nested in a FieldReference is the step's operand, not the destination.
+                nav = step_navigation(step)
+                # A destination FileMaker picks at runtime is a bounded diagnostic, never an edge:
+                # the script scan reported nothing at all for it until packet 1357, so a step whose
+                # layout is computed read as a step that navigates nowhere. No layout edge is created
+                # — inventing one is the failure this deliberately avoids.
+                if nav["dynamic"]:
+                    note = f"{step_name} (computed layout destination)"
+                    _edge("DynamicDispatch", name=note, via="dynamic", kind="dynamic")
+                    if note not in dyn_seen:
+                        dyn_seen.add(note)
+                        script_dynamic_dispatch[script_name].append(note)
+                for l_uuid, l_id, lname in nav["layouts"]:
+                    _edge("ScriptNavigate", "LayoutCatalog", l_uuid, l_id, lname,
+                          via=step_name)
                     if lname and lname not in nav_seen:
                         nav_seen.add(lname)
                         script_navigates_layouts[script_name].append(lname)
-                # The TO context the nav lands in (Go to Related Record / portal).
-                # Skip TO refs nested in a FieldReference — those carry the field's
-                # own TO context, not the navigation destination.
-                field_to_ids = {id(t) for fr in step.iter("FieldReference")
-                                for t in fr.iter("TableOccurrenceReference")}
-                for tr in step.iter("TableOccurrenceReference"):
-                    if id(tr) in field_to_ids:
-                        continue
-                    tname = tr.get("name", "")
-                    if tname and tname not in nav_to_seen:
+                for t_uuid, t_id, tname in nav["tos"]:
+                    _edge("ScriptNavigateTO", "TableOccurrenceCatalog", t_uuid, t_id,
+                          tname, via=step_name)
+                    if tname not in nav_to_seen:
                         nav_to_seen.add(tname)
                         script_navigates_tos[script_name].append(tname)
 
@@ -796,6 +1318,18 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
                 to_ref = ref.find("TableOccurrenceReference")
                 field_name = ref.get("name", "")
                 to_name = to_ref.get("name", "") if to_ref is not None else ""
+                # An identity-bearing reference is emitted even with an EMPTY name:
+                # FileMaker blanks the name (and the UUID) on a reference it cannot
+                # itself resolve, and every measured id-only <FieldReference> is of
+                # that shape. Requiring a name skipped them before they reached the
+                # projection, so they could be neither resolved nor diagnosed.
+                if ref.get("UUID", "") or ref.get("id", ""):
+                    _edge("FieldReference", "FieldsForTables", ref.get("UUID", ""),
+                          ref.get("id", ""), f"{to_name}::{field_name}" if field_name else "",
+                          mode="write" if is_write else "read",
+                          ctx_uuid=to_ref.get("UUID", "") if to_ref is not None else "",
+                          ctx_id=to_ref.get("id", "") if to_ref is not None else "",
+                          ctx_name=to_name)
                 if not (field_name and to_name):
                     continue
                 field_ref = f"{to_name}::{field_name}"
@@ -818,6 +1352,10 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
                 if not txt.strip():
                     continue
                 for sql_tbl in _sql_tables_in(txt):
+                    # FM SQL names a table occurrence as TEXT; there is no identity
+                    # to carry, so this stays name-matched by construction.
+                    _edge("SQLQuery", "TableOccurrenceCatalog", name=sql_tbl,
+                          mode="read", via="sql", kind="formula-name")
                     if sql_tbl not in sql_seen:
                         sql_seen.add(sql_tbl)
                         script_sql_tables[script_name].append(sql_tbl)
@@ -828,6 +1366,9 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
                 for fr in (str(r) for r in refs):
                     if "::" not in fr:
                         continue
+                    # A formula names its field as text — the formula boundary.
+                    _edge("FieldReference", "FieldsForTables", name=fr,
+                          mode="read", kind="formula-name")
                     _use(fr)
                     if fr not in wrote and fr not in read:
                         read.add(fr)
@@ -889,13 +1430,13 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
             fld_el = ET.fromstring(xml_str)
         except ET.ParseError:
             continue
-        implicit_to = xml_key.split("::", 1)[0] if "::" in xml_key else None
         seen_ff: set[str] = set()
         seen_fcf: set[str] = set()
         for calc in fld_el.iter("Calculation"):
             text_el = calc.find("Text")
             if text_el is None or not text_el.text:
                 continue
+            implicit_to = field_calc_locality(xml_key, calc)
             refs = analyze(_ADDON_CMT_LF_PAT.sub(r'\1\n', text_el.text), implicit_to=implicit_to or None)
             for fref in refs.field_refs:
                 key = str(fref)
@@ -919,6 +1460,7 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
 
     relationship_uses_field:    dict[str, list[str]] = defaultdict(list)
     field_used_in_relationships: dict[str, list[str]] = defaultdict(list)
+    relationship_join_details:  list = []
 
     for rel_key, xml_str in (result.section_xml or {}).get("RelationshipCatalog", {}).items():
         if not xml_str:
@@ -931,10 +1473,25 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
             continue
         rel_name = rel_el.get("name", rel_key)
         seen_rel_fields: set[str] = set()
+        seen_rel_detail: set = set()
         for ref in rel_el.iter("FieldReference"):
             to_ref = ref.find("TableOccurrenceReference")
             field_name = ref.get("name", "").strip()
             to_name = to_ref.get("name", "").strip() if to_ref is not None else ""
+            # A join predicate names its fields structurally, so it carries the same
+            # identities a script step does — and projecting it by name selects the
+            # wrong field for exactly the same reason (Codex review of packet 1349).
+            if ref.get("UUID", "") or ref.get("id", ""):
+                key = (rel_key, ref.get("UUID", ""), ref.get("id", ""))
+                if key not in seen_rel_detail:
+                    seen_rel_detail.add(key)
+                    relationship_join_details.append({
+                        "src_key": rel_key, "src_name": rel_name,
+                        "uuid": ref.get("UUID", ""), "id": ref.get("id", ""),
+                        "name": f"{to_name}::{field_name}" if field_name else "",
+                        "ctx_uuid": to_ref.get("UUID", "") if to_ref is not None else "",
+                        "ctx_id": to_ref.get("id", "") if to_ref is not None else "",
+                    })
             if field_name and to_name:
                 field_ref = f"{to_name}::{field_name}"
                 if field_ref not in seen_rel_fields:
@@ -975,11 +1532,13 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
         script_call_details=dict(script_call_details),
         script_navigates_layouts=dict(script_navigates_layouts),
         script_navigates_tos=dict(script_navigates_tos),
+        script_edge_details=script_edge_details,
         cf_uses_fields=dict(cf_uses_fields),
         field_used_in_cfs=dict(field_used_in_cfs),
         cf_calls_cf=dict(cf_calls_cf),
         cf_called_by_cf=dict(cf_called_by_cf),
         relationship_uses_field=dict(relationship_uses_field),
+        relationship_join_details=relationship_join_details,
         field_used_in_relationships=dict(field_used_in_relationships),
         field_calc_uses_fields=dict(field_calc_uses_fields),
         field_used_in_field_calcs=dict(field_used_in_field_calcs),

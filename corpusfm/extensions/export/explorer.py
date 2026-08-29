@@ -745,6 +745,12 @@ _XREF_DISPATCH: dict[tuple, tuple] = {
     ("LayoutCatalog", "LayoutValueList", "from"):        ("uses_value_lists", "Uses value lists"),
     ("LayoutCatalog", "LayoutCFCall", "from"):           ("calls_cfs", "Calls custom functions"),
     ("LayoutCatalog", "ScriptNavigate", "to"):           ("opened_by_scripts", "Opened by scripts"),
+    # Packet 1347 — a layout reached only through a BUTTON on another layout was the
+    # case that opened 1340: it looked unreferenced because nothing surfaced it.
+    ("LayoutCatalog", "LayoutNavigation", "from"):       ("navigates_to_layouts", "Navigates to layouts"),
+    ("LayoutCatalog", "LayoutNavigation", "to"):         ("opened_by_layouts", "Opened by layouts"),
+    ("LayoutCatalog", "LayoutContextTO", "from"):        ("shows_records_from", "Shows records from"),
+    ("TableOccurrenceCatalog", "LayoutContextTO", "to"): ("used_in_layouts", "Used in layouts"),
     ("ValueListCatalog", "LayoutValueList", "to"):       ("used_in_layouts", "Used in layouts"),
     ("ValueListCatalog", "FieldValidation", "to"):       ("validates_fields", "Validates fields"),
     ("ValueListCatalog", "RelationshipSort", "to"):      ("used_in_relationships", "Used in relationships"),
@@ -759,6 +765,8 @@ _XREF_HIDDEN: dict[tuple, str] = {
     ("ScriptCatalog", "DynamicDispatch", "from"):   "dynamic dispatch is an honest-limit note with no resolved target to link",
     ("ScriptCatalog", "ScriptNavigate", "from"):    "surfaced on the destination layout as 'Opened by scripts'",
     ("ScriptCatalog", "ScriptNavigateTO", "from"):  "TO navigation surfaced via structural shortcuts / workflows",
+    ("LayoutCatalog", "LayoutNavigateTO", "from"):  "a navigation destination TO is a graph/evidence edge; the panel shows the layout's own context TO",
+    ("TableOccurrenceCatalog", "LayoutNavigateTO", "to"): "the inverse of a hidden edge; the TO panel lists the layouts that SHOW its records",
     ("ScriptCatalog", "TriggerCascade", "from"):    "trigger cascade surfaced via workflows",
     ("ScriptCatalog", "TriggerCascade", "to"):      "trigger cascade surfaced via workflows",
     ("ScriptCatalog", "LayoutScript", "to"):        "layout/button trigger surfaced via workflows",

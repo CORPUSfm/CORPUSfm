@@ -12,7 +12,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import pty
+import select
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -29,6 +33,74 @@ def _run(argv: list[str], secrets, timeout: int = 120, stdin_text: str | None = 
         return p.returncode, secrets.redact((p.stdout + p.stderr).strip())
     except Exception as exc:  # noqa: BLE001
         return 1, secrets.redact(repr(exc))
+
+
+def _run_windows_tty_dialog(argv: list[str], timeout: int, stdin_text: str):
+    """Drive Windows Read-Host through a real local PTY, replying only after each prompt.
+
+    ``ssh -tt`` allocates the remote conhost, but a local stdin pipe is still not an interactive
+    console: measured on winfms2026, PowerShell displayed no prompts, exited zero, and did nothing.
+    A local PTY supplies the missing terminal semantics.  Waiting for each prompt also prevents a
+    password from being queued while terminal echo is still enabled.
+    """
+    responses = [part for part in stdin_text.split("\r") if part]
+    prompts = ("fm server admin account username", "fm server admin account password") * 2
+    if len(responses) != len(prompts):
+        return 1, "Windows TTY dialog refused: expected two username/password response pairs"
+
+    master, slave = pty.openpty()
+    proc = None
+    chunks: list[bytes] = []
+    response_index = 0
+    seen = ""
+    deadline = time.monotonic() + timeout
+    try:
+        proc = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+        os.close(slave)
+        slave = -1
+        while proc.poll() is None:
+            if time.monotonic() >= deadline:
+                proc.kill()
+                proc.wait(timeout=5)
+                return 1, "Windows TTY dialog timed out"
+            readable, _, _ = select.select([master], [], [], 0.25)
+            if not readable:
+                continue
+            try:
+                chunk = os.read(master, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+            seen += chunk.decode("utf-8", errors="replace").lower()
+            if response_index < len(prompts) and prompts[response_index] in seen:
+                os.write(master, responses[response_index].encode("utf-8") + b"\r")
+                response_index += 1
+                seen = ""
+        # A short final drain keeps the farewell / remote exit status in the report.
+        while True:
+            readable, _, _ = select.select([master], [], [], 0.05)
+            if not readable:
+                break
+            try:
+                chunk = os.read(master, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+        rc = proc.wait(timeout=5)
+        return rc, b"".join(chunks).decode("utf-8", errors="replace").strip()
+    except Exception as exc:  # noqa: BLE001
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        return 1, repr(exc)
+    finally:
+        if slave >= 0:
+            os.close(slave)
+        os.close(master)
 
 
 def _ssh(host: str, remote_cmd: str, secrets, timeout: int = 120, stdin_text: str | None = None,
@@ -53,7 +125,10 @@ def _pssh(host: str, ps: str, secrets, timeout: int = 120, stdin_text: str | Non
     if tty:
         argv.append("-tt")
     argv.extend((host, f"powershell -NoProfile -EncodedCommand {b64}"))
-    rc, out = _run(argv, secrets, timeout, stdin_text)
+    if tty and stdin_text is not None:
+        rc, out = _run_windows_tty_dialog(argv, timeout, stdin_text)
+    else:
+        rc, out = _run(argv, secrets, timeout, stdin_text)
     clean = "\n".join(l for l in out.splitlines()
                       if not l.startswith(("#< CLIXML", "<Objs", "_x")))
     return rc, clean.strip()
@@ -99,7 +174,10 @@ def _linux_lane(release_dir, package, sidecar, host, fm_pw, cfm_pw, secrets):
         "export FM_ADMIN_USER=admin CORPUSFM_ADMIN_USER=admin; "
         "export FM_ADMIN_PASS=$(printf %s \"$fm64\" | base64 -d); "
         "export CORPUSFM_ADMIN_PASS=$(printf %s \"$cfm64\" | base64 -d); "
-        f"exec bash {stage}/package/install.sh --silent --yes'"
+        f"exec bash {stage}/package/install.sh --silent --yes "
+        "--install-dir /opt/CORPUSfm "
+        "--fms-root \"/opt/FileMaker/FileMaker Server\" "
+        "--patch-hosting-dir /opt/CORPUSfm-Hosted'"
     )
     rc, out = _ssh(
         host, install_cmd, secrets, timeout=1800, stdin_text=secret_input)
@@ -136,8 +214,14 @@ def _linux_lane(release_dir, package, sidecar, host, fm_pw, cfm_pw, secrets):
     rc, mcp = _ssh(host, 'curl -sk -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" '
                          '-d "{}" https://localhost/corpusfm/mcp/', secrets, 30)
     health.append(_result("MCP POST fails closed -> 401", mcp.strip().endswith("401"), mcp))
-    rc, beq = _ssh(host, "sudo grep -q 'storage_backend: fm_odata' /etc/corpusfm/install.yaml && echo OK || echo NO", secrets, 30)
-    health.append(_result("storage backend = FileMakerODataBackend", "OK" in beq))
+    rc, beq = _ssh(
+        host,
+        "sudo -u corpusfm env HOME=/opt/CORPUSfm PYTHONPATH=/opt/CORPUSfm/src "
+        "/opt/CORPUSfm/venv/bin/python -c 'from corpusfm.lifecycle import runtime_storage; "
+        "print(type(runtime_storage.backend()).__name__)'",
+        secrets, 60)
+    health.append(_result("storage backend = FileMakerODataBackend",
+                          rc == 0 and beq.strip().endswith("FileMakerODataBackend"), beq))
     rc, ver = _ssh(host, "sudo -u corpusfm env HOME=/opt/CORPUSfm PYTHONPATH=/opt/CORPUSfm/src "
                          "/opt/CORPUSfm/venv/bin/python -c 'import corpusfm; print(corpusfm.__version__)'", secrets, 60)
     health.append(_result("version stamp present (not 0.0)", ver.strip() not in ("", "0.0"), f"v{ver.strip()}"))
@@ -153,8 +237,14 @@ def _linux_lane(release_dir, package, sidecar, host, fm_pw, cfm_pw, secrets):
     rc, gone = _ssh(host, "for p in /opt/CORPUSfm /etc/corpusfm /var/lib/corpusfm /opt/CORPUSfm-Hosted; "
                           "do test ! -e \"$p\" || exit 9; done; echo GONE", secrets, 30)
     uninst.append(_result("fixed product roots absent after uninstall", rc == 0 and "GONE" in gone, gone))
-    rc, svc = _ssh(host, "systemctl list-units --all 2>/dev/null | grep -q corpusfm && echo SVC || echo NOSVC", secrets, 30)
-    uninst.append(_result("services absent after uninstall", "NOSVC" in svc))
+    rc, svc = _ssh(
+        host,
+        "for u in corpusfm.service corpusfm-scheduler.service corpusfm-update.service "
+        "corpusfm-update.timer; do "
+        "test \"$(systemctl show -p LoadState --value \"$u\" 2>/dev/null)\" = not-found || exit 9; "
+        "done; echo NOSVC",
+        secrets, 30)
+    uninst.append(_result("services absent after uninstall", rc == 0 and "NOSVC" in svc, svc))
     rc, fmi = _ssh(host, 'curl -sk -o /dev/null -w "%{http_code}" https://localhost/fmi/odata/v4/', secrets, 30)
     uninst.append(_result("FMS /fmi/ healthy after uninstall -> 200", fmi.strip().endswith("200"), fmi))
     rc, prox = _ssh(host, 'curl -sk -o /dev/null -w "%{http_code}" https://localhost/corpusfm/login', secrets, 30)
@@ -201,16 +291,18 @@ def _win_lane(release_dir, package, sidecar, host, fm_pw, cfm_pw, secrets):
 
     # Run the install SYNCHRONOUSLY (blocking) — a detached Start-Process of install.ps1 is unreliable
     # on this box (the child dies early; observed packet 028), whereas the synchronous call operator
-    # runs to completion. Write-Host isn't capturable, so we discard streams and verify via the
-    # installer's own transcript + box state afterward. The ssh call blocks for the full install
-    # (~4-10 min depending on pip/network), so the timeout is generous.
+    # runs to completion. Do NOT redirect the script's streams at this call boundary. Windows
+    # PowerShell 5.1 turns a nested native command's ordinary stderr into a terminating error under
+    # the installer's ErrorActionPreference=Stop when the caller applies `*> $null`; measured twice
+    # on a clean winfms2026, that killed the source-seed clone and left dependency-only residue.
+    # _pssh captures and redacts the streams; the gate judges the transcript + box state afterward.
     secret_input = (base64.b64encode(fm_pw.encode()).decode() + "\n" +
                     base64.b64encode(cfm_pw.encode()).decode() + "\n")
     inst_cmd = ("$fm64=[Console]::In.ReadLine();$cfm64=[Console]::In.ReadLine();"
                 "$env:FM_ADMIN_USER='admin';$env:CORPUSFM_ADMIN_USER='admin';"
                 "$env:FM_ADMIN_PASS=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($fm64));"
                 "$env:CORPUSFM_ADMIN_PASS=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($cfm64));"
-                f"& '{stage}\\package\\install.ps1' -Silent -Yes *> $null; "
+                f"& '{stage}\\package\\install.ps1' -Silent -Yes; "
                 "$result=$LASTEXITCODE;Remove-Item Env:\\FM_ADMIN_PASS,Env:\\CORPUSFM_ADMIN_PASS -EA SilentlyContinue;"
                 "Write-Output ('rc=' + $result);exit $result")
     rc, irc = _pssh(host, inst_cmd, secrets, timeout=1800, stdin_text=secret_input)
@@ -248,7 +340,11 @@ def _win_lane(release_dir, package, sidecar, host, fm_pw, cfm_pw, secrets):
                        "p=False" in cap('Write-Output ("p=" + ((Test-Path "C:\\Program Files\\CORPUSfm\\.git-pat") -or (Test-Path "C:\\Program Files\\CORPUSfm\\.git-credentials")))')))
 
     # uninstall + cleanliness (synchronous; ~1-2 min)
-    answers = f"admin\n{fm_pw}\nadmin\n{fm_pw}\n"
+    # A forced Windows OpenSSH console is a real conhost input stream, not a Unix pipe: LF is
+    # inserted into the current Read-Host line and does not submit it.  Submit each answer with CR,
+    # exactly as the Enter key does.  Measured on winfms2026: LF left the installation untouched;
+    # CR authenticated and completed both credential rounds.
+    answers = f"admin\r{fm_pw}\radmin\r{fm_pw}\r"
     uninstall = "& 'C:\\Program Files\\CORPUSfm\\uninstall.ps1' -Yes"
     urc, uout = _pssh(host, uninstall, secrets, 900, stdin_text=answers, tty=True)
     uninst.append(_result("installed uninstaller completes", urc == 0 and "CORPUSfm removed" in uout,

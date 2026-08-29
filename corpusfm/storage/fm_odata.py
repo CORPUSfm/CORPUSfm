@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Optional
 
 import threading
+from urllib.parse import urlparse
 
 import requests
 import urllib3
@@ -70,13 +71,90 @@ class SettingsWriteNotDispatched(RuntimeError):
     distinguish "never landed" from "landed and the response was lost", so the caller rereads."""
 
 
+# ── Storage-channel availability, reported ONCE per episode (packet 1334) ──────────────────────
+#
+# A three-hour OData outage on a live box produced 8,832 log lines, of which the application wrote
+# ZERO: every one was urllib3's per-retry WARNING. The log rotated every ~4 hours, so the retention
+# collapsed during the incident, and the application never said its storage was unreachable.
+#
+# WHY THE STATE LIVES HERE, AT MODULE SCOPE. `get_backend()` builds fresh backend objects across the
+# web, scheduler and worker paths, and each backend builds one Session PER THREAD. State on either
+# would turn "once" into once per call site or per worker. Keyed by the sanitized storage CHANNEL —
+# scheme + host + database — so every backend and thread talking to one storage file shares an
+# episode, and a genuinely different endpoint can neither suppress nor recover another's.
+#
+# "Once" is honestly once per PROCESS, endpoint and observed down/up episode. The web and scheduler
+# are separate processes, so a box may write one pair from each. That is still a handful of lines
+# where the measured event produced thousands, and it needs no cross-process state.
+_CHANNEL_UP: dict = {}
+_CHANNEL_LOCK = threading.Lock()
+
+#: Recovery requires a status BELOW 500. A 5xx is not evidence the channel came back — 500, 501 and
+#: 505 would otherwise close an episode that is still open, which is a false all-clear (corrected after
+#: Codex review, 2026-08-26). 502/503/504 are the family the retry adapter exhausts and are what OPEN
+#: an episode; other 5xx neither open nor close one.
+_CHANNEL_DOWN_STATUSES = frozenset({502, 503, 504})
+_RECOVERY_BELOW = 500
+
+
+def _channel_of(url: str) -> str:
+    """`https://host/fmi/odata/v4/DB/TABLE?$filter=…` -> `https://host/fmi/odata/v4/DB`.
+
+    Never a table, query string or credential: an episode is about the CHANNEL, and a key carrying a
+    query would open a new episode per lane."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url or "?"
+    parts = [p for p in parsed.path.split("/") if p]
+    if "v4" in parts:
+        parts = parts[: parts.index("v4") + 2]          # …/fmi/odata/v4/<database>
+    return f"{parsed.scheme}://{parsed.netloc}/" + "/".join(parts)
+
+
+def _note_channel_outcome(url: str, *, ok: bool, detail: str) -> None:
+    """Record an up/down transition and log ONLY on the edge. Never raises, never alters the result."""
+    channel = _channel_of(url)
+    with _CHANNEL_LOCK:
+        previous = _CHANNEL_UP.get(channel)             # None = never observed
+        if previous == ok:
+            return                                      # no edge — stay silent
+        _CHANNEL_UP[channel] = ok                       # claim the edge under the lock, then log
+        first_observation = previous is None
+    if not ok:
+        logger.warning("FileMaker OData storage is unreachable at %s (%s). Further failures on this "
+                       "channel are not logged until it recovers.", channel, detail)
+    elif not first_observation:
+        logger.info("FileMaker OData storage is reachable again at %s.", channel)
+
+
+def _reset_channel_state_for_testing() -> None:
+    """Tests only: this is process-global, so it must not leak between them."""
+    with _CHANNEL_LOCK:
+        _CHANNEL_UP.clear()
+
+
 class _TimeoutSession(requests.Session):
     """A requests.Session that injects a default timeout on every request. All get/post/patch/delete
-    funnel through Session.request(), so one override covers the whole backend's ~40 call sites."""
+    funnel through Session.request(), so one override covers the whole backend's ~40 call sites.
+
+    It is also where channel availability is observed — after the retry adapter has exhausted itself,
+    so a transient blip the adapter absorbs never opens an episode."""
 
     def request(self, method, url, **kwargs):  # type: ignore[override]
         kwargs.setdefault("timeout", _FM_HTTP_TIMEOUT)
-        return super().request(method, url, **kwargs)
+        try:
+            resp = super().request(method, url, **kwargs)
+        except requests.RequestException as exc:
+            _note_channel_outcome(url, ok=False, detail=type(exc).__name__)
+            raise
+        if resp.status_code in _CHANNEL_DOWN_STATUSES:
+            _note_channel_outcome(url, ok=False, detail=f"HTTP {resp.status_code}")
+        elif resp.status_code < _RECOVERY_BELOW:
+            _note_channel_outcome(url, ok=True, detail=f"HTTP {resp.status_code}")
+        # Any other 5xx: not a down-family status, and not evidence of recovery either. Leave the
+        # episode exactly as it is.
+        return resp
 
 
 def _fm_retry() -> Retry:

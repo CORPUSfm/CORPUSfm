@@ -12,6 +12,9 @@ from __future__ import annotations
 import io
 import re
 from corpusfm.core import safe_xml as ET
+from corpusfm.core.identity import (ID_KIND, UUID_KIND, identity_key,
+                                    is_owner_ref_projection, owner_identities,
+                                    owner_identity)
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -29,12 +32,30 @@ class ParseResult:
     schema_version: str
     schema_warning: Optional[str]
     step_xml: dict = field(default_factory=dict)    # {script_name: xml_str}
+    # {identity_key: xml_str} for the SAME fragments as step_xml. FileMaker does not
+    # require script names to be unique, so the name-keyed dict above silently drops a
+    # duplicate-named script's body and hands its twin's steps to both — measured: 3 of
+    # 620 fragments in MicroK12_dev and 3 of 405 in CMP_Operations_UI_rev2. Every
+    # StepsForScripts fragment carries an owner <ScriptReference> with a UUID, so this
+    # view loses nothing. step_xml is retained for callers that legitimately want a
+    # name lookup; anything attributing a body to a script must use this one.
+    step_xml_by_identity: dict = field(default_factory=dict)
     section_xml: dict = field(default_factory=dict) # {section_key: {item_name: xml_str}}
     calcs: dict = field(default_factory=dict)        # {cf_name: fingerprint}
     cf_xml: dict = field(default_factory=dict)       # {cf_name: xml_str}
     field_names: dict = field(default_factory=dict)  # {table_name: [field_name, ...]} for display
     options: dict = field(default_factory=dict)      # {vl_name: fingerprint} from OptionsForValueLists
     options_xml: dict = field(default_factory=dict)  # {vl_name: xml_str}
+    # {identity_key: [xml_str, ...]} — the ModifyAction LAYOUT projections, kept beside
+    # section_xml instead of overwriting it (packet 1353). The AddAction <Layout> is the
+    # authoritative content; this projection is supplemental navigation evidence. Measured:
+    # every navigation semantic these carry is already present in the body they name
+    # (722/722 CMP_Operations_UI_rev2, 407/407 CMP_Operations, 34/34 MicroK12_dev, 1/1
+    # TechFest_dev, through step_navigation()), so they are retained for the one thing the
+    # body does NOT carry — a destination FileMaker computes at runtime, which the fragment
+    # marks with `type="current"` on its LayoutReferenceContainer and the body serialises as
+    # a <Label> the dynamic test does not read.
+    layout_nav_xml: dict = field(default_factory=dict)
     is_addon: bool = False                           # True when parsed from FMAdd_on XML
 
 
@@ -119,13 +140,20 @@ def _extract_catalogs(
     catalog_configs: list,
     noise_attrs: frozenset,
     noise_tags: frozenset,
-) -> tuple[dict, dict]:
-    """Extract all regular catalog sections from one action node.
+) -> tuple[dict, dict, dict]:
+    """Extract all regular catalog sections from ONE action node.
 
-    Returns (sections, section_xml) where both are {section_key: {item_name: value}}.
+    Returns (sections, section_xml, section_meta). The first two are
+    {section_key: {item_name: value}}; the third is {section_key: {item_name:
+    (identity_key, id_key, is_projection)}} and exists so `_merge_catalog_xml` can pair
+    an entry across action nodes by the identity it asserts instead of by its display
+    name. `id_key` is the item's `id` identity where it ALSO carries a UUID — the second
+    address a reference may use. All three are computed here because the Element is in
+    hand; recovering them later would mean re-parsing every stored string.
     """
     sections: dict[str, dict] = {}
     section_xml: dict[str, dict] = {}
+    section_meta: dict[str, dict] = {}
 
     for cat in catalog_configs:
         key = cat["key"]
@@ -145,6 +173,7 @@ def _extract_catalogs(
 
         items = sections.setdefault(key, {})
         xmls = section_xml.setdefault(key, {})
+        meta = section_meta.setdefault(key, {})
 
         for item in source:
             if item.tag != item_tag:
@@ -164,8 +193,12 @@ def _extract_catalogs(
                     n += 1
                 xml_key = f"{xml_key}__{n}"
             xmls[xml_key] = ET.tostring(item, encoding="unicode")
+            idents = owner_identities(key, item)
+            meta[xml_key] = (identity_key(idents[0] if idents else None),
+                             identity_key(next((i for i in idents[1:] if i.kind == ID_KIND), None)),
+                             is_owner_ref_projection(key, item))
 
-    return sections, section_xml
+    return sections, section_xml, section_meta
 
 
 def _extract_fields(
@@ -210,18 +243,20 @@ def _extract_steps(
 ) -> tuple[dict, dict]:
     """Extract script step fingerprints and raw XML strings.
 
-    Returns (fingerprints, xml_strings) where both are {script_name: str}.
+    Returns (fingerprints, {script_name: xml}, {identity_key: xml}). The third is the
+    one that keeps every fragment — see ParseResult.step_xml_by_identity.
     """
     steps: dict[str, str] = {}
     step_xml: dict[str, str] = {}
+    step_xml_by_identity: dict[str, str] = {}
 
     catalog_elem = action_node.find(steps_cfg["catalog_element"])
     if catalog_elem is None:
-        return steps, step_xml
+        return steps, step_xml, step_xml_by_identity
 
     source = _resolve_item_source(catalog_elem, steps_cfg)
     if source is None:
-        return steps, step_xml
+        return steps, step_xml, step_xml_by_identity
 
     item_tag = steps_cfg["item_element"]
     name_attr = steps_cfg["item_name_attr"]
@@ -231,9 +266,13 @@ def _extract_steps(
         if script_elem.tag != item_tag:
             continue
         sname = _resolve_item_name(script_elem, name_attr, name_child)
+        xml_str = ET.tostring(script_elem, encoding="unicode")
         steps[sname] = _elem_fingerprint(script_elem, noise_attrs, noise_tags)
-        step_xml[sname] = ET.tostring(script_elem, encoding="unicode")
-    return steps, step_xml
+        step_xml[sname] = xml_str
+        key = identity_key(owner_identity("ScriptCatalog", script_elem))
+        if key:
+            step_xml_by_identity[key] = xml_str
+    return steps, step_xml, step_xml_by_identity
 
 
 def _project_cf_calc(item: ET.Element) -> "Optional[ET.Element]":
@@ -406,6 +445,107 @@ def _merge(dest: dict, src: dict) -> None:
             dest[key].update(items)
 
 
+#: Sections whose ModifyAction projection is supplemental rather than authoritative.
+#: LayoutCatalog alone, and deliberately: its AddAction entry is the full layout body
+#: while the ModifyAction entry is a navigation projection of it, so letting the second
+#: land on the first destroys the layout. No other catalog was measured to behave that
+#: way, and applying a body-wins rule blindly would silently discard real modifications
+#: elsewhere (packet 1353, developer ruling 2).
+_BODY_IS_AUTHORITATIVE = frozenset({"LayoutCatalog"})
+
+
+def _pair_target(prior_meta: dict, xml_key: str, ident: str) -> Optional[str]:
+    """The key of the entry from an EARLIER action node that this item identifies.
+
+    UUID, else an unambiguous id, and never the display name — `core/identity.py`'s rule,
+    applied to the parser's own catalog merge. `prior_meta` holds only earlier nodes'
+    entries, which is what keeps the per-node `__N` disambiguation intact: two
+    same-identity items inside ONE node are left alone.
+
+    An item offering a UUID is matched on the UUID ALONE. A miss stays a miss and never
+    falls through to the id, because an id belonging to a different object is a wrong
+    answer rather than a weaker one. Several prior keys may carry one UUID — FileMaker
+    projects a rename that way — and those are revisions of one object, not ambiguity.
+
+    An item offering only an id is matched against EVERY prior claim on that id, whether
+    the entry holds it as its own identity or as the second address of a UUID-bearing
+    entry. Several claimants are unambiguous only when they are fragments of one logical
+    object, which is to say they share a single UUID primary; two id-only entries sharing
+    an id are two objects and pair with neither. This is `CatalogIndex.resolve`'s rule,
+    restated here because this function answers the same question against the parser's
+    own per-key metadata instead of against re-parsed XML — the two must not drift.
+
+    Measured: no export in this repository exercises the id route, because every
+    projection FileMaker emits carries a UUID. It exists because a reference may not.
+
+    A name match breaks a tie between prior keys that legitimately coalesce, so the
+    common case pairs exactly where it always did.
+    """
+    if not ident:
+        return None
+    if ident.startswith(f"{UUID_KIND}:"):
+        hits = [k for k, m in prior_meta.items() if m[0] == ident]
+    else:
+        hits = [k for k, m in prior_meta.items() if ident in (m[0], m[1])]
+        if len(hits) > 1:
+            primaries = {prior_meta[k][0] for k in hits}
+            if not (len(primaries) == 1
+                    and next(iter(primaries)).startswith(f"{UUID_KIND}:")):
+                return None
+    if not hits:
+        return None
+    return xml_key if xml_key in hits else hits[0]
+
+
+def _merge_catalog_xml(dest_xml: dict, dest_meta: dict, src_xml: dict, src_meta: dict,
+                       nav_xml: dict) -> None:
+    """Merge one action node's catalog XML into the accumulated view, BY IDENTITY.
+
+    The name-keyed merge this replaces landed a ModifyAction fragment on whatever entry
+    shared its display name. Measured on real exports: 4 catalog objects destroyed in
+    CMP_Operations_UI_rev2 and 2 in CMP_Operations, and — because two of the four were
+    folder-OPEN entries whose close markers still popped — 209 of 419 layouts left with
+    a wrong folder path.
+
+    Three rules, in order:
+      * an item lands on the earlier-node entry asserting the SAME identity;
+      * with no such entry it lands on its own name key, taking a `__N` suffix only when
+        that key is already held by a DIFFERENT identity;
+      * in `_BODY_IS_AUTHORITATIVE` a projection never displaces a body. It is routed to
+        `nav_xml` under the BODY's identity instead, so nothing is discarded and the
+        consumer finds it by the layout's own identity.
+    """
+    for section, items in src_xml.items():
+        dest = dest_xml.setdefault(section, {})
+        meta = dest_meta.setdefault(section, {})
+        prior = dict(meta)                 # earlier nodes only — see _pair_target
+        for xml_key, xml_str in items.items():
+            ident, _id_key, is_projection = src_meta.get(section, {}).get(xml_key, ("", "", False))
+            target = _pair_target(prior, xml_key, ident)
+            if target is None:
+                # No prior entry this item is known to BE. The name key is therefore
+                # reusable only when neither side asserts an identity at all — markers
+                # and separators, which are not objects. Comparing identity strings here
+                # instead let an AMBIGUOUS id through: two id-only objects and a
+                # projection all read `id:2`, pairing correctly refused, and the equality
+                # test then handed the projection the first one anyway (Codex, 2026-08-27).
+                target = xml_key
+                if target in dest and not (
+                        ident == "" and meta.get(target, ("", "", False))[0] == ""):
+                    n = 2
+                    while f"{xml_key}__{n}" in dest:
+                        n += 1
+                    target = f"{xml_key}__{n}"
+            elif (section in _BODY_IS_AUTHORITATIVE
+                  and is_projection and not meta[target][2]):
+                # Keyed by the BODY's identity, not the projection's: a projection may
+                # have reached it by id, and the consumer looks it up by the layout's own.
+                nav_xml.setdefault(meta[target][0], []).append(xml_str)
+                continue
+            dest[target] = xml_str
+            meta[target] = (ident, _id_key, is_projection)
+
+
 # Strict schema-version fence (packet 074). CORPUSfm runs a tight, validated window — FileMaker's
 # schema XML is NEAR-additive (FM 2026 retired two supplemental catalogs — packet 1284; see
 # _harvest_inline_supplemental), so we support exactly the versions we've built + validated against
@@ -524,19 +664,22 @@ def load_file(xml_path_or_bytes, label: str) -> ParseResult:
 
     sections: dict[str, dict] = {}
     section_xml: dict[str, dict] = {}
+    section_meta: dict[str, dict] = {}   # {section: {xml_key: (identity_key, is_projection)}}
+    layout_nav_xml: dict[str, list] = {}
     fields: dict[str, dict] = {}
     field_names: dict[str, list] = {}
     steps: dict[str, str] = {}
     step_xml: dict[str, str] = {}
+    step_xml_by_identity: dict[str, str] = {}
     calcs: dict[str, str] = {}
     cf_xml: dict[str, str] = {}
     options: dict[str, str] = {}
     options_xml: dict[str, str] = {}
 
     for action_node in root.findall(config.get("structure_path", "./Structure/")):
-        secs, sxmls = _extract_catalogs(action_node, catalog_configs, noise_attrs, noise_tags)
+        secs, sxmls, smeta = _extract_catalogs(action_node, catalog_configs, noise_attrs, noise_tags)
         _merge(sections, secs)
-        _merge(section_xml, sxmls)
+        _merge_catalog_xml(section_xml, section_meta, sxmls, smeta, layout_nav_xml)
         if fields_cfg:
             _merge(fields, _extract_fields(action_node, fields_cfg, noise_attrs, noise_tags))
         fn, fxml = _collect_field_names(action_node)
@@ -550,9 +693,10 @@ def load_file(xml_path_or_bytes, label: str) -> ParseResult:
         # field XML with the latest version from any ModifyAction.
         _merge(section_xml, {"FieldsForTables": fxml})
         if steps_cfg:
-            fps, xmls = _extract_steps(action_node, steps_cfg, noise_attrs, noise_tags)
+            fps, xmls, by_identity = _extract_steps(action_node, steps_cfg, noise_attrs, noise_tags)
             steps.update(fps)
             step_xml.update(xmls)
+            step_xml_by_identity.update(by_identity)
         if calcs_cfg:
             fps, xmls = _extract_calcs(action_node, calcs_cfg, noise_attrs, noise_tags)
             calcs.update(fps)
@@ -571,11 +715,13 @@ def load_file(xml_path_or_bytes, label: str) -> ParseResult:
         schema_version=schema_version,
         schema_warning=schema_warning,
         step_xml=step_xml,
+        step_xml_by_identity=step_xml_by_identity,
         section_xml=section_xml,
         calcs=calcs,
         cf_xml=cf_xml,
         field_names=field_names,
         options=options,
         options_xml=options_xml,
+        layout_nav_xml=layout_nav_xml,
         is_addon=is_addon,
     )

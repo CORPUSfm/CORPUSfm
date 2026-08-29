@@ -1,8 +1,10 @@
 """CLI: corpusfm update-notice — publish and print the informational post-update notice.
 
-The installer calls this as its FINAL line after restarting the service, so a CLI install shows the
-same notice the web first-load banner shows. The stable command is retained as an installer contract;
-it performs no storage, index, queue or migration work.
+The installer calls this as its FINAL line after restarting the service, so a CLI install reports the
+update without anyone opening a browser. It prints the DURABLE narrative — version, release lines and
+any recommendation — which since packet 1359 is deliberately NOT what the transient web toast shows:
+that toast carries the recommendation sentence alone, and appears only when there is one. The stable
+command is retained as an installer contract; it performs no storage, index, queue or migration work.
 """
 from __future__ import annotations
 

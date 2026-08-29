@@ -55,13 +55,22 @@ _NO_SOURCE = "\x00no-source"               # unknown/untrusted origin → its ow
 
 
 def _db_path() -> Path:
-    """The box-local throttle DB (``~/.corpusfm/login_throttle.sqlite3``). Overridable via
-    ``CORPUSFM_LOGIN_THROTTLE_DB`` for tests / non-standard installs."""
+    """The box-local throttle DB, in the application's own **durable mutable state** directory.
+    Overridable via ``CORPUSFM_LOGIN_THROTTLE_DB`` for tests / non-standard installs.
+
+    NOT the install marker's directory (packet 1333). That was the old derivation and it never
+    worked on a published installation: the installer creates ``/etc/corpusfm`` root-owned 0755 on
+    purpose — "only state, logs and run are writable by the service" — and pre-creates exactly ONE
+    application-owned file there, the marker itself, "without granting directory mutation". So this
+    store could never be created, every login logged `unable to open database file`, and the throttle
+    fail-opened on every attempt from install day. `app_paths.state_dir()` is the published
+    cross-platform contract for durable service-owned state; the development layout resolves it too.
+    """
     override = os.environ.get("CORPUSFM_LOGIN_THROTTLE_DB")
     if override:
         return Path(override)
-    from corpusfm.install import marker_path
-    return marker_path().parent / "login_throttle.sqlite3"
+    from corpusfm.lifecycle import app_paths
+    return app_paths.state_dir() / "login_throttle.sqlite3"
 
 
 def _connect() -> sqlite3.Connection:

@@ -164,7 +164,12 @@
     <button type="button" class="conn-dismiss" @click="offline = false" aria-label="Dismiss">&times;</button>
   </div>
 
-  {# Informational post-update notice. Shown once, then dismissed (server-gated per box). #}
+  {# Post-update ACTION WARNING (packet 1359). The server raises it only when the crossed release
+     window recommends re-ingestion, and its text is that one sentence — no version, no release
+     description, no instruction. This is not a place to document application changes; the durable
+     narrative lives in About and in the `corpusfm update-notice` CLI. Icon, text, dismiss: the
+     "Review artifacts" link was removed with the rest, because a warning does not need to navigate
+     for the reader. Shown once, then dismissed (server-gated per box). #}
   <div class="update-notice-banner" x-show="!!updateNotice" x-cloak x-transition.opacity>
     <span class="update-notice-icon" aria-hidden="true"><svg viewBox="0 0 20 20" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 5.5a6.5 6.5 0 1 0 1.4 4.5"/><path d="M16.5 3v3.2h-3.2"/></svg></span>
     <span class="update-notice-text" x-text="updateNotice ? updateNotice.text : ''"></span>
@@ -215,9 +220,14 @@
         <a title="Tags" href="{{ url_prefix }}/tags" class="nav-link {% if route_path == '/tags' %}active{% endif %}" :class="tierBlocked(1) && 'nav-link--gated'">
           <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 9.5V3.5a1 1 0 0 1 1-1h6L17 9.9a1 1 0 0 1 0 1.4l-5.2 5.2a1 1 0 0 1-1.4 0L2.5 9.5z"/><circle cx="6.2" cy="6.2" r="1.1" fill="currentColor" stroke="none"/></svg></span> Tags
         </a>
+        {# MCP connection self-service is per-USER, so it exists only on the server deployment; the
+           local development path has no user concept and the page refuses there (packet 1332). This is
+           DEPLOYMENT availability, not a gate — Artifacts and Tags above stay locally available. #}
+        {% if mode == 'server' %}
         <a title="MCP" href="{{ url_prefix }}/mcp-access" class="nav-link {% if route_path == '/mcp-access' %}active{% endif %}">
           <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 13l-2.5 2.5a2.1 2.1 0 0 1-3-3L4 10"/><path d="M13 7l2.5-2.5a2.1 2.1 0 0 1 3 3L16 10"/><path d="M8 12l4-4"/></svg></span> MCP
         </a>
+        {% endif %}
         {% endif %}
         {% if g_patch %}
         <a title="ISV Tool" href="{{ url_prefix }}/isv" class="nav-link {% if route_path == '/isv' %}active{% endif %}" :class="(tierBlocked(1) || tierBlocked(2)) && 'nav-link--gated'">
@@ -617,7 +627,7 @@
         updateAvailable: false,
         updateVersion: '',
         currentVersion: '{{ version }}',
-        updateNotice: null,          // informational post-update notice, shown once
+        updateNotice: null,          // post-update action warning; null unless one is owed
 
         // App-wide enrichment queue — the live state lives in the Alpine $store.queue (so the
         // Artifacts page can read $store.queue.active to gate its buttons). The chip binds to it;
@@ -909,6 +919,22 @@
           return false;
         },
         _startUpdateCheck() {
+          // An ADMIN shell already receives a full classification from the waiting-update prompt
+          // (packet 1341). Reuse it instead of making a second passive check — the scope requires one
+          // classification per admin shell load, and the prompt's own fetch is the one that counts.
+          if (this._updateInfoWired === undefined) {
+            this._updateInfoWired = true;
+            window.addEventListener('cfm-update-info', ev => {
+              const d = (ev && ev.detail) || {};
+              this._updateInfoSeen = true;
+              this.updateAvailable = !!d.update_available;
+              this.updateVersion = d.latest_version || '';
+              try {
+                localStorage.setItem('cfm_upd_available', d.update_available ? '1' : '0');
+                if (d.latest_version) localStorage.setItem('cfm_upd_version', d.latest_version);
+              } catch (_) {}
+            });
+          }
           try {
             const cachedVer = localStorage.getItem('cfm_upd_version') || '';
             if (localStorage.getItem('cfm_upd_available') === '1' && this._verGt(cachedVer, this.currentVersion)) {
@@ -951,8 +977,10 @@
           } catch (_) {}
         },
 
-        // Informational post-update notice: shown once after an update (server gates it on a
-        // per-box dismissed-version), then dismissed. Distinct from the "update available" badge above.
+        // Post-update ACTION WARNING: the server returns a payload only when the crossed release
+        // window recommends re-ingestion, so an ordinary update fetches {} and nothing is shown
+        // (packet 1359). Gated per box on a dismissed-version. Distinct from the "update available"
+        // badge above, and from About, which keeps the durable release narrative.
         async _loadUpdateNotice() {
           try {
             const r = await fetch('/api/settings/update-notice', { cache: 'no-store' });
@@ -1216,6 +1244,56 @@
   </script>
 
 
+{# ══ A waiting update, once per update, per administrator (packet 1341) ══════════════════════
+   The box finds updates with nobody watching — one box-wide observation every two hours from a daemon
+   thread — so what it discovers has no one to tell until someone signs in.
+
+   It does NOT apply. Its action opens Settings → Updates, which stays the only surface that confirms,
+   pins the exact head, applies, waits for the restart and handles target_changed. One apply path, one
+   consent pin.
+
+   The two exits are Skip and the Settings action — no Escape, no click-away, no unlabelled close: the
+   developer asked for semi-annoying, and a modal dismissed by accident is not that. #}
+  <div class="cfm-overlay" id="update-waiting" x-data="updateWaitingPrompt()" x-show="show" x-cloak
+       @keydown.escape.window.prevent
+       x-effect="show ? $nextTick(() => { _trap = window.cfmFocusTrap($refs.uwDlg) }) : (_trap && _trap())">
+    <div class="cfm-dialog" x-ref="uwDlg" role="dialog" aria-modal="true" aria-labelledby="uw-title"
+         style="max-width:40rem">
+      <div class="cfm-dialog-hdr">
+        <span class="cfm-dialog-title" id="uw-title">An update is waiting</span>
+      </div>
+      <div class="cfm-dialog-body">
+        {# `latest_version`/`current_version` already carry their `0.` prefix (updater.py), so only
+           the `v` is added here. Prepending `v0.` rendered `v0.0.1400`. #}
+        <p><strong x-text="'v' + (info.latest_version || '?')"></strong>
+           <span class="cfm-muted" x-text="' — this box is on v' + (info.current_version || '?')"></span></p>
+        <p class="cfm-muted" style="font-family:var(--mono,monospace);font-size:12px"
+           x-text="(info.target_head || '').slice(0, 12)"></p>
+        <template x-if="!info.installer_required">
+          <p class="cfm-muted">Nothing is applied from here. Review and apply it in Settings, where the
+            exact target is confirmed before anything runs.</p>
+        </template>
+        <template x-if="info.installer_required">
+          <div>
+            <p><strong>This update needs the installer.</strong> The in-app updater cannot perform it.</p>
+            <p class="cfm-muted" x-show="info.installer_reason" x-text="info.installer_reason"></p>
+            <p class="cfm-muted" x-show="info.upgrade_command"
+               style="font-family:var(--mono,monospace);font-size:12px" x-text="info.upgrade_command"></p>
+          </div>
+        </template>
+        <p class="cfm-inline-error" x-show="error" x-text="error"></p>
+      </div>
+      <div class="cfm-dialog-ftr">
+        <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!busy" @click="skip()">Skip this update</button>
+        <span class="cfm-spacer"></span>
+        <a class="cfm-btn cfm-btn--sm cfm-btn--primary"
+           :href="(window.CFM_PREFIX || '') + '/settings#updates'"
+           @click="markOffered()"
+           x-text="info.installer_required ? 'Open Settings' : 'Review and apply'"></a>
+      </div>
+    </div>
+  </div>
+
 {# ══ First sign-in: confirm the MCP address (packet 1326) ═══════════════════════════════════════
    ONE item, once per INSTALLATION, for a settings-gated user in server mode. The box asserts its own
    MCP address at startup from locally DETECTED evidence, and everything binds to it — the OAuth
@@ -1314,6 +1392,44 @@
 
 {% if mode == 'server' and authenticated and g_admin %}
 <script>
+  function updateWaitingPrompt() {
+    return {
+      show: false, busy: false, error: '', info: {},
+      init() {
+        // ONE passive classification per admin shell load. The sidebar badge reads this same
+        // response rather than making a second check (packet 1341).
+        fetch((window.CFM_PREFIX || '') + '/api/settings/update-prompt')
+          .then(r => r.ok ? r.json() : null)
+          .then(d => {
+            if (!d) return;
+            this.info = d;
+            this.show = !!d.show;
+            try { window.dispatchEvent(new CustomEvent('cfm-update-info', { detail: d })); } catch (_) {}
+          })
+          .catch(() => {});
+      },
+      markOffered() {
+        // Session-local ONLY: stops Settings stacking the same prompt during this visit. It is NOT the
+        // durable skip — leaving without applying keeps this head eligible at a later sign-in.
+        try { sessionStorage.setItem('cfm-update-offered', this.info.target_head || ''); } catch (_) {}
+      },
+      async skip() {
+        this.busy = true; this.error = '';
+        try {
+          const r = await fetch((window.CFM_PREFIX || '') + '/api/settings/update-prompt/skip', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expected_head: this.info.target_head || '' }),
+          });
+          const d = await r.json();
+          if (!d.ok) { this.error = d.error || 'The skip could not be saved.'; return; }
+          this.show = false;
+        } catch (e) {
+          this.error = String(e);
+        } finally { this.busy = false; }
+      },
+    };
+  }
+
   function initialMcpAddress() {
     return {
       show: false, addr: {}, candidates: [], warning: '', err: '', busy: false, busyMsg: '', chosen: '',

@@ -22,6 +22,23 @@ logger = logging.getLogger(__name__)
 
 RELEASE_MARKERS: list = [
     # {"build": <int>, "whats_new": "<one line>"},
+    # Packet 1353. The parser paired a ModifyAction layout projection by display name and
+    # overwrote whatever entry shared it, so layouts and folders were dropped, folder paths
+    # were mis-parented, and a projection replaced the layout body it belonged to. Every
+    # affected value is ingest-derived — items, rendered_text, folder_path, xref and
+    # dead-end analysis — so an artifact ingested before this build still carries the old
+    # answers. Advisory only: an administrator chooses the manual bulk Re-ingest.
+    {"build": 2727, "whats_new": "Layout catalog fidelity fix: layouts and folders no "
+                                 "longer overwritten by a modification fragment",
+     "reingest_recommended": True},
+    # Packet 1358. A value list referenced by id alone reached none of the UUID-keyed maps the
+    # xref projection read, so the artifact carried no LayoutValueList / FieldValidation /
+    # RelationshipSort / ScriptSort edge for it while dead-end analysis called the same value
+    # list live. The edges are derived at ingest and the self-heal cannot invent one in a stored
+    # artifact, so an artifact ingested before this build keeps the gap. Advisory only.
+    {"build": 2735, "whats_new": "Value-list references now resolve by catalog identity, so "
+                                 "an id-only reference produces its cross-reference edge",
+     "reingest_recommended": True},
 ]
 
 _OBSERVE_SECONDS = 2.0
@@ -123,13 +140,29 @@ def _save_state(state: dict) -> None:
 
 
 def pending_actions(last_seen: int, current: int) -> dict:
-    """Collect informational lines from markers in ``(last_seen, current]``."""
+    """Collect informational lines from markers in ``(last_seen, current]``.
+
+    `reingest_recommended` is ORed across the whole skipped-build window, so an administrator who
+    skips several releases still learns that one of them changed ingest-derived data. It is NOTICE
+    DATA, never an imperative (packet 1342): the release author is the single authority, and nothing
+    here inspects `whats_new`, file paths, changed modules, artifact render versions or xref shapes to
+    infer it.
+
+    The retired `reingest` key is deliberately NOT read. Packet 1062 made one flag mean both "this
+    changed" and "you may mutate the box", and packet 1304 retired the mutation half after finding it
+    could outrun its own completion marker. Old execution vocabulary must not silently regain meaning.
+    """
     whats_new = []
+    reingest_recommended = False
     for marker in RELEASE_MARKERS:
         build = int(marker.get("build", 0) or 0)
-        if last_seen < build <= current and marker.get("whats_new"):
+        if not (last_seen < build <= current):
+            continue
+        if marker.get("whats_new"):
             whats_new.append(str(marker["whats_new"]))
-    return {"whats_new": whats_new}
+        if marker.get("reingest_recommended"):
+            reingest_recommended = True
+    return {"whats_new": whats_new, "reingest_recommended": reingest_recommended}
 
 
 def _flow_lock_path() -> Path:
@@ -207,12 +240,27 @@ def _run_update_flow_locked() -> dict:
 
     actions = pending_actions(last_seen_build, current)
     result = {"ok": True, "action": "update", "version": current,
-              "prev_version": last_seen_build, "whats_new": actions["whats_new"]}
+              "prev_version": last_seen_build, "whats_new": actions["whats_new"],
+              # Persisted on the newly published notice only. Older `last_notice.detail` objects omit
+              # the key and therefore read as False — additive, so no state migration or rewrite.
+              "reingest_recommended": bool(actions.get("reingest_recommended"))}
     result["notice"] = notice_text(result)
     state["last_seen_version"] = current
     state["last_notice"] = {"version": current, "text": result["notice"], "detail": result}
     _save_state(state)
     return result
+
+
+#: One bounded sentence. Deliberately not "required", "queued", "refreshing" or "in progress": the
+#: product is recommending, and the administrator decides.
+#:
+#: It used to continue "An administrator can choose Re-ingest from Artifacts." — an instruction nobody
+#: asked for, on a surface that is not documentation. Removed by packet 1359, which also split the two
+#: audiences: this sentence IS the whole transient web toast, while About and the
+#: `corpusfm update-notice` CLI keep the version and release narrative around it because they are
+#: durable update-information surfaces. The identical-text rule from packet 1342 no longer holds, and
+#: no comment should claim it does.
+REINGEST_SENTENCE = "Re-ingestion is recommended to refresh stored analysis."
 
 
 def notice_text(result: dict) -> str:
@@ -222,22 +270,55 @@ def notice_text(result: dict) -> str:
     lines = result.get("whats_new") or []
     if lines:
         text.append(" ".join(line.rstrip(".") + "." for line in lines))
+    if result.get("reingest_recommended"):
+        text.append(REINGEST_SENTENCE)
     return " ".join(text)
 
 
+def _recommended(notice: dict) -> bool:
+    """Whether the STORED notice carried the recommendation. Absent on older records → False."""
+    detail = notice.get("detail")
+    return bool(isinstance(detail, dict) and detail.get("reingest_recommended"))
+
+
 def current_notice() -> dict:
+    """The transient web toast — an ACTION WARNING, and only that (packet 1359).
+
+    It appears only when the crossed release window recommended re-ingestion, and it carries the
+    recommendation sentence and nothing else: no version, no release description, no instruction.
+    Measured before the change: an update from 2662 to 2736 produced 342 characters of release notes,
+    and an ordinary update carrying no recommendation at all still raised a toast — so the surface was
+    a general release-note channel rather than a warning.
+
+    The text is derived from the stored `reingest_recommended` flag, NOT copied from the persisted
+    narrative, so the toast cannot drift back into documentation as release copy changes. The durable
+    record is untouched: `about_notice()` still returns the full narrative, and the stored state keeps
+    its shape, so an already-published notice renders correctly with no migration. A record predating
+    the flag reads as not recommended and shows no toast.
+    """
     state = _load_state()
     notice = state.get("last_notice") or {}
     if not notice or not notice.get("text"):
         return {}
+    if not _recommended(notice):
+        return {}
     if int(notice.get("version", 0)) <= int(state.get("notice_dismissed_version", 0)):
         return {}
-    return {"version": notice.get("version"), "text": notice.get("text")}
+    return {"version": notice.get("version"), "text": REINGEST_SENTENCE,
+            "reingest_recommended": True}
 
 
 def about_notice() -> dict:
+    """The durable record, kept after the toast is dismissed — including the recommendation, so an
+    administrator who dismissed the toast can still find it and act later.
+
+    Unlike the toast this IS an update-information surface, so it keeps the version and the release
+    narrative. The two have carried different text since packet 1359."""
     notice = _load_state().get("last_notice") or {}
-    return {"version": notice.get("version"), "text": notice.get("text")} if notice.get("text") else {}
+    if not notice.get("text"):
+        return {}
+    return {"version": notice.get("version"), "text": notice.get("text"),
+            "reingest_recommended": _recommended(notice)}
 
 
 def dismiss_notice() -> None:

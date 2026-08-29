@@ -40,16 +40,29 @@ class DiscoveredFile:
     name: str        # bare name, no .fmp12 — the identity used everywhere else
     filename: str    # exactly as FMS returned it (may carry .fmp12)
     is_self: bool     # the storage backend DB (from Settings) — shown, badged, patch-guarded
+    #: FMS runtime status verbatim (NORMAL / CLOSED / OPENING / CLOSING), "" when the scan did not
+    #: carry one. Only `closed` is ever derived from it for the browser (packet 1330).
+    status: str = ""
+
+    @property
+    def closed(self) -> "bool | None":
+        """True/False against the one open-state vocabulary, or **None when no status was reported**.
+
+        None is not closed. An omitted status asserts nothing — see `HostedDatabase.open`."""
+        from corpusfm.server.fms_admin_pki import _OPEN_RUNTIME
+        if not self.status:
+            return None
+        return self.status.upper() not in _OPEN_RUNTIME
 
 
 def strip_ext(filename: str) -> str:
     return filename[:-6] if filename.lower().endswith(".fmp12") else filename
 
 
-def classify(filename: str, *, self_names: set[str]) -> DiscoveredFile:
+def classify(filename: str, *, self_names: set[str], status: str = "") -> DiscoveredFile:
     bare = strip_ext(filename)
     is_self = bare.lower() in {s.lower() for s in self_names}
-    return DiscoveredFile(name=bare, filename=filename, is_self=is_self)
+    return DiscoveredFile(name=bare, filename=filename, is_self=is_self, status=status)
 
 
 def is_self_name(name: str) -> bool:
@@ -64,8 +77,17 @@ def is_self_name(name: str) -> bool:
 
 
 def classify_all(filenames: Iterable[str], *, self_names: set[str]) -> list[DiscoveredFile]:
-    """Normalize + classify a list of FMS filenames; skip blanks; sort by name."""
-    out = [classify(f, self_names=self_names) for f in filenames if f and f.strip()]
+    """Normalize + classify a list of FMS filenames; skip blanks; sort by name.
+
+    Accepts plain filenames or `HostedDatabase` records; a record carries its runtime status through."""
+    out = []
+    for f in filenames:
+        if hasattr(f, "filename"):                      # a HostedDatabase projection
+            if not f.filename.strip():
+                continue
+            out.append(classify(f.filename, self_names=self_names, status=f.status))
+        elif f and f.strip():
+            out.append(classify(f, self_names=self_names))
     return sorted(out, key=lambda d: d.name.lower())
 
 
@@ -79,8 +101,10 @@ def _self_names() -> set[str]:
         return set()
 
 
-def discover_hosted_files() -> list[str]:
-    """Live: PKI-auth → list_databases → logout. Returns raw filenames (with .fmp12).
+def discover_hosted_files() -> list:
+    """Live: PKI-auth → list_hosted_databases → logout. Returns `HostedDatabase` projections, each
+    carrying the filename and the runtime status (packet 1330); the same single
+    authenticate/list/logout sequence as before, with no extra Admin API session.
 
     Raises FileDiscoveryUnavailable when this installation's Admin API identity cannot be used —
     carrying the resolver's own REASON, so "none was published", "it is there and unreadable" and
@@ -103,7 +127,7 @@ def discover_hosted_files() -> list[str]:
     host = cfg["host"]
     token = pki.authenticate(host, cfg["name"], cfg["private_pem"])
     try:
-        return pki.list_databases(host, token)
+        return pki.list_hosted_databases(host, token)
     finally:
         pki.logout(host, token)
 

@@ -42,7 +42,8 @@
     <span class="cfm-badge cfm-badge--ok">automated</span> ·
     <span class="cfm-badge cfm-badge--warn">automatable</span> ·
     <span class="cfm-badge cfm-badge--broken">broken</span> ·
-    <span class="cfm-badge cfm-badge--idle">missing</span>.
+    <span class="cfm-badge cfm-badge--idle">missing</span> — a file that is closed on the server counts
+    as missing here, because it cannot be pulled; the file's pop-over says which it is.
   </p>
 
   <template x-if="files.length > 0">
@@ -80,7 +81,7 @@
             </div>
           </template>
           <template x-if="!f.job_count">
-            <div class="cfm-card-sub" x-text="f.missing ? 'Missing' : 'Not automated'"></div>
+            <div class="cfm-card-sub" x-text="(f.missing || f.closed) ? 'Missing' : 'Not automated'"></div>
           </template>
           <div class="cfm-card-sub" x-show="f.job_count && (f.last_run || f.next_run)">
             <span x-show="f.last_run" x-text="'last ' + f.last_run + (f.last_status ? (f.last_status === 'ok' ? ' ✓' : ' ✗') : '')"></span>
@@ -185,6 +186,12 @@
                   <span class="cfm-badge cfm-badge--muted" x-text="(detail.job_count || 0) + ' job' + ((detail.job_count === 1) ? '' : 's')"></span>
                   <template x-if="detail.needs_credential"><span class="cfm-badge cfm-badge--warn">needs credentials</span></template>
                   <template x-if="detail.all_verified"><span class="cfm-badge cfm-badge--ok">all verified</span></template>
+                  <template x-if="detail.missing">
+                    <span class="cfm-badge cfm-badge--idle">Not hosted</span>
+                  </template>
+                  <template x-if="detail.closed && !detail.missing">
+                    <span class="cfm-badge cfm-badge--idle">Closed on FileMaker Server</span>
+                  </template>
                   <template x-if="detail.is_self">
                     <span class="cfm-badge cfm-badge--muted">storage DB — pulls allowed, patch tools won't touch it</span>
                   </template>
@@ -502,8 +509,13 @@
 const FILE_READINESS_REASONS = {
   ok: 'Provable',
   no_credential: 'No credentials',
-  bad_creds: 'Bad credentials',
-  no_addon: 'Addon not installed',
+  bad_creds: 'Invalid account or password',
+  script_not_found: 'Export script not found (missing, or not visible to this account)',
+  file_closed: 'File is closed on FileMaker Server',
+  odata_not_enabled: 'OData is not enabled on this file',
+  not_hosted: 'File is not hosted on this server',
+  no_access: 'The account cannot open this file (password or access rights)',
+  file_unreachable: 'The file could not be opened, and the server inventory could not be read',
   odata_unreachable: 'OData unreachable',
   script_disabled: 'Export script disabled',
   error: 'Error',
@@ -642,13 +654,21 @@ function jobsPage() {
       return this.jobForm ? (this.gitRegs.find(r => r.name === this.jobForm.git_reg) || null) : null;
     },
 
-    // Gallery: filter (search) then sort by health — broken/amber float up.
+    // Gallery: filter (search) then sort by [job tier, health, name] (packet 1330). Files WITH jobs
+    // rank above files without; within either tier: broken, automated, automatable, missing. The
+    // tiers do not overlap in reachable health — a job-having file is never 'warn', a job-less one is
+    // never 'broken'/'ok' — so one rank table serves both. A closed job-having file stays in the job
+    // tier and sorts last within it.
     get visibleFiles() {
-      const rank = { broken: 0, ok: 1, idle: 2, warn: 3 };  // red → green → grey → amber
+      const rank = { broken: 0, ok: 1, warn: 2, idle: 3 };  // red → green → amber → grey
+      const tier = f => (f.job_count ? 0 : 1);
       let fs = this.files.slice();
       const q = this.fileSearch.trim().toLowerCase();
       if (q) fs = fs.filter(f => (f.name || '').toLowerCase().includes(q));
-      return fs.sort((a, b) => (rank[this.health(a)] - rank[this.health(b)]) || a.name.localeCompare(b.name));
+      return fs.sort((a, b) =>
+        (tier(a) - tier(b))
+        || (rank[this.health(a)] - rank[this.health(b)])
+        || a.name.localeCompare(b.name));
     },
 
     // The empty state must tell THREE situations apart (packet 1227). It used to say one thing —
@@ -751,18 +771,21 @@ function jobsPage() {
     // deactivated file; every PRESENT-but-not-automated file is AMBER (warn) — it's automatable,
     // just not automated yet. has jobs + last error → red; has jobs → green.
     health(f) {
-      if (f.missing) return 'idle';                              // gray — gone/deactivated
+      // A file CORPUSfm cannot reach wins before any job state (packet 1330). A closed file cannot be
+      // pulled at all — the schema XML comes from FileMaker running a script INSIDE the open file — so
+      // painting it amber/automatable was a false claim. Missing and closed are different facts and
+      // the pop-over says which; the gallery keeps one word for both, by developer ruling.
+      if (f.missing || f.closed) return 'idle';                  // gray — not reachable right now
       if (f.job_count && f.last_status === 'error') return 'broken';  // red — automated but last run failed
       if (f.job_count) return 'ok';                              // green — automated
-      return 'warn';                                             // amber — present, automatable
+      return 'warn';                                             // amber — open and automatable
     },
     healthWord(f) {
-      if (f.missing) return 'Missing';
+      if (f.missing || f.closed) return 'Missing';
       const h = this.health(f);
       if (h === 'ok') return 'Automated';
       if (h === 'broken') return 'Broken';
-      if (h === 'warn') return 'Set up';
-      return 'Idle';
+      return 'Automatable';                                      // warn — the only state left
     },
 
     // An error must never blank the visible list (packet 1227, defect 2). `/api/files` answers 200

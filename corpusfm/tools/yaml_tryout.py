@@ -77,7 +77,8 @@ def _steps_unknown(result, structure_raw: dict, version: str) -> list:
     from corpusfm.core.structure_catalog.miner import mine
     catalog = build_structure_catalog(structure_raw, version)
     fields_section = (result.section_xml or {}).get("FieldsForTables", {})
-    snap = mine(step_xml=result.step_xml or {}, fields_section_xml=fields_section, catalog=catalog)
+    snap = mine(step_xml=(result.step_xml_by_identity or result.step_xml or {}),
+                fields_section_xml=fields_section, catalog=catalog)
     return list(snap.steps_unknown)
 
 

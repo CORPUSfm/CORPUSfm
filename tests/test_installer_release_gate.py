@@ -127,6 +127,9 @@ def test_live_lanes_use_verified_zips_and_current_fixed_roots():
     assert '"sudo /opt/CORPUSfm/uninstall.sh --yes"' in LIVE_SRC
     assert "C:\\\\Program Files\\\\CORPUSfm\\\\uninstall.ps1" in LIVE_SRC
     assert "C:\\\\Program Files\\\\CORPUSfm" in LIVE_SRC
+    assert '"--install-dir /opt/CORPUSfm "' in LIVE_SRC
+    assert '"--fms-root \\\"/opt/FileMaker/FileMaker Server\\\" "' in LIVE_SRC
+    assert '"--patch-hosting-dir /opt/CORPUSfm-Hosted\'"' in LIVE_SRC
     assert 'str(root / "installer/linux/install.sh")' not in LIVE_SRC
     assert 'str(root / "installer/windows/install.ps1")' not in LIVE_SRC
 
@@ -136,6 +139,57 @@ def test_live_lanes_do_not_send_retired_credential_flags_or_passwords_on_argv():
         assert retired not in LIVE_SRC
     assert "stdin_text=secret_input" in LIVE_SRC
     assert "stdin_text=answers" in LIVE_SRC
+
+
+def test_windows_console_answers_use_carriage_return_not_unix_line_feed():
+    # Windows OpenSSH -tt presents Read-Host with conhost semantics: Enter is CR.  LF merely joins
+    # the next answer to the current input line, then EOF can leave the installed product in place.
+    windows_lane = LIVE_SRC[LIVE_SRC.index("def _win_lane"):]
+    assert 'answers = f"admin\\r{fm_pw}\\radmin\\r{fm_pw}\\r"' in windows_lane
+    assert 'answers = f"admin\\n{fm_pw}\\nadmin\\n{fm_pw}\\n"' not in windows_lane
+
+
+def test_windows_prompted_uninstall_uses_a_real_local_pty(monkeypatch):
+    called = {}
+
+    def fake_dialog(argv, timeout, stdin_text):
+        called.update(argv=argv, timeout=timeout, stdin_text=stdin_text)
+        return 0, "dialog complete"
+
+    def pipe_must_not_run(*_args, **_kwargs):
+        raise AssertionError("a pipe cannot drive Windows Read-Host")
+
+    monkeypatch.setattr(rg_live, "_run_windows_tty_dialog", fake_dialog)
+    monkeypatch.setattr(rg_live, "_run", pipe_must_not_run)
+
+    class NoSecrets:
+        @staticmethod
+        def redact(value):
+            return value
+
+    answers = "admin\rpassword\radmin\rpassword\r"
+    rc, out = rg_live._pssh("windows", "uninstall", NoSecrets(), timeout=321,
+                            stdin_text=answers, tty=True)
+    assert rc == 0 and out == "dialog complete"
+    assert called["timeout"] == 321 and called["stdin_text"] == answers
+    assert "-tt" in called["argv"]
+
+
+def test_windows_install_call_does_not_redirect_the_script_streams():
+    # PowerShell 5.1 promotes nested native stderr under a call-boundary *> redirect.  With the
+    # installer's Stop policy, ordinary Git clone progress then terminates a clean first install.
+    windows_lane = LIVE_SRC[LIVE_SRC.index("def _win_lane"):]
+    install_call = windows_lane[windows_lane.index("inst_cmd ="):windows_lane.index("rc, irc =")]
+    assert "install.ps1' -Silent -Yes; " in install_call
+    assert "*> $null" not in install_call
+
+
+def test_linux_health_reads_the_published_storage_authority_and_exact_service_load_states():
+    linux_lane = LIVE_SRC[LIVE_SRC.index("def _linux_lane"):LIVE_SRC.index("def _win_clean")]
+    assert "runtime_storage.backend()" in linux_lane
+    assert "FileMakerODataBackend" in linux_lane
+    assert "systemctl show -p LoadState" in linux_lane
+    assert "systemctl list-units --all" not in linux_lane
 
 
 def test_package_identity_binds_version_commit_zip_and_sidecar(tmp_path):

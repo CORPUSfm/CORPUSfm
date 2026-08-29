@@ -15,8 +15,17 @@ _BACKUP_COUNT = 3
 _FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 _DATE_FMT = "%Y-%m-%d %H:%M:%S"
 
-# Third-party loggers that produce too much noise at INFO
-_QUIET = ("watchdog", "urllib3", "httpx", "httpcore", "asyncio", "git")
+# Third-party loggers that produce too much noise at INFO.
+_QUIET = ("watchdog", "httpx", "httpcore", "asyncio", "git")
+
+# urllib3 needs a HIGHER floor than the rest, and only after the application reports channel
+# availability itself (packet 1334). Its per-retry record is emitted at WARNING, so the WARNING floor
+# above sat directly beneath the one message that floods: a measured three-hour storage outage wrote
+# 8,832 lines, 8,832 of them this record, rotating away the log's whole retention while the
+# application said nothing. `fm_odata` now reports one warning per down episode and one on recovery,
+# which is the information an operator needs; the per-attempt chatter is not. A genuine urllib3 ERROR
+# still reaches the log.
+_QUIET_ERROR = ("urllib3",)
 
 _configured = False
 
@@ -28,6 +37,18 @@ def log_dir() -> Path:
 
 def log_path() -> Path:
     return log_dir() / "corpusfm.log"
+
+
+def backup_count() -> int:
+    """How many rotations the handler keeps. Public so the reader need not copy the number."""
+    return _BACKUP_COUNT
+
+
+def rotation_family() -> list:
+    """Newest → oldest: ``corpusfm.log``, ``.log.1`` … ``.log.N``. Existence is NOT checked here;
+    the caller skips members that are missing or unreadable (rotation is a live race)."""
+    base = log_path()
+    return [base] + [base.with_name(base.name + f".{i}") for i in range(1, _BACKUP_COUNT + 1)]
 
 
 def setup_logging(level: int = logging.INFO, _log_file: Path = None) -> Path:
@@ -59,6 +80,8 @@ def setup_logging(level: int = logging.INFO, _log_file: Path = None) -> Path:
 
     for name in _QUIET:
         logging.getLogger(name).setLevel(logging.WARNING)
+    for name in _QUIET_ERROR:
+        logging.getLogger(name).setLevel(logging.ERROR)
 
     return path
 

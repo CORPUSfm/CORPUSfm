@@ -186,13 +186,19 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
    otherwise clip it (acutely on short dialogs). top/left/min-width are set live on open; the
    off-screen default prevents a pre-position flash. */
 .cfm-dd-menu {
-/* 24 hours or 60 minutes do not fit a screen; every other cfm-dd menu is short enough not to. */
-.cfm-dd-menu--scroll { max-height: 260px; overflow-y: auto; }
   position: fixed; z-index: 300; top: -9999px; left: 0; min-width: 140px;
   max-height: 320px; overflow-y: auto;
   background: var(--surface); border: 1px solid var(--border-2); border-radius: var(--radius);
   box-shadow: 0 8px 28px rgba(0,0,0,.45); padding: 4px;
 }
+/* 24 hours or 60 minutes do not fit a screen; every other cfm-dd menu is short enough not to.
+   AFTER the base rule, deliberately (packet 1343): both selectors have one-class specificity, so
+   placed before it the base rule's later `max-height: 320px` would still win. It was previously
+   nested INSIDE `.cfm-dd-menu`, which a browser reads as `& .cfm-dd-menu--scroll` — a DESCENDANT
+   selector — and both consumers compose the modifier on the same element, so it never matched.
+   `overflow-y` is restated rather than inherited from the base: this rule owns the scroll cap and
+   should be a complete statement of it. */
+.cfm-dd-menu--scroll { max-height: 260px; overflow-y: auto; }
 .cfm-dd-opt {
   display: block; width: 100%; text-align: left; font: inherit; font-size: 13px;
   min-height: 32px; padding: 7px 10px; border: 0; border-radius: 3px;

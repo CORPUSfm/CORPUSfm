@@ -11,6 +11,8 @@ Public API:
 from __future__ import annotations
 
 import re as _re
+from collections import Counter
+
 from corpusfm.core import safe_xml as ET
 from dataclasses import dataclass, field
 
@@ -39,7 +41,7 @@ from dataclasses import dataclass, field
 #       source, so when the formula lives in the PRIMARY CustomFunctionsCatalog <Calculation><Text>
 #       (the FM2026/SaveAsXML case) the body was signature-only. Now reads the primary first,
 #       falls back to the supplemental source. CustomFunctionsCatalog.
-RENDER_VERSION = 10
+RENDER_VERSION = 11
 
 @dataclass
 class RenderedItem:
@@ -1020,6 +1022,94 @@ def render_field(name: str, xml_str: str, **kwargs) -> RenderedItem:
     return RenderedItem(name=name, summary=summary, body=body, xml_str=xml_str)
 
 
+#: Bounds for the rendered object block (packet 1339). This text is PERSISTED in
+#: `ArtifactItem.rendered_text` and consumed by `git diff`, so its size must not track object count:
+#: one real file carried 10,270 layout objects, and a per-object dump would bloat every artifact and
+#: every export that embeds it.
+_OBJ_MAX_TYPES = 8        # distinct type labels before an `other` remainder
+_OBJ_MAX_DETAILS = 20     # meaningful binding/action lines
+_OBJ_LABEL_WIDTH = 60     # per-line truncation
+
+
+def _one_line(text: str) -> str:
+    """Collapse embedded newlines/control whitespace — a calculation must not break the block."""
+    return " ".join((text or "").split())
+
+
+def _trunc(text: str) -> str:
+    t = _one_line(text)
+    return t if len(t) <= _OBJ_LABEL_WIDTH else t[:_OBJ_LABEL_WIDTH - 1] + "…"
+
+
+def _layout_object_lines(xml_str: str) -> list:
+    """What is ON the layout, bounded (packet 1339).
+
+    `render_layout` used to read only layout-LEVEL metadata — context table, width, hidden, parts,
+    menu set, theme, triggers, margins — and never `PartsList`. So `(no detail)` did not mean "nothing
+    on this layout", it meant "no width or theme", and the 3,060 layouts that DID render said nothing
+    about their content either.
+
+    Geometry is deliberately absent: bounds, options, hide/conditional formulas belong to the
+    wireframe and the Diff/AI views, and duplicating them here would inflate every stored artifact.
+    """
+    from corpusfm.core.layout_objects import scan_layout_objects
+    scan = scan_layout_objects(xml_str)
+    if scan.parse_error:
+        return []
+    if not scan.objects:
+        # An UNKNOWN-ONLY layout is not an empty one. Returning [] here let a layout whose every
+        # object is an unrecognised form render "(no detail)" — the exact confident-empty answer this
+        # block exists to prevent (found by Codex review, 2026-08-26).
+        if scan.unexamined:
+            kinds = ", ".join(sorted({u["tag"] for u in scan.unexamined})[:3])
+            return [f"  Object analysis incomplete: {len(scan.unexamined)} unrecognized ({kinds})"]
+        return []
+
+    lines = ["  Objects: %d" % len(scan.objects)]
+    counts = Counter(o.type or "?" for o in scan.objects)
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    shown, remainder = ordered[:_OBJ_MAX_TYPES], ordered[_OBJ_MAX_TYPES:]
+    parts = [f"{t} {n}" for t, n in shown]
+    if remainder:
+        parts.append(f"other {sum(n for _, n in remainder)}")
+    lines.append("    " + ", ".join(parts))
+
+    #: Deduplicated by semantic tuple, so 100 repeated fields do not consume the budget.
+    seen: set = set()
+    details: list = []
+    for o in scan.objects:
+        for text in _object_detail_lines(o):
+            if text not in seen:
+                seen.add(text)
+                details.append(text)
+    for text in details[:_OBJ_MAX_DETAILS]:
+        lines.append("    " + text)
+    if len(details) > _OBJ_MAX_DETAILS:
+        lines.append(f"    … +{len(details) - _OBJ_MAX_DETAILS} more meaningful objects")
+    if scan.unexamined:
+        kinds = ", ".join(sorted({u["tag"] for u in scan.unexamined})[:3])
+        lines.append(f"    Object analysis incomplete: {len(scan.unexamined)} unrecognized ({kinds})")
+    return lines
+
+
+def _object_detail_lines(o) -> list:
+    """The bindings and actions that carry MEANING for one object. Geometry is not meaning."""
+    out: list = []
+    if o.field:
+        out.append(f"field {_trunc(f'{o.field_to}::{o.field}' if o.field_to else o.field)}")
+    if o.to and not o.field:
+        out.append(f"{_trunc(o.type)} context {_trunc(o.to)}")
+    if o.script:
+        out.append(f"{_trunc(o.type)} runs {_trunc(o.script)}")
+    for act in (o.actions or []):
+        target = act.get("layout") or act.get("to") or act.get("script")
+        if act.get("dynamic") or not target:
+            out.append(f"{_trunc(act.get('step', '?'))} → (computed)")
+        else:
+            out.append(f"{_trunc(act.get('step', '?'))} → {_trunc(target)}")
+    return out
+
+
 def render_layout(name: str, xml_str: str, **_) -> RenderedItem:
     try:
         elem = _parse(xml_str)
@@ -1078,6 +1168,8 @@ def render_layout(name: str, xml_str: str, **_) -> RenderedItem:
         l = margins.attrib.get("left", "")
         if any([t, r, b, l]):
             lines.append(f"  Fixed margins: top={t}  right={r}  bottom={b}  left={l}")
+
+    lines.extend(_layout_object_lines(xml_str))
 
     body = "\n".join(lines) if lines else "  (no detail)"
     return RenderedItem(name=name, summary=name, body=body, xml_str=xml_str)

@@ -30,6 +30,7 @@ import time
 from typing import Optional
 
 import urllib3
+from dataclasses import dataclass
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -358,8 +359,51 @@ def admin_api_request(
         logout(host, token, verify_ssl=verify_ssl)
 
 
-def list_databases(host: str, session_token: str, *, verify_ssl: bool = False) -> list[str]:
-    """List hosted database filenames using a session token (for connection test)."""
+#: The Admin API `databases` fields this product reads. A PROJECTION, not the FMS object: `clients`,
+#: encryption/decrypt metadata, `size`, `id` and any future key stay on the wire. A record that carries
+#: only what a caller needs cannot leak what it does not (packet 1330).
+@dataclass(frozen=True)
+class HostedDatabase:
+    filename: str            #: exactly as FMS returned it (carries `.fmp12`)
+    name: str                #: bare name — the identity used everywhere else
+    status: str              #: runtime status verbatim: NORMAL / CLOSED / OPENING / CLOSING / ""
+    ext_privileges: tuple    #: normalized `enabledExtPrivileges`, lowercased, order preserved
+
+    @property
+    def open(self) -> "bool | None":
+        """True/False against `_OPEN_RUNTIME`, or **None when FMS reported no status at all**.
+
+        None is not "closed". An omitted status asserts nothing — inventing a closed state from an
+        absent field would paint a live file gray. (Measured 2026-08-26: all 36 records on a live box
+        carried a status, so this is a defensive case, not the expected one.)"""
+        if not self.status:
+            return None
+        return self.status.upper() in _OPEN_RUNTIME
+
+
+def _hosted_database(record: dict) -> HostedDatabase:
+    """One Admin API `databases` entry -> the projection. Pure."""
+    filename = str(record.get("filename") or "")
+    privs = record.get("enabledExtPrivileges") or []
+    return HostedDatabase(
+        filename=filename,
+        name=strip_fmp12(filename),
+        status=str(record.get("status") or "").strip(),
+        ext_privileges=tuple(str(p).strip().lower() for p in privs if str(p).strip()),
+    )
+
+
+def strip_fmp12(filename: str) -> str:
+    """`Foo.fmp12` -> `Foo`. Kept here so the record primitive has no import cycle with discovery."""
+    return filename[:-6] if filename.lower().endswith(".fmp12") else filename
+
+
+def list_hosted_databases(host: str, session_token: str, *, verify_ssl: bool = False) -> list:
+    """The hosted databases as `HostedDatabase` projections (packet 1330).
+
+    Beside `list_databases`, not instead of it: the installed-identity Test, the remote-server Test and
+    remote discovery all consume the filename list, and widening that return type would pull unrelated
+    Settings contracts into this packet."""
     import requests
 
     resp = requests.get(
@@ -369,7 +413,15 @@ def list_databases(host: str, session_token: str, *, verify_ssl: bool = False) -
         timeout=30,
     )
     dbs = (resp.json().get("response") or {}).get("databases") or []
-    return [d.get("filename", "") for d in dbs]
+    return [_hosted_database(d) for d in dbs if d.get("filename")]
+
+
+def list_databases(host: str, session_token: str, *, verify_ssl: bool = False) -> list[str]:
+    """List hosted database filenames using a session token (for connection test).
+
+    The filename PROJECTION of `list_hosted_databases`. Its callers (Settings' PKI Test, the
+    remote-server Test, remote discovery) want names and nothing else; leave them that way."""
+    return [d.filename for d in list_hosted_databases(host, session_token, verify_ssl=verify_ssl)]
 
 
 # ── Database open/close via Admin API (no fmsadmin, no password) ─────────────

@@ -1,4 +1,4 @@
-"""Logs API — GET /api/logs, POST /api/logs/open-viewer"""
+"""Logs API — GET /api/logs (+ apply-metrics and action-history readers)."""
 
 from __future__ import annotations
 
@@ -10,30 +10,50 @@ from corpusfm.app.web.auth import require_auth
 router = APIRouter()
 
 
+# Synchronous on purpose (packet 1344): this is disk I/O, and FastAPI runs a `def` endpoint in its
+# threadpool. As `async def` it read megabytes on the web event loop.
 @router.get("/logs", dependencies=[Depends(require_auth)])
-async def get_logs(lines: int = 100, level: str = "ALL") -> JSONResponse:
+def get_logs(lines: int = 100, level: str = "ALL") -> JSONResponse:
+    """The newest `lines` matching `level`, across the whole rotation family (packet 1344).
+
+    Was: the current file only, a whole-file read to return a tail, and a level filter that tested
+    whether the level word appeared anywhere in the line. The response shape is unchanged, so the
+    Logs page needs no change.
+    """
     try:
-        from corpusfm.logging_config import log_path as _log_path
         from datetime import datetime, timezone
 
-        log_file = _log_path()
-        if not log_file.exists():
+        from corpusfm.app.web import log_reader
+        from corpusfm.logging_config import log_path as _log_path, rotation_family
+
+        canonical = _log_path()
+        members = rotation_family()
+
+        try:
+            display, read_members, failures = log_reader.read_tail(members, lines=lines, level=level)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except log_reader.LogReadError as exc:
+            # Every member failed. That is an error, NOT `exists: false` — claiming the log is empty
+            # when it could not be read would be the same class of lie as flagging a file missing on
+            # a failed scan.
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+        if not read_members:
             return JSONResponse({"lines": [], "exists": False})
 
-        stat = log_file.stat()
-        all_lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
-
-        if level != "ALL":
-            all_lines = [l for l in all_lines if level in l]
-
-        display = all_lines[-lines:]
+        # `path`/`size_kb`/`modified` describe the CANONICAL current file; when it is absent mid-
+        # rotation, the newest readable member supplies size/modified so readable history is not
+        # hidden, while the path stays canonical.
+        stat_source = canonical if canonical.exists() else read_members[0]
+        stat = stat_source.stat()
         return JSONResponse({
             "exists": True,
             "lines": display,
             "size_kb": round(stat.st_size / 1024, 1),
             # UTC ISO (packet 1005) — the browser localizes for display (see logs.html).
             "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
-            "path": str(log_file),
+            "path": str(canonical),
         })
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -82,23 +102,3 @@ async def get_action_history(limit: int = 200) -> JSONResponse:
         return JSONResponse({"entries": entries})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
-
-
-@router.post("/logs/open-viewer", dependencies=[Depends(require_auth)])
-async def open_log_viewer() -> JSONResponse:
-    try:
-        import subprocess
-        import sys
-        from corpusfm.logging_config import log_path as _log_path
-        log_file = _log_path()
-        if not log_file.exists():
-            return JSONResponse({"ok": False, "error": "Log file not found."})
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", str(log_file)])
-        elif sys.platform == "win32":
-            subprocess.Popen(["notepad", str(log_file)])
-        else:
-            subprocess.Popen(["xdg-open", str(log_file)])
-        return JSONResponse({"ok": True})
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)

@@ -10,12 +10,26 @@ Dead-end definitions:
   LayoutCatalog:           never navigated to by any script (Go to Layout,
                            Go to Related Record, New Window).
 
-Analysis strategy (Phase 3):
-  UUID-based comparison is primary for all analyses that have UUID indexes
-  from Phase 2.  Name-based comparison is retained as a fallback for catalog
-  items that lack a <UUID> child element (pre-FM-21 edge cases) and for
-  sources where FM stores references as formula text rather than structured
-  XML (CF formulas, field auto-enter/validation formulas).
+Membership key (packet 1348):
+  Every set below is keyed by the catalog's **xml_key** — the parser's unique
+  per-section key, which carries a `__N` suffix when a display name repeats.
+  FileMaker does not require display names to be unique within a catalog, nor
+  between catalogs — layouts, scripts and value lists all collide (packet 1358) — so a set of
+  display names cannot represent "one duplicate is live, the other dead" and
+  reported the LIVE one dead. Measured in MicroK12_dev: two duplicate script
+  names each held one referenced and one unreferenced UUID.
+
+Analysis strategy:
+  A STRUCTURED reference resolves by UUID, else by id, and never by display
+  name (packet 1348) — the name fallbacks for scripts and value lists are
+  retired, because against non-unique names they failed in the SILENT
+  direction: a wrongly-live object is never reported and nobody looks again.
+  An item that asserts no identity at all is not analysed rather than guessed.
+
+  FORMULA-derived references stay name-matched by construction: FileMaker puts
+  no identifier in a formula, so CF calls and the field references inside
+  auto-enter, validation and layout calculations have nothing else to match on.
+  That boundary is deliberate and is not narrowed by the rule above.
 """
 
 from __future__ import annotations
@@ -26,6 +40,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from corpusfm.core.identity import ID_KIND, UUID_KIND, owner_identity_from_xml
+from corpusfm.core.xref.graph import field_calc_locality
 from corpusfm.formula import analyze
 
 if TYPE_CHECKING:
@@ -35,24 +51,25 @@ if TYPE_CHECKING:
 
 @dataclass
 class DeadEndReport:
-    """Per-section sets of item names considered dead-ends."""
+    """Per-section sets of catalog xml_keys considered dead-ends."""
     scripts: set[str] = field(default_factory=set)
     custom_functions: set[str] = field(default_factory=set)
     value_lists: set[str] = field(default_factory=set)
     fields: set[str] = field(default_factory=set)   # "BaseTable::FieldName" keys
-    layouts: set[str] = field(default_factory=set)  # layout display names
+    layouts: set[str] = field(default_factory=set)  # layout xml_keys
 
-    def is_dead_end(self, section_key: str, item_name: str) -> bool:
+    def is_dead_end(self, section_key: str, xml_key: str) -> bool:
+        """Membership by the catalog's unique xml_key — never by display name."""
         if section_key == "ScriptCatalog":
-            return item_name in self.scripts
+            return xml_key in self.scripts
         if section_key == "CustomFunctionsCatalog":
-            return item_name in self.custom_functions
+            return xml_key in self.custom_functions
         if section_key == "ValueListCatalog":
-            return item_name in self.value_lists
+            return xml_key in self.value_lists
         if section_key == "FieldsForTables":
-            return item_name in self.fields
+            return xml_key in self.fields
         if section_key == "LayoutCatalog":
-            return item_name in self.layouts
+            return xml_key in self.layouts
         return False
 
     def count(self, section_key: str) -> int:
@@ -98,10 +115,28 @@ def compute_dead_ends(result: "ParseResult", xref: "XRefGraph") -> DeadEndReport
     )
 
 
+def _is_unreferenced(
+    section: str, xml_str: str, referenced_uuids: set[str], referenced_ids: set[str],
+) -> bool:
+    """Whether a catalog item has no inbound STRUCTURED reference.
+
+    Resolution is UUID, else id, never the display name — see
+    :mod:`corpusfm.core.identity`. An item asserting no identity at all is
+    NOT reported: it is unanalysable, and skipping loses information loudly
+    where a name match loses it silently by marking the item live.
+    """
+    identity = owner_identity_from_xml(section, xml_str)
+    if identity is None:
+        return False
+    if identity.kind == UUID_KIND:
+        return identity.value not in referenced_uuids
+    return identity.kind == ID_KIND and identity.value not in referenced_ids
+
+
 # ── Empty folder detection ─────────────────────────────────────────────────────
 
 def _empty_folders(xml_section: dict) -> set[str]:
-    """Return display names of folders whose subtree contains no real items.
+    """Return xml_keys of folders whose subtree contains no real items.
 
     A folder is empty if every descendant is also a folder, separator, or marker.
     Useful for scripts, CFs, value lists, and layouts that support FM folder hierarchy.
@@ -134,7 +169,7 @@ def _empty_folders(xml_section: dict) -> set[str]:
                 return True
         return False
 
-    return {_display_name(k) for k in folder_children if not has_real_items(k)}
+    return {k for k in folder_children if not has_real_items(k)}
 
 
 # ── Scripts ────────────────────────────────────────────────────────────────────
@@ -145,54 +180,28 @@ def _empty_folders(xml_section: dict) -> set[str]:
 _ADDON_UUID_PREFIX = "com.fmi.script.UUID-"
 
 
-def _layout_trigger_scripts(result: "ParseResult") -> set[str]:
-    """Name-based fallback: collect script names from layout ScriptTrigger elements."""
-    triggered: set[str] = set()
-    for xml_str in (result.section_xml or {}).get("LayoutCatalog", {}).values():
-        if not xml_str:
-            continue
-        try:
-            elem = ET.fromstring(xml_str)
-        except ET.ParseError:
-            continue
-        for container in elem.iter("ScriptTriggers"):
-            for trig in container.findall("ScriptTrigger"):
-                sr = trig.find("ScriptReference")
-                if sr is not None:
-                    name = sr.get("name", "").strip()
-                    if name:
-                        triggered.add(name)
-    return triggered
-
-
 def _dead_scripts(result: "ParseResult", xref: "XRefGraph") -> set[str]:
-    # UUID-based: scripts called by other scripts + scripts referenced in layouts.
+    # Scripts called by other scripts + scripts referenced in layouts.
     # layout_triggers includes both ScriptTrigger events and button actions.
     referenced_uuids = (
         set((xref.script_called_by_uuids or {}).keys())
         | set((xref.script_triggered_by_layout_uuids or {}).keys())
     )
-
-    # Name-based fallback (used when a catalog item has no <UUID> child).
-    referenced_names = set((xref.script_called_by or {}).keys()) | _layout_trigger_scripts(result)
+    referenced_ids = (
+        set((getattr(xref, "script_called_by_ids", None) or {}).keys())
+        | set((getattr(xref, "script_triggered_by_layout_ids", None) or {}).keys())
+    )
 
     section = (result.section_xml or {}).get("ScriptCatalog", {})
-    script_uuid_map = (xref.catalog_xml_key_to_uuid or {}).get("ScriptCatalog", {})
 
     dead: set[str] = set()
     for xml_key, xml_str in section.items():
         if _folder_type(xml_str):
             continue
-        name = _display_name(xml_key)
-        if name.startswith(_ADDON_UUID_PREFIX):
+        if _display_name(xml_key).startswith(_ADDON_UUID_PREFIX):
             continue
-        uuid = script_uuid_map.get(xml_key, "")
-        if uuid:
-            if uuid not in referenced_uuids:
-                dead.add(name)
-        else:
-            if name not in referenced_names:
-                dead.add(name)
+        if _is_unreferenced("ScriptCatalog", xml_str, referenced_uuids, referenced_ids):
+            dead.add(xml_key)
 
     return dead | _empty_folders(section)
 
@@ -254,59 +263,38 @@ def _dead_custom_functions(result: "ParseResult", xref: "XRefGraph") -> set[str]
         except ET.ParseError:
             pass
 
+    # A CF formula names its target and nothing else — FileMaker supplies no
+    # identifier there — so this stays name-matched by construction (the
+    # formula boundary packet 1348 explicitly does not cross). Only the
+    # MEMBERSHIP key becomes the unique xml_key.
     section = (result.section_xml or {}).get("CustomFunctionsCatalog", {})
     dead: set[str] = set()
-    for cf_name in (xref.custom_functions or []):
-        if cf_name.lower() not in called:
-            dead.add(cf_name)
+    for xml_key, xml_str in section.items():
+        if _folder_type(xml_str):
+            continue
+        if _display_name(xml_key).lower() not in called:
+            dead.add(xml_key)
     return dead | _empty_folders(section)
 
 
 # ── Value lists ────────────────────────────────────────────────────────────────
 
 def _dead_value_lists(result: "ParseResult", xref: "XRefGraph") -> set[str]:
-    # UUID-based: VL UUIDs found in field validation ValueListReference elements.
-    referenced_uuids = set((xref.value_list_used_in_field_uuids or {}).keys())
-
-    # Name-based fallback for VL items without a <UUID> child.
     # FM references value lists from four locations: layout controls, field
-    # validation, relationship portal sort orders, and Sort Records/Sort Portal steps.
-    referenced_names: set[str] = set()
-
-    def _collect_vl_names(xml_str: str) -> None:
-        if not xml_str:
-            return
-        try:
-            elem = ET.fromstring(xml_str)
-            for ref in elem.iter("ValueListReference"):
-                n = ref.get("name", "").strip()
-                if n:
-                    referenced_names.add(n)
-        except ET.ParseError:
-            pass
-
-    for section_key in ("FieldsForTables", "LayoutCatalog", "RelationshipCatalog"):
-        for xml_str in (result.section_xml or {}).get(section_key, {}).values():
-            _collect_vl_names(xml_str)
-
-    for xml_str in (result.step_xml or {}).values():
-        _collect_vl_names(xml_str)
+    # validation, relationship portal sort orders, and Sort Records/Sort Portal
+    # steps. All four are structural ValueListReference elements, so all four
+    # carry an identity and none needs the retired name match.
+    referenced_uuids = set((xref.value_list_used_in_field_uuids or {}).keys())
+    referenced_ids = set((getattr(xref, "value_list_used_in_field_ids", None) or {}).keys())
 
     section = (result.section_xml or {}).get("ValueListCatalog", {})
-    vl_uuid_map = (xref.catalog_xml_key_to_uuid or {}).get("ValueListCatalog", {})
 
     dead: set[str] = set()
     for xml_key, xml_str in section.items():
         if _folder_type(xml_str):
             continue
-        name = _display_name(xml_key)
-        uuid = vl_uuid_map.get(xml_key, "")
-        if uuid:
-            if uuid not in referenced_uuids:
-                dead.add(name)
-        else:
-            if name not in referenced_names:
-                dead.add(name)
+        if _is_unreferenced("ValueListCatalog", xml_str, referenced_uuids, referenced_ids):
+            dead.add(xml_key)
 
     return dead | _empty_folders(section)
 
@@ -398,7 +386,10 @@ def _dead_fields(result: "ParseResult", xref: "XRefGraph") -> set[str]:
     to_base = _build_to_base_table_map(result)
     all_to_refs: set[tuple[str, str]] = set()
 
-    for xml_str in (result.step_xml or {}).values():
+    # The identity view keeps every script body; step_xml drops a duplicate-named
+    # script's, which would make its fields look unreferenced.
+    for xml_str in (getattr(result, "step_xml_by_identity", None)
+                    or result.step_xml or {}).values():
         all_to_refs |= _collect_field_refs_from_xml(xml_str)
 
     for xml_str in (result.cf_xml or {}).values():
@@ -411,7 +402,7 @@ def _dead_fields(result: "ParseResult", xref: "XRefGraph") -> set[str]:
         except ET.ParseError:
             pass
 
-    for xml_str in (result.section_xml or {}).get("FieldsForTables", {}).values():
+    for xml_key, xml_str in (result.section_xml or {}).get("FieldsForTables", {}).items():
         if not xml_str:
             continue
         try:
@@ -419,8 +410,11 @@ def _dead_fields(result: "ParseResult", xref: "XRefGraph") -> set[str]:
                 t = calc.find("Text")
                 if t is None or not t.text:
                     continue
-                to_ref = calc.find("TableOccurrenceReference")
-                impl_to = to_ref.get("name", "").strip() if to_ref is not None else None
+                # One locality rule, shared with the graph: the calculation's context
+                # TO when it has one, else the field's own base table. This path used
+                # to pass None for a calc with no context, dropping a bare reference
+                # that the graph resolved.
+                impl_to = field_calc_locality(xml_key, calc)
                 all_to_refs |= _collect_field_refs_from_formula(t.text, implicit_to=impl_to or None)
         except ET.ParseError:
             pass
@@ -481,23 +475,28 @@ def _dead_fields(result: "ParseResult", xref: "XRefGraph") -> set[str]:
 # ── Layouts ───────────────────────────────────────────────────────────────────
 
 def _dead_layouts(result: "ParseResult", xref: "XRefGraph") -> set[str]:
-    """Layouts never navigated to by any script.
+    """Layouts never navigated to — by a script OR by another layout's objects.
 
-    Covers Go to Layout, Go to Related Record, and New Window steps via the
-    layout_used_in_script_uuids Phase 2 index.  UUID-only: layouts without a
-    <UUID> child are skipped rather than falsely flagged.
+    Covers Go to Layout, Go to Related Record and New Window steps, wherever they are embedded.
+    The script index alone was the whole inbound picture until packet 1340, so a layout reachable
+    only through a BUTTON on another layout was reported dead — a false positive in the analysis this
+    product sells, and the same step inside a script was already an edge.
+
+    A self-loop is excluded upstream, in the graph: a layout that navigates only to itself must not
+    rescue itself from this set. UUID-only: layouts without a <UUID> child are skipped rather than
+    falsely flagged.
     """
-    referenced_uuids = set((xref.layout_used_in_script_uuids or {}).keys())
-    layout_uuid_map = (xref.catalog_xml_key_to_uuid or {}).get("LayoutCatalog", {})
+    referenced_uuids = (set((xref.layout_used_in_script_uuids or {}).keys())
+                        | set((getattr(xref, "layout_navigated_by_layout_uuids", None) or {}).keys()))
+    referenced_ids = set((getattr(xref, "layout_used_in_script_ids", None) or {}).keys())
 
     section = (result.section_xml or {}).get("LayoutCatalog", {})
     dead: set[str] = set()
     for xml_key, xml_str in section.items():
         if _folder_type(xml_str):
             continue
-        uuid = layout_uuid_map.get(xml_key, "")
-        if uuid and uuid not in referenced_uuids:
-            dead.add(_display_name(xml_key))
+        if _is_unreferenced("LayoutCatalog", xml_str, referenced_uuids, referenced_ids):
+            dead.add(xml_key)
 
     return dead | _empty_folders(section)
 

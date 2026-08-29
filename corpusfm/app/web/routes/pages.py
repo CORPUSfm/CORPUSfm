@@ -213,6 +213,9 @@ async def login_post(request: Request, username: str = Form(""), password: str =
             now = int(_time.time())
             request.session["issued_at"] = now   # absolute cap anchor — NEVER updated after login
             request.session["seen"] = now        # sliding marker — bumped on activity (packet 1030)
+            # One post-login opportunity for the waiting-update prompt (packet 1341); see
+            # external_auth.establish_session, which marks the LDAP/OIDC paths identically.
+            request.session["update_prompt_opportunity"] = True
         # Packet 1179: resume a pending browser-OAuth authorization by its server-held transaction —
         # never an arbitrary external next URL. None for an ordinary sign-in → land on the app root.
         from corpusfm.app.web.routes.oauth import oauth_resume_target
@@ -292,7 +295,7 @@ async def account_get(request: Request, _=Depends(require_auth)):
     # The dropdown offers only pages this user can actually reach (standalone = everything).
     has_gate = (u.has_gate if u else (lambda g: True))
     return templates.TemplateResponse(request, "account.html", _ctx(
-        request, acct_prefs=acct_prefs, landing_pages=accessible_pages(has_gate),
+        request, acct_prefs=acct_prefs, landing_pages=accessible_pages(has_gate, server_mode=is_server_mode()),
         syntax_palettes=catalog(), syntax_palette_css=catalog_css(),
         syntax_highlighter_js=highlighter_source()))
 
@@ -345,6 +348,16 @@ async def account_password(request: Request, _=Depends(require_auth)):
             dependencies=[Depends(require_auth), Depends(require_gate("library_mcp"))])
 async def mcp_access(request: Request):
     # The page fetches everything from /api/account/mcp-connections — no server-rendered flag.
+    # Connection self-service is per-USER, and the local development path has no user concept, so its
+    # only data endpoint refused with a 401 that the shell's global handler read as an expired session
+    # and bounced to /login -> / -> /artifacts (packet 1332). Refuse at the point of entry instead; the
+    # auth and gate dependencies above stay and run first in server mode, so anonymous -> login and
+    # gate-less -> /docs are unchanged.
+    if not is_server_mode():
+        return HTMLResponse(
+            "<h1>MCP connections are a server feature</h1><p>Per-user MCP connection self-service "
+            "needs a co-located FileMaker Server deployment. This installation is running the local "
+            "development path, which has no user accounts.</p>", status_code=400)
     return templates.TemplateResponse(request, "mcp_access.html", _ctx(request))
 
 
@@ -354,6 +367,8 @@ async def account_mcp_connections(request: Request, _=Depends(require_auth),
     """The current user's unified, non-secret MCP access view (packet 1182): browser connections
     (one per consent grant) + manual tokens. Mutations stay explicit per credential type."""
     from corpusfm.app.web import mcp_connections
+    if not is_server_mode():
+        return JSONResponse({"ok": False, "error": "Not available on the local path — this needs a co-located FileMaker Server."}, status_code=400)
     u = current_user(request)
     if u is None:
         return JSONResponse({"ok": False, "error": "Not authenticated."}, status_code=401)
@@ -367,6 +382,8 @@ async def account_disconnect_mcp_connection(connection_id: str, request: Request
     """Disconnect ONE of the current user's browser connections. The subject is taken from the signed-in
     session ONLY — never from the request — and ownership is re-checked inside the store."""
     from corpusfm.app.web import oauth_store
+    if not is_server_mode():
+        return JSONResponse({"ok": False, "error": "Not available on the local path — this needs a co-located FileMaker Server."}, status_code=400)
     u = current_user(request)
     if u is None:
         return JSONResponse({"ok": False, "error": "Not authenticated."}, status_code=401)
@@ -411,6 +428,8 @@ async def account_delete_mcp_token(record_key: str, request: Request, _=Depends(
                                    __=Depends(require_gate("library_mcp"))):
     """Delete one of the current user's tokens (ownership-checked). Takes effect immediately."""
     from corpusfm.app.web import mcp_tokens
+    if not is_server_mode():
+        return JSONResponse({"ok": False, "error": "Not available on the local path — this needs a co-located FileMaker Server."}, status_code=400)
     u = current_user(request)
     if u is None:
         return JSONResponse({"ok": False, "error": "Not authenticated."}, status_code=401)
@@ -432,7 +451,7 @@ async def home(request: Request):
     # Standalone (no user) reaches everything; server mode gates by the user's gates. An
     # inaccessible/unknown choice falls back to Documentation (ungated, the safe landing).
     has_gate = (u.has_gate if u else (lambda g: True))
-    target = landing_target(key, has_gate) or "/docs"
+    target = landing_target(key, has_gate, server_mode=is_server_mode()) or "/docs"
     return RedirectResponse(url=prefixed(request, target), status_code=307)
 
 
