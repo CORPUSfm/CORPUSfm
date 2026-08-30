@@ -53,6 +53,7 @@ MCP_BROWSER_CONNECTION_DISCONNECTED = "mcp.browser_connection_disconnected"
 COMPARTMENT_RESTRICTION_TOGGLED = "apply.compartment_restriction_toggled"
 PKI_CHANGED = "pki.changed"                     # generated / registered / tested / removed (see meta.op)
 FMS_PLAN = "fms.plan"
+SERVER_LOG_READ = "server.log_read"   # packet 1360-02 — a gated log retrieval, never its content
 FMS_EXECUTE = "fms.execute"
 PATCH_APPLY = "patch.apply"
 PATCH_DRY_RUN = "patch.dry_run"
@@ -71,7 +72,7 @@ KNOWN_ACTIONS = frozenset({
     MCP_BROWSER_CONNECTION_DISCONNECTED,
     COMPARTMENT_RESTRICTION_TOGGLED,
     PKI_CHANGED,
-    FMS_PLAN, FMS_EXECUTE, PATCH_APPLY, PATCH_DRY_RUN, PATCH_VERIFY,
+    FMS_PLAN, FMS_EXECUTE, PATCH_APPLY, PATCH_DRY_RUN, PATCH_VERIFY, SERVER_LOG_READ,
     STORAGE_BACKEND_ACTIVATED, UPDATE_APPLIED,
     AUTH_SSO_LOGIN, USER_JIT_CREATED, EXTERNAL_AUTH_CONFIG_CHANGED,
 })

@@ -22,6 +22,13 @@ itself, tailing the most recent entries.
 
 **Refresh** re-reads the file with the current filters.
 
+## Reading logs from an assistant
+
+This page shows CORPUSfm's own log. An assistant connected over MCP can reach **both** CORPUSfm's log
+and FileMaker Server's, including rotated files — see
+[Reading server logs for troubleshooting](/docs/mcp#reading-server-logs-for-troubleshooting). That
+route is off by default and needs the Full FMS API gate.
+
 ## How it relates to the other review pages
 
 - **Logs** (this page) — the raw application log, for troubleshooting *how* something happened.

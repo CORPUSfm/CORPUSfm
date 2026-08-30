@@ -694,6 +694,24 @@ def _stage_assemble_items(state: PipelineState) -> None:
         _unique_name_to_id[nkey] = None if nkey in _unique_name_to_id else iid
     _unique_name_to_id = {k: v for k, v in _unique_name_to_id.items() if v}
 
+    # Add-on formula text can carry locale keys that `name_map` resolves to the
+    # item's final human label rather than its raw XML key. Keep that narrow text
+    # boundary ambiguity-safe: one logical, non-folder field owns the label or no
+    # field does. This is deliberately separate from `_unique_name_to_id`, whose
+    # keys are raw catalog display names and cannot represent this add-on form.
+    _unique_addon_field_name_to_id: dict = {}
+    if result.is_addon and name_map:
+        for iid, it in items.items():
+            if it.section != "FieldsForTables" or it.is_folder or not it.name:
+                continue
+            _unique_addon_field_name_to_id[it.name] = (
+                None if it.name in _unique_addon_field_name_to_id else iid
+            )
+        _unique_addon_field_name_to_id = {
+            name: iid for name, iid in _unique_addon_field_name_to_id.items()
+            if iid is not None
+        }
+
     def _text_target(section: str, name: str) -> str | None:
         """Resolve a target FileMaker named as TEXT — the only sanctioned name match.
 
@@ -791,7 +809,8 @@ def _stage_assemble_items(state: PipelineState) -> None:
         field_key = _field_display(name)
         to_id = _text_target("FieldsForTables", field_key)
         if to_id is None and result.is_addon and name_map:
-            to_id, field_key = _resolve_addon_field_ref(name, name_map, _field_name_to_id)
+            to_id, field_key = _resolve_addon_field_ref(
+                name, name_map, _unique_addon_field_name_to_id)
         return to_id, field_key
 
     def _structured_field_target(detail: dict):

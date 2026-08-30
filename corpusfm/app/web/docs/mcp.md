@@ -206,3 +206,31 @@ This is the sharpest surface on the bus, so it sits behind three rails:
 Two hard boundaries are always on: CORPUSfm's own storage database can never be opened/closed/paused
 by these tools, and **server-process restarts are not exposed** (the Admin API has no restart
 endpoint; that stays an installer/console action).
+
+### Reading server logs for troubleshooting
+
+The same switch and the same Full FMS API gate also govern two read-only tools that let an assistant
+help you diagnose a problem: one lists the log files available, the other reads the newest lines of
+one of them.
+
+The boundary is deliberately narrow. **Exactly two directories are reachable — FileMaker Server's own
+`Logs` directory and CORPUSfm's — and nothing else on the machine.** This is not general filesystem
+access: the assistant cannot name a path, only pick from the list the server offers, and it never
+sees where those files live on disk. Rotated files are included, so a problem from last week is still
+reachable. Directories, lock files, crash dumps and anything that is not a log are left out, and a
+file CORPUSfm cannot read stays **visible in the list, marked unreadable** — you are told it exists
+rather than being quietly shown a shorter list.
+
+What comes back is the newest lines, oldest-first, capped so one request cannot return an entire log.
+A search term is a plain substring, not a pattern. Two flags keep the answer honest: one tells you the
+output was cut to fit, and one tells you whether a search actually reached the end of the file — so
+"nothing found" is never confused with "stopped looking".
+
+**Log text is returned exactly as it was written.** CORPUSfm does not edit, mask, or filter what
+FileMaker Server or CORPUSfm logged, because an altered log is worse than useless when you are
+diagnosing a failure. That is why these tools sit behind the same two rails as FMS administration.
+Every read is recorded in the security ledger — which records *that* a log was read, never what it
+said.
+
+Anything outside those two directories — the system journal, the Windows Event Log, arbitrary files —
+stays out of scope; use SSH or the console for that.

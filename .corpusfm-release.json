@@ -40,9 +40,9 @@
     "corpusfm/app/web/docs/importing.md": "a1e953fb7b036646e62c8cb9357bfada558d981e4938482a9d20d00e0d9c328c",
     "corpusfm/app/web/docs/isv-workflow.md": "3a5eb1cc9dcf52da31b06b3feaa0db78473679cf2209361d7e635e44f5018930",
     "corpusfm/app/web/docs/jobs.md": "dfda96d9d534be3d274fa6510792441ed93c1edb84fcd555f649a60d046d33a9",
-    "corpusfm/app/web/docs/logs.md": "b0ee166a61d368503655a24a1901127c9c995028cecedd1c634f20eea71bc61f",
+    "corpusfm/app/web/docs/logs.md": "7690efe96f23f160a7988dc14c5d1cd521d19073f58817e5530394ffefa1af3f",
     "corpusfm/app/web/docs/mcp-client-cannot-connect.md": "b2e4f13feed7b9579e98dfd7544dc75d8db0b07099de3ee8e13fb219a2295455",
-    "corpusfm/app/web/docs/mcp.md": "0b1c8fe1f176c0a16966c863c35f6ffc81db749d247a4d484eaa6f4ac9c7700a",
+    "corpusfm/app/web/docs/mcp.md": "d4e1aae0aab2f813fa123bf3127ae638163d1edc36e35ef49838ae65ccb31496",
     "corpusfm/app/web/docs/merge.md": "be074bdc1eaaa6734cfc421c3ec450095f1e77918140f3318384bf3b95d3c0ff",
     "corpusfm/app/web/docs/monitoring.md": "6838f382782ab49c05912b6e6e041911cc46704676eab5d2612d5402fbd0ff23",
     "corpusfm/app/web/docs/ollama.md": "45f98bbb445cc3bd0cd4996f23c84bc0c3b7c526adbb353a0ae9ee4ca91560b8",
@@ -257,7 +257,7 @@
     "corpusfm/generation_jobs.py": "0937dd44abdcd1e1f5ccbceaf8893cdf3558be60212e291f39bd809ffc1381f2",
     "corpusfm/ingestion/__init__.py": "94782b40689ea6c43623ea28e2ffc7234670d7996e8de90ae128eb0266941c6c",
     "corpusfm/ingestion/clip.py": "49c43be5f4b495d84a27306f17d2e98118b2e465531d37d83f66501cdd912193",
-    "corpusfm/ingestion/pipeline.py": "a3b54f3afb31aed8636beabd2a54180e7c2577cdef4f9668f5c5e2b22679250a",
+    "corpusfm/ingestion/pipeline.py": "b0376ddd7dd215c9f9e76b555cd33eccd8c4a91b55289b4fa5aa5314e7a0ef28",
     "corpusfm/ingestion/reabsorb.py": "65a9b42234570b6bea35d3c01b0793e9b60f6b61772666e4625d7a1e7b699f75",
     "corpusfm/install.py": "4595573600cab60305f5cdb87ab65c494bf0f71ce2b18fffd9fc7d01d9cb0689",
     "corpusfm/lifecycle/__init__.py": "26ab965c00041c0e8492d8a633b08261e3fd4384bed5bcfc5cf64f528ab90767",
@@ -329,7 +329,7 @@
     "corpusfm/mcp/__main__.py": "ae126d789c035a402ceba0d3ca14ab4d134ae5a261d94cc63a37274c6d822620",
     "corpusfm/mcp/oauth_provider.py": "57464736c91d9e8798dd4d5fb263dad8638e21db5e22f0d1db03a9a759280084",
     "corpusfm/mcp/perspectives.py": "9e61506dc599288a471ae3618dc7f2b0c5acab04df34078884e860db8270bc96",
-    "corpusfm/mcp/server.py": "def5e2e04a260f49e3e2a43a34b521571d5898a49db8fd2932b0d57f55c43811",
+    "corpusfm/mcp/server.py": "d1331a6cf5b510894cc9c9b117828aa9a6f305a5ef802cad922b83c26e2893af",
     "corpusfm/runtime/__init__.py": "784a4844bb15a4559b49addd60f584fca7d9fa94f57633d38bc0969f161e8dcf",
     "corpusfm/runtime/compose.py": "06d8f8d235316e076d2c93f12370399a00eb589710b6f82e5481c3c570f521ba",
     "corpusfm/runtime/context.py": "dcf81ee5d73ce02d9eb0b696f034a625de283677f5d3c5e216000019c42f7fe9",
@@ -350,7 +350,7 @@
     "corpusfm/server/ai_env.py": "c846d4d20af472b8640a9b1093298604fbd87eb8dac1743827e34b634fa8ab9b",
     "corpusfm/server/apply_metrics.py": "d3312dc4a13c87851bad1c347db0b2f6f25eb8e5076cb6be1ae4d52568918e5e",
     "corpusfm/server/artifact_delete.py": "86f54cebe3958d1f07e98f37705e0f8aacaf28111f30212178ebfc4bd0a9c84e",
-    "corpusfm/server/audit.py": "1ba34cc7369d3919af02d6d0292c2b05512cfb80d2515998c2633b5025acae09",
+    "corpusfm/server/audit.py": "33ce23bd0d9e07df08145af70a6191c603a46ae3610e5dbe0c59e42482670f78",
     "corpusfm/server/cli/__init__.py": "3ee565149bededb82545ff2dd24fb571f966110474d09229d411f5990ef91949",
     "corpusfm/server/cli/__main__.py": "0d6b0133a04b28f511f023e7c9104e471436c2d91e25450bdcfa909536a3ef06",
     "corpusfm/server/cli/cmd_archive.py": "1dc906072f818d53985de0d94a15ab0f7d0b29ffe0ed24f51995b3a5cad5bc32",
@@ -395,6 +395,7 @@
     "corpusfm/server/jobs/validator.py": "10129059d1ae8d32480c33942cde934644619f9bd098f8ac771a07a07486adaa",
     "corpusfm/server/jobs/webhook.py": "747a1664b684d4f921cb01ec74b757c6d6e4540cbaf29f5755fab992802c66b1",
     "corpusfm/server/latest.py": "d7c6b3ab79d5554f18602f34f056e62f05985f6960784fb4158839d2b0fa32ee",
+    "corpusfm/server/log_access.py": "7c0e68927fbe0ddcbd50e7d5386a5d4b01a9ed09ae808c989530f1799b4ae7cc",
     "corpusfm/server/mcp_status.py": "f27b3f37ca69c018363988c59d27e253b2ca672ffdc796acca9dd0c3d108d165",
     "corpusfm/server/monitor/__init__.py": "adf7e2fcfab3873cf1f56efb526231ee05b6dd4416c902b7646d445f909faadb",
     "corpusfm/server/monitor/alerts.py": "fc48434d770eeba8379d388b83eaf4e88f93b692dd2bfff969884c6efa55af9b",
@@ -440,7 +441,7 @@
     "eslint.config.mjs": "306c98cfe14e33421b924a041584afd062309c040cbce90cb429311b0eb2aa03",
     "index.html": "f12bbbf2f30f19eaf5cd77d6771334e42bafd57c00bc5a0bcf3267c44f158966",
     "installer/SPEC.md": "69f634c6a8c1dd2270f01c7ce460cec08ef7017c7d2211293f0ddf737ee8760f",
-    "installer/assets/addon/CORPUSfm_ADDON.fmaddon": "690293afb9f6b44d4144bfdb6213002dc1be3b3b1618c5bebecca64e2140f38e",
+    "installer/assets/addon/CORPUSfm_ADDON.fmaddon": "5d97738290a5cd607a768496509690cc6fecfdd91dc102de87e4d8a3807b1feb",
     "installer/assets/addon/CORPUSfm_ADDON/de.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
     "installer/assets/addon/CORPUSfm_ADDON/en.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
     "installer/assets/addon/CORPUSfm_ADDON/es.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
@@ -466,11 +467,11 @@
     "installer/assets/addon/CORPUSfm_ADDON/preview.png": "149ddc231b664ebfc81a10a21d3dbf8059888cf8ecd2b5212a6a87d94403427b",
     "installer/assets/addon/CORPUSfm_ADDON/pt.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
     "installer/assets/addon/CORPUSfm_ADDON/sv.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
-    "installer/assets/addon/CORPUSfm_ADDON/template.xml": "99a00a600d3a6fae7f365f4cec28d8e140f9851f1842cb2b1172db77e4e45fce",
+    "installer/assets/addon/CORPUSfm_ADDON/template.xml": "948de961296aa65f8386641ddebcad744452dff2a6e425650600f1766cbe4e08",
     "installer/assets/addon/CORPUSfm_ADDON/zh.xml": "694dda6e15bc5e4b78059489900183b5d71f2f97baa000b4fcd2a9ff064e1a8a",
-    "installer/assets/addon/CORPUSfm_ADDON_AddonXML.artifact": "3c49b8047d5090bc46640cfe13d1a36ad2db88cd329ad4f15ad29aa8bfa0072a",
-    "installer/assets/addon/CORPUSfm_ADDON_MergedXML.artifact": "8d5cd7523af831303782636db2982c7245e6a6d31fecab1976967faa5be7f216",
-    "installer/assets/addon/CORPUSfm_ADDON_SaveAsXML.artifact": "c41160a36185972a830005490e276505b82ff351f1eb2af0ba327c615fa1318c",
+    "installer/assets/addon/CORPUSfm_ADDON_AddonXML.artifact": "dd11f69c2765df49fe5399a2879c03b0087abe9d9e7c142738654e915b68c8dd",
+    "installer/assets/addon/CORPUSfm_ADDON_MergedXML.artifact": "744194e5dfeccdb7a87ae2e6bcb679ee11b30a0bee8884af0f9306282f0a0778",
+    "installer/assets/addon/CORPUSfm_ADDON_SaveAsXML.artifact": "8d85adacb09fa3f9d9a599e0c2831e23d694f1d456f01b5d6e987bfea0ab15a2",
     "installer/assets/db/CORPUSfm_DB.artifact": "3349850244e18d5e42ec83b4da8cb6aee96144dcab04d742e1fdd8d5e6aecc86",
     "installer/assets/db/CORPUSfm_DB.fmp12": "c8de49533e8799846ae2a53af97d435d6f69d4eb786d06c2a01cfe2b60c9b907",
     "installer/bootstrap/linux/bootstrap.sh": "e170318989e91936ba49491cf5b51dfbe1434aef7fe0684525621692efc74bea",
@@ -489,7 +490,7 @@
     "installer/linux/corpusfm-update.sh": "7cb1a3d1d0355652cf38a55f94083e72573bd0eb1507a71608feee7efee02302",
     "installer/linux/install.sh": "a2921edbafe4306bcd4901f4d0452fc06a270801196aac344eafea215ec11ac2",
     "installer/linux/uninstall.sh": "4ed01932b737cfd1f9581a210fb98fbb622a346509bcc2a1b90cdaa201ae7e16",
-    "installer/package-installer.sh": "32a240b9435ec8ff2cca0ed574a9dfb92eda95c6e4088c282327f5168dd57b54",
+    "installer/package-installer.sh": "38bb3be5cf5d7f2ae0ef3c4b195a92a69842737cbbbd83046d20384fcfa0ce7a",
     "installer/requirements-server.txt": "abea698b78e22153851894197613660f8b9258081bf5e9245a963fa6d68ab86f",
     "installer/windows/_cfm_lib.ps1": "a34e55033968d8a05c91692aa26baeb2b01180bcbb1515562389dceda870ead9",
     "installer/windows/cfm-proxy-exec.ps1": "e7e84f7e45cdc29725bdf881284e632d19c23914d2c511b9d9deb8b9e5dbfee9",
@@ -510,7 +511,7 @@
     "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
     "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
     "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
-    "release-build.txt": "9c570860b93a0a8a4bae2a388206140504e249c9a09db81b04f79a3398f61b4a",
+    "release-build.txt": "980f14646c2bfdf523b3a2ab7ff6e8ded1bd194368f7fae32a299a83e03c3293",
     "requirements.txt": "acd44f337bdebcee434ede968e8a7669ed563f6cafbd7af0bbd5c3dcf1fe1a2f",
     "scripts/_release_gate_live.py": "335454a6e3e43c5e0375f7524a33a60647a862637e41dcba453cd474ab7d15b5",
     "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
@@ -2174,6 +2175,10 @@
       "class": "exact-copy",
       "owner": "application:corpusfm/server/latest.py"
     },
+    "corpusfm/server/log_access.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/server/log_access.py"
+    },
     "corpusfm/server/mcp_status.py": {
       "class": "exact-copy",
       "owner": "application:corpusfm/server/mcp_status.py"
@@ -2949,8 +2954,8 @@
   },
   "projection": {
     "contract_version": 2,
-    "installer_patch_authored_against": "570cbd7df68023301ccb926eb75fef79b13a3c77",
-    "installer_patch_sha256": "a8d9e480300ad275e4ea37d3c0fe0b7200c8a6c0e5df898486c4bdbb4b2a7c42",
+    "installer_patch_authored_against": "51f7d73bea73e123734a8b1be8d2e6c6f074d209",
+    "installer_patch_sha256": "5e6504b183866a52fb132bdcfcf2aadcde710d004ff3a655d1b91701e3af4c22",
     "path_policy": {
       "explicit_exclusions": [
         "**/__pycache__/**",
@@ -2976,15 +2981,15 @@
       "unselected_source_paths": "excluded"
     },
     "profile": "public",
-    "profile_sha256": "af0f073baa5728fdf169a240b460b9f47c365a2bbd34f7503895a44bfd738682",
+    "profile_sha256": "10cf12fae6520f7b74d178817ea550dd093ca3ccde85ba17c8b9d95a0037c780",
     "profile_version": 1
   },
-  "release_build": 2742,
+  "release_build": 2763,
   "schema_version": 2,
   "source_commits": {
-    "addon_assets": "f13a333d704ba51ff4bbe00e9cac1b79ba2588f9",
-    "application": "7fa8bdd0ff941b7863c5900566bfe2cb48b4de4e",
+    "addon_assets": "72d257c0251aedfac0bcee37e48f67864e1ba632",
+    "application": "79e0d52904741d61b4d6b5d122cdad768d80188b",
     "database_assets": "853339aaadad8e80e5f36a92879ef8a33491aa35",
-    "installer": "570cbd7df68023301ccb926eb75fef79b13a3c77"
+    "installer": "51f7d73bea73e123734a8b1be8d2e6c6f074d209"
   }
 }

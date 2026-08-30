@@ -1,6 +1,6 @@
 """corpusfm MCP server — mode-aware tool registration.
 
-App mode (79 tools — the non-server code path; co-located server is the only real deployment):
+App mode (81 tools — the non-server code path; co-located server is the only real deployment):
   list_artifacts      — list stored artifacts in the archive (optional tag filter)
   get_artifact_types  — the artifact TYPES the catalog holds and what each one supports
   delete_source       — delete an artifact's retained source XML to reclaim storage
@@ -80,6 +80,10 @@ App mode (79 tools — the non-server code path; co-located server is the only r
   plan_fms_control_database / execute_fms_control_database — two-step open/close/pause/resume/flush (NOT the storage DB)
   plan_fms_disconnect_client / execute_fms_disconnect_client — two-step disconnect a client by id
   plan_fms_message_clients / execute_fms_message_clients — two-step message one client or ALL
+  list_server_logs    — inventory the FMS + CORPUSfm log files (rotation families, sizes, readability);
+                        no paths, no other directory (`fms_api` gate + the default-off FMS-admin switch)
+  read_server_log     — bounded newest-lines tail of ONE such family by opaque id, optional literal
+                        `contains` filter; text returned verbatim (`fms_api` gate + the same switch)
 
 The 9 fms_* tools are broad FileMaker Server control via the Admin API v2 (PKI — no admin
 password held), behind THREE rails: the per-user `fms_api` gate; the server-wide
@@ -87,7 +91,11 @@ enable_fms_admin_mcp_tools switch (default off — hidden from tools/list + refu
 plan_*→execute_* two-step for every mutating op. Server-process restarts are deliberately excluded
 (the Admin API has no restart endpoint; that stays a CLI/installer concern).
 
-Server mode adds 7 more tools (86 total; registered only in server mode):
+list_server_logs / read_server_log ride the first two of those rails (packet 1360): read-only, two
+approved directories, an opaque id instead of any path, and no plan/execute step because they mutate
+nothing.
+
+Server mode adds 7 more tools (88 total; registered only in server mode):
   list_jobs           — list jobs (name, uuid, owner file, schedule, last run) — filterable by file
   run_job             — trigger a named job (pulls fresh XML from FMS); returns run_id
   get_job_run         — exact per-run status/outcome by run_id (active queue → HISTORY, no "latest")
@@ -564,6 +572,8 @@ _TOOL_GATES: dict = {
     "execute_fms_disconnect_client": "fms_api",
     "plan_fms_message_clients": "fms_api",
     "execute_fms_message_clients": "fms_api",
+    "list_server_logs": "fms_api",
+    "read_server_log": "fms_api",
     # automation — jobs / monitoring (server mode only)
     "get_layout_data_bindings": "library_mcp",
     "list_jobs": "automation",
@@ -583,6 +593,7 @@ _FMS_TOOLS = frozenset({
     "plan_fms_control_database", "execute_fms_control_database",
     "plan_fms_disconnect_client", "execute_fms_disconnect_client",
     "plan_fms_message_clients", "execute_fms_message_clients",
+    "list_server_logs", "read_server_log",
 })
 
 
@@ -2409,6 +2420,161 @@ def execute_fms_message_clients(plan_token: str) -> str:
                  outcome="ok" if failed == 0 else "error",
                  meta={"op": "message_clients", "sent": sent, "failed": failed})
     return f"Messaged {sent}/{len(targets)} client(s)" + (f" ({failed} failed)." if failed else ".")
+
+
+# ── Server log access (packet 1360-02) ─────────────────────────────────────────
+#
+# Two READ-ONLY tools over exactly two directories: FileMaker Server's Logs and CORPUSfm's own. Both
+# ride the same rails as the FMS admin surface above — the per-user `fms_api` gate and the server-wide
+# enable_fms_admin_mcp_tools switch — and neither accepts a filesystem path: a caller names a source by
+# an opaque id the server minted. Log text is returned VERBATIM (developer ruling 2026-08-29); the
+# disclosure controls are the two rails, not a scrubber.
+
+def _log_result_ceiling() -> int:
+    """How much log content one MCP result may carry.
+
+    The backend contract allows 256 KiB, which this transport cannot deliver: the shared response-size
+    middleware byte-truncates any result over `_RESPONSE_BYTE_CEILING` and would leave the caller
+    holding invalid JSON. So the wrapper lowers the ceiling instead of letting the envelope be cut,
+    halved again for the JSON envelope. `truncated` still reports the cut honestly.
+
+    An APPROVED transport constraint (Codex ruling, 2026-08-29), not a deviation: 256 KiB is the
+    backend maximum and an adapter may lower it to keep the envelope complete and valid, never raise it,
+    and must report any resulting cut as BOTH `truncated: true` and `search_complete: false`. Pagination
+    and a second tool are explicitly not authorized.
+
+    This is an ESTIMATE and is not trusted on its own — `_fit_json` measures the real envelope after
+    serialization. Review, 2026-08-29: halving assumes escaping costs at most 2×, and the estimate
+    alone was the whole guard; a log carrying Cyrillic, Greek or accented Latin (the census measured
+    non-ASCII in `Event.log` and `Access.log`) would have blown through it. Never let this exceed the
+    middleware's own ceiling, whatever the token budget is configured to.
+    """
+    return min(_RESPONSE_BYTE_CEILING // 2, max(8192, (_RESPONSE_BYTE_CEILING - 4096) // 2))
+
+
+def _fit_json(result: dict) -> str:
+    r"""Serialize, then MEASURE, then shed the oldest lines until the envelope really fits.
+
+    `ensure_ascii=False` first, matching the convention elsewhere in this module: escaping a 2-byte
+    UTF-8 character to `\uXXXX` costs six ASCII bytes, so ascii-escaping a non-English log is the
+    expansion that defeats a content-side estimate. If the envelope is still too large, oldest lines
+    go — the newest are what a troubleshooter wants — and the result says it was cut.
+    """
+    import json as _json
+    text = _json.dumps(result, indent=2, ensure_ascii=False)
+    if len(text.encode("utf-8")) <= _RESPONSE_BYTE_CEILING:
+        return text
+    def _oversize() -> bool:
+        return len(text.encode("utf-8")) > _RESPONSE_BYTE_CEILING
+
+    lines = result.get("lines") or []
+    while lines and _oversize():
+        del lines[: max(1, len(lines) // 10)]
+        result["lines"] = lines
+        result["returned_lines"] = len(lines)
+        result["truncated"] = True
+        result["search_complete"] = False
+        text = _json.dumps(result, indent=2, ensure_ascii=False)
+    # Lines are not the only thing that can overflow the envelope: a family with thousands of
+    # rotations makes `selected_members` and `failures` large on their own, and shedding lines then
+    # terminates with the envelope still over the ceiling — handing the middleware something to cut
+    # into invalid JSON, which is the one outcome the lowered ceiling exists to prevent. Review,
+    # 2026-08-29; no measured shape reaches it (the census found 14 and 9 files), but the sibling
+    # inventory tool already carries exactly this guard.
+    for key in ("selected_members", "failures"):
+        while len(result.get(key) or []) > 1 and _oversize():
+            result[key] = result[key][: max(1, len(result[key]) // 10)]
+            result["truncated"] = True
+            result["search_complete"] = False
+            text = _json.dumps(result, indent=2, ensure_ascii=False)
+    return text
+
+
+@mcp.tool()
+def list_server_logs() -> str:
+    """Inventory the FileMaker Server and CORPUSfm log files available for troubleshooting (read-only).
+
+    Returns JSON: each source is one rotation family with its members (name, size, modified time,
+    readable, current). Nothing else on the machine is reachable — this is not general filesystem
+    access, and it never returns a path. Unavailable roots and unreadable files stay VISIBLE with a
+    reason rather than silently disappearing. Requires the `fms_api` gate and the server-wide FMS admin
+    switch. Use `read_server_log` with a `source_id` from here to read one.
+    """
+    import json as _json
+    _require_fms_admin_enabled()
+    from corpusfm.server import log_access
+    inventory = log_access.list_server_logs()
+    text = _json.dumps(inventory, indent=2, ensure_ascii=False)
+    if len(text.encode("utf-8")) <= _RESPONSE_BYTE_CEILING:
+        return text
+    # An install with a very large number of rotations would otherwise be byte-truncated by the shared
+    # response middleware into invalid JSON. Elide the OLDEST members per family and say so, rather
+    # than hand back a broken envelope or silently drop whole sources — an unavailable root and an
+    # unreadable file must stay visible, which is the point of the inventory.
+    elided = 0
+    for source in inventory["sources"]:
+        if len(source["members"]) > 5:
+            elided += len(source["members"]) - 5
+            source["members"] = source["members"][:5]
+    if elided:
+        inventory["warnings"].append(
+            f"{elided} older rotation(s) are not listed here — this inventory was too large to return "
+            f"in one result; read a family to reach its older members")
+    return _json.dumps(inventory, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def read_server_log(source_id: str, member_id: str = "", lines: int = 200, contains: str = "") -> str:
+    """Read the newest lines of one FileMaker Server or CORPUSfm log family (read-only).
+
+    `source_id` comes from `list_server_logs`; a path is never accepted. Leave `member_id` empty to walk
+    the family newest rotation first, or pass one to read a specific older rotation. `lines` is 1-2000
+    (default 200). `contains` is a literal, case-insensitive substring (max 200 characters) — NOT a
+    regular expression.
+
+    `selected_members` lists the members ELIGIBLE for traversal, newest first — a satisfied request
+    stops early, so it is not a claim that every one of them was opened.
+
+    Returns JSON with the lines oldest-to-newest and, alongside them, `truncated` (output was cut to
+    fit) and `search_complete` (false when the scan budget stopped a filtered search before the family
+    was exhausted — so a miss is never mistaken for a clean negative). Per-member problems appear in
+    `failures`; they never turn into a short answer that looks complete. Log text is returned as it was
+    written. Requires the `fms_api` gate and the server-wide FMS admin switch.
+    """
+    import json as _json
+    _require_fms_admin_enabled()
+    from corpusfm.server import log_access
+    try:
+        result = log_access.read_server_log(
+            source_id, member_id=member_id or None, lines=lines, contains=contains or None,
+            max_output_bytes=_log_result_ceiling())
+    except log_access.LogAccessError as exc:
+        # The attempt reached the backend, so it is auditable — by CLASS, never by message: a message
+        # is the one place an absolute path or a caller's filter term could leak into the ledger.
+        audit.record(audit.SERVER_LOG_READ, actor=_mcp_actor(), target=str(source_id)[:64],
+                     outcome="denied", meta={"error": type(exc).__name__})
+        return f"ERROR: {exc}"
+    except Exception as exc:
+        audit.record(audit.SERVER_LOG_READ, actor=_mcp_actor(), target=str(source_id)[:64],
+                     outcome="error", meta={"error": type(exc).__name__})
+        # Deliberately the exception TYPE and not its text: an OSError carries the filename it failed
+        # on, and no response from these tools returns an absolute path.
+        return f"ERROR: the log could not be read ({type(exc).__name__})."
+    # Serialize FIRST, then audit. `_fit_json` may shed lines to fit the transport, and auditing
+    # before it recorded the pre-cut values: measured by review (2026-08-29) as a caller receiving
+    # `returned_lines: 71, truncated: true` while the ledger said `ok, returned: 400, truncated:
+    # false` — on the ordinary non-ASCII path. A ledger that disagrees with what was returned is
+    # worse than a thin one, and packet 1360-02's audit contract asks it to carry the truncation and
+    # the partial outcome.
+    text = _fit_json(result)
+    audit.record(
+        audit.SERVER_LOG_READ, actor=_mcp_actor(), target=result["source_id"],
+        outcome="partial" if (result["failures"] or result["truncated"]) else "ok",
+        meta={"members": len(result["selected_members"]), "requested": result["requested_lines"],
+              "returned": result["returned_lines"], "truncated": result["truncated"],
+              "search_complete": result["search_complete"], "failures": len(result["failures"]),
+              "filtered": bool(contains)})
+    return text
 
 
 @mcp.tool()
