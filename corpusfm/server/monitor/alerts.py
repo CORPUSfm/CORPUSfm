@@ -62,17 +62,11 @@ def _scope(job_name: Optional[str], job_uuid: Optional[str] = None) -> Optional[
     Callers speak in names (the UI's alert row, the MCP tool's ``job_name``), which is right for a
     human interface and wrong for a stored key: a deleted-and-recreated job reuses the name but not
     the uuid, and would otherwise start life already muted. Resolve here, once. A name that no
-    longer resolves falls back to itself — suppressing a vanished job's alert by name is harmless
-    and better than not suppressing it."""
-    if job_uuid:
-        return job_uuid
-    if not job_name:
-        return job_name
-    try:
-        from corpusfm.server.jobs.store import default_jobs_dir, load_job
-        return load_job(job_name, default_jobs_dir()).id or job_name
-    except Exception:
-        return job_name
+    THE NAME FALLBACK IS GONE (packet 1372-02, R4). It resolved a job from a display label to build
+    a suppression key, and duplicate names are ordinary now — so acknowledging one job's alert could
+    suppress another's. A caller with no uuid gets the name back as an opaque key: it suppresses
+    exactly what it names and joins to nothing."""
+    return job_uuid or job_name
 
 
 def suppress_alert(condition: str, job_name: Optional[str], hours: int,
@@ -199,7 +193,8 @@ def check_conditions(
             )
             if has_git_export:
                 try:
-                    runs = list_runs_for(cfg.name, history_dir, limit=config.zero_diff_threshold,
+                    runs = list_runs_for(getattr(cfg, "id", "") or "", history_dir,
+                                        limit=config.zero_diff_threshold,
                                          backend=backend, job_uuid=getattr(cfg, "id", "") or "")
                     if len(runs) >= config.zero_diff_threshold:
                         all_no_change = all(

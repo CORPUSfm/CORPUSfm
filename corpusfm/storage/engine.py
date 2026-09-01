@@ -290,14 +290,26 @@ class FMEngine:
     def blob_exists(self, logical: str, key: str, field: str) -> Optional[bool]:
         """Cheap non-empty check WITHOUT downloading the blob: a streamed GET reads exactly one
         byte then closes (Range asked for politely, but a 200-with-full-body still costs one
-        byte + a dropped connection). Returns None when the answer is uncertain — callers must
-        never treat uncertainty as absence."""
+        byte + a dropped connection).
+
+        THE THREE ANSWERS ARE DISTINCT AND THE MIDDLE ONE IS NOT UNCERTAINTY. `False` means the
+        server SAID the container is empty; `None` means we could not get an answer at all. Callers
+        must never treat uncertainty as absence — but they must equally not treat a stated absence
+        as uncertainty, which is the bug this docstring exists to prevent recurring.
+
+        **204 is FileMaker's answer for an empty container, measured** (u-test-private/w-test-private,
+        FMS 2026, packet 1372 ruling 4: a populated container answers `200` with a `Content-Length`;
+        an empty one answers `204 No Content` with no body). It was previously unlisted and so fell
+        through to `None`, which made an ordinary credentialless JOB look unreadable and stopped the
+        identity conversion dead. A stated emptiness is a fact about the data, not a failure to
+        learn one.
+        """
         cfield = reg.container_field(logical, field)
         url = self._b._url(f"{self._b._phys(logical)}('{key}')/{cfield}/$value")
         resp = None
         try:
             resp = self._b._session.get(url, headers={"Range": "bytes=0-0"}, stream=True)
-            if resp.status_code == 404:
+            if resp.status_code in (204, 404):
                 return False
             if resp.status_code in (200, 206):
                 return bool(next(resp.iter_content(1), b""))

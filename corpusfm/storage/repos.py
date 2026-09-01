@@ -9,6 +9,7 @@ This module starts with :class:`ArtifactsRepo` (STORAGE) — the template every 
 """
 from __future__ import annotations
 
+import re as _re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -267,23 +268,59 @@ _JOB_STATE_KEYS = ("LastRunTS", "LastStatus", "LastError", "LastDuration")
 _JOB_CRED_KEYS = ("AccountName", "HasCredential", "IsVerified", "VerifyReason")
 
 
+class JobReadUnavailable(RuntimeError):
+    """The JOB table could not be read — raised only for a caller that asked to hear about it.
+
+    The default `[]` stays, because the 10-second notification poll and the monitor rows genuinely
+    prefer a degraded empty render to an exception. A surface that PAINTS the job list cannot afford
+    that trade: "no jobs" and "could not ask" are different facts, and answering the second with the
+    first is an authoritative-looking lie (packet 1369).
+    """
+
+
+#: Job identity is a UUID and nothing else. Enforced at `save()`, which is where an id ENTERS the
+#: store — a read or delete simply misses on anything else, and both engines are injection-safe
+#: (`engine._clause` escapes for FM; SQLite is parameterised), so there is nothing for a
+#: read-side check to protect. Stated precisely because an earlier version of this comment claimed
+#: the regex guarded every path, which it never did.
+_SOUND_UUID = _re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                          r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+class JobIdentityInvalid(ValueError):
+    """A job was addressed, or offered for saving, without a sound UUID identity."""
+
+
 class JobsRepo:
-    """JOBS, entity-shaped: JobConfig + JobState over the engine (Phase 4 jobs fold — the
-    bespoke FM job methods are retired). The config YAML lives in the record's ``ConfigJSON``;
-    the name lookup is the indexed Name slot (FM text comparison is case-insensitive; the
-    SQLite slot is lowercased on both sides). Jobs are a server feature — the local dev/test
-    path stays on the YAML files in jobs/ (see server/jobs/store.py), so this repo only ever
-    runs over a live install's engine."""
+    """JOB, entity-shaped: JobConfig + JobState over the engine.
+
+    **UUID-ONLY (packet 1372-02).** Every operation addresses a record by its native key, which after
+    the 1372-01 conversion is also `JobConfig.id` and the `UUIDJob` its artifacts, history and queue
+    rows carry. `Name` is never queried to identify a row and is never required to be unique —
+    duplicate names, including case variants, are ordinary. That is the whole cutover: a job's
+    identity is a UUID a user cannot edit, not a label they can.
+
+    The config YAML lives in the record's ``ConfigJSON``. Jobs are a server feature — the local
+    dev/test path stays on the YAML files in jobs/ (see server/jobs/store.py), so this repo only ever
+    runs over a live install's engine.
+    """
 
     def __init__(self, engine: StorageEngine):
         self._e = engine
 
-    def _row(self, name: str) -> Optional[Row]:
-        # A mutation must distinguish a definite miss from an unreadable store. In particular,
-        # save(overwrite=True) performs this lookup after the route has already loaded the job; turning
-        # a transient second-read failure into None creates a second row instead of updating the first.
-        # Poll/list degradation stays at list()/list_with_state(), where [] is an explicit UI contract.
-        return self._e.get_one(_JOBS, Name=name)
+    def _row(self, job_uuid: str) -> Optional[Row]:
+        """One record by its native key. `None` is a definite miss; a read failure RAISES.
+
+        A mutation must distinguish a definite miss from an unreadable store: `save(overwrite=True)`
+        performs this lookup after the caller already holds the job, and turning a transient
+        second-read failure into `None` would create a second row instead of updating the first.
+        Poll/list degradation stays at `list()`/`list_with_state()`, where `[]` is an explicit UI
+        contract.
+        """
+        if not job_uuid:
+            return None
+        rows = self._e.get_by_keys(_JOBS, [job_uuid])
+        return rows[0] if rows else None
 
     @staticmethod
     def _config(jor: dict):
@@ -317,36 +354,82 @@ class JobsRepo:
                 result.append((None, f"{r.jor.get('Name', '?')}: {exc}"))
         return sorted(result, key=lambda pair: (pair[0].name if pair[0] else ""))
 
-    def list_with_state(self) -> list:
-        """(JobConfig | None, JobState) pairs from ONE read (audit #4) — the state fields
-        ride the same jor the config parse already read."""
+    @staticmethod
+    def _credentials(jor: dict) -> dict:
+        """The per-job credential/verification OVERLAY, from the jor the caller already holds.
+
+        These four values are the only credential facts that live in jor at all — the secret itself
+        rides the CredentialData container and is never projected here. Reading them back one job at
+        a time (`has_credential` / `account_name` / `verify_state`) is three indexed re-reads of a
+        record the enumeration already returned (packet 1368).
+        """
+        return {
+            "has_credential": bool(jor.get("HasCredential")),
+            "account": jor.get("AccountName", "") or "",
+            "verified": bool(jor.get("IsVerified")),
+            "verify_reason": jor.get("VerifyReason", "") or "",
+        }
+
+    def list_with_overlay(self, *, strict: bool = False) -> list:
+        """(JobConfig | None, JobState, credential-overlay) triples from ONE read.
+
+        The single derivation: config, last-run state and the credential/verification overlay all
+        come from the same `JSONOfRecord`. `list_with_state()` is this without the third element.
+        """
         try:
             rows = self._e.list_all(_JOBS)
-        except Exception:
+        except Exception as exc:
             import logging
-            logging.getLogger(__name__).error("JobsRepo.list_with_state failed", exc_info=True)
+            logging.getLogger(__name__).error("JobsRepo.list_with_overlay failed", exc_info=True)
+            if strict:
+                raise JobReadUnavailable(
+                    "The job list could not be read from storage "
+                    f"({type(exc).__name__}). See the CORPUSfm server log for detail.") from exc
             return []
         result = []
         for r in rows:
             state = self._state(r.jor)
+            cred = self._credentials(r.jor)
             try:
-                result.append((self._config(r.jor), state))
+                result.append((self._config(r.jor), state, cred))
             except Exception:
-                result.append((None, state))
-        return sorted(result, key=lambda pair: (pair[0].name if pair[0] else ""))
+                result.append((None, state, cred))
+        return sorted(result, key=lambda triple: (triple[0].name if triple[0] else ""))
 
-    def load(self, name: str):
-        row = self._row(name)
+    def list_with_state(self, *, strict: bool = False) -> list:
+        """(JobConfig | None, JobState) pairs from ONE read (audit #4) — the state fields
+        ride the same jor the config parse already read.
+
+        ``strict=True`` raises `JobReadUnavailable` instead of degrading an unreadable store to `[]`.
+        """
+        return [(cfg, state) for cfg, state, _cred in self.list_with_overlay(strict=strict)]
+
+    def load(self, job_uuid: str):
+        row = self._row(job_uuid)
         if row is None:
-            raise KeyError(f"Job '{name}' not found in the JOB store.")
+            raise KeyError(f"No job with id {job_uuid!r} in the JOB store.")
         return self._config(row.jor)
 
     def save(self, cfg, overwrite: bool = False) -> None:
-        """Create or update a job record. On update the last-run state keys are preserved."""
-        import uuid as _uuidlib
-        existing = self._row(cfg.name)
+        """Create or update a job AT ITS OWN ID. On update the state and credential keys survive.
+
+        **The record is created at `cfg.id`, not at a fresh uuid4.** That single line is what packet
+        1372 exists to fix: `save()` used to mint its own key while the caller minted `cfg.id`, so
+        most jobs carried two uuids and every artifact, run and queue row linked to the one the
+        record did not live at.
+
+        A missing or malformed id is REFUSED rather than repaired. There is nowhere left to guess
+        from — names are not identity any more and may legitimately collide — so a caller that has
+        not decided what job this is has not finished making the request.
+        """
+        job_uuid = (getattr(cfg, "id", "") or "").strip()
+        if not _SOUND_UUID.match(job_uuid):
+            raise JobIdentityInvalid(
+                f"job {cfg.name!r} carries id {getattr(cfg, 'id', None)!r}, which is not a UUID. "
+                "A job is identified by its UUID; the name is a label and may collide.")
+        existing = self._row(job_uuid)
         if existing is not None and not overwrite:
-            raise ValueError(f"Job '{cfg.name}' already exists. Pass overwrite=True to replace.")
+            raise ValueError(f"A job with id {job_uuid} already exists. Pass overwrite=True to replace.")
         jor = {
             "Name": cfg.name,
             "FileName": getattr(cfg, "file", "") or "",   # the hosted-file binding (indexed slot)
@@ -359,35 +442,35 @@ class JobsRepo:
             for k in (*_JOB_STATE_KEYS, *_JOB_CRED_KEYS):
                 if k in existing.jor:
                     jor[k] = existing.jor[k]
-            self._e.update(_JOBS, existing.key, jor)
+            self._e.update(_JOBS, job_uuid, jor)
         else:
-            self._e.create(_JOBS, str(_uuidlib.uuid4()), jor)
+            self._e.create(_JOBS, job_uuid, jor)
 
-    def delete(self, name: str) -> bool:
-        row = self._row(name)
+    def delete(self, job_uuid: str) -> bool:
+        row = self._row(job_uuid)
         if row is None:
             return False
         self._e.delete(_JOBS, row.key)
         return True
 
-    def read_state(self, name: str):
+    def read_state(self, job_uuid: str):
         from corpusfm.server.jobs.state import JobState
-        row = self._row(name)
+        row = self._row(job_uuid)
         return self._state(row.jor) if row is not None else JobState()
 
-    def update_state(self, name: str, run) -> None:
+    def update_state(self, job_uuid: str, run) -> None:
         """Merge last-run state into the job's jor after a run.
 
-        An unresolved name is a legitimate no-op — the state lives ON the job record and is deleted
+        An unresolved id is a legitimate no-op — the state lives ON the job record and is deleted
         with it, so a run that outlives its job has nothing to update (its HISTORY row is written
         regardless, and that is the durable account). It is logged rather than silent, because
         'half the write landed' is otherwise invisible (packet 1149)."""
-        row = self._row(name)
+        row = self._row(job_uuid)
         if row is None:
             import logging
             logging.getLogger(__name__).info(
-                "job state not updated — no JOBS record named %r (deleted mid-run?); the run's "
-                "HISTORY row is unaffected", name)
+                "job state not updated — no JOB record with id %r (deleted mid-run?); the run's "
+                "HISTORY row is unaffected", job_uuid)
             return
         duration_s = getattr(run, "duration_s", None)
         jor = dict(row.jor)
@@ -404,31 +487,40 @@ class JobsRepo:
     # + the display account name live in jor. Extinguished with the job (delete cascades the
     # container). "The security price of making a job is knowing the credentials."
 
-    def set_credential(self, name: str, account: str, password: str) -> bool:
+    def set_credential(self, job_uuid: str, account: str, password: str) -> bool:
+        """Set or REPLACE this job's credential. There is no standalone removal here.
+
+        THE ADAPTER DOES NOT POLICE JOB POLICY (developer ruling, packet 1372 waterfall correction).
+        An earlier version refused a blank half from down here, on the reasoning that a retained job
+        must never be left credentialless. Both halves of that were wrong: a credentialless job is a
+        valid incomplete draft, and whether a submitted credential is coherent is a question for the
+        entry boundary that accepted it — `POST /api/files/{name}/jobs` makes exactly that check.
+        This layer's job is to store what it is given and to describe accurately what it holds.
+        """
         import json as _json
         from corpusfm.core.crypto import compress, encode_blob
-        row = self._row(name)
+        row = self._row(job_uuid)
         if row is None:
             return False
         blob = encode_blob(
-            compress(_json.dumps({"account": account or "", "password": password or ""},
+            compress(_json.dumps({"account": account, "password": password},
                                  ensure_ascii=False).encode("utf-8")),
             encrypt_on=True)   # ALWAYS encrypted — a credential is a secret, not a bulk blob
         self._e.blob_put(_JOBS, row.key, "CredentialData", blob)
         jor = dict(row.jor)
-        jor["AccountName"] = account or ""
+        jor["AccountName"] = account
         jor["HasCredential"] = True
         jor["IsVerified"] = False        # a new credential invalidates the prior verification
         jor["VerifyReason"] = ""
         self._e.update(_JOBS, row.key, jor)
         return True
 
-    def get_credential(self, name: str) -> "Optional[dict]":
+    def get_credential(self, job_uuid: str) -> "Optional[dict]":
         """{account, password} for a run-time pull, or None. Reads the container explicitly —
         never rides an ordinary job read."""
         import json as _json
         from corpusfm.core.crypto import decode_blob, decompress
-        row = self._row(name)
+        row = self._row(job_uuid)
         if row is None:
             return None
         raw = self._e.blob_get(_JOBS, row.key, "CredentialData")
@@ -442,35 +534,22 @@ class JobsRepo:
             return None
         return {"account": data["account"], "password": data["password"]}
 
-    def has_credential(self, name: str) -> bool:
-        row = self._row(name)
+    def has_credential(self, job_uuid: str) -> bool:
+        row = self._row(job_uuid)
         return bool(row and row.jor.get("HasCredential"))
 
-    def account_name(self, name: str) -> str:
-        row = self._row(name)
+    def account_name(self, job_uuid: str) -> str:
+        row = self._row(job_uuid)
         return (row.jor.get("AccountName", "") if row else "") or ""
 
-    def delete_credential(self, name: str) -> bool:
-        row = self._row(name)
-        if row is None:
-            return False
-        # Container deletion is the revocation. Never clear the badge/account and report success when
-        # the secret is still readable (a normal indeterminate OData failure can leave the delete
-        # unapplied). Metadata follows only after the credential is demonstrably gone; a later metadata
-        # failure is visible and retryable, with runtime already safely unable to read a credential.
-        self._e.blob_delete(_JOBS, row.key, "CredentialData")
-        jor = dict(row.jor)
-        jor["HasCredential"] = False
-        jor["AccountName"] = ""
-        jor["IsVerified"] = False
-        jor["VerifyReason"] = ""
-        self._e.update(_JOBS, row.key, jor)
-        return True
+    # `delete_credential` is RETIRED (packet 1372-02). It was the only way to leave a retained job
+    # without the credential it needs, and the browser route that called it is gone. Deleting the
+    # JOB still cascades its container; that is the supported way to extinguish a credential.
 
-    def set_verified(self, name: str, verified: bool, reason: str = "") -> None:
+    def set_verified(self, job_uuid: str, verified: bool, reason: str = "") -> None:
         """Record the per-job verification verdict (IsVerified validates the exact
         job/file/credential/script combination; it dies with the job)."""
-        row = self._row(name)
+        row = self._row(job_uuid)
         if row is None:
             return
         jor = dict(row.jor)
@@ -478,8 +557,8 @@ class JobsRepo:
         jor["VerifyReason"] = reason or ""
         self._e.update(_JOBS, row.key, jor)
 
-    def verify_state(self, name: str) -> "tuple[bool, str]":
-        row = self._row(name)
+    def verify_state(self, job_uuid: str) -> "tuple[bool, str]":
+        row = self._row(job_uuid)
         if row is None:
             return False, ""
         return bool(row.jor.get("IsVerified")), (row.jor.get("VerifyReason", "") or "")

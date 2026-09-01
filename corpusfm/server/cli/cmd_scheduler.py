@@ -58,7 +58,17 @@ def run(args: argparse.Namespace) -> int:
         active = info.get("active_jobs") or []
         from corpusfm.core import servertime
         clock = servertime.clock_info()
-        print(f"Status:        {'running' if running else 'stopped (stale)'}")
+        # WAITING IS ITS OWN ANSWER (packet 1372-01). `running` here means the process is alive, and
+        # a gated scheduler IS alive — but printing "running" for a process that will fire nothing is
+        # the comfortable answer, not the true one. The word the process wrote is shown on this line
+        # rather than demoted to `Status file:` below.
+        if not running:
+            print("Status:        stopped (stale)")
+        elif status == "waiting":
+            print("Status:        waiting — this corpus is not at the projection version this "
+                  "build requires, so no schedule will fire")
+        else:
+            print("Status:        running")
         print(f"Last update:   {ts} UTC")
         print(f"Status file:   {status}")
         print(f"Check every:   {poll}s")

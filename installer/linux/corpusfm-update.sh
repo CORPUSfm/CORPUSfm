@@ -275,6 +275,28 @@ fi
 # match would let a 7-character abbreviation authorize every commit sharing it, including one nobody
 # has seen yet -- which is the very case where the administrator should be sent back to update_check.
 if [[ "$OBSERVED" != "$REQUESTED" ]]; then
+    # THE SCHEDULED OBSERVATION IS NOT A FAILURE, AND MUST NOT LOOK LIKE ONE (packet 1373).
+    #
+    # The web service refreshes this box's Git refs by running THIS script with an all-zero consent
+    # value -- forty zeroes is not a Git object id, so the comparison above can only ever refuse, and
+    # that refusal IS the mechanism. It runs every two hours on a perfectly healthy installation.
+    #
+    # Refusing with `exit 1` made systemd mark a `Type=oneshot` unit `failed` and KEEP it there, so
+    # every healthy Linux box permanently occupied `systemctl --failed` -- the first place an
+    # administrator looks for a fault. That trains people to ignore a failed CORPUSfm unit, which is
+    # exactly the signal that has to stay meaningful for the case where the updater really did fail.
+    #
+    # Only the exit status changes, and only for a value that cannot be a commit. The outcome record
+    # is written unchanged -- same `refused`, same `target_changed`, same detail -- because the
+    # refusal is real and the administrator's evidence for it lives there, not in an exit code. The
+    # web service reads that record and never the status (`_POST_FETCH_REFUSALS`), so what it
+    # observes is identical. A REAL stale-consent refusal, where the administrator authorized an
+    # actual commit that has since moved, still exits 1.
+    if [[ "$REQUESTED" =~ ^0{40,64}$ ]]; then
+        log "REFUSED: target_changed (scheduled observation; refs refreshed, nothing attempted)"
+        write_outcome refused target_changed "origin/main is now ${OBSERVED:0:12}, but this update was authorized for ${REQUESTED:0:12}. Check for updates again and authorize the current tip." false
+        exit 0
+    fi
     die refused target_changed "origin/main is now ${OBSERVED:0:12}, but this update was authorized for ${REQUESTED:0:12}. Check for updates again and authorize the current tip."
 fi
 

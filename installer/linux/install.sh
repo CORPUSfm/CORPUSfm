@@ -1038,7 +1038,9 @@ if [[ "$PREEXISTING_STATE" == published ]]; then
 else
     printf '    FMS recognition: not yet confirmed (phase 16 proves it)\n'
 fi
-if ! $SILENT && ! $ASSUME_YES; then
+if [[ "$PREEXISTING_STATE" == published ]]; then
+    printf '  Published installation locations are authoritative; this update cannot change them.\n'
+elif ! $SILENT && ! $ASSUME_YES; then
     printf '  Use these locations? [y/N] '
     read -r _location_answer
     case "$_location_answer" in y|Y|yes|YES) : ;; *) printf '  - Declined before acquisition; nothing has been changed.\n'; exit 0 ;; esac

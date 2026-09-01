@@ -136,7 +136,7 @@ async def schedule_preview(request: Request) -> JSONResponse:
     })
 
 
-def _schedule_trigger_from_body(body: dict, job_name: str):
+def _schedule_trigger_from_body(body: dict, job_uuid: str):
     """Build a schedule trigger from a save request. Returns (trigger, errors).
 
     THE SERVER OWNS `revision` AND `effective_after`, and a client value for either is discarded
@@ -163,7 +163,7 @@ def _schedule_trigger_from_body(body: dict, job_name: str):
 
     previous = None
     try:
-        existing = load_job(job_name, default_jobs_dir())
+        existing = load_job(job_uuid, default_jobs_dir())
         previous = existing.trigger.resolved_schedule() if existing.trigger is not None else None
     except Exception:
         previous = None
@@ -208,33 +208,49 @@ def _job_server_ref(cfg) -> str:
     return (getattr(cfg.source, "server_ref", None) or "local")
 
 
+class JobsProjectionUnavailable(RuntimeError):
+    """The JOB/Queue projection behind the Jobs gallery could not be read (packet 1369).
+
+    Its message is bounded on purpose: an administrator sees what failed and where to look, never a
+    third-party response body, URL or traceback. The full detail goes to the server log.
+    """
+
+
 def _jobs_by_file(server_ref: str = "local") -> dict[str, list]:
     """Map file_name -> its jobs for ONE server context (packet 1015: jobs are keyed by (server, file);
     the Jobs page shows one server at a time). Includes only jobs whose server_ref matches. One
     list_jobs() read grouped + a credential/verify overlay. A file is 'automated' when non-empty.
 
-    Each job carries a `running` flag from its in-flight [pull] QUEUE record (packet 086)."""
+    Each job carries a `running` flag from its in-flight [pull] QUEUE record (packet 086).
+
+    RAISES `JobsProjectionUnavailable` when the JOB or QUEUE read fails. It used to swallow every
+    exception into `{}`, which the whole page above it then read as "this server has no automated
+    files" — an authoritative-looking empty gallery standing in for a storage outage, and for the
+    deliberate published-install refusal too (packet 1369).
+    """
+    from corpusfm.server.jobs.store import JobsStoreUnavailable
+    from corpusfm.storage.repos import JobReadUnavailable
+
     out: dict[str, list] = {}
     try:
-        from corpusfm.server.jobs.store import (
-            list_jobs_with_state, default_jobs_dir, has_job_credential, job_account_name,
-            job_verify_state,
-        )
+        from corpusfm.server.jobs.store import list_jobs_with_overlay, default_jobs_dir
         from corpusfm.server.jobs.run_queue import active_runs
         from corpusfm.storage import get_backend
-        running_names = {m.get("job_name", "") for m in active_runs(get_backend())}
+        # JOIN BY UUID (packet 1372-02): duplicate names are ordinary now, and a name join lit
+        # every same-named job when one ran.
+        running_uuids = {m.get("job_uuid", "") for m in active_runs(get_backend()) if m.get("job_uuid")}
         jobs_dir = default_jobs_dir()
-        for cfg, st in list_jobs_with_state(jobs_dir):
+        for cfg, st, cred in list_jobs_with_overlay(jobs_dir, strict=True):
             if not cfg.file:
                 continue
             if _job_server_ref(cfg) != server_ref:
                 continue
             t = cfg.trigger
             p = cfg.process
-            verified, vreason = job_verify_state(cfg.name)
             out.setdefault(cfg.file, []).append({
+                "id": getattr(cfg, "id", "") or "",     # the job's identity; every row action uses it
                 "name": cfg.name,
-                "uuid": getattr(cfg, "id", "") or "",   # every row action scopes to this (packet 1143)
+                "uuid": getattr(cfg, "id", "") or "",   # kept: existing JS reads `uuid` (packet 1143)
                 "trigger_summary": _trigger_summary(cfg),
                 "trigger_type": t.type if t else "",
                 **_schedule_fields(cfg),
@@ -245,16 +261,26 @@ def _jobs_by_file(server_ref: str = "local") -> dict[str, list]:
                 "max_artifacts": p.max_artifacts,
                 "git_regs": list(p.git_export.registrations) if p.git_export else [],
                 "tags": list(cfg.tags or []),
-                "has_credential": has_job_credential(cfg.name),
-                "account": job_account_name(cfg.name),
-                "verified": verified,
-                "verify_reason": vreason,
+                "has_credential": cred["has_credential"],
+                "account": cred["account"],
+                "verified": cred["verified"],
+                "verify_reason": cred["verify_reason"],
                 "last_run_ts": st.last_run_ts or "",
                 "last_status": st.last_status or "",
-                "running": cfg.name in running_names,
+                "running": (getattr(cfg, "id", "") or "") in running_uuids,
             })
-    except Exception:
-        pass
+    except (JobsStoreUnavailable, JobReadUnavailable) as exc:
+        # CORPUSfm's own prose, already bounded and already administrator-facing ("this installation
+        # is published but has composed no corpus"). It carries nothing from a third party, so it
+        # travels verbatim — losing that refusal was the worst case of the swallow.
+        raise JobsProjectionUnavailable(str(exc)) from exc
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error(
+            "Jobs projection read failed for server_ref=%r", server_ref, exc_info=True)
+        raise JobsProjectionUnavailable(
+            "The job list could not be read from storage "
+            f"({type(exc).__name__}). See the CORPUSfm server log for detail.") from exc
     return out
 
 
@@ -286,11 +312,15 @@ def _discover_for_server(server_ref: str) -> dict:
     return inventory
 
 
-def _base_file_rows(*, live: bool, server_ref: str = "local") -> "tuple[list[dict], str]":
+def _base_file_rows(*, live: bool, server_ref: str = "local",
+                    jobs_by_file: "dict[str, list] | None" = None) -> "tuple[list[dict], str]":
     """The Jobs-page base rows for ONE server context (packet 1015). Returns (rows, error).
     ``live=False`` (page load, NO Admin API): the files that have jobs on this server, from the JOBS
     read. ``live=True`` (Refresh): the live hosted-file list (local PKI or the remote server's fmsadmin
-    Admin API) unioned with the job-having files. is_self is a local-only, name-derived label."""
+    Admin API) unioned with the job-having files. is_self is a local-only, name-derived label.
+
+    ``jobs_by_file`` is the request's already-built projection. Both this and `_attach_jobs` used to
+    call `_jobs_by_file()` for themselves, so one response rebuilt it twice (packet 1368)."""
     from corpusfm.server.file_discovery import is_self_name
     is_local = server_ref in ("", "local")
     #: name -> (missing, closed). The two are INDEPENDENT facts, composed only on a successful live
@@ -298,7 +328,7 @@ def _base_file_rows(*, live: bool, server_ref: str = "local") -> "tuple[list[dic
     #: record reported a non-open runtime status. A missing row is never also inferred closed, and a
     #: page-load or failed-scan row asserts neither (packet 1330).
     names: dict = {}
-    for fn in _jobs_by_file(server_ref).keys():
+    for fn in (_jobs_by_file(server_ref) if jobs_by_file is None else jobs_by_file):
         names.setdefault(fn, (False, None))  # page load: presence unknown → assume present (no Admin API)
     err = ""
     if live:
@@ -352,11 +382,14 @@ def _aggregate_job_tags(jobs: list[dict]) -> list[dict]:
     return tags
 
 
-def _attach_jobs(rows: list[dict], server_ref: str = "local") -> list[dict]:
+def _attach_jobs(rows: list[dict], server_ref: str = "local",
+                 jobs_by_file: "dict[str, list] | None" = None) -> list[dict]:
     """Fold each file's job count + summary + aggregate feature tags + credential/verify summary
     + last/next-run onto its row (packet 085 U3b: credential/verify are per-JOB — the file card
-    shows the summary across its jobs), scoped to ONE server context (packet 1015)."""
-    by_file = _jobs_by_file(server_ref)
+    shows the summary across its jobs), scoped to ONE server context (packet 1015).
+
+    ``jobs_by_file`` is the request's already-built projection (packet 1368)."""
+    by_file = _jobs_by_file(server_ref) if jobs_by_file is None else jobs_by_file
     for r in rows:
         jobs = by_file.get(r["name"], [])
         r["job_count"] = len(jobs)
@@ -411,8 +444,10 @@ async def list_files_route(request: Request) -> JSONResponse:
     state. Use POST /api/files/refresh to also pull the live hosted-file list."""
     try:
         ref = _server_ref_param(request)
-        rows, err = _base_file_rows(live=False, server_ref=ref)
-        return JSONResponse({"files": _attach_jobs(rows, ref), **({"error": err} if err else {})})
+        by_file = _jobs_by_file(ref)      # built ONCE per request (packet 1368)
+        rows, err = _base_file_rows(live=False, server_ref=ref, jobs_by_file=by_file)
+        return JSONResponse({"files": _attach_jobs(rows, ref, jobs_by_file=by_file),
+                             **({"error": err} if err else {})})
     except Exception as exc:
         return JSONResponse({"files": [], "error": str(exc)}, status_code=200)
 
@@ -424,59 +459,93 @@ async def refresh_files_route(request: Request) -> JSONResponse:
     files, each overlaid with its job state. User-initiated (Refresh); nothing is persisted."""
     try:
         ref = _server_ref_param(request)
-        rows, err = _base_file_rows(live=True, server_ref=ref)
-        return JSONResponse({"files": _attach_jobs(rows, ref), **({"error": err} if err else {})})
+        by_file = _jobs_by_file(ref)      # built ONCE per request (packet 1368)
+        rows, err = _base_file_rows(live=True, server_ref=ref, jobs_by_file=by_file)
+        return JSONResponse({"files": _attach_jobs(rows, ref, jobs_by_file=by_file),
+                             **({"error": err} if err else {})})
     except Exception as exc:
         return JSONResponse({"files": [], "error": str(exc)}, status_code=200)
 
 
-@router.post("/files/{name}/tags", dependencies=[Depends(require_auth)])
-async def set_file_tags_route(name: str, request: Request) -> JSONResponse:
-    """Set a JOB's configured artifact tags — applied at landing to every artifact the job
-    produces (packet 085 U3b: the per-file propagation tags moved onto the job). ``name`` here
-    is the JOB name (the route path kept for URL stability)."""
+def _job_gate():
+    """`None` when JOB work may proceed; a 503 JSONResponse when it may not (packet 1372-02, R8).
+
+    Every JOB mutation and execution route calls this BEFORE it writes or enqueues. Until startup
+    has strictly read back `ProjectionVersion == 2`, the JOB table may still be keyed the old way and
+    this build addresses it only by UUID — so a write would either fail confusingly or land a row
+    (a blank-`UUIDJob` Job Run) that then blocks the very conversion that would fix it.
+
+    Reading stays available: the job list, the detail pop-over and the catalog are all unaffected.
+    503 rather than 409 because this is a temporary service condition an administrator resolves by
+    restarting, not a conflict with the request.
+    """
+    from corpusfm.server.jobs.store import JobWorkUnavailable, assert_job_work_permitted
+    try:
+        assert_job_work_permitted()
+    except JobWorkUnavailable as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    return None
+
+
+@router.post("/jobs/{job_uuid}/tags", dependencies=[Depends(require_auth)])
+async def set_job_tags_route(job_uuid: str, request: Request) -> JSONResponse:
+    """Set a JOB's configured artifact tags — applied at landing to every artifact the job produces.
+
+    **The path used to be `/files/{name}/tags` and `{name}` was really a JOB NAME** (packet 085 U3b
+    moved the tags onto the job and the URL was kept "for stability"). A path that says one thing and
+    means another is exactly what this cutover removes, so it now names what it addresses.
+    """
     from corpusfm.server.jobs.store import load_job, save_job, default_jobs_dir
     body = await request.json()
     tags = body.get("tags") or []
     if isinstance(tags, str):
         tags = [t.strip() for t in tags.split(",") if t.strip()]
     tags = [t for t in (str(x).strip() for x in tags) if t]
+    guard = _job_gate()
+    if guard is not None:
+        return guard
     try:
-        cfg = load_job(name, default_jobs_dir())
+        cfg = load_job(job_uuid, default_jobs_dir())
     except KeyError:
-        return JSONResponse({"ok": False, "error": f"No such job '{name}'."}, status_code=404)
+        return JSONResponse({"ok": False, "error": f"No job with id {job_uuid}."}, status_code=404)
     cfg.tags = tags or None
     save_job(cfg, default_jobs_dir(), overwrite=True)
     return JSONResponse({"ok": True, "tags": tags})
 
 
-@router.post("/files/{name}/jobs/{job}/credential", dependencies=[Depends(require_auth)])
-async def set_job_credential_route(name: str, job: str, request: Request) -> JSONResponse:
-    """Store (or replace) a JOB's own FileMaker account + password (packet 085 U3b: per-job,
-    encrypted in the JOB record's CredentialData container — never a shared/per-file secret)."""
+@router.post("/jobs/{job_uuid}/credential", dependencies=[Depends(require_auth)])
+async def set_job_credential_route(job_uuid: str, request: Request) -> JSONResponse:
+    """Store or REPLACE a JOB's own FileMaker account + password (per-job, encrypted in the JOB
+    record's CredentialData container — never a shared or per-file secret).
+
+    **There is no delete route any more (packet 1372-02).** A retained job may not be left without
+    the credential it needs to do the one thing it exists for; replacement is always available, and
+    deleting the job cascades the container.
+    """
     from corpusfm.server.jobs.store import set_job_credential
     body = await request.json()
     account = (body.get("account") or "").strip()
     password = body.get("password") or ""
     if not account or not password:
-        return JSONResponse({"ok": False, "error": "account and password are required"}, status_code=400)
-    if not set_job_credential(job, account, password):
-        return JSONResponse({"ok": False, "error": f"No such job '{job}'."}, status_code=404)
+        return JSONResponse({"ok": False, "error": "account and password are required"},
+                            status_code=400)
+    guard = _job_gate()
+    if guard is not None:
+        return guard
+    if not set_job_credential(job_uuid, account, password):
+        return JSONResponse({"ok": False, "error": f"No job with id {job_uuid}."}, status_code=404)
     return JSONResponse({"ok": True})
 
 
-@router.delete("/files/{name}/jobs/{job}/credential", dependencies=[Depends(require_auth)])
-async def delete_job_credential_route(name: str, job: str) -> JSONResponse:
-    from corpusfm.server.jobs.store import delete_job_credential
-    return JSONResponse({"ok": delete_job_credential(job)})
-
-
-@router.post("/files/{name}/jobs/{job}/verify", dependencies=[Depends(require_auth)])
-async def verify_job_route(name: str, job: str) -> JSONResponse:
+@router.post("/jobs/{job_uuid}/verify", dependencies=[Depends(require_auth)])
+async def verify_job_route(job_uuid: str) -> JSONResponse:
     """Run the readiness probe for one JOB (its own credential against its file) and record the
     verdict on the JOB record (IsVerified)."""
     from corpusfm.server.file_readiness import verify_job
-    return JSONResponse(verify_job(job))
+    guard = _job_gate()
+    if guard is not None:
+        return guard
+    return JSONResponse(verify_job(job_uuid))
 
 
 # ── Jobs attached to a tracked file ───────────────────────────────────────────
@@ -526,26 +595,35 @@ async def job_locate(job_uuid: str = "") -> JSONResponse:
 @router.get("/files/{name}/jobs", dependencies=[Depends(require_auth)])
 async def file_jobs_list(name: str, request: Request) -> JSONResponse:
     """List the jobs attached to one file, scoped to the selected server context (``?server_ref=``,
-    packet 1015 — jobs are keyed by (server, file)), with last-run state + each job's export method."""
+    packet 1015 — jobs are keyed by (server, file)), with last-run state + each job's export method.
+
+    Reads through packet 1368's `list_jobs_with_overlay()` — the SAME projection the two file-list
+    endpoints take, not a second one. Every matching job used to be read back three more times
+    (`job_verify_state` / `has_job_credential` / `job_account_name`) for four values the enumeration
+    had already returned in its `JSONOfRecord`, costing `3 + 3J` reads for `J` attached jobs; it is a
+    flat 3 now (packet 1371).
+
+    Deliberately NOT `strict=True`. Packet 1369 made the strict read opt-in and took it for the Jobs
+    gallery alone; this endpoint keeps the degraded-empty render it already had, because changing
+    that would change this response."""
     try:
-        from corpusfm.server.jobs.store import (
-            list_jobs_with_state, default_jobs_dir, has_job_credential, job_account_name,
-            job_verify_state,
-        )
+        from corpusfm.server.jobs.store import list_jobs_with_overlay, default_jobs_dir
         from corpusfm.server.jobs.config import content_for_modes, default_method
         from corpusfm.server.jobs.run_queue import active_runs
         from corpusfm.storage import get_backend
         ref = _server_ref_param(request)
         is_remote = ref not in ("", "local")
-        running_names = {m.get("job_name", "") for m in active_runs(get_backend())}
+        # JOIN BY UUID (packet 1372-02). It used to join on `job_name`, so two jobs sharing a name
+        # both lit up when one ran — and duplicate names are now ordinary.
+        running_uuids = {m.get("job_uuid", "") for m in active_runs(get_backend()) if m.get("job_uuid")}
         jobs_dir = default_jobs_dir()
         rows = []
-        for cfg, st in list_jobs_with_state(jobs_dir):
+        for cfg, st, cred in list_jobs_with_overlay(jobs_dir):
             if cfg.file != name or _job_server_ref(cfg) != ref:
                 continue
             t = cfg.trigger
-            _verified, _vreason = job_verify_state(cfg.name)
             rows.append({
+                "id": cfg.id,
                 "name": cfg.name,
                 "trigger_type": t.type if t else "",
                 **_schedule_fields(cfg),
@@ -568,14 +646,14 @@ async def file_jobs_list(name: str, request: Request) -> JSONResponse:
                 "file_path": getattr(cfg.source, "file_path", None) or "",
                 "webhook_token": cfg.webhook_token or "",
                 "tags": list(cfg.tags or []),
-                "has_credential": has_job_credential(cfg.name),
-                "account": job_account_name(cfg.name),
-                "verified": _verified,
-                "verify_reason": _vreason,
+                "has_credential": cred["has_credential"],
+                "account": cred["account"],
+                "verified": cred["verified"],
+                "verify_reason": cred["verify_reason"],
                 "last_run": (st.last_run_ts.replace("T", " ")[:19] + " UTC") if st.last_run_ts else "",
                 "last_status": st.last_status or "",
                 "last_error": st.last_error or "",
-                "running": cfg.name in running_names,
+                "running": (cfg.id or "") in running_uuids,
             })
         rows.sort(key=lambda r: r["name"].lower())
         return JSONResponse({"jobs": rows})
@@ -599,7 +677,32 @@ async def file_job_save(name: str, request: Request) -> JSONResponse:
         job_name = (body.get("name") or "").strip()
         if not job_name:
             return JSONResponse({"ok": False, "error": "job name is required"}, status_code=400)
-        is_new = bool(body.get("is_new", True))
+        # IDENTITY COMES FROM THE BODY, NOT THE NAME (packet 1372-02). A create omits `id` and
+        # receives the server-minted one; an edit carries the id it is editing, and that id is
+        # immutable — there is no rename problem to solve any more, because a name is not identity.
+        submitted_id = (body.get("id") or "").strip()
+        is_new = not submitted_id
+        guard = _job_gate()
+        if guard is not None:
+            return guard
+
+        # THE JOB'S UUID. A create mints one; an edit uses the submitted id and must resolve it.
+        #
+        # The old code looked the job up by the SUBMITTED NAME, so a changed name missed, minted a
+        # fresh uuid and wrote a SECOND record — orphaning the original's credential, history and
+        # artifacts. It closed that by forbidding renames outright. **Renaming is now ordinary**:
+        # identity is the id in the body, the name is a label, and two jobs may share one.
+        import uuid as _uuid
+        if is_new:
+            job_id = str(_uuid.uuid4())
+        else:
+            job_id = submitted_id
+            try:
+                load_job(job_id, default_jobs_dir())
+            except KeyError:
+                return JSONResponse({"ok": False, "error": f"No job with id {job_id}."},
+                                    status_code=404)
+
 
         # Server context (packet 1015): the Jobs-page HEADER selection, carried on the job as
         # ``server_ref``. "local" (or unset) = the co-located server; a SERVER record uuid = a remote
@@ -659,7 +762,7 @@ async def file_job_save(name: str, request: Request) -> JSONResponse:
 
         ttype = (body.get("trigger_type") or "manual").strip()
         if ttype == "schedule":
-            trigger, sched_errors = _schedule_trigger_from_body(body, job_name)
+            trigger, sched_errors = _schedule_trigger_from_body(body, job_id)
             if sched_errors:
                 return JSONResponse({"ok": False, "error": "; ".join(sched_errors)}, status_code=400)
         else:
@@ -668,7 +771,7 @@ async def file_job_save(name: str, request: Request) -> JSONResponse:
         token = None
         if ttype == "webhook":
             try:
-                existing = load_job(job_name, default_jobs_dir())
+                existing = None if is_new else load_job(job_id, default_jobs_dir())
             except KeyError:
                 existing = None
             token = (existing.webhook_token if existing and existing.webhook_token else generate_token())
@@ -683,27 +786,6 @@ async def file_job_save(name: str, request: Request) -> JSONResponse:
                 repo=(body.get("git_repo") or "").strip(),
                 modes=modes_for_content(body.get("git_content")),
             )
-
-        # Stable job uuid — assigned once at creation, preserved on edit (the artifact/run
-        # link key; never the name).
-        #
-        # An edit MUST resolve an existing record (packet 1149). Renaming is not a supported
-        # operation: the previous code looked the job up by the SUBMITTED name, so a changed name
-        # missed, minted a fresh uuid, and `save_job` wrote a SECOND record — orphaning the
-        # original's credential, its run history, and its artifacts, with no way back. The UI
-        # forbids renaming by disabling the field; this closes the same door on the API and MCP,
-        # which were unconstrained. Refusing IS the fix — do not teach this route to rename.
-        import uuid as _uuid
-        job_id = None
-        if not is_new:
-            try:
-                job_id = load_job(job_name, default_jobs_dir()).id
-            except KeyError:
-                return JSONResponse(
-                    {"ok": False, "error": f"No job named ‘{job_name}’ exists. Renaming a job is not "
-                                           f"supported — create a new job instead."},
-                    status_code=400)
-        job_id = job_id or str(_uuid.uuid4())
 
         _tags = body.get("tags") or []
         if isinstance(_tags, str):
@@ -731,56 +813,98 @@ async def file_job_save(name: str, request: Request) -> JSONResponse:
         verrs = validate_job(cfg)
         if verrs:
             return JSONResponse({"ok": False, "error": "; ".join(verrs)}, status_code=400)
-        save_job(cfg, default_jobs_dir(), overwrite=not is_new)
-        # Per-job credential (packet 085 U3b): "the security price of making a job is knowing the
-        # credentials." Set it when supplied — the secret lands in the JOB's CredentialData
-        # container, never in the config. An edit that omits the password keeps the existing one.
+
+        # A CREDENTIALLESS JOB IS A VALID INCOMPLETE DRAFT (developer ruling, packet 1372
+        # waterfall correction). An earlier draft of 1372-02 refused to create one, on the reasoning
+        # that "the security price of making a job is knowing the credentials". That made a job the
+        # user was still assembling impossible to save, and it is not this route's call to make: a
+        # credential is required where it is USED — verification and execution — and each of those
+        # refuses clearly on its own behalf.
+        #
+        # Half a credential is still a mistake worth naming, and naming it HERE is right: this route
+        # is the entry boundary, and the entry boundary is where data is policed. The storage adapter
+        # underneath stores what it is given and describes what it holds.
         account = (body.get("account") or "").strip()
         password = body.get("password") or ""
+        if bool(account) != bool(password):
+            return JSONResponse(
+                {"ok": False, "error": "supply both an account and a password, or neither to keep "
+                                       "the existing credential"}, status_code=400)
+
+        save_job(cfg, default_jobs_dir(), overwrite=not is_new)
         if account and password:
             from corpusfm.server.jobs.store import set_job_credential
-            set_job_credential(job_name, account, password)
-        return JSONResponse({"ok": True})
+            try:
+                set_job_credential(job_id, account, password)
+            except Exception as exc:
+                # The job is KEPT. A credential that would not store no longer leaves a forbidden
+                # state — it leaves a draft, which is a state the product now supports — and deleting
+                # the job the user just asked for would destroy more than it repaired. Say what
+                # happened instead, and leave the job to be completed.
+                return JSONResponse(
+                    {"ok": False, "id": job_id,
+                     "error": f"the job was created, but its credential could not be stored ({exc}). "
+                              "It is saved without one; add the credential to run it."},
+                    status_code=500)
+        return JSONResponse({"ok": True, "id": job_id})
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
-@router.delete("/files/{name}/jobs/{job}", dependencies=[Depends(require_auth)])
-async def file_job_delete(name: str, job: str) -> JSONResponse:
+@router.delete("/jobs/{job_uuid}", dependencies=[Depends(require_auth)])
+async def job_delete(job_uuid: str) -> JSONResponse:
+    guard = _job_gate()
+    if guard is not None:
+        return guard
     try:
         from corpusfm.server.jobs.store import delete_job, default_jobs_dir
-        delete_job(job, default_jobs_dir())
+        # `delete_job` answers whether the job EXISTED. Discarding that made "Delete all jobs"
+        # report success for rows it had not deleted, which is the shape of report that hides a
+        # partial failure behind a green banner.
+        if not delete_job(job_uuid, default_jobs_dir()):
+            return JSONResponse({"ok": False, "error": f"No job with id {job_uuid}."},
+                                status_code=404)
         return JSONResponse({"ok": True})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
-@router.post("/files/{name}/jobs/{job}/run", dependencies=[Depends(require_auth)])
-async def file_job_run(name: str, job: str) -> JSONResponse:
-    """Run a file-job now (manual trigger): enqueue a [pull] QUEUE record (packet 086 — the pull
-    worker executes it) and return its record id as the task_id the UI polls. A manual run never
-    dedups — it always enqueues (queues behind any in-flight run of the same file)."""
+@router.post("/jobs/{job_uuid}/run", dependencies=[Depends(require_auth)])
+async def job_run(job_uuid: str) -> JSONResponse:
+    """Run a job now: enqueue a Job Run QUEUE record and return its id as the task_id the UI polls.
+
+    A manual run never dedups — it always enqueues, queueing behind any in-flight run of the same
+    file. **It resolves the job FIRST and enqueues with that job's UUID**, so no path here can
+    produce a Queue row with a blank `UUIDJob`: an unresolvable id is a 404 before anything is
+    written, and the gate above refuses before that.
+    """
     from starlette.concurrency import run_in_threadpool
 
-    def _enqueue() -> str:
+    guard = _job_gate()
+    if guard is not None:
+        return guard
+
+    def _enqueue():
         from corpusfm.server import queue_handlers
         from corpusfm.server.jobs.store import load_job, default_jobs_dir
         from corpusfm.storage import get_backend
-        cfg = load_job(job, default_jobs_dir())
+        cfg = load_job(job_uuid, default_jobs_dir())          # KeyError -> 404 below, nothing written
         qid, run_id = queue_handlers.enqueue_job_run(
-            get_backend(), job_name=job, job_uuid=getattr(cfg, "id", "") or "",
+            get_backend(), job_name=cfg.name, job_uuid=cfg.id,
             file_name=getattr(cfg, "file", "") or "", trigger="manual")
         with _run_lock:
             # The durable run id is what makes the outcome resolvable after this process restarts
             # (packet 1149); the in-memory entry is only a fast path.
-            _run_tasks[qid] = {"name": job, "run_id": run_id}
+            _run_tasks[qid] = {"job_uuid": job_uuid, "name": cfg.name, "run_id": run_id}
         return qid, run_id
 
     try:
         qid, run_id = await run_in_threadpool(_enqueue)
         return JSONResponse({"ok": True, "task_id": qid, "run_id": run_id})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": f"No job with id {job_uuid}."}, status_code=404)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
@@ -816,12 +940,12 @@ async def file_job_run_status(task_id: str, run_id: str = "") -> JSONResponse:
             rec = get_run_record(backend, rid)
             if rec is not None:
                 return {"status": rec.status or "ok", "error": rec.error or ""}
-        job_name = entry.get("name", "")
-        if not job_name:
+        job_uuid = entry.get("job_uuid", "")
+        if not job_uuid:
             return {"status": "unknown", "error": "This run could not be resolved."}
         from corpusfm.server.jobs.state import read_state
         from corpusfm.server.jobs.store import default_jobs_dir
-        st = read_state(job_name, default_jobs_dir())
+        st = read_state(job_uuid, default_jobs_dir())
         return {"status": st.last_status or "ok", "error": st.last_error or ""}
 
     return JSONResponse(await run_in_threadpool(_status))

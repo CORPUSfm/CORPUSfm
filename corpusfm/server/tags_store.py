@@ -151,6 +151,47 @@ def record_views(backend):
     return user_view, recs
 
 
+def catalog_view(backend):
+    """``(artifact_records, user_view, tag_fold_failed)`` — `record_views`' two values plus one
+    honesty bit, reading only the tables that can still change the answer (packet 1370).
+
+    `record_views` reads all three tables unconditionally. That is right for the catalog page, which
+    always has records and always renders tags, and wrong for a caller that may have neither: an
+    EMPTY catalog paid a TAG read and a STORAGELINK read to be told there was nothing to tag, and a
+    store whose v2 tag tables are not live paid them to be told the same. Both were reads the
+    predecessor `iter_artifact_metas()` + `load_tags()` pair never performed.
+
+    So visible STORAGE is read once, always — every caller needs it, and the lineage/IsLatest view
+    is derived from those records alone. TAG and STORAGELINK are read only when there is at least
+    one record AND `tables_available()` permits them. ``user_view`` is `{}` in the skipped cases,
+    which is what the full fold would have produced anyway: with no records nothing can be looked
+    up, and without the v2 tables `load_tags()` already answered empty.
+
+    A STORAGE failure PROPAGATES — without records there is no answer to give, and the caller must
+    decide how to degrade. **A TAG/STORAGELINK failure does not**: the records are already in hand,
+    and throwing them away only makes the caller enumerate STORAGE a second time to rebuild what
+    this call just read. It returns them with an empty ``user_view`` and ``tag_fold_failed=True``.
+
+    That third value exists because the two "no tags" cases are NOT the same to a caller. Tables
+    unavailable is a definite, complete answer about a legacy store. A fold that RAISED is an
+    incomplete read, and the incumbent behavior a caller may need to preserve — for instance a
+    lineage filter that must degrade to a no-op rather than act on a partial view — keys on exactly
+    that difference. Skipped and failed look identical in ``user_view``; only this bit separates
+    them.
+    """
+    recs = _artifact_records(backend)
+    if not recs or not tables_available(backend):
+        return recs, {}, False
+    try:
+        _, uuid_to_name, assigns = _partition(backend)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(
+            "tag fold unavailable; serving %d catalog record(s) untagged", len(recs), exc_info=True)
+        return recs, {}, True
+    return recs, _fold_assignments(assigns, uuid_to_name), False
+
+
 # ── record_views snapshot (audit #2 SNAPSHOT) ─────────────────────────────────
 # The catalog list route (incl. every 300ms search keystroke) reused to do the FULL
 # STORAGE + TAG + STORAGELINK read per request. A short TTL snapshot serves those reads;

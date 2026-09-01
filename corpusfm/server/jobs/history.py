@@ -10,7 +10,7 @@ Public API:
     RunRecord
     default_history_dir()                                   — vestigial dir (nothing is written)
     record_run(backend, run)                                — write a HISTORY Type=Run row
-    list_runs_for(job_name, history_dir, limit, backend, job_uuid) — read Type=Run for a job
+    list_runs_for(job_uuid, history_dir, limit, backend) — read Type=Run for one job
 """
 
 from __future__ import annotations
@@ -51,13 +51,17 @@ def record_run(backend, run: RunRecord) -> None:
 
 
 def list_runs_for(
-    job_name: str,
+    job_uuid: str,
     history_dir: Path = None,
     limit: int = 50,
     backend=None,
-    job_uuid: str = "",
 ) -> list[RunRecord]:
-    """Run history for a job, newest first — HISTORY Type=Run scoped by UUIDJob, on both
-    backends. ``history_dir`` is accepted for call-site compatibility but unused (no JSONL)."""
+    """Run history for one job, newest first — HISTORY Type=Run scoped by `UUIDJob`.
+
+    **The first positional is the job's UUID.** It used to be `job_name`, which the body then
+    ignored in favour of a `job_uuid=` keyword — a dead parameter that made every call site read as
+    though history were name-scoped, and an open invitation to reintroduce exactly that.
+    `history_dir` is accepted for call-site compatibility and unused (there is no JSONL).
+    """
     from corpusfm.server.history import list_run_records
     return list_run_records(backend, job_uuid, limit=limit)

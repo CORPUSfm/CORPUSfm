@@ -32,7 +32,12 @@ async def monitor_status() -> JSONResponse:
                 if scheduler_is_running(jobs_dir):
                     info = read_scheduler_status(jobs_dir)
                     ts = (info.get("ts", "") or "")[:19].replace("T", " ")
-                    scheduler_status = f"Scheduler running — {ts} UTC"
+                    if (info.get("status") or "") == "waiting":
+                        # Alive, and firing nothing. Reporting it as "running" would hide the only
+                        # fact an operator needs here (packet 1372-01).
+                        scheduler_status = f"Scheduler waiting — jobs paused — {ts} UTC"
+                    else:
+                        scheduler_status = f"Scheduler running — {ts} UTC"
                 else:
                     scheduler_status = "Scheduler not running"
             except Exception:
@@ -43,6 +48,11 @@ async def monitor_status() -> JSONResponse:
             "active_alerts": [
                 {
                     "condition": a.condition,
+                    # The suppression KEY (packet 1372-02, R4). The Acknowledge button sends this
+                    # back; `job_name` beside it is the label the operator reads. Sending only the
+                    # name wrote `job_failed:<name>` while the evaluator read `job_failed:<uuid>`,
+                    # so the alert kept firing while the operator believed it was muted.
+                    "job_uuid":  a.job_uuid or "",
                     "job_name":  a.job_name or "",
                     "message":   a.message,
                     "severity":  a.severity,
@@ -87,6 +97,10 @@ async def job_health() -> JSONResponse:
         return JSONResponse({
             "rows": [
                 {
+                    # Identity first: the Monitoring table keys its rows on this. Keying on `name`
+                    # threw `Duplicate key on x-for` the moment two jobs shared a display name, which
+                    # is ordinary now (found by the packet 1364 L1 gate on u-test-private).
+                    "uuid":        r.uuid,
                     "name":        r.name,
                     "source_type": r.source_type,
                     "schedule":    r.schedule or "—",
@@ -107,7 +121,10 @@ async def suppress_alert(request: Request) -> JSONResponse:
         from corpusfm.server.monitor.alerts import suppress_alert as _suppress
         from corpusfm.server.monitor.config import load_monitor_config
         config = load_monitor_config()
-        _suppress(body["condition"], body.get("job_name"), config.suppress_hours)
+        # Suppress by UUID. `job_name` is accepted only as the fallback key for an alert that has
+        # no job at all (a corpus-wide condition), where the name IS the whole scope.
+        _suppress(body["condition"], None, config.suppress_hours,
+                  job_uuid=(body.get("job_uuid") or "").strip() or None)
         return JSONResponse({"ok": True})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -115,7 +132,7 @@ async def suppress_alert(request: Request) -> JSONResponse:
 
 @router.get("/overview", dependencies=[Depends(require_auth)])
 async def overview() -> JSONResponse:
-    """Aggregate the last 10 activities per group for the Overview page (CLAUDE-UX §4).
+    """Aggregate the last 10 activities per group for the Recent activity pop-over.
 
     Read-only: each group is isolated so one failing source never blanks the page.
     """
@@ -128,9 +145,7 @@ async def overview() -> JSONResponse:
     # Artifacts → imports / merges / patches (newest-first, capped at 10 each)
     try:
         from corpusfm.storage import get_backend
-        from corpusfm.server.tags import load_tags
         backend = get_backend()
-        tags_map = load_tags()
 
         def _fmt(fm_file, meta) -> dict:
             return {
@@ -143,7 +158,6 @@ async def overview() -> JSONResponse:
                 "gap_issues":    meta.gap_issues,
                 "is_schema":     getattr(meta, "is_schema", False),
                 "artifact_type": getattr(meta, "artifact_type", ""),
-                "tags":          tags_map.get(meta.uuid, []) if meta.uuid else [],
                 "root_uuid":     meta.root_uuid or "",
             }
 

@@ -372,9 +372,27 @@ if result.requires_installer:
 # value can only ever REFUSE. Comparing it first put it in FRONT of those gates, which is the shape
 # of a value that selects rather than consents.
 if ($script:Observed -ne $script:Requested) {
-    Stop-With 'refused' 'target_changed' ("origin/main is now " + $script:Observed.Substring(0,12) +
+    $detail = ("origin/main is now " + $script:Observed.Substring(0,12) +
         ", but this update was authorized for " + $script:Requested.Substring(0,12) +
         ". Check for updates again and authorize the current tip.")
+    # THE SCHEDULED OBSERVATION IS NOT A FAILURE (packet 1373). The web service refreshes this box's
+    # Git refs by running this script with an all-zero consent value; forty zeroes is not a Git
+    # object id, so the comparison above can only refuse, and that refusal IS the mechanism.
+    #
+    # MEASURED DIFFERENCE FROM LINUX, and the reason this branch is here anyway: Windows Task
+    # Scheduler does NOT hold a task in a failed state -- `State` stays `Ready` -- so Windows never
+    # had Linux's permanently-failed unit. What it did have is `LastTaskResult=1` on a healthy box,
+    # which is the same misleading signal to anyone querying the task or scripting against it.
+    #
+    # Only the exit status changes, and only for a value that cannot be a commit. The outcome record
+    # is written unchanged, because the refusal is real and its evidence lives there. A REAL
+    # stale-consent refusal still exits 1.
+    if ($script:Requested -match '^0{40,64}$') {
+        Write-Log 'REFUSED: target_changed (scheduled observation; refs refreshed, nothing attempted)'
+        Write-Outcome 'refused' 'target_changed' $detail $false
+        exit 0
+    }
+    Stop-With 'refused' 'target_changed' $detail
 }
 
 # -- apply ----------------------------------------------------------------------------------------

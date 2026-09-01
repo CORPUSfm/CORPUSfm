@@ -790,7 +790,15 @@ def test_consent_is_compared_AFTER_every_other_eligibility_gate(artifact, compar
     assert text.index("not_fast_forward") < consent, "consent precedes the fast-forward gate"
     assert text.index("needs_installer") < consent, "consent precedes the classification gate"
     assert text.count(comparison) == 1, "consent has more than one operative comparison"
-    assert text.count("target_changed") == 1, "the early consent comparison is still present"
+    # Every mention of the refusal REASON must sit inside that single comparison. This used to read
+    # `text.count("target_changed") == 1`, which was a SPELLING proxy for the same rule and broke on a
+    # legitimate change: packet 1373 added a branch INSIDE the one comparison so that the scheduled
+    # all-zero observation exits 0 instead of leaving a permanently failed systemd unit. That added no
+    # second consent decision -- the assertion above still holds -- it only named the reason more than
+    # once. What must be true is that no consent verdict is reached BEFORE the gates, which is what
+    # this now checks directly.
+    first_reason = text.index("target_changed")
+    assert first_reason > consent, "a consent verdict is reached before the single comparison"
 
 
 def test_the_linux_environment_is_BUILT_not_filtered():
@@ -1737,3 +1745,66 @@ def test_the_RENDERED_LINUX_UPDATER_names_the_venv_under_ITS_OWN_install_dir(
     rendered = _ui.render("installer/linux/corpusfm-update.sh")
     assert f'VENV_PY="{expected}"' in rendered
     assert "@@" not in rendered
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+# Packet 1373 — a healthy observation must not leave a failed service state.
+# ══════════════════════════════════════════════════════════════════════════════════════
+
+def _run_status(install):
+    """`(exit_status, outcome)` — the same run as `_run`, keeping the status it discards."""
+    proc = subprocess.run(["bash", str(install["script"])],
+                          capture_output=True, text=True, timeout=120)
+    path = install["state"] / "update-outcome" / "update_outcome.json"
+    return proc.returncode, (json.loads(path.read_text()) if path.exists() else None)
+
+
+def test_the_scheduled_observation_refuses_but_does_not_EXIT_nonzero(install, tmp_path):
+    """The web service refreshes this box's Git refs by running the updater with an ALL-ZERO consent
+    value. Forty zeroes is not a Git object id, so the comparison can only refuse — that refusal IS
+    the mechanism, and it runs every two hours on a perfectly healthy installation.
+
+    Exiting 1 made systemd mark the `Type=oneshot` unit `failed` and KEEP it there, so every healthy
+    Linux box permanently occupied `systemctl --failed` — the first place an administrator looks for
+    a fault. Measured on u-test-private, packet 1373.
+
+    THE REFUSAL ITSELF IS UNCHANGED, which is the half that matters: same `refused`, same
+    `target_changed`, same detail. Only the exit status moves, and only for a value that cannot be a
+    commit. The web service reads the outcome record and never the status, so what it sees is
+    identical.
+    """
+    _bind_fake_git(install, tmp_path)
+    _request(install, expected_head="0" * 40)
+    status, outcome = _run_status(install)
+    assert outcome is not None, "the updater wrote no outcome at all"
+    assert outcome["state"] == "refused", outcome
+    assert outcome["reason_code"] == "target_changed", outcome
+    assert status == 0, "a healthy scheduled observation still exits nonzero"
+
+
+def test_a_REAL_stale_consent_refusal_still_exits_nonzero(install, tmp_path):
+    """CONTROL, and the one that keeps the fix honest.
+
+    An administrator who authorized a commit that has since moved gets the same reason code — and
+    must still be a nonzero exit, because something was actually asked for and refused. If this ever
+    passed at 0, the packet would have turned genuine updater refusals into success, which is
+    precisely what it was forbidden to do.
+    """
+    _bind_fake_git(install, tmp_path)
+    _request(install, expected_head="a" * 40)
+    status, outcome = _run_status(install)
+    assert outcome is not None
+    assert outcome["reason_code"] == "target_changed", outcome
+    assert status != 0, "a real stale-consent refusal was turned into a success"
+
+
+def test_an_ordinary_failure_is_untouched_by_the_observation_branch(install):
+    """CONTROL for BREADTH. A refusal reached before the consent gate never sees the new branch and
+    must keep exiting nonzero — the change must not have widened into 'refusals succeed'."""
+    _request(install)
+    (install["src"] / "corpusfm").mkdir(parents=True, exist_ok=True)
+    (install["src"] / "corpusfm" / "evil.py").write_text("import os\n")
+    status, outcome = _run_status(install)
+    assert outcome is not None
+    assert outcome["reason_code"] == "unclean_tree", outcome
+    assert status != 0, "an unclean-tree refusal was turned into a success"

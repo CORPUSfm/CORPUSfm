@@ -464,12 +464,16 @@
         get softTimedOut() { return !!this._cad.softTimedOut; },
         get cadencePhase() { return this._cad.phase; },
         get active() { return !!this.running || this.queuedCount > 0; },
-        // JobRun fold (R4): the running/queued job + file names, derived from the unified JobRun activity
-        // rows (they carry job_name/file_name) — replacing the retired /api/jobs/running duplicate.
-        get runningJobNames() {
+        // JobRun fold (R4): the running/queued job IDENTITIES + file names, derived from the unified
+        // JobRun activity rows — replacing the retired /api/jobs/running duplicate.
+        //
+        // UUIDs, not names (packet 1372-02). Two jobs may share a label, so a name-derived set lit
+        // the Running badge on every one of them the moment a single job ran, and disabled their Run
+        // buttons with it.
+        get runningJobUuids() {
           return [...new Set(this._durableRecords
             .filter(r => (r.kinds || []).includes('job-run') && (r.status === 'running' || r.status === 'queued'))
-            .map(r => r.job_name).filter(Boolean))];
+            .map(r => r.job_uuid).filter(Boolean))];
         },
         get runningFileNames() {
           return [...new Set(this._durableRecords
@@ -1253,7 +1257,14 @@
    consent pin.
 
    The two exits are Skip and the Settings action — no Escape, no click-away, no unlabelled close: the
-   developer asked for semi-annoying, and a modal dismissed by accident is not that. #}
+   developer asked for semi-annoying, and a modal dismissed by accident is not that.
+
+   GATED IDENTICALLY TO ITS SCRIPT. `updateWaitingPrompt()` is defined inside the settings-gated
+   server-mode block below, so emitting this `x-data` unconditionally mounted a component whose factory
+   did not exist — twelve uncaught ReferenceErrors on every page for every non-admin user, and for
+   everyone in the local development path. Same defect class as the missing `_trap`, in the same block,
+   found by the review of that fix; the sibling initial-MCP prompt was already wrapped this way. #}
+{% if mode == 'server' and authenticated and g_admin %}
   <div class="cfm-overlay" id="update-waiting" x-data="updateWaitingPrompt()" x-show="show" x-cloak
        @keydown.escape.window.prevent
        x-effect="show ? $nextTick(() => { _trap = window.cfmFocusTrap($refs.uwDlg) }) : (_trap && _trap())">
@@ -1293,6 +1304,7 @@
       </div>
     </div>
   </div>
+{% endif %}
 
 {# ══ First sign-in: confirm the MCP address (packet 1326) ═══════════════════════════════════════
    ONE item, once per INSTALLATION, for a settings-gated user in server mode. The box asserts its own
@@ -1395,6 +1407,16 @@
   function updateWaitingPrompt() {
     return {
       show: false, busy: false, error: '', info: {},
+      // DECLARED, not implied. `x-effect` on #update-waiting assigns `_trap` while installing the
+      // shipped focus trap, and Alpine resolves that against THIS component's data — so an undeclared
+      // property is a ReferenceError thrown at shell initialization on every authenticated page,
+      // whether or not the prompt is ever shown. Measured on an installed box (packet 1364): one page
+      // error, class ReferenceError, on every authenticated surface. NOT on the login page — that
+      // template does not extend this shell and carries none of this markup (measured). The
+      // neighbouring initialMcpAddress() declares its own; a declaration there cannot serve this
+      // component. Undeclared, the trap is neither installed nor released, and this dialog is
+      // deliberately non-dismissible — so a keyboard user tabs into the controls behind it.
+      _trap: null,
       init() {
         // ONE passive classification per admin shell load. The sidebar badge reads this same
         // response rather than making a second check (packet 1341).

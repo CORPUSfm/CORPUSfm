@@ -17,6 +17,9 @@ from corpusfm.server.monitor.config import MonitorConfig
 
 @dataclass
 class JobHealthRow:
+    #: The job's UUID — its identity. `name` beside it is a display label that MAY REPEAT, so
+    #: anything keying, joining or de-duplicating a health row uses this and never the name.
+    uuid: str
     name: str
     source_type: str
     schedule: Optional[str]        # first cron expression, or None
@@ -67,6 +70,7 @@ def get_job_health(
                 pass
 
         rows.append(JobHealthRow(
+            uuid=getattr(cfg, "id", "") or "",
             name=cfg.name,
             source_type=cfg.source.type if cfg.source else "?",
             schedule=schedule,
@@ -75,4 +79,6 @@ def get_job_health(
             overdue=overdue,
         ))
 
-    return sorted(rows, key=lambda r: r.name)
+    # Sorted for display by name, then by uuid so that two jobs sharing a display name still have a
+    # STABLE, total order — an unstable order makes a keyed list re-shuffle on every poll.
+    return sorted(rows, key=lambda r: (r.name, r.uuid))

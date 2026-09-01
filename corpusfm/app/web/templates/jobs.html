@@ -129,7 +129,7 @@
 
               {# Each job is its own world (packet 1143): every action here scopes to THIS job's
                  uuid. The card is not a click target — Edit is the only way into the record. #}
-              <template x-for="j in jobs" :key="j.name">
+              <template x-for="j in jobs" :key="j.id">
                 <div class="cfm-listcard cfm-listcard--acts cfm-listcard--stack"
                      :class="'cfm-listcard--' + (j.last_status === 'error' ? 'broken' : (j.last_run ? 'ok' : 'idle'))">
                   <span class="cfm-lc-ident">
@@ -156,7 +156,7 @@
                     <button type="button" class="cfm-btn cfm-btn--sm" title="Edit this job"
                             @click="editJob(j)">Edit</button>
                     <button type="button" class="cfm-btn cfm-btn--sm"
-                            :disabled="!!(j.running || runningJob[j.name] || $store.ready.blocked(2))"
+                            :disabled="!!(j.running || runningJob[j.id || j.uuid] || $store.ready.blocked(2))"
                             :title="$store.ready.blocked(2) ? 'Running a job needs FileMaker Server apply prerequisites (PKI / tool / helper)' : 'Run this job now'"
                             @click="runNow(j)">Now</button>
                     <button type="button" class="cfm-btn cfm-btn--sm" title="This job's run history"
@@ -241,7 +241,7 @@
           <div class="cfm-dialog-body">
             <div class="cfm-field">
               <label class="cfm-field-label" for="job-name">Job name</label>
-              <input id="job-name" type="text" class="cfm-input" x-model="jobForm.name" :disabled="!jobForm.is_new"
+              <input id="job-name" type="text" class="cfm-input" x-model="jobForm.name"
                      placeholder="e.g. nightly-index">
             </div>
 
@@ -478,7 +478,7 @@
           <div class="cfm-dialog-ftr">
             <template x-if="!jobForm.is_new">
               <button type="button" class="cfm-btn cfm-btn--sm" @click="runJob(jobForm)"
-                      :disabled="!!runningJob[jobForm.name] || $store.ready.blocked(2)"
+                      :disabled="!!runningJob[jobForm.id] || $store.ready.blocked(2)"
                       :title="$store.ready.blocked(2) ? 'Running a job needs FileMaker Server apply prerequisites (PKI / tool / helper)' : ''">Run now</button>
             </template>
             <template x-if="!jobForm.is_new && !confirmDelJob">
@@ -594,7 +594,7 @@ function jobsPage() {
     clock: { now_text: '', zone: '', fallback: false },
     WEEKDAY_OPTS, HOUR_OPTS, MINUTE_OPTS,
     delJobBusy: false, orphanWipeBusy: false,   // per-operation in-flight guards (packet 1186)
-    runningNames: [], _runTimer: null,
+    runningUuids: [], _runTimer: null,
     fileSearch: '',
     confirmOrphanWipe: false,
     TRIGGER_OPTS,
@@ -753,15 +753,15 @@ function jobsPage() {
     patchRunning() {
       const q = this.$store.queue;
       if (!q) return;
-      const jobSet = new Set(q.runningJobNames);
+      const jobSet = new Set(q.runningJobUuids);
       const fileSet = new Set(q.runningFileNames);
-      this.runningNames = [...jobSet];
+      this.runningUuids = [...jobSet];
       // Patch the card rows reactively from the feed-derived running file set (no page-data pretense —
       // this only flips a `running` flag; the file rows come from /api/files).
       this.files = this.files.map(f => Object.assign({}, f, { running: fileSet.has(f.name) }));
       // Flip the open detail's job rows immediately too.
       if (this.jobs && this.jobs.length) {
-        this.jobs = this.jobs.map(j => Object.assign({}, j, { running: jobSet.has(j.name) }));
+        this.jobs = this.jobs.map(j => Object.assign({}, j, { running: jobSet.has(j.id || j.uuid) }));
       }
     },
     destroy() { if (this._onActivity) window.removeEventListener('cfm-activity', this._onActivity); },
@@ -852,16 +852,16 @@ function jobsPage() {
     async runNow(j) {
       const file = this.detail && this.detail.name;   // capture up front — detail may change
       if (!file) return;
-      this.runningJob = Object.assign({}, this.runningJob, { [j.name]: true });
+      this.runningJob = Object.assign({}, this.runningJob, { [j.id || j.uuid]: true });
       try {
-        const r = await fetch(`/api/files/${encodeURIComponent(file)}/jobs/${encodeURIComponent(j.name)}/run`,
+        const r = await fetch(`/api/jobs/${encodeURIComponent(j.id || j.uuid)}/run`,
                               { method: 'POST' });
         const d = await r.json();
         if (d.ok) window.cfmNotify.info(`'${j.name}' started.`);
         else window.cfmNotify.error(d.error || `Could not start '${j.name}'.`);
       } catch (e) { window.cfmNotify.error(String(e)); }
       finally {
-        this.runningJob = Object.assign({}, this.runningJob, { [j.name]: false });
+        this.runningJob = Object.assign({}, this.runningJob, { [j.id || j.uuid]: false });
         if (this.detail && this.detail.name === file) await this.loadJobs(file);
       }
     },
@@ -876,7 +876,7 @@ function jobsPage() {
         const doomed = this.jobs.slice();     // frozen once — the loop is over this snapshot
         let failed = 0;
         for (const j of doomed) {             // ordering + one request per job, unchanged
-          const r = await fetch(`/api/files/${encodeURIComponent(name)}/jobs/${encodeURIComponent(j.name)}`, { method: 'DELETE' });
+          const r = await fetch(`/api/jobs/${encodeURIComponent(j.id || j.uuid)}`, { method: 'DELETE' });
           const d = await r.json();
           if (!d.ok) failed++;
         }
@@ -908,7 +908,9 @@ function jobsPage() {
     editJob(j) {
       this.jobMsg = ''; this.confirmDelJob = false;
       this.jobForm = {
-        is_new: false, name: j.name, trigger_type: j.trigger_type || 'manual',
+        // `id` is the job's identity and travels on every edit and every row action; the name is a
+        // label the user may now change freely (packet 1372-02).
+        id: j.id || j.uuid, is_new: false, name: j.name, trigger_type: j.trigger_type || 'manual',
         server_time: j.server_time || '02:00',
         weekdays: (j.weekdays || []).slice(), legacy_cron: j.legacy_cron || '',
         script: j.script || this.defaultMethod, file_path: j.file_path || '',
@@ -958,12 +960,24 @@ function jobsPage() {
 
     async saveJob() {
       if (!this.jobForm.name || !this.jobForm.name.trim()) { this.jobMsg = 'Job name is required.'; return; }
+      // A NEW job cannot be saved without a credential (packet 1372-02): a job that cannot pull is
+      // an alarm nobody set. Said here so the user hears it before the round trip; the server
+      // refuses independently, and refuses before it writes anything.
+      if (this.jobForm.is_new && !(this.jobForm.account || '').trim()) {
+        this.jobMsg = 'A FileMaker account is required — a job cannot pull without one.'; return;
+      }
+      if (this.jobForm.is_new && !this.jobForm.password) {
+        this.jobMsg = 'A FileMaker password is required — a job cannot pull without one.'; return;
+      }
       this.savingJob = true; this.jobMsg = '';
       try {
         const r = await fetch(`/api/files/${encodeURIComponent(this.detail.name)}/jobs`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...this.jobForm,
+            // IDENTITY, not the name (packet 1372-02). A create sends no id and the server mints
+            // one; an edit sends the id it is editing, and that id cannot be changed by an edit.
+            id: this.jobForm.is_new ? undefined : this.jobForm.id,
             // `revision` and `effective_after` are NOT sent — the server stamps them, and a
             // client that could author them could make a schedule fire during its own save.
             server_ref: this.serverRef,   // the job's server context = the page's header selection
@@ -991,9 +1005,8 @@ function jobsPage() {
       try {
         // Inside the try: a null `jobForm`/`detail` on a delayed invocation must not throw past the
         // finally and strand this control disabled until reload.
-        const name = this.jobForm.name;
-        const file = this.detail.name;
-        const r = await fetch(`/api/files/${encodeURIComponent(file)}/jobs/${encodeURIComponent(name)}`,
+        // Addressed by the job's own id (packet 1372-02): the name is a label two jobs may share.
+        const r = await fetch(`/api/jobs/${encodeURIComponent(this.jobForm.id)}`,
                               { method: 'DELETE' });
         const d = await r.json();
         // fetch does not reject on 4xx/5xx — the route's {ok} is the only honest signal.
@@ -1007,10 +1020,10 @@ function jobsPage() {
     },
 
     async runJob(j) {
-      this.runningJob = Object.assign({}, this.runningJob, { [j.name]: true });
+      this.runningJob = Object.assign({}, this.runningJob, { [j.id || j.uuid]: true });
       window.cfmNotify.info(`Running '${j.name}'…`);
       try {
-        const r = await fetch(`/api/files/${encodeURIComponent(this.detail.name)}/jobs/${encodeURIComponent(j.name)}/run`,
+        const r = await fetch(`/api/jobs/${encodeURIComponent(j.id || j.uuid)}/run`,
                               { method: 'POST' });
         const d = await r.json();
         if (d.task_id) {
@@ -1021,7 +1034,7 @@ function jobsPage() {
         }
       } catch (e) { window.cfmNotify.error(String(e)); }
       finally {
-        this.runningJob = Object.assign({}, this.runningJob, { [j.name]: false });
+        this.runningJob = Object.assign({}, this.runningJob, { [j.id || j.uuid]: false });
         await this.loadJobs(this.detail.name);
       }
     },
@@ -1044,7 +1057,7 @@ function jobsPage() {
       if (!jobForm || jobForm.is_new) return;
       this.verifyingJob = true;
       try {
-        const r = await fetch(`/api/files/${encodeURIComponent(this.detail.name)}/jobs/${encodeURIComponent(jobForm.name)}/verify`,
+        const r = await fetch(`/api/jobs/${encodeURIComponent(jobForm.id)}/verify`,
                               { method: 'POST' });
         const d = await r.json();
         const ok = d.status === 'provable';

@@ -47,8 +47,10 @@ def _age_seconds(iso: str, now: datetime) -> float:
 
 def active_runs(backend) -> list[dict]:
     """The in-flight Job Runs (non-failed run records on a producing step), oldest-first. Each:
-    {job_name, run_id, started_at, file_name}. A backend without an engine reports none. ``run_id`` is
-    the QUEUE record key (its operational address while active), preserving the pre-1142 contract."""
+    {job_uuid, job_name, run_id, started_at, file_name}. A backend without an engine reports none.
+    ``run_id`` is the QUEUE record key (its operational address while active), preserving the pre-1142
+    contract. ``job_uuid`` is what callers JOIN on (packet 1372-02) — ``job_name`` is a frozen label
+    and two jobs may share it."""
     repo = queue_repo(backend)
     if repo is None:
         return []
@@ -56,9 +58,11 @@ def active_runs(backend) -> list[dict]:
     for step in _RUN_ACTIVE_STEPS:
         for r in repo.list_by_type(step):        # non-failed only
             p = r.jor.get("Payload", {}) or {}
-            if not p.get("job_name"):            # a browser import ([upload, ingest]) is not a Job Run
+            from corpusfm.server.queue_handlers import is_job_run
+            if not is_job_run(r):                # a browser import ([upload, ingest]) is not a Job Run
                 continue
-            out.append({"job_name": p.get("job_name", ""), "run_id": r.key,
+            out.append({"job_uuid": r.jor.get("UUIDJob", "") or "",
+                        "job_name": p.get("job_name", ""), "run_id": r.key,
                         "started_at": r.jor.get("created_at", ""),
                         "file_name": p.get("file_name", "")})
     out.sort(key=lambda d: d.get("started_at", ""))

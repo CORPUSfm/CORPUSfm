@@ -87,7 +87,14 @@ TABLE: dict[str, str] = {
 # bump induces the file-wide sweep (CFM.SRV.RefreshIndexProjections). Distinct from the physical-
 # schema `Build` (storage_migration) — this axis is backfill-able live and must never bump `Build`
 # or require a fresh install.
-PROJECTION_VERSION: int = 1
+# 1 → 2 (packet 1372-01): the JOB IDENTITY CONVERSION. This is the "existing stored data must be
+# converted" signal doing exactly the job it was defined for. The calculation map is UNCHANGED —
+# nothing about the projection itself moved — but every JOB record must be re-keyed so its native
+# record key, its `JobConfig.id` and the `UUIDJob` its artifacts/history/queue rows already carry are
+# one value. `projections.assert_projection` runs that conversion at the version-transition seam and
+# stamps 2 only after it and the incumbent refresh both succeed. Neither `Build` nor
+# `db_schema_build.txt` moves: this is not a fresh-database requirement.
+PROJECTION_VERSION: int = 2
 
 SLOTS: dict[str, dict[str, tuple[str, str]]] = {
     # STORAGE (the catalog) — classification → identity → linkage → matching → order → search → flags.

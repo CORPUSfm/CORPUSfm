@@ -10,33 +10,44 @@ equivalence is proven, which is a different packet.
 
 **No redaction (developer ruling, 2026-08-29).** Approved log text is returned verbatim. These are
 administrator-gated troubleshooting tools and the application is not the policy authority for what
-FileMaker Server or CORPUSfm wrote. Decoding, complete-line handling, the caller's own filter and the
-output ceiling are the only things that shape the return. An "improvement" that scrubs, masks or drops
-content is a regression against that ruling — the disclosure controls are the two MCP gate rails and the
-approved-root fence, enforced by packet 1360-02 and by this module respectively.
+FileMaker Server or CORPUSfm wrote. The page ceiling is the ONLY thing that shapes the return. An
+"improvement" that scrubs, masks or drops content is a regression against that ruling — the disclosure
+controls are the two MCP gate rails and the approved-root fence, enforced by packet 1360-02 and by this
+module respectively.
+
+**Raw acquisition (developer simplification ruling, 2026-08-30).** This module acquires approved log
+BYTES; the calling AI interprets them. It holds no timestamp grammar, no window arithmetic, no logical-
+record assembly and no content filter, because four review rounds showed that a transport layer asked
+to understand heterogeneous, version-dependent log text drops content while reporting success.
+
+**LIVE, not a snapshot (developer rulings 1-4, 2026-08-30).** Reads are strictly read-only and never
+lock, copy aside, or otherwise stabilise a log. Concurrent writes and rotation are normal operating
+conditions rather than errors to eliminate, so nothing here promises a single-generation traversal. A
+date range selects FILES from filesystem metadata; it never parses a timestamp out of log text.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
+import json
 import os
 import re
 import stat as _stat
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Bytes of log data one request may EXAMINE. Measured, not chosen for roundness (packet 1360-01 census,
-# 2026-08-29): the largest real rotation family on `w-test-private` is TopCallStats at 67.34 MiB, so a
-# 64 MiB budget would make an exhaustive search of the two families most worth searching report
-# `search_complete: false`. 128 MiB is the next power of two above the measured maximum. It bounds work,
-# never memory — reads are fixed-size chunks regardless.
-SCAN_BUDGET_BYTES = 128 * 1024 * 1024
+# The cumulative 128 MiB traversal budget that used to live here is REMOVED (developer ruling 2,
+# 2026-08-30). It was not the MCP transport ceiling; it was an application limit that made every byte
+# of a selected family beyond it permanently unreachable over MCP — a prefix cutoff, reproduced at
+# proportional scale as ranges [24,32) and [16,24) of a 32-byte member followed by an empty terminal
+# reply with no cursor. In this reader there is no hidden scan: bytes examined are bytes returned, the
+# per-page ceiling already bounds work per call, and the concurrency seam bounds competing reads.
 
-MAX_LINES = 2000
-DEFAULT_LINES = 200
+#: Bytes of log text ONE page may carry. The transport lowers it; nothing raises it.
 MAX_OUTPUT_BYTES = 256 * 1024
-MAX_CONTAINS_CHARS = 200
 _CHUNK = 65536
 
 _OWNER_FMS = "fms"
@@ -375,145 +386,335 @@ def list_server_logs(roots: list[_Root] | None = None) -> dict:
     }
 
 
-# ── bounded backward reading ──────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# Packet 1363 — LIVE raw byte acquisition (developer rulings, 2026-08-30)
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+#
+# Three contracts have stood here in succession, and the differences matter more than the code.
+#
+# 1. The INTERPRETING reader understood log text — time windows, a timestamp grammar with runtime
+#    probing, DST placement, multi-line records, keyword filtering, record counting, a fragment
+#    protocol. Four review rounds each found a fresh way for it to drop content while reporting
+#    success; CXR-1 returned two of a four-line fixture because a traceback carries no timestamp.
+# 2. The FROZEN-SNAPSHOT reader replaced it with byte pagination, but promised each traversal was one
+#    coherent generation of the file. It could not keep that promise: the cursor embedded the whole
+#    member list (so a 900-rotation family could not be paged at all), a 64-byte tail anchor was
+#    trivially evaded by an in-place rewrite that preserved those bytes, and a 128 MiB traversal
+#    budget silently made older bytes unreachable for ever.
+# 3. THIS reader is honestly LIVE (rulings 1–4, 2026-08-30). It is strictly read-only: it never locks,
+#    snapshots, or tries to stabilise a log. It starts at the newest content and works backward.
+#    Concurrent writes and rotation are NORMAL OPERATING CONDITIONS, not errors to eliminate — so
+#    nothing here claims a single-generation traversal, and `traversal_complete` says only that every
+#    range this traversal addressed was read with no detected failure.
+#
+# The cursor is BOUNDED: a position and the selection parameters, never a member list. Every page
+# rebuilds the live catalog and reapplies every fence. Cursor size does not grow with rotation count,
+# so a large family is paged rather than refused.
 
-class _Budget:
-    def __init__(self, total: int | None = None) -> None:
-        # Read at construction, never bound as a default argument: the module constant is the single
-        # place the measured number lives, and a default would freeze a copy of it at import.
-        self.left = SCAN_BUDGET_BYTES if total is None else total
-        self.stopped = False
+CURSOR_VERSION = 3
+#: HMAC domain separation. The web session secret is the INPUT; this label makes the cursor key a
+#: different key, so a cursor can never be confused with (or forged from) a session cookie. The
+#: version rides in the label, so a cursor minted by either earlier contract cannot validate here.
+_CURSOR_PURPOSE = b"corpusfm/log_access/cursor/v3"
 
-    def take(self, n: int) -> int:
-        if n > self.left:
-            self.stopped = True
-            n = self.left
-        self.left -= n
-        return n
+#: A page may never be smaller than this, or a cursor could fail to advance.
+MIN_PAGE_BYTES = 1
 
 
-class _LineTooLong(Exception):
-    """A single physical line exceeded what the output could hold, so the scan stopped there."""
+class CursorInvalid(LogAccessError):
+    """The cursor is not this server's, not this query's, or not this format's."""
 
 
-def _iter_lines_backward(fd: int, size: int, budget: _Budget, max_line: int):
-    """Yield ``(text_bytes, at_file_start)`` newest-first, reading fixed chunks and never the whole file.
+# ── authenticated cursor ──────────────────────────────────────────────────────────────────────
 
-    A line is never decoded until it is complete, so a multibyte UTF-8 sequence spanning a chunk
-    boundary cannot be split. Raises ``OSError`` if the file shrinks under the read — a concurrent
-    rotation is reported as a member failure, never as a short answer that looks complete.
+def _cursor_key() -> bytes:
+    """A sub-key derived from the installation's session secret with a versioned purpose label.
 
-    ``max_line`` is what makes "never reads an entire file into memory" TRUE rather than merely usual.
-    The partial line being reassembled is the one unbounded structure here: a member with no newline
-    in its trailing region — a corrupt log, or a writer emitting one enormous record — would otherwise
-    grow it to the whole file, and `chunk + tail` would transiently double that. Such a line cannot be
-    returned anyway (the output ceiling would drop it), so the scan stops at it and the caller is told
-    the result was cut. Found by review, 2026-08-29; the module comment had claimed the opposite.
+    Developer ruling, packet 1363: the session secret is the INPUT, never the signing key. Domain
+    separation means a cursor cannot be forged from (or mistaken for) a session cookie.
     """
-    if size == 0:
-        return
-    pos = size
-    tail = b""
-    first = True
-    while pos > 0:
-        want = min(_CHUNK, pos)
-        granted = budget.take(want)
-        if granted <= 0:
-            return
-        pos -= granted
-        os.lseek(fd, pos, os.SEEK_SET)
-        chunk = os.read(fd, granted)
-        if len(chunk) < granted:
-            raise OSError("the log file shrank while it was being read")
-        buf = chunk + tail
-        if first:
-            first = False
-            if buf.endswith(b"\n"):        # the file's own final terminator, not an empty last line
-                buf = buf[:-1]
-        parts = buf.split(b"\n")
-        tail = parts[0]
-        for part in reversed(parts[1:]):
-            yield part, False
-        if len(tail) > max_line:
-            raise _LineTooLong
-        if budget.stopped:
-            return
-    yield tail, True
+    from corpusfm.app.web.auth import session_secret
+    return hmac.new(session_secret().encode("utf-8"), _CURSOR_PURPOSE, hashlib.sha256).digest()
 
 
-def _decode(raw: bytes, at_start: bool) -> str:
-    text = raw.decode("utf-8", errors="replace")
-    if text.endswith("\r"):                 # CRLF is universal on Windows (census, 2026-08-29)
-        text = text[:-1]
-    if at_start and text.startswith("﻿"):
-        # A UTF-8 BOM is an encoding marker, not log text. Measured on fmodata.log / fmodata.log.1 /
-        # scriptEvent.log. Stripped ONLY at file offset 0, so nothing inside a record is touched.
-        text = text[1:]
-    return text
+def _seal_cursor(state: dict) -> str:
+    body = json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    mac = hmac.new(_cursor_key(), body, hashlib.sha256).digest()[:16]
+    return (base64.urlsafe_b64encode(body).decode("ascii").rstrip("=") + "."
+            + base64.urlsafe_b64encode(mac).decode("ascii").rstrip("="))
 
 
-def _read_member(member: _Member, *, needed: int, contains: str | None, budget: _Budget,
-                 out: list[str], out_bytes: int, ceiling: int) -> tuple[int, bool, bool, str | None]:
-    """Collect newest-first from one member. Returns (out_bytes, truncated, exhausted, failure)."""
+def _unseal_cursor(token: str) -> dict:
+    if not isinstance(token, str) or token.count(".") != 1:
+        raise CursorInvalid("cursor_invalid")
+    body_b64, mac_b64 = token.split(".")
     try:
-        fd = _open_nofollow(member.path)
+        body = base64.urlsafe_b64decode(body_b64 + "=" * (-len(body_b64) % 4))
+        mac = base64.urlsafe_b64decode(mac_b64 + "=" * (-len(mac_b64) % 4))
+    except Exception:
+        raise CursorInvalid("cursor_invalid")
+    if not hmac.compare_digest(mac, hmac.new(_cursor_key(), body, hashlib.sha256).digest()[:16]):
+        raise CursorInvalid("cursor_invalid")
+    try:
+        state = json.loads(body.decode("utf-8"))
+    except Exception:
+        raise CursorInvalid("cursor_invalid")
+    if not isinstance(state, dict) or state.get("v") != CURSOR_VERSION:
+        raise CursorInvalid("cursor_invalid")
+    return state
+
+
+# ── the concurrency seam ──────────────────────────────────────────────────────────────────────
+
+class _ScanSeam:
+    """One active scan per process — the shared backend concurrency seam.
+
+    **The value is PROVISIONAL and local-correctness only.** Ownership is settled here; the shipped
+    concurrency number needs measured load evidence through the running service, which is a separately
+    authorized live step. Nothing may quote `1` as the shipped value.
+    """
+    def __init__(self, limit: int = 1) -> None:
+        import threading
+        self.limit = limit
+        self._sem = threading.BoundedSemaphore(limit)
+
+    def __enter__(self):
+        self._sem.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._sem.release()
+        return False
+
+
+SCAN_SEAM = _ScanSeam()
+
+
+# ── page assembly ─────────────────────────────────────────────────────────────────────────────
+
+def _decode_page(raw: bytes) -> str:
+    """Bytes to text, and nothing else.
+
+    Malformed bytes decode to U+FFFD (ruling 4). That is READABLE, not byte-identical: one `0xff`
+    source byte becomes a three-byte UTF-8 replacement character in the returned JSON text. Which is
+    why every POSITION and every source-byte count in a reply is in ORIGINAL FILE BYTES, and the
+    length of the text is reported separately — conflating the two was CXR2-4. Exact recovery of
+    malformed source bytes is an SSH use case; there is no base64 mode and no second binary reader.
+    """
+    return raw.decode("utf-8", errors="replace")
+
+
+def _codepoint_start(fd: int, lo: int) -> int:
+    """``lo``, moved back to the start of the UTF-8 code point it falls inside.
+
+    This is the ONLY boundary rule in the module, and it is what lets a page be a plain byte range.
+    A page always begins on a lead byte, so the older page that ends where it begins also ends on a
+    complete code point — no fragment protocol and no per-line state.
+
+    **The walk must MOVE ONLY IF IT FOUND A LEAD BYTE.** A code point carries at most three
+    continuation bytes, so a walk of three reaches the lead byte of any well-formed character. If it
+    does not find one within reach, `lo` cannot be inside a valid code point — the bytes there are
+    already invalid — so the position is left where it is. Returning `lo - 3` unconditionally was a
+    real content-loss defect: one stray continuation byte after any 4-byte character made the walk
+    overshoot INTO that character and split it, destroying it in both pages.
+    """
+    if lo <= 0:
+        return 0
+    back = min(3, lo)
+    os.lseek(fd, lo - back, os.SEEK_SET)
+    probe = os.read(fd, back + 1)
+    if len(probe) < back + 1:
+        return lo
+    i = back
+    while i > 0 and (probe[i] & 0xC0) == 0x80:
+        i -= 1
+    if (probe[i] & 0xC0) == 0x80:
+        return lo                   # no lead byte within reach: these bytes are already invalid
+    return lo - (back - i)
+
+
+def _created_at(path: Path) -> float | None:
+    """The member's creation time, or ``None`` where the platform does not record one.
+
+    macOS and Windows expose a real birth time; ext4 on Linux usually does not through `os.stat`, and
+    `st_ctime` there is the INODE-CHANGE time, which a chmod moves. Guessing with it would silently
+    misfile a rotation, so an absent birth time is reported as absent and modification time is used
+    instead (ruling 1).
+    """
+    try:
+        st = os.stat(path)
     except OSError:
-        return out_bytes, False, False, "unreadable"
-    try:
-        st_open = os.fstat(fd)
-        if (not _stat.S_ISREG(st_open.st_mode)
-                or not _same_identity(member.dev, member.ino, st_open)
-                or st_open.st_nlink != 1):
-            # Replaced or rotated between catalog and open, or a second link appeared after the catalog
-            # accepted it (Codex ruling, 2026-08-29, F3 — revalidated here, not only at catalog time).
-            # Not an escape and not content: a structured failure, which falsifies `search_complete`.
-            return out_bytes, False, False, "changed_during_read"
-        needle = contains.lower() if contains else None
-        try:
-            for raw, at_start in _iter_lines_backward(fd, st_open.st_size, budget, ceiling):
-                if len(out) >= needed:
-                    return out_bytes, False, True, None
-                text = _decode(raw, at_start)
-                if needle is not None and needle not in text.lower():
-                    continue
-                cost = len(text.encode("utf-8")) + 1
-                if out_bytes + cost > ceiling:
-                    # The newest complete lines are retained; this older one is dropped. The result is
-                    # cut, so it is neither satisfied nor exhausted — `truncated` says why.
-                    return out_bytes, True, False, None
-                out.append(text)
-                out_bytes += cost
-        except _LineTooLong:
-            return out_bytes, True, False, None
-        except OSError:
-            return out_bytes, False, False, "changed_during_read"
-        return out_bytes, False, not budget.stopped, None
-    finally:
-        os.close(fd)
+        return None
+    born = getattr(st, "st_birthtime", None)
+    if born:
+        return float(born)
+    if os.name == "nt":
+        return float(st.st_ctime)
+    return None
 
 
-def read_server_log(source_id: str, member_id: str | None = None, lines: int = DEFAULT_LINES,
-                    contains: str | None = None, roots: list[_Root] | None = None,
-                    max_output_bytes: int | None = None) -> dict:
-    """Bounded tail of one approved log family.
+def _order_key(member) -> list:
+    """The traversal order, as data a bounded cursor can carry.
 
-    ``max_output_bytes`` lowers the contract ceiling for a transport that cannot carry it — the MCP
-    wrapper passes one, because the shared response-size middleware would otherwise byte-truncate the
-    serialized JSON into something unparseable. It can only ever LOWER the ceiling.
+    Current member first, then rotations by DESCENDING modification time, with the name only as a
+    tie-break. That is what the catalog actually does; the docs used to describe `X.log`, `X.log.1`,
+    `X.log.2` in numeric-suffix order, which is a different and stronger claim that disagrees whenever
+    timestamps are copied or rewritten (CXR2-6).
     """
-    if not isinstance(lines, int) or isinstance(lines, bool):
-        raise InvalidArgument("lines must be an integer")
-    if not 1 <= lines <= MAX_LINES:
-        raise InvalidArgument(f"lines must be between 1 and {MAX_LINES}")
-    if contains is not None:
-        if not isinstance(contains, str):
-            raise InvalidArgument("contains must be text")
-        if len(contains) > MAX_CONTAINS_CHARS:
-            raise InvalidArgument(f"contains must be at most {MAX_CONTAINS_CHARS} characters")
-        if contains == "":
-            contains = None
+    return [0 if member.current else 1, -member.mtime, member.name]
 
-    # A FRESH catalog, by contract: an id minted before a root moved must not resolve afterwards.
+
+def _order_fingerprint(selected) -> str:
+    """A FIXED-SIZE digest of the traversal's ordering — never the member list itself.
+
+    What it hashes is the ORDERED SEQUENCE OF MEMBER IDENTITIES, deliberately, and not the raw order
+    inputs. An ordinary append to the current log changes that member's mtime and therefore its order
+    key, while changing nothing about the order — `current` sorts first regardless. Hashing the raw
+    inputs would raise `catalog_changed_during_traversal` on essentially every traversal of an actively
+    written log, which is the honesty signal crying wolf until nobody reads it. The resulting order is
+    the thing coverage actually depends on.
+
+    Sixteen hex characters whatever the family holds, so the cursor cannot grow with rotation count
+    (ruling 3).
+    """
+    return hashlib.sha256("\x00".join(m.member_id for m in selected).encode("utf-8")).hexdigest()[:16]
+
+
+def _select(members, since: datetime | None, until: datetime | None):
+    """The members a date range selects, and how honestly it could be decided.
+
+    A date range selects FILES from filesystem metadata (ruling 1). It never parses a timestamp out of
+    log text, and it is NOT a promise that every returned line falls inside the range — a selected
+    file is one whose own coverage overlaps it. A member covers roughly `[created, modified]`, so the
+    overlap test is `modified >= since` and `created < until`; where creation time is unavailable,
+    modification time stands in for it and the reply says so.
+    """
+    if since is None and until is None:
+        return list(members), {"applied": False, "creation_time_available": None}
+    kept, born_seen, born_missing = [], 0, 0
+    for m in members:
+        born = _created_at(m.path)
+        if born is None:
+            born_missing += 1
+        else:
+            born_seen += 1
+        low = born if born is not None else m.mtime
+        if since is not None and m.mtime < since.timestamp():
+            continue
+        if until is not None and low >= until.timestamp():
+            continue
+        kept.append(m)
+    return kept, {
+        "applied": True,
+        "creation_time_available": (born_missing == 0) if (born_seen or born_missing) else None,
+        "members_without_creation_time": born_missing,
+        "basis": ("creation_and_modification" if born_missing == 0
+                  else "modification_only" if born_seen == 0 else "mixed"),
+    }
+
+
+def read_server_log(source_id: str = "", member_id: str | None = None, *,
+                    max_bytes: int | None = None, cursor: str | None = None,
+                    since: str | None = None, until: str | None = None,
+                    lookback_hours: float | None = None,
+                    roots: list[_Root] | None = None, now: datetime | None = None,
+                    lines: int | None = None, contains: str | None = None,
+                    max_output_bytes: int | None = None) -> dict:
+    """One bounded, contiguous page of raw text from an approved log family — read LIVE.
+
+    **Live, never a snapshot (ruling 1).** Access is strictly read-only: nothing here locks a file,
+    copies it aside, or tries to stabilise it. The traversal starts at the newest available content
+    and works backward toward progressively less-active members. Concurrent writes and rotation are
+    normal operating conditions, and this reader does not pretend to eliminate them — it will not tell
+    you that everything you received came from one generation of a file, because a stateless reader
+    over a live file cannot know that. A later request rereads the current log as it exists then.
+
+    **Order.** The current member first, then rotations by DESCENDING modification time, name only as
+    a tie-break. Within a member the tail comes first and each continuation moves backward. A page
+    never spans two members — two files are not contiguous — so every page names its member and its
+    exact `[page_byte_start, page_byte_end)` range in ORIGINAL FILE BYTES.
+
+    **Coverage.** Following `next_cursor` transports the ranges it addresses exactly once, and
+    `traversal_complete` says precisely that: every range this traversal addressed was read with no
+    detected failure. It is NOT a claim that the file did not change underneath it.
+
+    **Date ranges select FILES, from filesystem metadata (ruling 1).** `since`/`until` are server-local
+    wall-clock times and `lookback_hours` is relative to the server clock; a member is selected when
+    its own coverage overlaps the range. Log TEXT is never parsed, so this is not a promise that every
+    returned line falls inside the range, and the reply reports whether creation time was actually
+    available or modification time had to stand in for it.
+
+    **Refused arguments.** `lines` and `contains` were record counting and server-side filtering; they
+    are refused rather than ignored, so a caller relying on them learns instead of quietly receiving a
+    different answer. `max_output_bytes` is accepted as the old spelling of `max_bytes`, and
+    `max_bytes` MAY accompany a cursor — it is a property of the transport carrying one page, not of
+    the query, and the MCP adapter lowers it and re-asks.
+    """
+    from corpusfm.core import servertime
+
+    for name, value in (("lines", lines), ("contains", contains)):
+        if value not in (None, "", 0):
+            raise InvalidArgument(
+                f"{name} is no longer supported: this reader returns raw log text and does not "
+                f"filter or interpret it — read pages and search them yourself")
+    if max_bytes is None:
+        max_bytes = max_output_bytes
+    if max_bytes is None:
+        max_bytes = MAX_OUTPUT_BYTES
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
+        raise InvalidArgument("max_bytes must be an integer")
+    if max_bytes < MIN_PAGE_BYTES:
+        raise InvalidArgument(f"max_bytes must be at least {MIN_PAGE_BYTES}")
+    room = min(max_bytes, MAX_OUTPUT_BYTES)
+
+    zone = servertime.local_zone()
+    observed = (now or servertime.local_now())
+    observed = (observed.replace(tzinfo=zone) if observed.tzinfo is None
+                else observed.astimezone(zone))
+
+    state = None
+    if cursor:
+        state = _unseal_cursor(cursor)
+        for name, value in (("source_id", source_id), ("member_id", member_id),
+                            ("since", since), ("until", until)):
+            if value:
+                raise InvalidArgument(f"{name} cannot be supplied with a cursor")
+        if lookback_hours is not None:
+            raise InvalidArgument("lookback_hours cannot be supplied with a cursor")
+        source_id = state["src"]
+        member_id = state["mem"] or None
+        query_id, page_number = state["q"], state["p"]
+        prior_failures = state.get("f", 0)
+        eff_since = datetime.fromisoformat(state["since"]) if state.get("since") else None
+        eff_until = datetime.fromisoformat(state["until"]) if state.get("until") else None
+        at_key, at_member, at_pos = state.get("key"), state.get("cm"), state.get("pos")
+        prior_fingerprint = state.get("fp")
+        catalog_changed = state.get("cc", 0)
+    else:
+        if lookback_hours is not None:
+            if isinstance(lookback_hours, bool) or not isinstance(lookback_hours, (int, float)):
+                raise InvalidArgument("lookback_hours must be a number")
+            if lookback_hours <= 0:
+                raise InvalidArgument("lookback_hours must be positive")
+            if since or until:
+                raise InvalidArgument("lookback_hours cannot be combined with since/until")
+            eff_until = observed
+            eff_since = observed - timedelta(hours=float(lookback_hours))
+        else:
+            eff_since = _parse_wall(since, "since", zone) if since else None
+            eff_until = _parse_wall(until, "until", zone) if until else None
+        if eff_since and eff_until and eff_since >= eff_until:
+            raise InvalidArgument("since must be earlier than until")
+        query_id = hashlib.sha256(
+            f"{source_id}|{member_id}|{since}|{until}|{lookback_hours}|"
+            f"{observed.isoformat()}".encode("utf-8")).hexdigest()[:16]
+        page_number, prior_failures = 1, 0
+        at_key = at_member = at_pos = None
+        prior_fingerprint, catalog_changed = None, 0
+
+    # EVERY page rebuilds the catalog from the approved roots and reapplies every fence. A
+    # continuation is a fresh, fully fenced request that happens to carry a position; it is never a
+    # handle onto an open file, and it carries no member list (ruling 3).
     sources, _ = build_catalog(roots)
     source = next((s for s in sources if s.source_id == source_id), None)
     if source is None:
@@ -521,57 +722,164 @@ def read_server_log(source_id: str, member_id: str | None = None, lines: int = D
     if not source.available:
         raise UnknownSource("that log source is not available")
 
+    candidates = list(source.members)
     if member_id:
-        selected = [m for m in source.members if m.member_id == member_id]
-        if not selected:
+        candidates = [m for m in source.members if m.member_id == member_id]
+        if not candidates:
             raise UnknownSource("that member does not belong to this source")
-    else:
-        selected = list(source.members)
+    selected, selection = _select(candidates, eff_since, eff_until)
+    selected.sort(key=_order_key)
 
-    ceiling = MAX_OUTPUT_BYTES if max_output_bytes is None else min(MAX_OUTPUT_BYTES, max_output_bytes)
-    if ceiling < 1:
-        raise InvalidArgument("max_output_bytes must be positive")
+    # A live traversal sorts a MUTABLE catalog on every page, so a rotation whose mtime moves can cross
+    # the cursor while the walk is in progress. Measured on one current file and three rotations at a
+    # 16-byte page: moving an already-read member behind the cursor returned it TWICE (80 of 40 bytes),
+    # and moving an unread member ahead of the cursor omitted it entirely — both with
+    # `traversal_complete: true` and zero failures, and on the omission path the terminal page's own
+    # `selected_members` still listed the member it never returned (Codex CXR3-1).
+    #
+    # This does NOT reinstate the withdrawn snapshot contract. Nothing is frozen, locked or refused, and
+    # the walk continues best-effort. What changes is the CLAIM: once the ordering has moved, exact
+    # family coverage is no longer knowable, so the traversal says so instead of reporting clean.
+    fingerprint = _order_fingerprint(selected)
+    if prior_fingerprint is not None and prior_fingerprint != fingerprint and not catalog_changed:
+        catalog_changed = page_number
 
-    budget = _Budget()
-    collected: list[str] = []
-    out_bytes = 0
-    truncated = False
-    failures: list[dict] = []
-    exhausted_all = True
+    failures: list = []
+    idx, pos = 0, None
+    if at_member is not None:
+        found = next((k for k, m in enumerate(selected) if m.member_id == at_member), None)
+        if found is not None:
+            idx, pos = found, at_pos
+        else:
+            # Live semantics: the member this cursor was reading is gone from the live catalog — it
+            # rotated away, was pruned, or dropped out of the date selection. Say so and resume at the
+            # first member that sorts strictly OLDER than the recorded position, rather than starting
+            # the family again or refusing outright (ruling 1 + 3).
+            failures.append({"member_id": at_member, "reason": "member_no_longer_present"})
+            idx = next((k for k, m in enumerate(selected) if _order_key(m) > at_key), len(selected))
+            pos = None
 
-    for member in selected:
-        if len(collected) >= lines or budget.stopped or truncated:
-            # `truncated` joins the stop conditions because once the ceiling is reached every further
-            # line is rejected on arrival — continuing would back-scan whole rotations, under a filter
-            # up to the entire scan budget, to collect nothing.
-            exhausted_all = False
+    text = ""
+    page_member = page_index = None
+    page_start = page_end = 0
+
+    with SCAN_SEAM:
+        while idx < len(selected):
+            member = selected[idx]
+            try:
+                fd = _open_nofollow(member.path)
+            except OSError:
+                failures.append({"member_id": member.member_id, "reason": "unreadable"})
+                idx, pos = idx + 1, None
+                continue
+            try:
+                st = os.fstat(fd)
+                if (not _stat.S_ISREG(st.st_mode)
+                        or not _same_identity(member.dev, member.ino, st)
+                        or st.st_nlink != 1):
+                    failures.append({"member_id": member.member_id, "reason": "changed_during_read"})
+                    idx, pos = idx + 1, None
+                    continue
+                upper = st.st_size if pos is None else pos
+                if upper > st.st_size:
+                    # The file is shorter than where this cursor was reading. Under live semantics
+                    # that is a real event to REPORT, not an error to eliminate: read what is there.
+                    failures.append({"member_id": member.member_id, "reason": "member_shrank"})
+                    upper = st.st_size
+                if upper <= 0:
+                    idx, pos = idx + 1, None
+                    continue
+                lo = _codepoint_start(fd, max(0, upper - room))
+                want = upper - lo
+                os.lseek(fd, lo, os.SEEK_SET)
+                raw = b""
+                while len(raw) < want:
+                    part = os.read(fd, min(_CHUNK, want - len(raw)))
+                    if not part:
+                        break
+                    raw += part
+                if len(raw) < want:
+                    failures.append({"member_id": member.member_id, "reason": "member_shrank"})
+                    if not raw:
+                        idx, pos = idx + 1, None
+                        continue
+                    lo = upper - len(raw)
+            finally:
+                os.close(fd)
+            text = _decode_page(raw)
+            page_member, page_index, page_start, page_end = member.member_id, idx, lo, lo + len(raw)
+            if lo > 0:
+                pos = lo
+            else:
+                idx, pos = idx + 1, None
             break
-        out_bytes, cut, exhausted, failure = _read_member(
-            member, needed=lines, contains=contains, budget=budget,
-            out=collected, out_bytes=out_bytes, ceiling=ceiling)
-        truncated = truncated or cut
-        if failure is not None:
-            failures.append({"member_id": member.member_id, "reason": failure})
-            exhausted_all = False
-        elif not exhausted:
-            exhausted_all = False
+        else:
+            idx, pos = len(selected), None
 
-    # A request can be "satisfied" by line COUNT while the newest member was unreadable or the output
-    # was cut — and the first draft returned `search_complete: true` in exactly that case, beside a
-    # non-empty `failures` list, because `satisfied or …` short-circuited the guard written next to it.
-    # Found by review, 2026-08-29. Authoritative now means: nothing was missed, by any route.
-    satisfied = len(collected) >= lines
-    complete = ((satisfied or exhausted_all)
-                and not failures and not truncated and not budget.stopped)
+    has_more = idx < len(selected)
+    failed_total = prior_failures + len(failures)
+    cursor_out = _seal_cursor({
+        "v": CURSOR_VERSION, "q": query_id, "p": page_number + 1, "src": source.source_id,
+        "mem": member_id or "", "cm": selected[idx].member_id, "key": _order_key(selected[idx]),
+        "pos": pos, "f": failed_total, "fp": fingerprint, "cc": catalog_changed,
+        "since": eff_since.isoformat() if eff_since else "",
+        "until": eff_until.isoformat() if eff_until else "",
+    }) if has_more else None
+
+    ci = servertime.clock_info()
     return {
         "source_id": source.source_id,
         "selected_members": [m.member_id for m in selected],
-        "lines": list(reversed(collected)),
-        "requested_lines": lines,
-        "returned_lines": len(collected),
-        "truncated": truncated,
-        # True only when the answer is authoritative: the request was satisfied, or the family was
-        # examined to its start — and in either case nothing was skipped, failed or cut.
-        "search_complete": bool(complete),
+        "text": text,
+        # ORIGINAL FILE BYTES vs the length of the JSON text, kept apart deliberately. One `0xff`
+        # source byte is 1 source byte and 3 text bytes; reporting a single `returned_bytes` conflated
+        # the two (CXR2-4).
+        "source_bytes": page_end - page_start,
+        "returned_text_bytes": len(text.encode("utf-8")),
+        "replacement_characters": text.count("�"),
+        "member_id": page_member,
+        "member_index": page_index,
+        "page_byte_start": page_start if page_member else None,
+        "page_byte_end": page_end if page_member else None,
         "failures": failures,
+        # A failure on page 1 must still be visible on page 9. Keeping only THIS page's failures let
+        # the final reply say `traversal_complete: true` after a whole member had been skipped.
+        "failed_members_so_far": failed_total,
+        "selection": selection,
+        # ONE structured condition, recorded at the page that first noticed and carried forward by the
+        # cursor, so a caller reading only the terminal reply still sees it.
+        "conditions": ([{"condition": "catalog_changed_during_traversal",
+                         "first_seen_page": catalog_changed,
+                         "detail": ("the family's member ordering changed while this traversal was in "
+                                    "progress, so exact coverage of it can no longer be claimed")}]
+                       if catalog_changed else []),
+        "query_id": query_id,
+        "page_number": page_number,
+        "traversal": "current_member_first_then_rotations_by_descending_mtime",
+        # Stated in the payload, not only in prose: this reader does not promise a snapshot.
+        "live_read": True,
+        "server_time_observed": observed.isoformat(),
+        "server_clock": {"zone_id": ci.zone_id, "abbreviation": ci.abbreviation,
+                         "source": ci.source, "predicts_dst": ci.predicts_dst},
+        # Every range this traversal ADDRESSED was read with no detected failure. Never a claim that
+        # the underlying files held still (CXR2-1, ruling 1).
+        "traversal_complete": bool(not has_more and not failed_total and not catalog_changed),
+        "has_more": has_more,
+        "next_cursor": cursor_out,
     }
+
+
+def _parse_wall(text: str, what: str, zone) -> datetime:
+    """A server-local wall-clock ISO timestamp, as the caller is told to write it."""
+    if not isinstance(text, str):
+        raise InvalidArgument(f"{what} must be text")
+    try:
+        parsed = datetime.fromisoformat(text.strip())
+    except Exception:
+        raise InvalidArgument(
+            f"{what} must be a server-local wall-clock time such as 2026-08-30T02:15:00")
+    return parsed.replace(tzinfo=zone) if parsed.tzinfo is None else parsed.astimezone(zone)
+
+
+#: The retired name. `query_log` was the interpreting engine's entry point; the raw reader IS the query.
+query_log = read_server_log

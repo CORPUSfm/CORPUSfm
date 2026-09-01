@@ -137,6 +137,7 @@ def _normalize_durable(row: dict) -> dict:
         "ephemeral": False,
         # JobRun fold (R4): the running-badge data rides the ONE feed row, so /api/jobs/running is a
         # redundant re-derivation (retired client-side in Stage 2). Empty for non-job records.
+        "job_uuid": row.get("job_uuid", "") or "",   # what the running badge joins on (1372-02)
         "job_name": row.get("job_name", "") or "",
         "file_name": row.get("file_name", "") or "",
         "uuid": row.get("uuid", "") or "",

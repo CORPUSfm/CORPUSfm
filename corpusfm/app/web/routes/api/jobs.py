@@ -21,7 +21,6 @@ def runs_list(
     request: Request,
     page: int = 1,
     per_page: int = 50,
-    job: str = "",
     job_uuid: str = "",
     status: str = "",
     trigger: str = "",
@@ -80,6 +79,8 @@ def runs_list(
         for r in runs:
             if r.job_name:
                 job_opts.setdefault(r.job_uuid or "", r.job_name)
+        # `job_names` is DISPLAY ONLY and the `job=` name filter is gone (packet 1372-02): two jobs
+        # may share a label, so filtering on one would have shown both jobs' runs as one job's.
         job_names: list[str] = [n for n in job_opts.values() if n]
 
         by_job: dict = {}
@@ -91,8 +92,6 @@ def runs_list(
             if job_uuid and ju != job_uuid:
                 continue
             for i, run in enumerate(group):
-                if job and (run.job_name or "") != job:
-                    continue
                 # Closest older successful run OF THE SAME JOB whose artifact is still present.
                 prev_path = ""
                 for older in group[i + 1:]:

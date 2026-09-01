@@ -101,6 +101,38 @@ def enqueue_enrichment_steps(backend, uuid: str, steps, *, owner: str = "") -> s
     return qid
 
 
+#: The explicit Job Run discriminator (packet 1372-02, R4). Four paths used to ask "does this row's
+#: payload carry a `job_name`?", which made a DISPLAY LABEL load-bearing control flow: a job whose
+#: name was somehow blank stopped being a Job Run. `kind` says what the row is; the name is a frozen
+#: snapshot from the moment it was enqueued.
+JOB_RUN = "job_run"
+
+
+def is_job_run(row_or_payload) -> bool:
+    """True for a Job Run row.
+
+    Two signals, never a name. `kind` is what everything enqueued from now on carries. The second
+    covers a row that was ALREADY on the queue when the update landed — it has a `UUIDJob` (every
+    Job Run has carried one since packet 1142) **and** a `Payload.job_name` (every Job Run has
+    carried that too).
+
+    **Both halves are required, deliberately.** "A non-blank `UUIDJob` means Job Run" on its own is
+    an implicit discriminator of exactly the kind this packet exists to delete: today
+    `enqueue_job_run` is the only caller that sets `uuid_job=`, but nothing enforces that, and a
+    future job-scoped deindex or enrichment row would then have its tags copied forward, a
+    fabricated closing `ok` RunRecord written, and its artifacts pruned for something that never ran.
+    Requiring the legacy shape's OTHER field costs nothing and keeps the accident out.
+    """
+    jor = getattr(row_or_payload, "jor", None)
+    if jor is not None:
+        payload = jor.get("Payload", {}) or {}
+        if (jor.get("UUIDJob") or "").strip() and (payload.get("job_name") or "").strip():
+            return True
+    else:
+        payload = row_or_payload or {}
+    return (payload or {}).get("kind") == JOB_RUN
+
+
 def enqueue_job_run(backend, *, job_name: str, job_uuid: str = "", file_name: str = "",
                     trigger: str = "manual", run_id: str = "") -> "tuple[str, str]":
     """Enqueue a Job Run as ONE unified QUEUE record (packet 1142 — the run IS the acquire): a
@@ -117,18 +149,26 @@ def enqueue_job_run(backend, *, job_name: str, job_uuid: str = "", file_name: st
     HISTORY. Returns ``(queue_record_uuid, run_id)``. ``UUIDJob`` carries the job identity so 'is this
     job running?' is an indexed read AND every step resolves its own job by uuid (packet 1142 §F₀);
     ``job_name`` rides the payload as a FROZEN display label; ``file_name`` rides it for the Jobs-page
-    running badge."""
+    running badge.
+
+    **`UUIDJob` IS MANDATORY (packet 1372-02, R4).** A Job Run with no job identity is unrunnable by
+    UUID-only code and, worse, is exactly the record the identity conversion refuses to attribute —
+    so one enqueued now would block the next startup. It is refused here, before the write, rather
+    than discovered later. `Payload.kind` is the explicit discriminator that replaces "does this row
+    have a `job_name`?"; the name is a frozen label from this point on."""
     repo = _repo(backend)
     run_id = run_id or str(_uuidlib.uuid4())
+    job_uuid = (job_uuid or "").strip()
+    if not job_uuid:
+        raise ValueError(
+            "a Job Run must carry the UUID of the job it runs; refusing to enqueue an "
+            "unattributable run.")
     # Resolve the job to decide the enrichment/git tail (baked at enqueue, per readiness + config —
-    # mirroring enqueue_import). Prefer the uuid (the key); fall back to the name only if unresolved.
+    # mirroring enqueue_import). BY UUID ONLY: the name is not identity and may collide.
     job = None
     try:
-        from corpusfm.server.jobs.store import find_job_by_id, load_job, default_jobs_dir
-        if job_uuid:
-            job = find_job_by_id(job_uuid)
-        if job is None and job_name:
-            job = load_job(job_name, default_jobs_dir())
+        from corpusfm.server.jobs.store import find_job_by_id
+        job = find_job_by_id(job_uuid)
     except Exception:
         job = None
     summarize_ok = bool(getattr(getattr(job, "process", None), "summarize_on_ingest", True)) \
@@ -147,7 +187,7 @@ def enqueue_job_run(backend, *, job_name: str, job_uuid: str = "", file_name: st
     _fn = file_name or job_name or "run"
     ingest_filename = _fn if _fn.lower().endswith(".xml") else f"{_fn}.xml"
     qid = repo.enqueue(steps,
-                       payload={"job_name": job_name, "trigger": trigger,
+                       payload={"kind": JOB_RUN, "job_name": job_name, "trigger": trigger,
                                 "file_name": file_name or "", "run_id": run_id,
                                 "filename": ingest_filename},
                        owner=f"job:{job_name}", uuid_job=job_uuid or "")
@@ -174,23 +214,20 @@ def find_run_in_queue(backend, run_id: str):
 
 
 def _resolve_run_job(row):
-    """Resolve the JobConfig behind a run record BY UUID (packet 1142 §F₀ — the uuid is the key, the
-    name is only a frozen display label). Falls back to the name only when no uuid is carried (a legacy
-    record). Returns the JobConfig, or None when the job no longer exists."""
-    j = row.jor
-    uuid = j.get("UUIDJob", "") or ""
-    name = (j.get("Payload", {}) or {}).get("job_name") or ""
+    """Resolve the JobConfig behind a run record BY UUID, and only by UUID (packet 1372-02).
+
+    The name fallback is gone. It could only ever fire for a row with no `UUIDJob` — which
+    `enqueue_job_run` now refuses to create — and it resolved a job from a label that may legitimately
+    belong to several. Returns the JobConfig, or None when the job no longer exists.
+    """
+    uuid = row.jor.get("UUIDJob", "") or ""
+    if not uuid:
+        return None
     try:
-        from corpusfm.server.jobs.store import default_jobs_dir, find_job_by_id, load_job
-        if uuid:
-            job = find_job_by_id(uuid)
-            if job is not None:
-                return job
-        if name:
-            return load_job(name, default_jobs_dir())
+        from corpusfm.server.jobs.store import find_job_by_id
+        return find_job_by_id(uuid)
     except Exception:
         return None
-    return None
 
 
 def _record_run_error(row, message: str) -> None:
@@ -199,7 +236,7 @@ def _record_run_error(row, message: str) -> None:
     ``get_job_run`` after the queue row is cleared). Keyed by ``run_id``, so a later Restart's success
     overwrites this error in place. Best-effort — never blocks the step's own failure."""
     p = row.jor.get("Payload", {}) or {}
-    if not p.get("job_name"):
+    if not is_job_run(row):
         return
     try:
         from datetime import datetime, timezone
@@ -220,7 +257,8 @@ def _record_run_error(row, message: str) -> None:
             trigger=p.get("trigger") or "schedule", duration_s=max(0.0, dur), error=message,
             run_id=p.get("run_id") or None, job_uuid=row.jor.get("UUIDJob", "") or None,
             job_name=p.get("job_name") or "")
-        _record_run(p["job_name"], default_jobs_dir(), default_history_dir(), run, get_backend())
+        _record_run(row.jor.get("UUIDJob", "") or "", default_jobs_dir(), default_history_dir(),
+                    run, get_backend())
     except Exception:
         log.debug("acquire: error run-record write failed", exc_info=True)
 
@@ -375,7 +413,7 @@ def _acquire_push(repo, backend, row, job, bound) -> W.StepResult:
         msg = "This job targets a remote server that no longer exists."
         _record_run_error(row, msg)
         return W.fail(msg)
-    c = get_job_credential(job.name) or {}
+    c = get_job_credential(getattr(job, "id", "") or "") or {}
     if not c.get("account") or not c.get("password"):
         msg = f"No usable credential stored for job '{job.name}' — set it on the job"
         _record_run_error(row, msg)
@@ -534,7 +572,7 @@ def enqueue_reingest(backend, uuid: str, *, owner: str = "", was_indexed=None) -
 def ingest_handler(repo, row) -> W.StepResult:
     """Ingest one ``ingest``-step record — parse + store the staged source into a STORAGE artifact (the
     step's outcome). Three kinds share the step:
-    - a **Job Run** (``Payload.job_name`` + ``UUIDJob``) → the 077-E landing, then the run's durable
+    - a **Job Run** (``Payload.kind == "job_run"``, with a mandatory ``UUIDJob``) → the 077-E landing, then the run's durable
       side effects the old monolithic ``run_job`` did at store: copy-forward tags, the closing RunRecord,
       artifact pruning (git + enrichment are their OWN downstream steps);
     - a browser **import** → the landing + its baked enrichment tail (no job side effects);
@@ -555,7 +593,7 @@ def ingest_handler(repo, row) -> W.StepResult:
     # Origin = the ingesting CHANNEL (packet 1169): a job run passes "Import" so land_artifact promotes it
     # to "Job" from the queue row's UUIDJob; an AI/MCP import carries its channel in the payload; a human
     # web import is "WebUI". The promotion only fires while origin == "Import", so WebUI/MCP flow through.
-    origin = "Import" if p.get("job_name") else (p.get("origin") or "WebUI")
+    origin = "Import" if is_job_run(row) else (p.get("origin") or "WebUI")
     outcome = ingest_import_bytes(
         raw, p.get("filename") or "import",
         name=p.get("name") or "", locale=p.get("locale") or "",
@@ -568,12 +606,12 @@ def ingest_handler(repo, row) -> W.StepResult:
 
 
 def _apply_run_side_effects(backend, row, outcome) -> None:
-    """For a JOB RUN (has ``job_name``), apply the durable outcome the old monolithic ``run_job`` wrote
-    at store — copy-forward tags, the closing OK RunRecord, artifact pruning. A browser import / MCP
-    deliverable (no ``job_name``) is a no-op. Best-effort: none of these fail the ingest step — the run's
+    """For a JOB RUN, apply the durable outcome the old monolithic ``run_job`` wrote at store —
+    copy-forward tags, the closing OK RunRecord, artifact pruning. A browser import / MCP deliverable
+    is a no-op. Discriminated by ``Payload.kind``, not by whether a display label happens to be set. Best-effort: none of these fail the ingest step — the run's
     real outcome is the STORED artifact, already committed; these are its bookkeeping."""
     p = row.jor.get("Payload", {}) or {}
-    if not p.get("job_name"):
+    if not is_job_run(row):
         return
     job = _resolve_run_job(row)
     meta = getattr(outcome, "meta", None)
@@ -618,10 +656,10 @@ def _close_run_record(backend, row, uuid_storage: str) -> None:
     """Write the ONE closing ``ok`` RunRecord for a Job Run at ingest (packet 1142 — ingest is every
     run's real completion, push or pull). Generalizes the old ``_maybe_close_push_run``: the trigger is
     read from the payload (manual/schedule/push/webhook), not hard-coded to ``push``. Best-effort; a
-    browser import (no ``job_name``) is a no-op. Keyed by ``run_id``, so a Restart after an earlier error
+    browser import is a no-op (by ``Payload.kind``). Keyed by ``run_id``, so a Restart after an earlier error
     RunRecord overwrites it in place. Git + enrichment are downstream steps (their own compartments)."""
     p = row.jor.get("Payload", {}) or {}
-    if not p.get("job_name"):
+    if not is_job_run(row):
         return
     try:
         from datetime import datetime, timezone
@@ -648,8 +686,9 @@ def _close_run_record(backend, row, uuid_storage: str) -> None:
             ts=now.isoformat(timespec="seconds"), status="ok", trigger=p.get("trigger") or "schedule",
             duration_s=max(0.0, duration), archive_path=us,
             run_id=run_id, job_uuid=row.jor.get("UUIDJob", "") or None,
-            job_name=p["job_name"])
-        _record_run(p["job_name"], default_jobs_dir(), default_history_dir(), run, backend)
+            job_name=p.get("job_name") or "")
+        _record_run(row.jor.get("UUIDJob", "") or "", default_jobs_dir(), default_history_dir(),
+                    run, backend)
     except Exception:
         log.debug("run-record write failed at ingest", exc_info=True)
 
@@ -881,7 +920,7 @@ def _kinds_and_target(backend, jor) -> "tuple[list[str], str]":
     if p.get("op") == "deindex":
         return ["Deindex"], (p.get("file_name") or "")
     if Q.ACQUIRE in steps:                        # a self-initiated run (push OR pull) — the acquire IS the run
-        return ["JobRun"], (p.get("job_name") or "job")
+        return ["JobRun"], (p.get("job_name") or "job")   # display label only
     if Q.REINGEST in steps:
         return ["Reingest"], (_target_name(backend, jor.get("UUIDStorage", "")) or "artifact")
     if Q.UPLOAD in steps or Q.INGEST in steps:    # a non-deliverable, client-supplied upload/ingest pipeline is an import
@@ -950,6 +989,11 @@ def workspace_view(backend) -> list:
             # JobRun fold (packet 1136 Stage 1, R4): the running-badge data (job identity + FM file)
             # rides the ONE row so the unified activity feed makes /api/jobs/running a redundant
             # re-derivation. Empty for non-job records — additive keys, ignored by the Queue page.
+            #
+            # `job_uuid` is what the badge JOINS on (packet 1372-02). The row has always carried it;
+            # it simply was not surfaced, so the browser fell back to joining on the display NAME —
+            # which lights every job sharing a label the moment one of them runs.
+            "job_uuid": j.get("UUIDJob", "") or "",
             "job_name": p.get("job_name", "") or "",
             "file_name": p.get("file_name", "") or "",
         })

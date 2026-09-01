@@ -5,8 +5,8 @@ in the jobs list without reading full history.
 
 Public API:
     JobState
-    read_state(job_name, jobs_dir) -> JobState
-    update_state(job_name, run, jobs_dir)
+    read_state(job_uuid, jobs_dir) -> JobState
+    update_state(job_uuid, run, jobs_dir)
 """
 
 from __future__ import annotations
@@ -34,17 +34,18 @@ class JobState:
     last_duration: Optional[str] = None  # seconds as string; None if not yet run
 
 
-def _state_path(job_name: str, jobs_dir: Path) -> Path:
-    from corpusfm.server.jobs.store import _safe_name   # shared injective encoder (space-safe, collision-free)
-    return jobs_dir / f"{_safe_name(job_name)}.state"
+def _state_path(job_uuid: str, jobs_dir: Path) -> Path:
+    """The sidecar beside `<job_uuid>.yaml` (packet 1372-02). It used to be keyed by an encoded
+    NAME, so renaming a job orphaned its state and two case-variant names shared one file."""
+    return jobs_dir / f"{job_uuid}.state"
 
 
-def read_state(job_name: str, jobs_dir: Path) -> JobState:
-    """Read last-run state for a job. Server mode: from the JOBS record. Local: .state sidecar."""
+def read_state(job_uuid: str, jobs_dir: Path) -> JobState:
+    """Read last-run state for a job. Server mode: from the JOB record. Local: .state sidecar."""
     r = _repo()
     if r is not None:
-        return r.read_state(job_name)
-    path = _state_path(job_name, jobs_dir)
+        return r.read_state(job_uuid)
+    path = _state_path(job_uuid, jobs_dir)
     if not path.exists():
         return JobState()
     try:
@@ -60,17 +61,17 @@ def read_state(job_name: str, jobs_dir: Path) -> JobState:
         return JobState()
 
 
-def update_state(job_name: str, run: RunRecord, jobs_dir: Path) -> None:
-    """Persist run state. Server mode: merges into the JOBS record. Local: .state sidecar."""
+def update_state(job_uuid: str, run: RunRecord, jobs_dir: Path) -> None:
+    """Persist run state. Server mode: merges into the JOB record. Local: .state sidecar."""
     r = _repo()
     if r is not None:
         try:
-            r.update_state(job_name, run)
+            r.update_state(job_uuid, run)
         except Exception:
             pass
         return
     jobs_dir.mkdir(parents=True, exist_ok=True)
-    path = _state_path(job_name, jobs_dir)
+    path = _state_path(job_uuid, jobs_dir)
     duration_s = getattr(run, "duration_s", None)
     state = {
         "last_run_ts": run.ts,

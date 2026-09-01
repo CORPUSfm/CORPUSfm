@@ -1,6 +1,6 @@
 """Webhook listener subprocess for Jobs.
 
-Listens for POST /webhook/{job_name}/{token} and fires job runs.
+Listens for POST /webhook/{job_uuid}/{token} and fires job runs.
 Also exposes GET /health for liveness checks.
 
 Usage (run as subprocess or directly):
@@ -15,7 +15,7 @@ The listener runs blocking in the calling thread. To launch from code:
 
 Public API (for testing / embedding):
     make_handler(jobs_dir, archive_dir, history_dir)
-    webhook_url(job_name, token, host, port) -> str
+    webhook_url(job_uuid, token, host, port) -> str
 """
 
 from __future__ import annotations
@@ -30,13 +30,13 @@ DEFAULT_PORT = 8765
 
 
 def webhook_url(
-    job_name: str,
+    job_uuid: str,
     token: str,
     host: str = "localhost",
     port: int = DEFAULT_PORT,
 ) -> str:
     """Return the webhook URL for a job."""
-    return f"http://{host}:{port}/webhook/{job_name}/{token}"
+    return f"http://{host}:{port}/webhook/{job_uuid}/{token}"
 
 
 def make_handler(
@@ -53,13 +53,13 @@ def make_handler(
                 self._respond(404, {"status": "error", "message": "Not found"})
                 return
 
-            _, job_name, token = parts
+            _, job_uuid, token = parts
 
             try:
                 from corpusfm.server.jobs.store import load_job
-                job = load_job(job_name, jobs_dir)
+                job = load_job(job_uuid, jobs_dir)
             except KeyError:
-                self._respond(404, {"status": "error", "message": f"Job '{job_name}' not found"})
+                self._respond(404, {"status": "error", "message": f"Job '{job_uuid}' not found"})
                 return
 
             if not job.webhook_token or job.webhook_token != token:
@@ -75,7 +75,7 @@ def make_handler(
             def _run():
                 from corpusfm.server.jobs.runner import run_job
                 run_job(
-                    job_name,
+                    job_uuid,
                     jobs_dir=jobs_dir,
                     archive_dir=archive_dir,
                     history_dir=history_dir,
@@ -83,7 +83,7 @@ def make_handler(
                 )
 
             threading.Thread(target=_run, daemon=True).start()
-            self._respond(202, {"status": "accepted", "job": job_name})
+            self._respond(202, {"status": "accepted", "job": job_uuid})
 
         def do_GET(self):
             if self.path in ("/health", "/health/"):

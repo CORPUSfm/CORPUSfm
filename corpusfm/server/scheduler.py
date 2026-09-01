@@ -137,6 +137,8 @@ class Scheduler:
         self._stop = threading.Event()
         self._last_minute: Optional[datetime] = None
         self._warned_seconds: set[str] = set()
+        # One log line per gated stretch, not one per cycle (see `_job_work_permitted`).
+        self._version_gate_logged = False
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -219,14 +221,59 @@ class Scheduler:
                 return
             self._stop.wait(timeout=min(_STOP_CHECK_SECONDS, remaining))
 
+    def _job_work_permitted(self) -> bool:
+        """May this cycle fire anything? (packet 1372-01)
+
+        The scheduler is a SEPARATE PROCESS from the web service and it never converts. The web
+        service owns the `ProjectionVersion` 1 → 2 transition that re-keys every JOB record; until
+        that stamp lands, a schedule fired from here would enqueue work against a table this build
+        cannot address. So the scheduler reads the stored version and, while it is absent, behind,
+        malformed or unreadable, fires nothing and says so.
+
+        WAITING IS THE WHOLE MECHANISM AND IT NEEDS NO NEW ONE: the loop already runs a cycle per
+        minute, so returning False here IS the recheck. There is no separate poller, no timeout and
+        no give-up — a corpus that never converts simply never fires, which is the honest outcome.
+
+        A failure to READ is treated exactly like "not converted". Firing a job because storage was
+        briefly unreachable is the opposite of what an unreadable answer should license.
+        """
+        from corpusfm.storage import get_backend, projections
+        try:
+            permitted = projections.conversion_complete(get_backend(self.archive_dir))
+        except Exception:
+            log.warning("scheduler: could not read the corpus projection version; firing nothing "
+                        "this cycle", exc_info=True)
+            permitted = False
+        if permitted:
+            self._version_gate_logged = False
+            return True
+        if not self._version_gate_logged:
+            # ONCE per gated stretch, not once a minute: a corpus that sits unconverted overnight
+            # would otherwise write 480 identical lines into the journal, which is how a real signal
+            # gets tuned out.
+            log.warning("scheduler: this corpus is not at the projection version this build "
+                        "requires, so the JOB identity conversion has not completed. No schedule "
+                        "will fire until the web service converts and stamps it. Re-checking every "
+                        "cycle; nothing is being skipped permanently.")
+            self._version_gate_logged = True
+        return False
+
     def _check_and_fire(self) -> None:
         """Observe the current server-local minute; fire every schedule that matches it."""
         now = servertime.local_now()
         minute = now.replace(second=0, microsecond=0)
+        # THE GATE SUPPRESSES FIRING AND NOTHING ELSE (packet 1372-01). Status and alerts still run
+        # below: a box sitting unconverted is exactly when an operator needs monitoring to keep
+        # working, and silencing the alert path would turn one problem into two invisible ones.
+        permitted = self._job_work_permitted()
         # An early-firing timer, a manual poke, or a retry after a failed cycle can land twice in
         # one minute. This is loop hygiene, NOT an occurrence authority: a process that restarts
         # inside a matching minute starts with no marker and observes it again (packet 1209).
-        if minute != self._last_minute:
+        #
+        # THE MINUTE IS NOT CONSUMED WHILE GATED: `_last_minute` only advances on a cycle that was
+        # allowed to fire, so the minute in which the conversion lands is still observed rather than
+        # having been marked seen by a cycle that fired nothing.
+        if permitted and minute != self._last_minute:
             self._last_minute = minute
             self._fire_matching_schedules(minute)
 
@@ -238,7 +285,7 @@ class Scheduler:
                              if m.get("job_name")})
         except Exception:
             active = []
-        self._write_status("running", active_jobs=active)
+        self._write_status("running" if permitted else "waiting", active_jobs=active)
 
         # Evaluate and dispatch alerts (errors here never kill the scheduler)
         self._check_alerts()
@@ -267,12 +314,18 @@ class Scheduler:
             log.debug("Alert check error (non-fatal): %s", exc)
 
     def _fire_matching_schedules(self, minute: datetime) -> None:
+        """CARRY THE ENUMERATED CONFIG, do not reload it (packet 1372-02, R4).
+
+        It used to pass `job_cfg.name` to `_fire`, which loaded the job again — by name. That threw
+        away the identity it was already holding, and with duplicate names now ordinary it could
+        reload a DIFFERENT job than the one whose schedule matched.
+        """
         for job_cfg, _load_error in list_jobs(self.jobs_dir):
             if job_cfg is None:
                 continue
             for trigger in (t for t in (job_cfg.triggers or []) if t.type == "schedule"):
                 if self._matches(job_cfg.name, trigger, minute):
-                    self._fire(job_cfg.name)
+                    self._fire(job_cfg)
                     break  # one fire per job per minute, however many triggers agree
 
     def _matches(self, job_name: str, trigger, minute: datetime) -> bool:
@@ -298,7 +351,7 @@ class Scheduler:
             return False
         return _schedule.matches(sched, minute)
 
-    def _fire(self, job_name: str) -> None:
+    def _fire(self, job) -> None:
         """Enqueue a Job Run onto the QUEUE workspace (packet 086 — the pull worker executes it, so
         the scheduler no longer spawns a run thread). Cron-overrun guard: skip this fire if the job
         already has an in-flight run (a still-running schedule must not stack). A crashed run's record
@@ -307,24 +360,27 @@ class Scheduler:
         this guard (it's the web/MCP path, which always enqueues)."""
         from corpusfm.storage import get_backend
         backend = get_backend(self.archive_dir)
+        job_uuid = getattr(job, "id", "") or ""
+        if not job_uuid:
+            # Unreachable after the 1372-01 conversion, which gives every job a sound id, and worth
+            # refusing rather than enqueueing an unattributable run that would block the next start.
+            log.error("Job %r carries no id and will not be fired", getattr(job, "name", "?"))
+            return
         try:
             from corpusfm.server import queue_handlers
             from corpusfm.server.jobs.run_queue import has_active_run_for_job
-            from corpusfm.server.jobs.store import load_job
-            job = load_job(job_name, self.jobs_dir)
-            job_uuid = getattr(job, "id", "") or ""
             # Cron-overrun guard: skip if this job already has a non-stale in-flight run (indexed read).
-            if job_uuid and has_active_run_for_job(backend, job_uuid):
-                log.info("Job '%s' already running — skipping fire", job_name)
+            if has_active_run_for_job(backend, job_uuid):
+                log.info("Job '%s' (%s) already running — skipping fire", job.name, job_uuid)
                 return
             queue_handlers.enqueue_job_run(
-                backend, job_name=job_name, job_uuid=job_uuid,
+                backend, job_name=job.name, job_uuid=job_uuid,
                 file_name=getattr(job, "file", "") or "", trigger="schedule")
-            log.info("Firing job: %s", job_name)
+            log.info("Firing job: %s (%s)", job.name, job_uuid)
         except Exception as exc:
-            # Fail-open would double-run; but a load/enqueue error means we couldn't fire at all —
+            # Fail-open would double-run; but an enqueue error means we couldn't fire at all —
             # log and move on (the schedule re-fires next tick).
-            log.error("Job '%s' fire failed: %s", job_name, exc)
+            log.error("Job '%s' fire failed: %s", getattr(job, "name", "?"), exc)
 
     def _write_status(self, status: str, active_jobs: Optional[list] = None) -> None:
         status_path = self.jobs_dir / STATUS_FILE
@@ -355,10 +411,25 @@ def read_scheduler_status(jobs_dir: Path) -> dict:
         return {}
 
 
+#: Status words a LIVE scheduler process writes. `waiting` (packet 1372-01) means the process is
+#: alive and cycling but firing nothing, because the corpus has not reached the projection version
+#: this build requires. It is deliberately a distinct word rather than a flag on `running`, and both
+#: consumers were updated to say so: `corpusfm scheduler status` prints "waiting" with the reason,
+#: and the Recent-activity pop-over says "Scheduler waiting — jobs paused". Writing the word without
+#: teaching the readers it would have left every surface reporting "running" while nothing could
+#: fire, which is the comfortable answer rather than the true one.
+_LIVE_STATUSES = ("running", "waiting")
+
+
 def scheduler_is_running(jobs_dir: Path) -> bool:
-    """True if a scheduler process has written a recent 'running' status."""
+    """True if a scheduler PROCESS has written a recent live status.
+
+    Liveness, not productivity — the callers use it to decide whether a scheduler exists at all (the
+    monitor raises a "scheduler down" alert from it). A gated scheduler is up: reporting it as down
+    would raise the wrong alarm and, worse, would make the real problem look like a dead process.
+    """
     info = read_scheduler_status(jobs_dir)
-    if info.get("status") != "running":
+    if info.get("status") not in _LIVE_STATUSES:
         return False
     ts_str = info.get("ts")
     if not ts_str:

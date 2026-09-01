@@ -21,6 +21,8 @@ Commands:
     status             Readiness/diagnostic report (tiers + per-capability status)
     migrate-storage / backfill-{system-tags,latest,storage-projections}
                        Storage-schema migration + idempotent data backfills
+    migrate job-identity
+                       JOB identity conversion — diagnosis/recovery (startup activates)
 
 The authoritative command list is built in main.py::build_parser().
 """

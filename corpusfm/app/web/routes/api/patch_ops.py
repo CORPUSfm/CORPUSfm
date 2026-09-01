@@ -86,7 +86,7 @@ def _target_access(body: dict, *, database_name: str = "", before_path: str = ""
             expected = (database_name or "").removesuffix(".fmp12").casefold()
             actual = (getattr(job, "file", "") or "").removesuffix(".fmp12").casefold() if job else ""
             local = not job or (getattr(job.source, "server_ref", None) or "local") == "local"
-            cred = get_job_credential(job.name) if job and local and expected and actual == expected else None
+            cred = get_job_credential(job_id) if job and local and expected and actual == expected else None
             if cred and cred.get("account") and cred.get("password"):
                 return TargetAccess(str(cred["account"]), str(cred["password"]), ear, "job")
         except Exception:

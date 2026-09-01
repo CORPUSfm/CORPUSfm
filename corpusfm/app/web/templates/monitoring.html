@@ -28,7 +28,7 @@
     <template x-if="activeAlerts.length === 0">
       <p class="cfm-badge cfm-badge--ok">All clear — no active alerts.</p>
     </template>
-    <template x-for="a in activeAlerts" :key="a.condition + a.job_name">
+    <template x-for="a in activeAlerts" :key="a.condition + (a.job_uuid || a.job_name)">
       <div class="cfm-alert-row">
         <span class="cfm-badge" :class="a.severity === 'error' ? 'cfm-badge--broken' : 'cfm-badge--warn'">●</span>
         <span class="cfm-spacer">
@@ -52,7 +52,7 @@
       <table class="cfm-table">
         <thead><tr><th>Job</th><th>Source</th><th>Schedule</th><th>Last Run</th><th>Status</th></tr></thead>
         <tbody>
-          <template x-for="r in jobHealth" :key="r.name">
+          <template x-for="r in jobHealth" :key="r.uuid">
             <tr>
               <td x-text="r.name"></td>
               <td x-text="r.source_type"></td>
@@ -108,7 +108,9 @@ function monitorPage() {
       try {
         await fetch('/api/monitor/suppress', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ condition: alert.condition, job_name: alert.job_name }),
+          // The job's UUID is the suppression key (packet 1372-02): two jobs may share a name, so
+          // acknowledging one job's alert must not silence another's.
+          body: JSON.stringify({ condition: alert.condition, job_uuid: alert.job_uuid || '' }),
         });
         await this.loadStatus();
       } catch (_) {}

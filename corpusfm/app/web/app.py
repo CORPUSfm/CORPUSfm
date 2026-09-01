@@ -207,30 +207,54 @@ def _make_lifespan(mcp_app):
         except Exception:
             import logging
             logging.getLogger(__name__).debug("startup index-cache prewarm skipped", exc_info=True)
+        # Refuse a multi-worker launch (packet 063) — DELIBERATELY outside every try/except so it
+        # dies LOUDLY. Both background queues keep running-state in-process; a second worker would
+        # fork the queue (two drainers, split state, double AI spend).
+        #
+        # MOVED AHEAD OF THE CONVERSION BY PACKET 1372-01. It used to sit just above the Queue
+        # workers, which was sufficient while everything before it only READ. The storage-readiness
+        # step below now re-keys JOB records, and under `WEB_CONCURRENCY=2` every forked worker runs
+        # this lifespan: they would each have converted concurrently and only then died on this
+        # check. Refusing first costs nothing and removes the race. (It still does not catch a second
+        # bare `python -m` process — that remains the documented follow-up in `_enforce_single_worker`
+        # — but it does catch the misconfiguration this function exists for.)
+        _enforce_single_worker()
+        # ── STORAGE DATA READINESS — SYNCHRONOUS, and before anything touches a JOB ──────
+        # Assert the FM-side index-projection contract BEFORE any record is written: read the SETTING
+        # JSONOfRecord and, if it's missing/empty, write the full default template; else ensure only
+        # the Calculations map matches the code (settings left alone), updating it if drifted.
+        # Whenever the map is written, run the file-wide refresh script (waited on). The app no longer
+        # writes slot fields — the CF derives them, so a missing map = empty slots.
+        #
+        # THIS USED TO RUN IN THE `_diagnose` DAEMON THREAD, and packet 1372-01 moved it out here.
+        # The reason is not tidiness: `ProjectionVersion` 1 → 2 now carries the JOB identity
+        # conversion, so this call is what makes the JOB table safe for UUID-addressed code to read.
+        # Left in a daemon thread it raced the Queue workers started a few lines below, which is a
+        # race whose losing side is job work running against a half-converted table. It is therefore
+        # awaited here, before `queue_workers.start_all()`.
+        #
+        # It still never fails startup. A failed conversion leaves the stored version behind, which
+        # gates JOB work below and holds the scheduler off — the box keeps serving everything that
+        # does not touch a job, which is most of the product, rather than refusing to boot.
+        # Server-mode only.
+        try:
+            from corpusfm.config import is_server_mode
+            if is_server_mode():
+                from corpusfm.storage import projections, get_backend
+                _be = get_backend()
+                projections.assert_projection(_be)
+                # Fence (packet 085 §8): a secret must never sit in the SETTING blob —
+                # strip any legacy AI key a hand-copied config may have carried.
+                projections.assert_no_setting_secrets(_be)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug("startup projection-assert skipped", exc_info=True)
         # Warm the readiness report in a daemon thread. Storage repair belongs to the installer;
         # web startup observes the published state and never mutates it.
         try:
             import threading
 
             def _diagnose():
-                # Assert the FM-side index-projection contract BEFORE any record is written: read the
-                # SETTING JSONOfRecord and, if it's missing/empty, write the full default template; else
-                # ensure only the Calculations map matches the code (settings left alone), updating it if
-                # drifted. Whenever the map is written, run the file-wide refresh script (waited on). The
-                # app no longer writes slot fields — the CF derives them, so a missing map = empty slots.
-                # Server-mode only; never fails startup.
-                try:
-                    from corpusfm.config import is_server_mode
-                    if is_server_mode():
-                        from corpusfm.storage import projections, get_backend
-                        _be = get_backend()
-                        projections.assert_projection(_be)
-                        # Fence (packet 085 §8): a secret must never sit in the SETTING blob —
-                        # strip any legacy AI key a hand-copied config may have carried.
-                        projections.assert_no_setting_secrets(_be)
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).debug("startup projection-assert skipped", exc_info=True)
                 # Seed the default example artifacts (CORPUSfm's own DB + addon schemas) so a fresh
                 # catalog always has something for MCP/testing/demo. Only fills an EMPTY catalog +
                 # self-healing. Server-mode only, so the LocalBackend test/dev path (and e2e catalogs)
@@ -256,18 +280,28 @@ def _make_lifespan(mcp_app):
         except Exception:
             import logging
             logging.getLogger(__name__).debug("startup diagnose thread skipped", exc_info=True)
-        # Refuse a multi-worker launch (packet 063) — DELIBERATELY outside the try/except below so it
-        # dies LOUDLY. Both background queues keep running-state in-process; a second worker would fork
-        # the queue (two drainers, split state, double AI spend).
-        _enforce_single_worker()
         # Start the QUEUE workspace workers (packet 086): register the producer step handlers, then
         # start the per-type FIFO workers + the upload watchdog. They scan the QUEUE for work orphaned
         # by a crash/restart and drain it; a bare poke wakes the relevant worker on each new record.
         # Never fails startup (a scan hiccup must not block boot).
         try:
             from corpusfm.server import queue_handlers, queue_workers
-            queue_handlers.register_all()
-            queue_workers.start_all()
+            from corpusfm.storage import projections, get_backend
+            # GATED ON THE CONVERSION, not merely ordered after it (packet 1372-01). The Queue is
+            # where Job Runs execute, so starting its workers over a JOB table that is still keyed
+            # the old way is the one thing the version stamp exists to prevent. `conversion_complete`
+            # is a strict read: absent, behind, malformed and unreadable all answer False, and the
+            # dev/test LocalBackend path — which has no SETTING singleton and nothing to convert —
+            # answers True.
+            if not projections.conversion_complete(get_backend()):
+                import logging
+                logging.getLogger(__name__).error(
+                    "QUEUE workers NOT started: this corpus is not at the projection version this "
+                    "build requires, so the JOB identity conversion has not completed. Jobs and "
+                    "queued work stay paused; the server log above names what refused.")
+            else:
+                queue_handlers.register_all()
+                queue_workers.start_all()
         except Exception:
             import logging
             logging.getLogger(__name__).debug("startup queue workers skipped", exc_info=True)

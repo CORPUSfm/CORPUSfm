@@ -33,7 +33,7 @@ sweep, or the gallery. When that inventory read fails, the reason degrades hones
 
 Public API:
     classify_probe(probe) -> (status, reason)
-    verify_job(job_name, *, host=None, verify_ssl=None) -> dict
+    verify_job(job_uuid, *, host=None, verify_ssl=None) -> dict
 """
 
 from __future__ import annotations
@@ -130,7 +130,7 @@ def _probe_transport(server_ref: str | None):
     return for_server_ref(server_ref)
 
 
-def verify_job(job_name: str, *, host: Optional[str] = None,
+def verify_job(job_uuid: str, *, host: Optional[str] = None,
                verify_ssl: Optional[bool] = None) -> dict:
     """Probe one JOB's readiness (its own credential against its file), record the verdict on
     the JOB record (IsVerified), and return {status, reason}. No credential → blocked/
@@ -138,20 +138,20 @@ def verify_job(job_name: str, *, host: Optional[str] = None,
     from corpusfm.server.jobs.store import get_job_credential, load_job, set_job_verified
 
     try:
-        cfg = load_job(job_name)
+        cfg = load_job(job_uuid)
     except Exception:
         return {"status": BLOCKED, "reason": "error"}
     file_name = getattr(cfg, "file", "") or ""
 
-    cred = get_job_credential(job_name)
+    cred = get_job_credential(job_uuid)
     if not cred or not cred.get("account") or not cred.get("password"):
-        set_job_verified(job_name, False, "no_credential")
+        set_job_verified(job_uuid, False, "no_credential")
         return {"status": BLOCKED, "reason": "no_credential"}
 
     try:
         transport = _probe_transport(getattr(cfg.source, "server_ref", None))
     except Exception:
-        set_job_verified(job_name, False, "odata_unreachable")
+        set_job_verified(job_uuid, False, "odata_unreachable")
         return {"status": BLOCKED, "reason": "odata_unreachable"}
     if verify_ssl is None:
         verify_ssl = transport.verify_ssl
@@ -168,5 +168,5 @@ def verify_job(job_name: str, *, host: Optional[str] = None,
     if str(probe.get("fm_code") or "") == "802":
         inventory = read_inventory(file_name, getattr(cfg.source, "server_ref", None))
     status, reason = classify_probe(probe, inventory)
-    set_job_verified(job_name, status == PROVABLE, reason)
+    set_job_verified(job_uuid, status == PROVABLE, reason)
     return {"status": status, "reason": reason}

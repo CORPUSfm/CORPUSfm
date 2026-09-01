@@ -1,15 +1,19 @@
 """FileMaker Jobs — named automation units.
 
-A Job describes where to pull FM DDR XML from, what to do with it, and what
-fires it. Stored as YAML files in the jobs/ directory.
+A Job describes where to pull FM DDR XML from, what to do with it, and what fires it.
+
+**A job is identified by its UUID and by nothing else (packet 1372-02).** Names are editable labels
+that may collide, including by case; no operation resolves a job from one. On a server install the
+store is the JOB table keyed by that UUID; on the unpublished dev/test path it is one
+`<job_uuid>.yaml` per job in the jobs/ directory, with the name inside the document.
 
 Core API:
     JobConfig, JobSource, JobProcess, JobGitExport, JobTrigger  (config.py)
-    save_job, load_job, list_jobs, delete_job, generate_token  (store.py)
+    save_job, load_job(job_uuid), list_jobs, delete_job(job_uuid), generate_token  (store.py)
     validate_job                                                 (validator.py)
     run_job                                                      (runner.py)
     RunRecord, record_run, list_runs_for                         (history.py)
-    JobState, read_state, update_state                           (state.py)
+    JobState, read_state(job_uuid), update_state(job_uuid)       (state.py)
     pull_source                                                   (sources.py)
     webhook_url, make_handler, DEFAULT_PORT                      (webhook.py)
 """

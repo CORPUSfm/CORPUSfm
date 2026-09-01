@@ -13,7 +13,7 @@ Flow:
     4. Record run in history and update state sidecar
 
 Public API:
-    run_job(job_name, jobs_dir, archive_dir, history_dir, trigger)
+    run_job(job_uuid, jobs_dir, archive_dir, history_dir, trigger)
         -> RunRecord
 """
 
@@ -46,7 +46,7 @@ def resolve_job_credentials(job: "JobConfig") -> dict:
     none (local_file)."""
     if job.file:
         from corpusfm.server.jobs.store import get_job_credential
-        c = get_job_credential(job.name)
+        c = get_job_credential(getattr(job, "id", "") or "")
         if not c or not c.get("account") or not c.get("password"):
             raise ValueError(f"No usable credential stored for job '{job.name}' — set it on the job")
         from corpusfm.server.fms_transport import for_server_ref
@@ -60,16 +60,15 @@ def resolve_job_credentials(job: "JobConfig") -> dict:
 
 
 def run_job(
-    job_name: str,
+    job_uuid: str,
     jobs_dir: Path = None,
     archive_dir: Path = None,
     history_dir: Path = None,
     trigger: str = "manual",
     on_stored=None,
     run_id: str = None,
-    job_uuid: str = "",
 ) -> RunRecord:
-    """Execute one job run synchronously; returns a RunRecord (status ok or error).
+    """Execute one job run synchronously, addressed BY UUID; returns a RunRecord (ok or error).
 
     Packet 086: this is the executor — in production the ``pull`` QUEUE worker calls it (the run is a
     ``[pull]`` laundry-list record; the single pull worker IS the mutual exclusion, so the old
@@ -97,17 +96,25 @@ def run_job(
     backend = get_backend(archive_dir)
 
     start = datetime.now(timezone.utc)
-    log.info("job '%s' starting — trigger=%s", job_name, trigger)
+    # THE EXECUTOR ITSELF TAKES THE GATE (packet 1372-02, R8). The QUEUE workers reach this through
+    # a boot gate and the routes through their own, but `corpusfm jobs run` and the unlaunched
+    # webhook call it DIRECTLY — so an unconverted corpus could still be made to pull a file and
+    # write a STORAGE artifact while the box was meant to be paused. Gating the executor covers
+    # every caller, including ones added later.
+    from corpusfm.server.jobs.store import assert_job_work_permitted
+    assert_job_work_permitted()
+
+    log.info("job %s starting — trigger=%s", job_uuid, trigger)
 
     run_id = run_id or str(uuid.uuid4())
     return _run_job_body(
-        job_name, jobs_dir, history_dir, trigger, backend, start, run_id,
-        on_stored=on_stored, job_uuid=job_uuid or "",
+        job_uuid, jobs_dir, history_dir, trigger, backend, start, run_id,
+        on_stored=on_stored,
     )
 
 
 def _run_job_body(
-    job_name: str,
+    job_uuid: str,
     jobs_dir: Path,
     history_dir: Path,
     trigger: str,
@@ -115,35 +122,28 @@ def _run_job_body(
     start: datetime,
     run_id: str,
     on_stored=None,
-    job_uuid: str = "",
 ) -> RunRecord:
 
-    # Load config
+    # Load config BY UUID. The caller's uuid is the run's identity whether or not the config loads,
+    # so a failure is still attributable (packet 1149 — a run row without it is reachable only by
+    # exact run_id, and so invisible on the Runs page, /api/alerts and the zero-diff alert forever).
     try:
-        job = load_job(job_name, jobs_dir)
+        job = load_job(job_uuid, jobs_dir)
     except KeyError as exc:
-        # Early failure: the config never loaded, so the caller's job_uuid is the ONLY source of the
-        # job identity (packet 1149 — the QUEUE row carries it; it was never genuinely unknown). A run
-        # row without it can be reached only by exact run_id, so the failure is invisible on the Runs
-        # page, on /api/alerts, and to the zero-diff alert, forever.
-        return _record_error(job_name, jobs_dir, history_dir, str(exc), start, trigger, backend,
-                             run_id=run_id, job_uuid=job_uuid or "")
+        return _record_error(job_uuid, jobs_dir, history_dir, str(exc), start, trigger, backend,
+                             run_id=run_id)
 
     # Validate
     errors = validate_job(job)
     if errors:
         msg = "Config invalid: " + "; ".join(errors)
-        return _record_error(job_name, jobs_dir, history_dir, msg, start, trigger, backend,
-                             run_id=run_id, job_uuid=getattr(job, "id", "") or "")
+        return _record_error(job_uuid, jobs_dir, history_dir, msg, start, trigger, backend,
+                             run_id=run_id, job_name=job.name)
 
-    # Stable identities: the job's uuid (assigned once, persisted). run_id was assigned by
-    # run_job; artifacts link to these — never the name.
-    if not job.id:
-        job.id = str(uuid.uuid4())
-        try:
-            save_job(job, jobs_dir)
-        except Exception:
-            log.debug("could not persist generated id for job '%s'", job_name, exc_info=True)
+    # THE LAZY ID BACKFILL IS GONE (packet 1372-02). It assigned an id and re-saved with
+    # `overwrite=False`, which both engines refused because the name was already present — a repair
+    # that never once repaired anything, and whose failure was swallowed. A job now cannot exist
+    # without an id: `save()` refuses one, and packet 1372-01 gave every existing record its own.
 
     # Mutual exclusion is the single pull QUEUE worker (packet 086 — run_claim retired): runs execute
     # one at a time by construction, so there is no per-file claim/wait/takeover here any more.
@@ -165,9 +165,9 @@ def _run_job_body(
         target = job.file or (job.source.databases or [None])[0]
         if not target:
             return _record_error(
-                job_name, jobs_dir, history_dir,
+                job_uuid, jobs_dir, history_dir,
                 "This job has no owner file — it can't pull a hosted database.",
-                start, trigger, backend, run_id=run_id, job_uuid=getattr(job, "id", "") or "",
+                start, trigger, backend, run_id=run_id, job_name=job.name,
             )
         source_list = [dataclasses.replace(job.source, databases=[target])]
 
@@ -177,13 +177,13 @@ def _run_job_body(
         credentials = resolve_job_credentials(job)
     except ValueError as exc:
         return _record_error(
-            job_name, jobs_dir, history_dir, str(exc), start, trigger, backend,
-            run_id=run_id, job_uuid=getattr(job, "id", "") or "",
+            job_uuid, jobs_dir, history_dir, str(exc), start, trigger, backend,
+            run_id=run_id, job_name=job.name,
         )
     except Exception as exc:
         return _record_error(
-            job_name, jobs_dir, history_dir, f"Credential load failed: {exc}", start, trigger, backend,
-            run_id=run_id, job_uuid=getattr(job, "id", "") or "",
+            job_uuid, jobs_dir, history_dir, f"Credential load failed: {exc}", start, trigger, backend,
+            run_id=run_id, job_name=job.name,
         )
 
     all_metas = []
@@ -194,7 +194,7 @@ def _run_job_body(
     _keep_source_xml = _app_cfg.keep_source_xml
 
     for single_source in source_list:
-        db_label = (single_source.databases or [None])[0] or job_name
+        db_label = (single_source.databases or [None])[0] or job.name
 
         # Pull XML
         try:
@@ -290,9 +290,9 @@ def _run_job_body(
                 from corpusfm.server.artifact_delete import prune_job_artifacts
                 pruned = prune_job_artifacts(backend, job.id, job.process.max_artifacts)
                 if pruned:
-                    log.debug("Pruned %d artifact(s) for job '%s' (limit=%d)", pruned, job_name, job.process.max_artifacts)
+                    log.debug("Pruned %d artifact(s) for job '%s' (limit=%d)", pruned, job.name, job.process.max_artifacts)
             except Exception:
-                log.debug("Artifact pruning failed for job '%s'", job_name, exc_info=True)
+                log.debug("Artifact pruning failed for job '%s'", job.name, exc_info=True)
 
         # Git export (optional — errors here do not fail the job). The job's repo overrides
         # each registration's default (a deploy-key credential ignores it — bound repo). Each
@@ -325,8 +325,8 @@ def _run_job_body(
 
     if not all_metas:
         msg = "; ".join(pull_errors) or "All database pulls failed"
-        return _record_error(job_name, jobs_dir, history_dir, msg, start, trigger, backend,
-                             run_id=run_id, job_uuid=getattr(job, "id", "") or "")
+        return _record_error(job_uuid, jobs_dir, history_dir, msg, start, trigger, backend,
+                             run_id=run_id, job_name=job.name)
 
     end = datetime.now(timezone.utc)
     duration = round((end - start).total_seconds(), 2)
@@ -342,8 +342,9 @@ def _run_job_body(
         run_id=run_id,
         job_uuid=job.id,
     )
-    log.info("job '%s' completed in %.1fs (%d database(s))", job_name, duration, len(all_metas))
-    _record_run(job_name, jobs_dir, history_dir, run, backend)
+    log.info("job '%s' (%s) completed in %.1fs (%d database(s))", job.name, job_uuid, duration,
+             len(all_metas))
+    _record_run(job_uuid, jobs_dir, history_dir, run, backend)
     return run
 
 
@@ -365,20 +366,20 @@ def _run_fms_push_trigger(
     directly and never reach here.)"""
     from corpusfm.server import queue_handlers
 
-    job_name = job.name
+    job_name = job.name                    # display label for the log lines below
     _je = job.id or ""   # this job's uuid — carried onto every early-error RunRecord (packet 1058)
     file_name = job.file or (job.source.databases or [None])[0] or ""
     if not file_name:
-        return _record_error(job_name, jobs_dir, history_dir,
+        return _record_error(_je, jobs_dir, history_dir,
                              "This fms_push job has no owner file to pull.", start, trigger, backend,
-                             run_id=run_id, job_uuid=_je)
+                             run_id=run_id, job_name=job_name)
     try:
         queue_handlers.enqueue_job_run(backend, job_name=job_name, job_uuid=_je,
                                        file_name=file_name, trigger=trigger, run_id=run_id or "")
     except Exception as exc:
-        return _record_error(job_name, jobs_dir, history_dir,
+        return _record_error(_je, jobs_dir, history_dir,
                              f"fms_push: could not enqueue the run: {exc}",
-                             start, trigger, backend, run_id=run_id, job_uuid=_je)
+                             start, trigger, backend, run_id=run_id, job_name=job_name)
 
     end = datetime.now(timezone.utc)
     run = RunRecord(
@@ -395,7 +396,7 @@ def _run_fms_push_trigger(
 
 
 def _record_error(
-    job_name: str,
+    job_uuid: str,
     jobs_dir: Path,
     history_dir: Path,
     message: str,
@@ -403,9 +404,15 @@ def _record_error(
     trigger: str,
     backend=None,
     run_id: str = None,
-    job_uuid: str = None,
+    job_name: str = "",
 ) -> RunRecord:
-    log.error("job '%s' failed: %s", job_name, message)
+    """An error RunRecord, scoped by the job's UUID.
+
+    `job_name` is the DISPLAY label and is optional: a run that fails before its config loads has no
+    name to show, and stamping the uuid there instead would put an identity in a field readers treat
+    as prose. Empty is the honest answer; the run is still findable, because it is found by uuid.
+    """
+    log.error("job %s failed: %s", job_uuid, message)
     end = datetime.now(timezone.utc)
     duration = round((end - start).total_seconds(), 2)
     # Carry the run identity + job uuid onto the error RunRecord (packet 1058 P0-A) so a failed run is
@@ -419,13 +426,14 @@ def _record_error(
         error=message,
         run_id=run_id or None,
         job_uuid=job_uuid or None,
+        job_name=job_name or "",
     )
-    _record_run(job_name, jobs_dir, history_dir, run, backend)
+    _record_run(job_uuid or "", jobs_dir, history_dir, run, backend)
     return run
 
 
 def _record_run(
-    job_name: str,
+    job_uuid: str,
     jobs_dir: Path,
     history_dir: Path,
     run: RunRecord,
@@ -437,12 +445,14 @@ def _record_run(
     # Freeze the label (packet 1149): every run row carries the job's name AS AT RUN TIME, so no read
     # surface has to borrow it from live config. This is the single chokepoint every runner-side writer
     # passes through, which is why it is stamped here rather than at each construction site.
-    if not getattr(run, "job_name", None):
-        run.job_name = job_name or ""
+    if not getattr(run, "job_uuid", None):
+        run.job_uuid = job_uuid or None
     if backend is not None:
         record_run(backend, run)
-    # JOBS "last run" summary (FM-primary already; stays as-is).
+    # The JOB record's "last run" summary, addressed BY UUID (packet 1372-02). It was addressed by
+    # name, so a run belonging to one of two same-named jobs updated whichever the lookup found —
+    # and a deleted job's run silently updated a survivor that happened to share its label.
     try:
-        update_state(job_name, run, jobs_dir)
+        update_state(job_uuid, run, jobs_dir)
     except Exception:
         pass
