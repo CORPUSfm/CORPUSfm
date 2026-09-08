@@ -176,47 +176,80 @@ def test_linux_authorization_server_metadata_routes_packet_1179():
     assert 'ProxyPassMatch "^/\\.well-known/openid-configuration\\$"' not in PROXY_SH
 
 
-# ── A6.1 — first scheduler activation warning (packet 1000-09) ───────────────────────
+# ── A6.1 — the scheduler service is RETIRED, and the retirement is enforced ──────────────
 
-def test_scheduler_first_activation_is_gated():
-    """RE-EXPRESSED from `test_linux_scheduler_first_activation_is_gated` (A6.1).
+def test_the_installers_CREATE_no_scheduler_service():
+    """RE-EXPRESSED from `test_scheduler_first_activation_is_gated` (A6.1), because the invariant it
+    defended no longer has a subject.
 
-    **The flag was retired; the invariant was not.** `--no-scheduler` is gone and the scheduler
-    always installs (§4H.2) — so *"first activation is gated on the flag"* has no subject. What
-    packet 1023 actually established is different and still true: **an upgrade of a box that
-    predates the scheduler unit silently activates previously-inert scheduled Jobs**, so the FIRST
-    activation must warn or ask before phase 21 starts it. An operator who never ran a scheduler
-    should not discover one running because they upgraded.
+    **The history.** Packet 1023 established that an upgrade of a box predating the scheduler unit
+    silently activated previously-inert scheduled Jobs, so the FIRST activation had to warn before
+    phase 21 started it. Application packet 1361-01 round 3 removed the unit entirely: scheduling is
+    a background component of the ONE web process, because a second process could not honour the
+    process-wide database-readiness gate — it kept reading and writing FileMaker while CORPUSfm was
+    paused.
 
-    Re-expressed against both platforms, because the obligation was never Linux-specific.
+    So there is no first activation to warn about, and a stronger rule replaces it: **neither
+    installer renders, registers or starts a scheduler service at all.**
     """
     import pathlib as _p
-    import re as _re
 
     root = _p.Path(__file__).resolve().parent.parent
     sh = (root / "installer/linux/install.sh").read_text(encoding="utf-8")
     ps1 = (root / "installer/windows/install.ps1").read_text(encoding="ascii")
 
-    conditions = {
-        "linux": r"if\s+\$IS_UPGRADE\s+&&\s+!\s+\$SCHED_UNIT_PREEXISTED\s*;\s*then(?P<body>.*?)\nfi",
-        "windows": r"if\s*\(\$IsUpgrade\s+-and\s+-not\s+\$SchedServicePreexisted\)\s*\{(?P<body>.*?)\n\}",
-    }
     for name, raw in (("linux", sh), ("windows", ps1)):
         code = "\n".join(l for l in raw.splitlines() if not l.lstrip().startswith("#"))
-        # 1. The installer must be able to TELL a first activation from an already-active scheduler.
-        preexisted = _re.search(r"(SCHED_UNIT_PREEXISTED|SchedServicePreexisted|SchedPreexist)\w*",
-                                code)
-        assert preexisted, f"{name}: nothing distinguishes a first scheduler activation"
-        marker = preexisted.group(0)
-        # 2. The exact cell is UPDATE + ABSENT. Fresh installs and pre-existing units stay quiet.
-        gate = _re.search(conditions[name], code, _re.S)
-        assert gate, f"{name}: the first-activation distinction does not gate phase 21"
-        assert _re.search(r"\b(warn|Warn|cfm_confirm|Confirm-|Read-Host)\b", gate.group("body")), (
-            f"{name}: a first scheduler activation neither warns nor asks for consent")
+        for forbidden in ("'web','scheduler'", '"web","scheduler"',
+                          "@('web','scheduler')", "for _role in web scheduler"):
+            assert forbidden not in code, f"{name}: a scheduler service is still rendered"
+        assert "activating the scheduler for the first time" not in raw, \
+            f"{name}: the retired first-activation warning survived"
 
-        # 3. Capture precedes registration/start, and the warning precedes the start.
-        capture = code.index(marker)
-        warning = gate.start()
-        start = (code.index('systemctl start "$_unit"') if name == "linux"
-                 else code.index("& $exe start"))
-        assert capture < warning < start, (name, capture, warning, start)
+
+def test_both_installers_REMOVE_an_existing_scheduler_service_on_upgrade():
+    """The other half, and the one an upgraded box depends on. `python -m corpusfm.server.scheduler`
+    exits 2 now, so a surviving unit under `Restart=always` (or WinSW's restart policy) would fail
+    forever. The upgrade must STOP it and DELETE it, not merely stop writing it."""
+    import pathlib as _p
+
+    root = _p.Path(__file__).resolve().parent.parent
+    sh = (root / "installer/linux/install.sh").read_text(encoding="utf-8")
+    ps1 = (root / "installer/windows/install.ps1").read_text(encoding="ascii")
+
+    # Linux: stop, disable, delete the unit file, reload. The unit path moved into
+    # `$_sched_unit_file` when A001's guard gained its second predicate (the reload must be reachable
+    # after an interruption that removed the file but not the daemon's view of it) — asserted through
+    # the variable rather than by re-pinning the literal path, which is `test_scheduler_retirement_
+    # adapter`'s subject.
+    assert "SCHED_SERVICE_RETIRED=corpusfm-scheduler" in sh
+    assert 'systemctl stop "$SCHED_SERVICE_RETIRED"' in sh
+    assert 'systemctl disable "$SCHED_SERVICE_RETIRED"' in sh
+    assert '_sched_unit_file="/etc/systemd/system/${SCHED_SERVICE_RETIRED}.service"' in sh
+    assert 'rm -f "$_sched_unit_file"' in sh
+    # and it is quiesced beside the web service before the new code lands
+    assert 'for _unit in "$WEB_SERVICE" "$SCHED_SERVICE_RETIRED"; do' in sh
+
+    # Windows: stop + uninstall through WinSW (or sc.exe), then remove its definition. Asserted
+    # against the RULE rather than a variable's spelling: the deletion moved into the retirement
+    # adapter's `Remove-CfmRetiredSchedulerService` and picked up a `$script:` scope prefix there,
+    # which the previous string match read as the deletion having vanished. The ORDER that move
+    # exists to fix is `test_scheduler_retirement_adapter`'s subject; this stays the "it is actually
+    # deleted" half.
+    assert "$SchedServiceRetired = 'corpusfm-scheduler'" in ps1
+    assert "function Remove-CfmRetiredSchedulerService" in ps1
+    assert "$schedExe stop" in ps1 and "$schedExe uninstall" in ps1
+    assert "sc.exe delete $script:SchedServiceRetired" in ps1
+    assert "foreach ($svc in @($WebService, $SchedServiceRetired))" in ps1
+
+
+def test_neither_installer_grants_anything_to_a_scheduler_identity():
+    """A virtual service account whose service does not exist has no SID, so any grant naming it
+    would refuse with `LookupAccountName` error 1332 on every fresh Windows box."""
+    import pathlib as _p
+
+    root = _p.Path(__file__).resolve().parent.parent
+    ps1 = (root / "installer/windows/install.ps1").read_text(encoding="ascii")
+    code = "\n".join(l for l in ps1.splitlines() if not l.lstrip().startswith("#"))
+    assert "$SchedSid" not in code, "a grant still names the retired scheduler's SID"
+    assert "scheduler_sid" not in code, "the key-provisioning request still names a scheduler SID"

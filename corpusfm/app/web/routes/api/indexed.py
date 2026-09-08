@@ -16,6 +16,8 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from corpusfm.app.web.auth import current_user, require_auth, require_any_gate
+from corpusfm.app.web.deps import get_ctx
+from corpusfm.runtime import AppContext
 
 log = logging.getLogger("corpusfm.indexed")
 
@@ -116,15 +118,19 @@ def delete_indexed(file_name: str) -> JSONResponse:
 
 
 @router.get("/indexed/check")
-def check_indexed(uuid: str = "") -> JSONResponse:
+def check_indexed(uuid: str = "", ctx: AppContext = Depends(get_ctx)) -> JSONResponse:
     """Check whether ONE artifact is in the vector index (per-artifact, keyed by the record uuid).
     Returns {configured, indexed, count}."""
     from corpusfm.app.web.routes.api.library import _embedder_on, indexed_status
-    if not _embedder_on():
+
+    # One settings read for this request too, asked of the context (packet 1361-01) — the
+    # capability check and the membership read share it.
+    cfg = ctx.app_config()
+    if not _embedder_on(cfg):
         return JSONResponse({"configured": False, "indexed": False, "count": 0})
     if not uuid:
         return JSONResponse({"configured": True, "indexed": False, "count": 0})
-    indexed, count = indexed_status(uuid)
+    indexed, count = indexed_status(uuid, cfg)
     return JSONResponse({"configured": True, "indexed": indexed, "count": count})
 
 

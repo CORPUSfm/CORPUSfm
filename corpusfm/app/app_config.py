@@ -260,9 +260,25 @@ def load_authoritative_setting(key: str, default=""):
         return default
 
 
-def load_app_config(path: Optional[Path] = None, *, require_authority: bool = False) -> AppConfig:
+def load_app_config(path: Optional[Path] = None, *, require_authority: bool = False,
+                    backend=None) -> AppConfig:
+    """Read the app settings, freshly, every call.
+
+    `backend` lets a caller that has ALREADY resolved a storage backend hand it in rather than make
+    this function resolve one (packet 1361-01). Resolution is the expensive half — it re-reads the
+    installation record, loads the held credential, and builds a backend whose first request pays a
+    TLS handshake — so a request that reads settings through a backend it already holds pays for the
+    read alone. It changes nothing about WHEN settings are read: there is no memo here, and the next
+    call still goes to the authority.
+
+    A supplied backend that is not a FileMaker store (the LocalBackend dev/test path) falls through
+    to the YAML file, exactly as an unset `storage_backend` does.
+    """
     # FM OData mode: read preferences from FM SETTINGS.
-    b = _try_fm_backend()
+    if backend is not None:
+        b = backend if hasattr(backend, "load_fm_settings") else None
+    else:
+        b = _try_fm_backend()
     if b is not None:
         if require_authority:
             try:

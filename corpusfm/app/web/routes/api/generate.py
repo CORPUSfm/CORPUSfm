@@ -196,33 +196,36 @@ async def explorer_candidates(request: Request) -> JSONResponse:
     Candidate eligibility consults the capability map (packet 040) — only types with the
     `explorer` capability (SaveAsXML / AddonXML / MergedXML) are offered, so a low-fidelity
     tenant (fmClip / fmScript / fmCalc / PatchXML) is never wrongly presented a lens.
-    MergedXML artifacts are first-class catalog records (unified-artifacts plan §5) — they
-    come through iter_artifact_metas() like any other type, not a separate _merged/ scan.
-    """
+
+    Served from the persistent catalog's TYPE index (packet 1361-01) — this enumerated STORAGE with
+    `iter_artifact_metas()` on every dialog open and discarded most of it. A catalog whose database
+    read failed says so rather than returning an empty candidate list, which on this dialog reads as
+    "you have nothing to explore"."""
     from corpusfm.storage import get_backend
-    from corpusfm.artifact.capabilities import has_capability, EXPLORER
+    from corpusfm.server import catalog
+    from corpusfm.artifact.capabilities import has_capability, EXPLORER, VISIBLE_TYPES
 
     backend = get_backend()
-    items: list[dict] = []
+    view = catalog.view(backend)
+    if view.failed:
+        return JSONResponse({"candidates": [], "catalog_failed": True,
+                             "unavailable": True, "reason": "storage"})
 
-    for meta in backend.iter_artifact_metas():
-        fm_file = meta.file_name
-        label = (meta.name or fm_file) if meta.is_addon else fm_file
-        art_type = (
-            meta.artifact_type
-            if getattr(meta, "artifact_type", None)
-            else ("AddonXML" if meta.is_addon else "SaveAsXML")
-        )
-        if not has_capability(art_type, EXPLORER):
-            continue
-        items.append({
-            "uuid":      meta.uuid,        # canonical record address (packet 085 U3f)
-            "type":      art_type,
-            "label":     label,
-            "fm_file":   fm_file,
-            "timestamp": meta.timestamp,
-            "root_uuid": meta.root_uuid,
-        })
+    items: list[dict] = []
+    for art_type in sorted(t for t in VISIBLE_TYPES if has_capability(t, EXPLORER)):
+        for rec in view.select(type=art_type):
+            meta = rec.get("meta")
+            if meta is None:
+                continue
+            fm_file = meta.file_name
+            items.append({
+                "uuid":      meta.uuid,        # canonical record address (packet 085 U3f)
+                "type":      art_type,
+                "label":     (meta.name or fm_file) if meta.is_addon else fm_file,
+                "fm_file":   fm_file,
+                "timestamp": meta.timestamp,
+                "root_uuid": meta.root_uuid,
+            })
 
     return JSONResponse({"candidates": items})
 

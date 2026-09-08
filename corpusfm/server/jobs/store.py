@@ -1,18 +1,24 @@
-"""Job storage — UUID-addressed (packet 1372-02).
+"""Job storage — UUID-addressed, ENGINE-BACKED, and nothing else (packet 1372-02 / 1361-01).
 
 A job is identified by its UUID and by nothing else. Names are editable labels that may collide,
-including by case; no operation here resolves a job from one. On a server install the store is the
-JOB table keyed by that UUID; on the unpublished dev/test path it is one `<job_uuid>.yaml` per job in
-the jobs/ directory, with the name inside the document. A valid YAML file = active job; no separate
-activation step.
+including by case; no operation here resolves a job from one. The store is the JOB table keyed by
+that UUID, over whichever engine the live backend exposes — FileMaker OData on a server install, the
+SQLite mirror in development.
+
+**The `<job_uuid>.yaml` file store is REMOVED (packet 1361-01).** It was the storage half of a job
+model the product does not support: filesystem-selected jobs, archives and history, executed
+directly. CORPUSfm's Jobs pull XML from HOSTED FileMaker files, store artifacts internally, and may
+export to GitHub — none of which a directory of YAML files is part of. Keeping it as a "dev path"
+meant development exercised a store production never uses, and the fallback could silently take a
+misconfigured box with it. Development now uses the same engine-backed JOB table through the SQLite
+mirror. There is no compatibility path and no migration: the model is unsupported, not deprecated.
 
 Public API:
-    default_jobs_dir()
-    save_job(cfg, jobs_dir, overwrite)          # creates at cfg.id; refuses a missing/invalid id
-    load_job(job_uuid, jobs_dir) -> JobConfig
-    find_job_by_id(job_uuid, jobs_dir)          # O(1) on the server path
-    list_jobs(jobs_dir) -> list[tuple[JobConfig | None, str | None]]
-    delete_job(job_uuid, jobs_dir) -> bool
+    save_job(cfg, overwrite)                    # creates at cfg.id; refuses a missing/invalid id
+    load_job(job_uuid) -> JobConfig
+    find_job_by_id(job_uuid)                    # O(1) — a direct key read
+    list_jobs() -> list[tuple[JobConfig | None, str | None]]
+    delete_job(job_uuid) -> bool
     generate_token() -> str
     assert_job_work_permitted()                 # the ProjectionVersion 2 gate
 """
@@ -21,12 +27,9 @@ from __future__ import annotations
 
 import re
 import secrets
-from pathlib import Path
 from typing import Optional
 
 from corpusfm.server.jobs.config import JobConfig
-
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 TOKEN_BYTES = 16  # 32 hex chars
 
@@ -40,30 +43,39 @@ class JobsStoreUnavailable(RuntimeError):
     """
 
 
-def _repo():
-    """The JobsRepo on a server (fm_odata) install, else None (local dev/test = YAML files).
-    Jobs are a server feature, so the gate is the INSTALL MODE, not engine presence — the
-    repo just carries the entity logic over whichever engine the live backend exposes."""
-    # THE SILENT FALLBACK THIS CLOSES (packet 1246-08 §11.2 row 5): returning None on a published
-    # box sends Jobs to local YAML files while the corpus sits there unused, and nothing reports it.
+def _repo(backend=None):
+    """The JobsRepo over a backend's engine. NEVER None — there is no second store.
+
+    ``backend`` lets a caller that already holds one supply it (packet 1361-01), instead of this
+    resolving a fresh one through the global `get_backend()`.
+
+    The install-mode gate that used to sit here existed to choose between the JOB table and a
+    directory of YAML files. With the file store removed (packet 1361-01) there is nothing to choose:
+    every install and every development tree reads and writes the same JOB table, so the only failure
+    left is a backend that exposes no engine at all, which is a refusal rather than a fallback.
+
+    The published-but-uncomposed check survives, because it says something the engine cannot: an
+    installation that has published authority but composed no corpus must refuse Jobs rather than
+    serve them from somewhere else (packet 1246-08 §11.2 row 5).
+    """
     from corpusfm.lifecycle import runtime_storage
 
-    active = runtime_storage.fm_storage_active()
-    if active is None:                        # nothing published — the dev/test path, unchanged
-        from corpusfm.install import read_install_config
-        if read_install_config().get("storage_backend") != "fm_odata":
-            return None
-    elif not active:
+    try:
+        active = runtime_storage.fm_storage_active()
+    except Exception:
+        active = None
+    if active is False:
         raise JobsStoreUnavailable(
             "this installation is published but has composed no corpus; refusing to serve Jobs "
-            "from local files while its storage authority is incomplete.")
-    from corpusfm.storage import get_backend
+            "while its storage authority is incomplete.")
     from corpusfm.storage.repos import jobs_repo
-    r = jobs_repo(get_backend())
+    if backend is None:
+        from corpusfm.storage import get_backend
+        backend = get_backend()
+    r = jobs_repo(backend)
     if r is None:
         raise JobsStoreUnavailable(
-            "storage_backend is fm_odata but FileMakerODataBackend could not be loaded."
-        )
+            "the active storage backend exposes no engine, so the JOB table cannot be read.")
     return r
 
 
@@ -161,33 +173,6 @@ def job_verify_state(job_uuid: str) -> "tuple[bool, str]":
     return r.verify_state(job_uuid) if r is not None else (False, "")
 
 
-def _published_state_dir():
-    """The published writable state directory, or `None` when nothing is published.
-
-    THE SOURCE TREE IS NOT WRITABLE (packet 1246-10-04). `_PROJECT_ROOT` is `/opt/CORPUSfm/src` on
-    an installed box — root-owned 0750 and inside the systemd sandbox's read-only world — so a
-    default that puts mutable job, history or archive material there is a scheduler that cannot
-    run. The published `state_dir` is the authority the unit already grants (`ReadWritePaths`), and
-    a tree that publishes no installation keeps `_PROJECT_ROOT`.
-    """
-    from corpusfm.lifecycle import app_paths
-
-    try:
-        return app_paths.state_dir()
-    except Exception:  # noqa: BLE001 - nothing published: the development tree, unchanged
-        return None
-
-
-def default_jobs_dir() -> Path:
-    state = _published_state_dir()
-    return (state if state is not None else _PROJECT_ROOT) / "jobs"
-
-
-def default_history_dir() -> Path:
-    state = _published_state_dir()
-    return (state if state is not None else _PROJECT_ROOT) / "history"
-
-
 def generate_token() -> str:
     """Generate a secure random webhook token."""
     return secrets.token_hex(TOKEN_BYTES)
@@ -197,155 +182,68 @@ def generate_token() -> str:
 # which is the local half of the identity defect this cutover removes: two jobs whose names differed
 # only by case shared one file, and renaming a job orphaned its state sidecar. Local files are now
 # named by the job's UUID, with the name inside the document where it belongs.
-# `corpusfm migrate job-identity --jobs-dir <dir>` converts a developer's existing fixtures.
+# There is nothing left to convert: the local file store itself is gone (packet 1361-01), and with
+# it `corpusfm migrate job-identity --jobs-dir`.
 
 
-def _job_path(job_uuid: str, jobs_dir: Path) -> Path:
-    return jobs_dir / f"{job_uuid}.yaml"
-
-
-def save_job(
-    cfg: JobConfig,
-    jobs_dir: Path = None,
-    overwrite: bool = False,
-) -> None:
-    """Write a job config AT ITS OWN ID. Raises if the id is missing or already present."""
+def save_job(cfg: JobConfig, overwrite: bool = False) -> None:
+    """Write a job config AT ITS OWN ID into the JOB table. Raises if the id is missing or present."""
     assert_job_work_permitted()
-    from corpusfm.storage.repos import JobIdentityInvalid, _SOUND_UUID
-    r = _repo()
-    if r is not None:
-        r.save(cfg, overwrite=overwrite)
-        return
-    job_uuid = (getattr(cfg, "id", "") or "").strip()
-    if not _SOUND_UUID.match(job_uuid):
-        raise JobIdentityInvalid(
-            f"job {cfg.name!r} carries id {getattr(cfg, 'id', None)!r}, which is not a UUID.")
-    if jobs_dir is None:
-        jobs_dir = default_jobs_dir()
-    jobs_dir.mkdir(parents=True, exist_ok=True)
-    path = _job_path(job_uuid, jobs_dir)
-    if path.exists() and not overwrite:
-        raise ValueError(f"A job with id {job_uuid} already exists. Pass overwrite=True to replace.")
-    path.write_text(cfg.to_yaml(), encoding="utf-8")
+    _repo().save(cfg, overwrite=overwrite)
 
 
-def load_job(job_uuid: str, jobs_dir: Path = None) -> JobConfig:
+def load_job(job_uuid: str) -> JobConfig:
     """Load a job by its UUID. Raises KeyError if not found."""
-    r = _repo()
-    if r is not None:
-        return r.load(job_uuid)
-    if jobs_dir is None:
-        jobs_dir = default_jobs_dir()
-    path = _job_path(job_uuid, jobs_dir)
-    if not path.exists():
-        raise KeyError(f"No job with id {job_uuid!r} in {jobs_dir}.")
-    return JobConfig.from_yaml(path.read_text(encoding="utf-8"))
+    return _repo().load(job_uuid)
 
 
-def find_job_by_id(job_uuid: str, jobs_dir: Path = None) -> Optional[JobConfig]:
-    """A job by its UUID, or None. **O(1) now** — it is a direct key read, not a scan.
-
-    It used to enumerate every job and compare ids in Python, because the id was not the record's
-    address. It is, so this is `load_job` with a miss returned instead of raised.
-    """
+def find_job_by_id(job_uuid: str) -> Optional[JobConfig]:
+    """A job by its UUID, or None. O(1) — a direct key read, not a scan."""
     if not job_uuid:
         return None
     try:
-        return load_job(job_uuid, jobs_dir)
+        return load_job(job_uuid)
     except KeyError:
         return None
 
 
-def list_jobs(
-    jobs_dir: Path = None,
-) -> list[tuple[Optional[JobConfig], Optional[str]]]:
-    """Return all jobs as (JobConfig | None, error_str | None) pairs, sorted by name.
+def list_jobs() -> list[tuple[Optional[JobConfig], Optional[str]]]:
+    """Every job as (JobConfig | None, error_str | None) pairs, sorted by name.
 
     Invalid records are included with config=None and an error string.
     """
-    r = _repo()
-    if r is not None:
-        return r.list()
-    if jobs_dir is None:
-        jobs_dir = default_jobs_dir()
-    if not jobs_dir.exists():
-        return []
-    result = []
-    for path in sorted(jobs_dir.glob("*.yaml")):
-        try:
-            cfg = JobConfig.from_yaml(path.read_text(encoding="utf-8"))
-            result.append((cfg, None))
-        except Exception as exc:
-            result.append((None, f"{path.name}: {exc}"))
-    return result
+    return _repo().list()
 
 
-def list_jobs_with_state(jobs_dir: Path = None, *, strict: bool = False) -> list:
-    """(JobConfig, JobState) for every VALID job — from ONE store read on a server install
-    (audit #4: the state fields ride the same JOBS records the config parse already reads; the
-    old per-job ``read_state`` re-fetch was an N+1 on the 10s notifications poll). Local mode
-    reads the cheap sidecar files as before.
+def list_jobs_with_state(*, strict: bool = False, backend=None) -> list:
+    """(JobConfig, JobState) for every VALID job — from ONE store read.
 
-    ``strict=True`` asks the engine read to raise `JobReadUnavailable` rather than degrade an
-    unreadable JOB table to an empty list — for a caller that paints the list and must not present
-    a failed read as "there are none" (packet 1369). Opt-in: the poll/monitor callers keep the
-    degraded render they were built for.
+    The state fields ride the same JOB records the config parse already reads, so this costs one
+    enumeration rather than the per-job ``read_state`` re-fetch it replaced (an N+1 on the 10s
+    notifications poll).
+
+    ``strict=True`` asks the read to raise `JobReadUnavailable` rather than degrade an unreadable JOB
+    table to an empty list — for a caller that paints the list and must not present a failed read as
+    "there are none" (packet 1369). Opt-in: the poll/monitor callers keep the degraded render they
+    were built for.
     """
-    r = _repo()
-    if r is not None:
-        return [(cfg, state) for cfg, state in r.list_with_state(strict=strict) if cfg is not None]
-    from corpusfm.server.jobs.state import read_state
-    if jobs_dir is None:
-        jobs_dir = default_jobs_dir()
-    return [(cfg, read_state(getattr(cfg, "id", "") or "", jobs_dir))
-            for cfg, _err in list_jobs(jobs_dir) if cfg is not None]
+    return [(cfg, state) for cfg, state in _repo(backend).list_with_state(strict=strict)
+            if cfg is not None]
 
 
-def _overlay_by_reread(job_uuid: str) -> dict:
-    """The credential/verification overlay for ONE job, by indexed re-read — the local dev/test path.
-
-    Kept because the YAML enumeration has no `JSONOfRecord` to project from: on an unpublished tree
-    the configs come from files while credential state still lives in the LocalBackend engine
-    (`_jrepo()` is not install-mode gated). Projecting from jor is valid only when the enumeration
-    itself came from the engine (packet 1368).
-    """
-    verified, reason = job_verify_state(job_uuid)
-    return {"has_credential": has_job_credential(job_uuid), "account": job_account_name(job_uuid),
-            "verified": verified, "verify_reason": reason}
-
-
-def list_jobs_with_overlay(jobs_dir: Path = None, *, strict: bool = False) -> list:
+def list_jobs_with_overlay(*, strict: bool = False) -> list:
     """(JobConfig, JobState, overlay) for every VALID job — the ONE derivation the Jobs surfaces use.
 
-    ``overlay`` is ``{has_credential, account, verified, verify_reason}``. On a server install it is
-    projected from the same `JSONOfRecord` the config and state already came from, so a file list no
-    longer costs three indexed JOB re-reads per job. The secret never appears: only its presence
-    flag, the display account and the verification verdict live in jor at all.
-
-    A pure projection over the enumerated rows on purpose — a later read model can reuse the
-    derivation instead of growing a second one.
+    ``overlay`` is ``{has_credential, account, verified, verify_reason}``, projected from the same
+    ``JSONOfRecord`` the config and state already came from, so a job list costs no extra indexed
+    re-reads. The secret never appears: only its presence flag, the display account and the
+    verification verdict live in jor at all.
     """
-    r = _repo()
-    if r is not None:
-        return [(cfg, state, cred) for cfg, state, cred in r.list_with_overlay(strict=strict)
-                if cfg is not None]
-    return [(cfg, state, _overlay_by_reread(getattr(cfg, "id", "") or ""))
-            for cfg, state in list_jobs_with_state(jobs_dir, strict=strict)]
+    return [(cfg, state, cred) for cfg, state, cred in _repo().list_with_overlay(strict=strict)
+            if cfg is not None]
 
 
-def delete_job(job_uuid: str, jobs_dir: Path = None) -> bool:
-    """Delete a job by its UUID, with its state sidecar. Returns True if it existed."""
+def delete_job(job_uuid: str) -> bool:
+    """Delete a job by its UUID. Returns True if it existed."""
     assert_job_work_permitted()
-    r = _repo()
-    if r is not None:
-        return r.delete(job_uuid)
-    if jobs_dir is None:
-        jobs_dir = default_jobs_dir()
-    path = _job_path(job_uuid, jobs_dir)
-    state_path = jobs_dir / f"{job_uuid}.state"
-    existed = path.exists()
-    if existed:
-        path.unlink()
-    if state_path.exists():
-        state_path.unlink()
-    return existed
+    return _repo().delete(job_uuid)

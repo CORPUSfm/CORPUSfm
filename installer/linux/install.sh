@@ -112,7 +112,13 @@ CFM_FMS_HOST=localhost
 CFM_PROXY_TYPES=(fms-nginx apache)
 WEB_SERVICE=corpusfm
 MCP_SERVICE=corpusfm-mcp
-SCHED_SERVICE=corpusfm-scheduler
+# `corpusfm-scheduler` is RETIRED (application packet 1361-01, round 3). Scheduling is a background
+# component of the ONE web process now: it starts when the database becomes readable and stops with
+# the service. A second process could not honour the process-wide database-readiness gate — it kept
+# reading and writing FileMaker while CORPUSfm was paused — and `python -m corpusfm.server.scheduler`
+# now exits 2 with that reason, so an obsolete unit under `Restart=always` would crash-loop forever.
+# The name survives ONLY as the removal target below.
+SCHED_SERVICE_RETIRED=corpusfm-scheduler
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CFM_INSTALLER_SERIES=""
 CFM_INSTALLER_VERSION=""
@@ -248,10 +254,10 @@ WEB_PREFIX=/corpusfm
 # Admin-API endpoint exists — box-probed).
 [[ -n "${HOSTING_DIR+x}" ]] && HOSTING_DIR_EXPLICIT=1 || HOSTING_DIR_EXPLICIT=""
 HOSTING_DIR="${HOSTING_DIR:-${INSTALL_DIR}-Hosted}"
-# MCP and the scheduler ALWAYS install (§4H.2). These stay as CONSTANTS because the sections below
-# still read them; what is gone is every flag that could set them. There is no opt-out to express.
+# MCP ALWAYS installs (§4H.2). It stays a CONSTANT because the sections below still read it; what is
+# gone is every flag that could set it. There is no opt-out to express. The scheduler has no switch
+# at all any more — it is not a service, it is a component of the web process.
 ENABLE_MCP=true
-ENABLE_SCHEDULER=true
 MCP_PORT=8765
 MCP_HOST=0.0.0.0      # LAN-reachable (co-located, MCP-centric product) — auto-token + UFW-scoped
 MCP_LAN_SUBNET=""     # scope the UFW rule to a subnet instead of opening the port to all
@@ -641,6 +647,167 @@ lc_commit_provider() {  # lc_commit_provider <provider> <operation_id> <inspecte
     ok "$prov composed at generation $committed"
 }
 
+# A001's ACCUMULATED RECOVERY ROUTE — and it is A001's alone, not a framework.
+#
+# THE PROBLEM IT SOLVES. Phase 3 routes every retained journal through the shared provider
+# disposition, and `a001_scheduler_authority` is not a provider — `_provider_for_journal` answers
+# None, `_preflight` raises "the unresolved lifecycle journal does not identify its provider", and
+# the installer dies before it can ever reach A001 step 5. The composition operation is resumable;
+# until now the installers could not reach it. So this recognizes the EXACT A001 journal ahead of
+# generic disposition. A001 is still not a provider and the provider vocabulary is untouched.
+#
+# WHAT IT DOES NOT DO. It does not continue the installation. Recovery and new work are never
+# combined — a run that repairs and then installs cannot say which half a later failure belongs to —
+# so a successful recovery ENDS this invocation and the operator re-runs.
+lc_recover_a001_authority() {   # lc_recover_a001_authority <journal-record-json>
+    local rec="$1" op inst state sub result gen unit_file load_state out committed
+    op="$(lc_json_field "$rec" operation_id)"
+    inst="$(lc_json_field "$rec" installation_id)"
+    state="$(lc_json_field "$rec" state)"
+    sub="$(lc_json_field "$rec" current_subsystem)"
+    result="$(lc_json_field "$rec" result)"
+
+    # ── the accepted interruption shapes ────────────────────────────────────────────
+    #
+    # A CHEAP EARLY SUBSET, NOT THE AUTHORITY. The full rule is a MATRIX pairing the journal state
+    # with whether the manifest still records the scheduler, and only the application operation can
+    # see both halves — this script has no manifest reader and must not grow one. So these refuse
+    # the shapes visible from the journal alone; the operation refuses the pairs, and because
+    # `lc_run` dies on a refusal, a pair rejected there ends this invocation with the journal
+    # untouched. A refusal is never reinterpreted as recoverable and nothing here discards a record.
+    case "$state" in
+        open)
+            [[ -z "$sub" || "$sub" == "None" || "$sub" == "null" ]] \
+                || die "The retained A001 journal is open yet names subsystem '$sub'; it contradicts itself and remains untouched." ;;
+        checkpointed)
+            [[ "$sub" == "a001_scheduler_authority" ]] \
+                || die "The retained A001 journal is checkpointed under subsystem '$sub', not a001_scheduler_authority; it remains untouched." ;;
+        resolved)
+            [[ "$sub" == "a001_scheduler_authority" ]] \
+                || die "The retained A001 journal is resolved under subsystem '$sub'; it remains untouched."
+            [[ "$result" == "completed" ]] \
+                || die "The retained A001 journal is resolved '$result'; only a completed retirement may be finished. It remains untouched." ;;
+        *)
+            die "The retained A001 journal reads state '$state', which is not a resumable retirement. It remains untouched." ;;
+    esac
+    # THE EXACT CANONICAL UUID, lowercase, as `schema._UUID_RE` spells it. The previous shape test
+    # was `^[0-9a-fA-F-]{36}$`, which accepts thirty-six dashes and any hex/dash soup of the right
+    # length — a length check wearing an identity check's clothes. There is deliberately no second
+    # normalization rule here: a record whose identity is not already canonical is not one to
+    # tidy up, it is one to refuse.
+    [[ "$inst" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
+        || die "The retained A001 journal's installation identity '$inst' is not a canonical lowercase UUID; it remains untouched."
+    [[ -n "$op" ]] \
+        || die "The retained A001 journal names no operation; it remains untouched."
+
+    # ── bound to the PUBLISHED identity, not to what the interrupted run believed ────
+    #
+    # TWO SOURCES, COMPARED. `status.installation_id` is read from the published LOCATOR and
+    # `status.journal_operation` from the journal state block; `$inst` and `$op` come from reading
+    # the journal file directly. So these compare the retained record against published authority.
+    #
+    # The previous version compared `$_lc_j_inst` with `$inst` — BOTH read from the same journal
+    # record — which is a tautology that can only fail if one of the two reads is broken. It proved
+    # nothing about whether this journal belongs to the installation being recovered.
+    [[ "$_lc_locator" == present ]] \
+        || die "A retained A001 journal is present but this installation publishes no locator; refusing to recover against unpublished authority."
+    [[ "$_lc_manifest" == valid ]] \
+        || die "A retained A001 journal is present but the manifest reads '$_lc_manifest'; refusing to recover against a record that cannot be read."
+    local status_inst status_op
+    status_inst="$(lc_json_field "$_lc_state" installation_id)"
+    status_op="$(lc_json_field "$_lc_state" journal_operation)"
+    [[ "$inst" == "$status_inst" ]] \
+        || die "The retained A001 journal names installation '$inst' but the published locator names '$status_inst'; refusing to recover a journal that belongs elsewhere. Nothing has been changed."
+    [[ "$op" == "$status_op" ]] \
+        || die "The retained A001 journal names operation '$op' but the status reports '$status_op'; the evidence disagrees with itself. Nothing has been changed."
+    [[ -n "$_lc_install_dir" ]] \
+        || die "The published installation record names no software root; refusing to recover."
+
+    # ── the platform's physical postconditions, RE-PROVED ───────────────────────────
+    unit_file="/etc/systemd/system/${SCHED_SERVICE_RETIRED}.service"
+    [[ ! -f "$unit_file" ]] \
+        || die "A retained A001 journal is present but $unit_file still exists. The physical retirement did not complete; re-run the installer, which will finish it. The journal remains untouched."
+    load_state="$(systemctl show -p LoadState --value "$SCHED_SERVICE_RETIRED" 2>/dev/null || true)"
+    [[ -z "$load_state" || "$load_state" == "not-found" ]] \
+        || die "A retained A001 journal is present but systemd still exposes $SCHED_SERVICE_RETIRED (LoadState=$load_state). The physical retirement did not complete; re-run the installer. The journal remains untouched."
+
+    # ── THE CURRENT generation, never one the interrupted process remembered ─────────
+    gen="$(lc_json_field "$_lc_state" generation)"
+    [[ "$gen" =~ ^[0-9]+$ && "$gen" -ge 1 ]] \
+        || die "The published manifest reports generation '$gen'; refusing to recover A001 against it."
+
+    info "Finishing the interrupted A001 authority retirement (operation $op, generation $gen)"
+    # THE SAME OPERATION, through the runtime phase 3 already selected. No second mutation path.
+    out="$(lc_run "A001 authority recovery" composition retire-scheduler-authority --request \
+        "$(lc_request "retire-scheduler-authority" "$(printf '{"schema_version":1,"installation_id":"%s","expected_generation":%s,"install_dir":"%s","actor":"installer"}' \
+            "$inst" "$gen" "$_lc_install_dir")")")"
+    committed="$(lc_json_field "$out" committed_generation)"
+    # THE OPERATION MUST HAVE FINISHED **THIS** OPERATION. A result naming another one means the
+    # composition joined a different record than the one phase 3 routed here.
+    local returned_op
+    returned_op="$(lc_json_field "$out" operation_id)"
+    [[ "$returned_op" == "$op" ]] \
+        || die "A001 recovery finished operation '$returned_op', not the retained '$op'; nothing further will be attempted."
+
+    # ── read the STATE back; the call returning is not the proof ─────────────────────
+    local after
+    after="$("${CFM_LIFECYCLE[@]}" status --json 2>>"$CFM_LOG")" \
+        || die "A001 recovery ran but the lifecycle status could not be re-read; inspect $CFM_LOG before further work."
+    [[ "$(lc_json_field "$after" journal)" == "none" ]] \
+        || die "A001 recovery ran but a lifecycle journal is still retained; nothing further will be attempted."
+    [[ "$(lc_json_field "$after" manifest)" == "valid" ]] \
+        || die "A001 recovery ran but the manifest no longer reads valid; nothing further will be attempted."
+    [[ "$(lc_json_field "$after" install_dir)" == "$_lc_install_dir" ]] \
+        || die "A001 recovery ran but the published software root changed; nothing further will be attempted."
+    [[ "$(lc_json_field "$after" installation_id)" == "$status_inst" ]] \
+        || die "A001 recovery ran but the published installation identity changed; nothing further will be attempted."
+    [[ "$(lc_json_field "$after" generation)" == "$committed" ]] \
+        || die "A001 recovery reported generation '$committed' but the record reads '$(lc_json_field "$after" generation)'; nothing further will be attempted."
+
+    ok "A001 authority retirement completed at generation $committed"
+    # RECOVERY IS THE WHOLE INVOCATION. It is never combined with the remaining phases.
+    die "The interrupted A001 authority retirement is complete. Re-run this Series 2 package to
+     begin a separate installation invocation."
+}
+
+# A001 AUTHORITY RETIREMENT. A different thing from the physical retirement: the unit work proves
+# the OS no longer carries the service, this proves the published installation record no longer
+# claims it.
+#
+# CALLED ONLY AFTER THE PHYSICAL POSTCONDITIONS HOLD, and it re-proves them here rather than
+# trusting the order of two call sites: the unit file must be gone AND systemd must report no
+# loadable unit.
+#
+# THE PREDICATE INCLUDES THE LEGACY MANIFEST ENTRY, not just OS residue. An installation interrupted
+# after the unit work but before this write has no unit and no LoadState, so an OS-only predicate
+# would skip it forever and leave the record stale. The operation decides: a true no-op when the
+# entry is already gone and no journal of its own exists.
+lc_retire_scheduler_authority() {
+    local unit_file="/etc/systemd/system/${SCHED_SERVICE_RETIRED}.service" state req out committed removed
+    if [[ -f "$unit_file" ]]; then
+        die "Refusing to retire scheduler authority while $unit_file is still present; the physical retirement must complete first."
+    fi
+    state="$(systemctl show -p LoadState --value "$SCHED_SERVICE_RETIRED" 2>/dev/null || true)"
+    if [[ -n "$state" && "$state" != "not-found" ]]; then
+        die "Refusing to retire scheduler authority while systemd still exposes $SCHED_SERVICE_RETIRED (LoadState=$state); the physical retirement must complete first."
+    fi
+    req="$(lc_request "retire-scheduler-authority" "$(printf '{"schema_version":1,"installation_id":"%s","expected_generation":%s,"install_dir":"%s","actor":"installer"}' \
+        "$INSTALLATION_ID" "$CFM_GENERATION" "$INSTALL_DIR")")"
+    # lc_run DIES on a refusal, which is required: authority retirement that cannot be written or
+    # verified fails the installer rather than reporting A001 complete over a stale record.
+    out="$(lc_run "scheduler authority retirement" composition retire-scheduler-authority --request "$req")"
+    committed="$(lc_json_field "$out" committed_generation)"
+    [[ "$committed" =~ ^[0-9]+$ && "$committed" -ge "$CFM_GENERATION" ]] \
+        || die "scheduler authority retirement returned generation '$committed'; expected at least $CFM_GENERATION."
+    CFM_GENERATION="$committed"
+    removed="$(lc_json_field "$out" removed)"
+    if [[ "$removed" == "True" || "$removed" == "true" ]]; then
+        ok "Retired scheduler authority: the installation record no longer names it (generation $committed)"
+    else
+        ok "Installation record already names no scheduler (generation $committed)"
+    fi
+}
+
 # Retire one provider's journal record through the shipped boundary. §4H.5 requires the discard and
 # the installers CLAIMED it; until correction A there was no verb that performed one, so the claim
 # was false and the next provider met a journal record its predecessor had left behind.
@@ -808,8 +975,9 @@ for item in payload.get("per_type", []):
 #   --no-pull --ref --allow-dirty   a clean expected origin and forward-only `main` are MANDATORY.
 #                               The trust rails these parameterised are kept and are not optional;
 #                               the SELF-PULL itself is retired with them
-#   --enable-mcp --no-mcp --no-scheduler --mcp-*   MCP and the scheduler ALWAYS install; runtime
-#                               auth, per-user gates and job configuration decide use
+#   --enable-mcp --no-mcp --mcp-*   MCP ALWAYS installs; runtime auth and per-user gates decide use
+#   --no-scheduler              there is no scheduler service to disable: scheduling is a component
+#                               of the web process (application packet 1361-01)
 #   --fm-admin-user --fm-admin-pass --admin-user --admin-pass --git-pat
 #                               secrets never travel in argv (§6); the approved environment
 #                               secrets replace them
@@ -1538,11 +1706,10 @@ $IS_UPGRADE && info "Existing install found — upgrade mode" || info "Fresh ins
 # exact installed HEAD so this read-only decision cannot be invalidated silently before reset.
 preflight_package_source_advance
 
-# Capture the scheduler unit's PRIOR presence now, before we (re)write it below. An upgrade of a box
-# that predates the scheduler unit will otherwise silently activate previously-inert scheduled Jobs
-# (packet 1023 finding 1) — this flag lets the enable/start step ask/warn on that first activation.
-SCHED_UNIT_PREEXISTED=false
-[[ -f "/etc/systemd/system/$SCHED_SERVICE.service" ]] && SCHED_UNIT_PREEXISTED=true
+# The pre-capture of the scheduler unit's presence is GONE with the unit. It armed a
+# first-activation warning (packet 1023 finding 1) that has no subject any more, and nothing else
+# read it. Phase 9 quiesces the obsolete unit and phase 20 retires it, each testing for the unit
+# file at the moment it acts — which is what makes both idempotent on a re-run.
 
 
 # ── The SELF-PULL IS RETIRED (parent §4H.2, packet 1246-04-02) ────────────────────
@@ -1679,6 +1846,11 @@ PY
                     || die "The interrupted uninstall journal names no installation identity; it remains untouched."
                 info "Resuming the interrupted uninstall with the verified package runtime"
                 lc_resume_orphaned_uninstall "$_lc_j_inst"
+            fi
+            # A001 FIRST, and only for its exact mode. Generic provider disposition cannot route
+            # this journal at all — A001 is not a provider and is not being made one.
+            if [[ "$_lc_j_mode" == a001_scheduler_authority ]]; then
+                lc_recover_a001_authority "$_lc_j_record"
             fi
             lc_preflight_disposition
             if [[ "$LC_CONDITION" == recover_first ]]; then
@@ -2013,7 +2185,11 @@ if $IS_UPGRADE; then
     # The ordinary in-place updater may already have advanced source while the live venv is old.
     # Nothing is restartable until the replacement venv and its source binding are proven together.
     QUIESCE_RESTORE_READY=false
-    for _unit in "$WEB_SERVICE" "$SCHED_SERVICE"; do
+    # The retired scheduler unit is quiesced here too: an upgrade of a box that still carries it
+    # must stop it before the new code lands, or it keeps reading FileMaker under the old venv.
+    # Phase 20 then disables and deletes it. It is deliberately NOT added to QUIESCED_ACTIVE_UNITS'
+    # restore set — there is nothing to restore it to.
+    for _unit in "$WEB_SERVICE" "$SCHED_SERVICE_RETIRED"; do
         if systemctl is-active --quiet "$_unit" 2>/dev/null; then
             QUIESCED_ACTIVE_UNITS+=("$_unit")
             info "Stopping $_unit..."
@@ -3317,8 +3493,10 @@ unset CFM_ADMIN_PASS
 # read-only to both roles; neither receives a per-file exception. Rendering here rather than restating
 # the remaining role boundaries keeps one contract.
 info "Rendering final service definitions from lifecycle/service_identity..."
-for _role in web scheduler; do
-    _unit="$([[ $_role == web ]] && echo "$WEB_SERVICE" || echo "$SCHED_SERVICE")"
+# ONE ROLE (application packet 1361-01, round 3). The `scheduler` role is retired: scheduling is a
+# background component of the web process, so there is no second unit to render, verify or start.
+for _role in web; do
+    _unit="$WEB_SERVICE"
     PYTHONPATH="$INSTALL_DIR/src" "$INSTALL_DIR/venv/bin/python" - "$_role" "/etc/systemd/system/$_unit.service" "$INSTALL_DIR" <<'RENDER' \
         || die "Could not render the $_role service definition."
 import sys
@@ -3359,6 +3537,61 @@ for _mcp_env in "$CFM_SECRETS_DIR/.mcp_env" "$INSTALL_DIR/.mcp_env"; do
     fi
 done
 $_retired_mcp_env && ok "Retired the previous global MCP token; MCP access now uses named users"
+
+# ── A001: retire the standalone scheduler unit (folded into the web app now) ───────
+# Application packet 1361-01. Scheduling is a background component of the ONE web process: it starts
+# from the same database-readiness resume path that starts the catalog synchronizer and the queue
+# workers, and it stops with the service. A second process could not honour a process-wide readiness
+# gate — it kept reading the JOB table, evaluating ALERTs and enqueueing QUEUE work while CORPUSfm
+# was PAUSED on an unreadable database.
+#
+# THIS IS NOT OPTIONAL ON AN UPGRADE. `python -m corpusfm.server.scheduler` now exits 2 with the
+# reason, so an obsolete unit under `Restart=always` would crash-loop forever, and its journal would
+# fill with a refusal an operator cannot act on from the unit alone.
+#
+# TWO PREDICATES, NOT ONE. This used to be a single `[[ -f <unit file> ]]` block, and that made the
+# rerunnability claim false: an interruption after `rm -f` but before `daemon-reload` left systemd
+# still exposing the unit from its in-memory generation, and the next invocation saw no file and
+# skipped the reconciliation that would have cleared it. So the unit FILE and systemd's VIEW of the
+# unit are asked about separately, and the reload is reached from either.
+_sched_unit_file="/etc/systemd/system/${SCHED_SERVICE_RETIRED}.service"
+_sched_load_state="$(systemctl show -p LoadState --value "$SCHED_SERVICE_RETIRED" 2>/dev/null || true)"
+if [[ -f "$_sched_unit_file" || ( -n "$_sched_load_state" && "$_sched_load_state" != "not-found" ) ]]; then
+    info "Retiring the standalone $SCHED_SERVICE_RETIRED unit (scheduling is inside the web app)..."
+    # Stop and disable only while the unit is still something systemd can act on. Both tolerate a
+    # unit that is already gone, which is what makes a re-entry after a partial run harmless.
+    systemctl stop "$SCHED_SERVICE_RETIRED" 2>/dev/null || true
+    systemctl disable "$SCHED_SERVICE_RETIRED" 2>/dev/null || true
+    # An explicit `if` rather than `[[ -f … ]] && rm -f …`. NOT because the `&&` form aborts here —
+    # measured, it does not: `set -e` exempts a failing command that is the LEFT operand of `&&`, so
+    # a missing file is harmless in that position. It is written this way because that exemption is
+    # positional: the same line as the last statement of a function returns 1 to its caller, and the
+    # residue path this block exists to heal is exactly the path where the test is false.
+    if [[ -f "$_sched_unit_file" ]]; then
+        rm -f "$_sched_unit_file"
+    fi
+    # RECONCILIATION IS REACHED WHETHER OR NOT THE FILE WAS THERE THIS TIME. This is the half the
+    # old arrangement could skip.
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl reset-failed "$SCHED_SERVICE_RETIRED" 2>/dev/null || true
+
+    # VERIFY BOTH, before reporting anything. The file must be gone AND systemd must no longer offer
+    # a loadable unit; either alone has been true on a box that was not actually retired.
+    if [[ -f "$_sched_unit_file" ]]; then
+        die "The retired $SCHED_SERVICE_RETIRED unit file could not be removed ($_sched_unit_file)."
+    fi
+    _sched_load_state="$(systemctl show -p LoadState --value "$SCHED_SERVICE_RETIRED" 2>/dev/null || true)"
+    if [[ -n "$_sched_load_state" && "$_sched_load_state" != "not-found" ]]; then
+        die "systemd still exposes $SCHED_SERVICE_RETIRED (LoadState=$_sched_load_state) after the unit file was removed. It cannot start under this build and must not remain loadable."
+    fi
+    ok "Standalone scheduler unit retired; the web service schedules."
+fi
+unset _sched_unit_file _sched_load_state
+
+# A001 STEP 5 - AUTHORITY RETIREMENT, after every physical postcondition above holds. Outside the
+# block on purpose: an installation interrupted after the unit work but before this write enters
+# with no OS residue at all, and must still heal.
+lc_retire_scheduler_authority
 
 # ── Retire the old standalone MCP service (folded into the web app now) ────────────
 # Migration: a box upgrading from the separate-service era has corpusfm-mcp.service on
@@ -3426,9 +3659,6 @@ chmod 0700 "$INSTALLER_ENTRY_POINT"
 # fresh install or an update. An earlier version left the update path alone "because the layout
 # cutover owns the restart"; the cutover is gone, and that branch left every upgrade finished with
 # the product stopped.
-if $IS_UPGRADE && ! $SCHED_UNIT_PREEXISTED; then
-    warn "This update is activating the scheduler for the first time; previously inert scheduled Jobs may now run."
-fi
 PHASE21_OWNS_START=true
 systemctl daemon-reload
 for _unit in "${VERIFIED_UNITS[@]}"; do
@@ -3711,7 +3941,7 @@ echo ""
 echo "  Logs:      journalctl -u $WEB_SERVICE -f"
 [[ -n "${CFM_LOG:-}" ]] && echo "  Install log: $CFM_LOG  (full transcript; re-run with --verbose to watch live)"
 echo "  Status:    systemctl status $WEB_SERVICE"
-$ENABLE_SCHEDULER && echo "  Scheduler: systemctl status $SCHED_SERVICE"
+echo "  Scheduler: inside the web service (no separate unit; see Monitoring in the browser)"
 echo "  CLI:       corpusfm --help"
 echo "  Data:      $CFM_STATE_DIR/archive/"
 echo ""

@@ -87,6 +87,16 @@ TABLE: dict[str, str] = {
 # bump induces the file-wide sweep (CFM.SRV.RefreshIndexProjections). Distinct from the physical-
 # schema `Build` (storage_migration) — this axis is backfill-able live and must never bump `Build`
 # or require a fresh install.
+# NOT BUMPED BY PACKET 1361-01, and the reason is the point of this note. That packet retires the
+# `IsLatest` flag, so STORAGE.NumberField0 simply stops being projected — a REMOVED slot needs no
+# sweep, because nothing queries it and the stale values it leaves behind are read by nothing. An
+# interim revision of the packet repurposed that slot for an `IsValidJSON` projection and bumped this
+# to 3 to re-derive it; the persistent catalog reads all three tables UNFILTERED, so the escape hatch
+# that projection existed to provide is unnecessary and both it and the bump are gone. The "Latest
+# Artifact" promotion link needs no seam either: it is minted by a startup conversion that runs
+# unconditionally (`server.latest.convert_and_repair`), and its `UUIDJob` lives in the record's
+# JSONOfRecord, which the catalog reads directly — no indexed slot, nothing to project, nothing to
+# query. Do not bump this axis for a projection nothing reads.
 # 1 → 2 (packet 1372-01): the JOB IDENTITY CONVERSION. This is the "existing stored data must be
 # converted" signal doing exactly the job it was defined for. The calculation map is UNCHANGED —
 # nothing about the projection itself moved — but every JOB record must be re-keyed so its native
@@ -108,7 +118,9 @@ SLOTS: dict[str, dict[str, tuple[str, str]]] = {
         "ArtifactTimestamp": ("TextField7",  "text"),   # PRIMARY orderby
         "Description":       ("TextField8",  "text"),   # contains() search
         "Memory":            ("TextField9",  "text"),   # contains() search
-        "IsLatest":          ("NumberField0", "bool"),  # eq 1 latest-only page — lineage is job_uuid alone (086/Ruling A)
+        # NumberField0 is DELIBERATELY UNPROJECTED (packet 1361-01). It carried `IsLatest`, and
+        # "which artifact of this lineage is current" is now a STORAGELINK relationship, not a
+        # per-record boolean. Nothing queries the slot, so nothing re-derives it.
         "HasSummaries":      ("NumberField1", "bool"),  # eq 1 enrichment facet (blob cohabits the record)
         # JSONOfRecord-only (no slot — never queried): analyzer_failed · gap_* · provenance ·
         # icon_b64 · FMVersion/schema_version · has_name_map/has_source.
@@ -136,9 +148,13 @@ SLOTS: dict[str, dict[str, tuple[str, str]]] = {
         "Name": ("TextField0", "textlower"),
     },
     "STORAGELINK": {
-        "Type":        ("TextField0", "text"),          # link vocabulary (today: "User Tag")
+        "Type":        ("TextField0", "text"),          # link vocabulary ("User Tag" · "Latest Artifact")
         "UUIDStorage": ("TextField1", "text"),
         "UUIDTag":     ("TextField2", "text"),
+        # A promotion link's `UUIDJob` rides in its JSONOfRecord and is read from there by the
+        # catalog and by the startup repair. It gets NO slot: no query narrows on it (the promotion
+        # is addressed by its deterministic record key), and an unqueried projection is a calculation
+        # to maintain for nobody (packet 1361-01).
     },
     # HISTORY — append-only event mentions; display facts snapshotted into jor so deleted
     # JOB/STORAGE rows never break rendering. Age nothing.
@@ -262,7 +278,7 @@ def table(logical: str) -> str:
 
 
 def slot(logical: str, json_key: str) -> str:
-    """Slot field backing a queried logical field (e.g. ('STORAGE','IsLatest') → 'NumberField0').
+    """Slot field backing a queried logical field (e.g. ('STORAGE','Type') → 'TextField0').
 
     Raises KeyError if the field isn't projected into a slot — a guard against
     silently building a $filter/$orderby on an unindexed (and on the generic

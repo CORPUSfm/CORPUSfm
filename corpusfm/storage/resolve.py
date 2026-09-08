@@ -10,8 +10,16 @@ Rules (ratified, design note §7):
      (returns the tag's members).
   3. ``FileName/Timestamp`` rel_paths are NOT accepted — retired outright, no alias shim.
 
-A single match resolves; multiple matches are **latest-preferred** (an ``IsLatest`` member of the
-match set), and if still ambiguous the candidates are returned — never a guess.
+**An alias is not a primary key.** A single match resolves to its UUID. Several matches are ALL
+returned as candidates — never silently collapsed to one, and never resolved by an automatic
+latest/newest rule. Each candidate carries ``is_latest`` from the persistent catalog's normalized
+promotion verdict, and the list is ordered latest-first then newest-timestamp so the caller sees the
+likely answer at the top while still being told there was more than one. Under the approved
+semantics several candidates may legitimately be latest at once — job-less artifacts are always
+latest, and a lineage whose promotion is missing or unresolvable is latest as a whole.
+
+Everything downstream of this module — every operation, every stored relationship — remains
+UUID-addressed. This is an address-resolution surface, not an identity.
 """
 from __future__ import annotations
 
@@ -35,10 +43,12 @@ class Candidate:
     file_name: str
     type: str
     timestamp: str
+    is_latest: bool = False
 
     def to_dict(self) -> dict:
         return {"uuid": self.uuid, "primary_name": self.primary_name,
-                "file_name": self.file_name, "type": self.type, "timestamp": self.timestamp}
+                "file_name": self.file_name, "type": self.type, "timestamp": self.timestamp,
+                "is_latest": self.is_latest}
 
 
 @dataclass
@@ -54,28 +64,52 @@ class Resolution:
         return bool(self.uuid) and not self.ambiguous
 
 
-def _cand(row) -> Candidate:
+def _cand(row, *, is_latest: bool = False) -> Candidate:
     j = row.jor
     return Candidate(row.key, j.get("PrimaryName", ""), j.get("FileName", ""),
-                     j.get("Type", ""), j.get("ArtifactTimestamp", ""))
+                     j.get("Type", ""), j.get("ArtifactTimestamp", ""), is_latest)
 
 
-def _narrow(rows) -> Resolution:
-    """One record → resolved; many → latest-preferred, else candidates; none → not found."""
+def _latest_uuids(backend) -> frozenset:
+    """The normalized promotion verdict, from the persistent catalog — never a per-record flag.
+
+    A paused process or an unbuilt model answers with the empty set, which costs the ANNOTATION and
+    the ordering, never the candidate list: this module's job is to say which records an alias names,
+    and it can still do that when the catalog cannot say which of them is current.
+    """
+    try:
+        from corpusfm.server import catalog
+        view = catalog.view(backend)
+        return frozenset() if view.failed else view.latest_uuids
+    except Exception:
+        return frozenset()
+
+
+def _narrow(rows, backend=None) -> Resolution:
+    """One record → resolved; many → EVERY candidate, latest-first then newest; none → not found.
+
+    An alias that names several records is genuinely ambiguous and is reported that way (packet
+    1361-01, correction 5). Two things it does NOT do, deliberately:
+
+    * it does not pick one. The retired `IsLatest` rule silently resolved a multi-snapshot FileName
+      to whichever row carried the flag, which made an alias behave like a primary key;
+    * it does not rank by timestamp alone. `is_latest` comes from the catalog's normalized promotion
+      index, so the ordering reflects what the product means by "current" rather than what the clock
+      says. Several candidates may legitimately be latest — job-less artifacts always are, and an
+      unresolved promotion makes a whole lineage latest — so this is an ANNOTATION and an ORDERING,
+      never a tie-break that would collapse the list.
+    """
     from corpusfm.artifact.capabilities import VISIBLE_TYPES
     rows = [r for r in rows if r.jor.get("Type", "") in VISIBLE_TYPES]
     if not rows:
         return Resolution()
     if len(rows) == 1:
         return Resolution(uuid=rows[0].key)
-    latest = [r for r in rows if r.jor.get("IsLatest") in (True, 1, "1", "true")]
-    if len(latest) == 1:
-        return Resolution(uuid=latest[0].key)
-    pool = latest or rows
-    if len(pool) == 1:
-        return Resolution(uuid=pool[0].key)
-    pool = sorted(pool, key=lambda r: r.jor.get("ArtifactTimestamp", ""), reverse=True)
-    return Resolution(ambiguous=True, candidates=[_cand(r).to_dict() for r in pool])
+    latest = _latest_uuids(backend) if backend is not None else frozenset()
+    pool = sorted(rows, key=lambda r: (r.key in latest, r.jor.get("ArtifactTimestamp", "")),
+                  reverse=True)
+    return Resolution(ambiguous=True,
+                      candidates=[_cand(r, is_latest=r.key in latest).to_dict() for r in pool])
 
 
 def _tag_members(eng, name: str) -> list:
@@ -111,14 +145,14 @@ def resolve(backend, ref: str) -> Resolution:
     # 2. Alias: PrimaryName → FileName (ensure_fmp12-normalized) → tag name. get_many lowercases
     #    the comparand (both engines), so the match is case-insensitive.
     try:
-        res = _narrow(eng.get_many(_STORAGE, "PrimaryName", [ref]))
+        res = _narrow(eng.get_many(_STORAGE, "PrimaryName", [ref]), backend)
         if res.found or res.ambiguous:
             return res
         from corpusfm.core.filenames import ensure_fmp12
-        res = _narrow(eng.get_many(_STORAGE, "FileName", [ensure_fmp12(ref)]))
+        res = _narrow(eng.get_many(_STORAGE, "FileName", [ensure_fmp12(ref)]), backend)
         if res.found or res.ambiguous:
             return res
-        return _narrow(_tag_members(eng, ref))
+        return _narrow(_tag_members(eng, ref), backend)
     except Exception:
         return Resolution()
 

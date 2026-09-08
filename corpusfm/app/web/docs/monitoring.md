@@ -14,9 +14,15 @@ signal everywhere, so a problem is visible no matter which page you landed on.
 
 ## Scheduler status
 
-At the top, a badge shows whether the background **scheduler** — the process that runs jobs on their
-schedule and evaluates alerts — is running, with the time it last checked in. If it stops, that badge
-turns to a warning and a `scheduler_stopped` alert fires, so a dead scheduler can't hide.
+At the top, a badge shows whether the background **scheduler** — the part of CORPUSfm that runs jobs
+on their schedule and evaluates alerts — is running, with the time it last checked in. If it stops,
+that badge turns to a warning and a `scheduler_stopped` alert fires, so a dead scheduler can't hide.
+
+The scheduler runs inside CORPUSfm itself; there is no separate service to start or watch. It also
+follows the same rule everything else does: **while CORPUSfm cannot read its database it is paused**,
+and a paused scheduler evaluates no schedule and starts no job. The badge says `paused` when that is
+why nothing is firing, so you can tell "the clock stopped" from "the database is away". A time that
+passed while CORPUSfm was paused is not made up afterwards.
 
 ## Current alerts
 
@@ -26,7 +32,8 @@ The live conditions CORPUSfm watches for:
 - **Job overdue** — a scheduled job hasn't run within its grace period after its expected time.
 - **Zero-diff suspicion** — a git-exporting job produced *no* changes for several consecutive runs, a
   possible sign the export silently broke.
-- **Scheduler stopped** — the scheduler process isn't responding (see above).
+- **Scheduler stopped** — the scheduler has stopped inside CORPUSfm (see above). This is not
+  the same as *paused*: a paused scheduler is alive and waiting for the database.
 - **Disk low** — free space where artifacts are stored dropped below the threshold.
 
 Each firing alert shows its severity, the job it concerns, and a message. **Acknowledge** (the ✓) hides

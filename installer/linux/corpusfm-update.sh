@@ -77,11 +77,17 @@ REQUEST_FILE="$STATE_DIR/update-inbox/update_request.json"
 OUTCOME_FILE="$STATE_DIR/update-outcome/update_outcome.json"
 LOG_FILE="$LOG_DIR/update.log"
 EXPECTED_ORIGIN="https://github.com/CORPUSfm/CORPUSfm.git"
-# The scheduler is restarted and verified here.  The web process is the caller waiting for this
-# operation's outcome; update_service schedules its supervised SIGTERM only after the success
-# response flushes.  Restarting it here killed the outcome reader and reported a completed update
-# as trigger_failed.
-SERVICES=(corpusfm-scheduler)
+# NOTHING IS RESTARTED HERE ANY MORE (application packet 1361-01, round 3).
+#
+# This step used to restart and verify `corpusfm-scheduler`, and deliberately NOT the web service:
+# the web process is the caller waiting for this operation's outcome, and `update_service` schedules
+# its supervised SIGTERM only after the success response flushes — restarting it here killed the
+# outcome reader and reported a completed update as `trigger_failed`.
+#
+# The scheduler is no longer a service. Scheduling is a background component of the web process, so
+# the ONE unit on this box is the one this script must not touch, and the restart set is empty. The
+# import probe below is what proves the new code loads; the web service's own supervised restart is
+# what brings it up.
 
 # The allowlist lives in the Python helper (`ALLOWED_EXACT`) and nowhere else. A second copy
 # here was never read and could only ever disagree with the one that decides.
@@ -336,7 +342,8 @@ restore() {
         rm -f -- "$STAMP" >/dev/null 2>&1 || true
     fi
     rm -f -- "$STAMP_BACKUP" "$STAMP_STAGE" >/dev/null 2>&1 || true
-    for svc in "${SERVICES[@]}"; do systemctl restart "$svc" >/dev/null 2>&1 || true; done
+    # No service restart: this script starts none, so a rollback has none to undo. The web service
+    # is restarted by its own supervised path after it reads this operation's outcome.
 }
 
 log "advancing $SRC from ${OLD_HEAD:0:12} to ${OBSERVED:0:12}"
@@ -380,21 +387,6 @@ if ! (cd "$SRC" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$SRC" "$VENV_PY" -c 'im
     restore
     RESULT_HEAD="$OLD_HEAD"
     die refused import_probe_failed "the new code did not load in a fresh interpreter; rolled back" true
-fi
-
-for svc in "${SERVICES[@]}"; do
-    systemctl restart "$svc" >/dev/null 2>&1 || true
-done
-
-sleep 3
-FAILED_SVC=""
-for svc in "${SERVICES[@]}"; do
-    systemctl is-active --quiet "$svc" >/dev/null 2>&1 || FAILED_SVC="$svc"
-done
-if [[ -n "$FAILED_SVC" ]]; then
-    restore
-    RESULT_HEAD="$OLD_HEAD"
-    die failed service_did_not_start "$FAILED_SVC did not come back; rolled back" true
 fi
 
 RESULT_HEAD="$("$GIT" -C "$SRC" -c safe.directory='*' rev-parse HEAD 2>/dev/null)"

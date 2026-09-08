@@ -494,6 +494,17 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
   font-size: 13px;
 }
 
+/* Catalog FREEZE (packet 1361-01). A failed database read stops catalog-dependent interaction
+   BEFORE the explanation appears, so nobody acts on a view the server has said it cannot vouch
+   for. The banner and the toast stay reachable — only the surface under them goes inert. */
+.cfm-catalog-frozen > *:not(.cfm-unavailable):not(.cfm-page-hdr) {
+  pointer-events: none;
+  opacity: .5;
+  filter: saturate(.4);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* ── Table (review surfaces: Monitoring, Logs) ───────────────────────────── */
 .cfm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .cfm-table th {

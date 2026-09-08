@@ -212,42 +212,296 @@ def jor_secret_keys(jor: dict) -> list:
     return found
 
 
+def strip_secret_keys(value):
+    """A copy of ``value`` with every :data:`SECRET_JOR_KEYS` key removed at EVERY dictionary depth.
+
+    **The counterpart of** :func:`jor_secret_keys`, and it exists because the two had drifted apart
+    (packet 1361-01, round 5). The detector recurses into nested dicts and into dicts inside
+    lists/tuples; the cleanup was a single top-level comprehension. So a secret buried one level
+    down — ``{"config": {"client_secret": "…"}}`` — was DETECTED, written back unchanged, and then
+    reported as removed. That is the worst of the three possible outcomes: the credential survives
+    and the fence says it is gone.
+
+    One transformation, used by every cleanup path, so the pair cannot drift again. Everything that
+    is not a forbidden KEY is preserved exactly: neighbouring keys, their values, their order,
+    nesting depth, and list/tuple container types. Scalars are returned unchanged.
+    """
+    if isinstance(value, dict):
+        return {k: strip_secret_keys(v) for k, v in value.items() if k not in SECRET_JOR_KEYS}
+    if isinstance(value, list):
+        return [strip_secret_keys(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(strip_secret_keys(v) for v in value)
+    return value
+
+
+def _as_document(raw):
+    """The write response's ``JSONOfRecord`` as a dict, or ``None`` when it is not usable.
+
+    A confirmed write returns the committed record, and that body is the cheapest authoritative
+    answer to "is the secret gone". It is only usable when it is actually there and actually parses
+    into an object; anything else — no response record, a non-JSON body, a JSON scalar or array —
+    is UNUSABLE, and the caller rereads rather than assuming.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, (str, bytes, bytearray)):
+        import json as _json
+        try:
+            doc = _json.loads(raw)
+        except Exception:                                           # noqa: BLE001
+            return None
+        return doc if isinstance(doc, dict) else None
+    return None
+
+
+def _authoritative_after_write(eng, logical: str, key: str, written):
+    """The record as the substrate now holds it, or ``None`` when that could not be established.
+
+    Two sources, in order: the full record the write RETURNED, and — when that is missing or
+    unusable — one STRICT keyed reread. ``None`` means inconclusive, which the fence treats as a
+    write failure rather than as success: a strip nobody could confirm has not been confirmed.
+
+    **A FOUND RECORD IS NOT AUTOMATICALLY A USABLE ONE** (packet 1361-01, round 6). This returned
+    ``row.jor if isinstance(row.jor, dict) else {}``, so a reread that located the record but came
+    back with a ``None``, a scalar, a list or an unparseable body was converted into an EMPTY
+    OBJECT — and an empty object contains no forbidden key, so the fence read it as proof the secret
+    was gone. That is the same false-success shape round 5 removed from the transformation, one
+    layer along: the least trustworthy input producing the most reassuring answer.
+
+    A reread verifies a cleanup only when it yields a usable JSON **object**. ``row.jor`` is tried
+    first because it is the parsed authoritative body; a row that also exposes the raw JSON is
+    allowed as a second source, and malformed or non-object raw stays inconclusive. Everything else
+    — absent, scalar, array, unparseable — answers ``None``.
+
+    A usable EMPTY object is a real and successful answer, and it is distinct from every case above:
+    the record genuinely holds ``{}``, which is a document the substrate returned rather than one
+    this function invented.
+    """
+    doc = _as_document(getattr(written, "raw", None) if written is not None else None)
+    if doc is not None:
+        return doc
+    rows = eng.get_by_keys(logical, [key])
+    for row in rows or ():
+        if row.key != key:
+            continue
+        doc = _as_document(row.jor)
+        if doc is not None:
+            return doc
+        # The parsed body was unusable. A row that carries the substrate's own raw JSON gets one
+        # more chance, on the same terms — an object, or nothing.
+        return _as_document(getattr(row, "raw", None))
+    return None
+
+
 def assert_no_setting_secrets(backend) -> dict:
     """Runtime arm of the universal no-secret-in-jor fence (packet 1007, generalizing packet 085 §8).
 
     Secrets never belong in any table's jor — they ride Corpus-Key-encrypted containers. Fresh installs
     never write one, so this is a defense-in-depth strip against a hand-copied old config (not a
-    migration). Checks the SETTING singleton (via its dedicated strip method) AND scans the USER table
-    (few rows) for stray secret keys. Best-effort; never raises."""
+    migration). Checks the SETTING singleton (via its dedicated strip method) AND scans the USER,
+    GITREG, SERVER and MCPTOKEN tables (few rows) for stray secret keys.
+
+    Returns ``{"ok", "removed", "read_failed", "write_failed", "reason"}``. It still never raises —
+    but it no longer SWALLOWS (packet 1361-01, round 4). It used to answer ``ok: True`` whatever
+    happened, so a fence that could not read SETTING and a fence that could not strip a secret it had
+    found both reported success. Neither is a fence: the first asserted nothing, and the second left
+    a secret in a record's jor while telling the caller it was gone. Both are database failures and
+    the startup authority stops the attempt on either.
+
+    **Every cleanup write is VERIFIED against the authoritative record** (round 5) — from the record
+    the write returned when that is usable, and from a strict keyed reread when it is not. A write
+    the substrate accepted is not a secret that is gone, and the fence's whole value is the claim
+    that it IS gone. An unusable response followed by a failed or inconclusive reread is a
+    ``write_failed``; so is a record that still carries the key. Startup stays paused on either.
+
+    A backend that exposes neither the SETTING strip methods nor an engine has nothing to check; that
+    is a structural local fact and stays a clean ``ok: True``.
+
+    **One deliberate non-goal, stated so it is not rediscovered as a finding.** The SETTING path
+    detects the narrower :data:`~corpusfm.app.app_config.SETTING_SECRET_KEYS` at the TOP LEVEL only,
+    matching exactly what ``remove_fm_settings_keys`` is able to drop. Detection and cleanup agree
+    there, so that path makes no false removal claim — which is the defect round 5 exists to fix, and
+    it is a defect the SETTING path never had. Broadening its detection to the recursive walk would
+    find a nested key the backend's strip method cannot remove, and the honest outcome would then be
+    a permanent ``write_failed``. The OIDC client secret and the LDAP bind password live in the
+    Corpus-Key-encrypted ``SETTING.OidcSecret`` container, not in this record, so no shipped path
+    nests one. Widening it is a change to ``remove_fm_settings_keys`` first, and a decision for the
+    developer.
+    """
     from corpusfm.app.app_config import SETTING_SECRET_KEYS
-    removed_all: list = []
+    out = {"ok": False, "removed": [], "read_failed": False, "write_failed": False,
+           "verified_present": False, "reason": ""}
+    removed_all: list = out["removed"]
     # SETTING singleton strip — FM-backend only (its dedicated method); skipped on the dev mirror.
     if hasattr(backend, "remove_fm_settings_keys") and hasattr(backend, "load_fm_settings"):
         try:
             stored = backend.load_fm_settings()
-            present = [k for k in SETTING_SECRET_KEYS if k in (stored or {})]
-            if present:
-                logger.warning("projections: legacy secret keys in SETTING, stripping: %s", present)
-                removed_all += list(backend.remove_fm_settings_keys(present) or present)
-        except Exception:
-            logger.debug("projections: SETTING secret strip failed", exc_info=True)
-    # USER + GITREG table scans (bounded — accounts + credentials are few): a secret key in a row's
-    # jor is a bug; strip it. Both tables keep their secrets in Corpus-Key-encrypted containers.
+        except Exception as exc:                                    # noqa: BLE001
+            out["read_failed"] = True
+            out["reason"] = f"SETTING could not be read: {type(exc).__name__}: {exc}"
+            logger.warning("projections: the SETTING secret fence could not READ; nothing was "
+                           "asserted", exc_info=True)
+            return out
+        present = [k for k in SETTING_SECRET_KEYS if k in (stored or {})]
+        if present:
+            logger.warning("projections: legacy secret keys in SETTING, stripping: %s", present)
+            try:
+                backend.remove_fm_settings_keys(present)
+            except Exception as exc:                                # noqa: BLE001
+                out["write_failed"] = True
+                out["reason"] = (f"a legacy secret was found in SETTING and could NOT be stripped: "
+                                 f"{type(exc).__name__}: {exc}")
+                logger.error("projections: a legacy secret in SETTING could not be stripped; it is "
+                             "STILL THERE", exc_info=True)
+                return out
+            # VERIFY FROM THE AUTHORITATIVE RECORD, never from the call returning (round 5).
+            # `remove_fm_settings_keys` answers a list of key NAMES, not a record — and it is
+            # documented "best-effort: never raises", so it returns an empty list for a missing
+            # record and for an absent `@editLink` just as it does for a clean one. The old code
+            # then credited `present` anyway (`… or present`) and reported a removal nobody
+            # performed. There is no usable returned record here, so this is always the strict
+            # keyed reread; `strict=True` is what separates a genuinely empty SETTING from an
+            # outage that answers `{}`.
+            try:
+                after = backend.load_fm_settings(strict=True)
+            except Exception as exc:                                # noqa: BLE001
+                out["write_failed"] = True
+                out["reason"] = ("the SETTING secret strip could not be verified — the record could "
+                                 f"not be reread: {type(exc).__name__}: {exc}")
+                logger.error("projections: the SETTING secret strip is UNCONFIRMED; treating it as "
+                             "not performed", exc_info=True)
+                return out
+            still = [k for k in SETTING_SECRET_KEYS if k in (after or {})]
+            if still:
+                out["write_failed"] = True
+                # VERIFIED PRESENT (round 7): the strip completed and a STRICT reread — a read that
+                # SUCCEEDED — shows the key is still there. That is a decided fact about the record,
+                # not a database that went away, so it is deterministic and repeating cannot change
+                # it. Contrast the two branches above, where the strip raised or could not be
+                # reread: those are outages and stay transient.
+                out["verified_present"] = True
+                out["reason"] = (f"the SETTING record still holds {still} after the strip; the "
+                                 "secret is STILL THERE")
+                logger.error("projections: %s", out["reason"])
+                return out
+            # Credit only what the authoritative record proves is gone.
+            removed_all += [k for k in present if k not in (after or {})]
+    # USER + GITREG + SERVER + MCPTOKEN scans (bounded — accounts + credentials are few): a secret key
+    # in a row's jor is a bug; strip it. Every one of these tables keeps its real secrets in
+    # Corpus-Key-encrypted containers.
+    eng = getattr(backend, "engine", None)
+    if eng is not None:
+        for logical in ("USER", "GITREG", "SERVER", "MCPTOKEN"):
+            try:
+                rows = list(eng.list_all(logical))
+            except Exception as exc:                                # noqa: BLE001
+                out["read_failed"] = True
+                out["reason"] = f"{logical} could not be read: {type(exc).__name__}: {exc}"
+                logger.warning("projections: the %s secret fence could not READ; nothing was "
+                               "asserted", logical, exc_info=True)
+                return out
+            for r in rows:
+                bad = jor_secret_keys(r.jor)
+                if not bad:
+                    continue
+                logger.warning("projections: secret keys in %s jor %s, stripping: %s",
+                               logical, r.key, bad)
+                # RECURSIVE, matching the detector (round 5). This was
+                # `{k: v for k, v in r.jor.items() if k not in SECRET_JOR_KEYS}` — top level only —
+                # so a nested secret was found, written back untouched, and counted as removed.
+                cleaned = strip_secret_keys(r.jor)
+                try:
+                    written = eng.update(logical, r.key, cleaned)
+                except Exception as exc:                            # noqa: BLE001
+                    out["write_failed"] = True
+                    out["reason"] = (f"a secret in {logical}/{r.key} could NOT be stripped: "
+                                     f"{type(exc).__name__}: {exc}")
+                    logger.error("projections: a secret in %s/%s could not be stripped; it is "
+                                 "STILL THERE", logical, r.key, exc_info=True)
+                    return out
+                # VERIFY, from the record the write RETURNED when it is usable and from a strict
+                # keyed reread when it is not. A write that was accepted is not a secret that is
+                # gone: the substrate may have committed a different document, an intermediary may
+                # have dropped the body, and the strip itself may have missed something.
+                try:
+                    after = _authoritative_after_write(eng, logical, r.key, written)
+                except Exception as exc:                            # noqa: BLE001
+                    out["write_failed"] = True
+                    out["reason"] = (f"the strip of {logical}/{r.key} could not be verified — the "
+                                     f"record could not be reread: {type(exc).__name__}: {exc}")
+                    logger.error("projections: the %s/%s secret strip is UNCONFIRMED; treating it "
+                                 "as not performed", logical, r.key, exc_info=True)
+                    return out
+                if after is None:
+                    out["write_failed"] = True
+                    out["reason"] = (f"the strip of {logical}/{r.key} returned no usable record and "
+                                     "a strict reread did not find it; the result is unconfirmed")
+                    logger.error("projections: %s", out["reason"])
+                    return out
+                remaining = jor_secret_keys(after)
+                if remaining:
+                    out["write_failed"] = True
+                    out["verified_present"] = True          # see the SETTING branch above
+                    out["reason"] = (f"{logical}/{r.key} still holds {sorted(set(remaining))} after "
+                                     "the strip; the secret is STILL THERE")
+                    logger.error("projections: %s", out["reason"])
+                    return out
+                removed_all += bad
+    out["ok"] = True
+    return out
+
+
+def assert_conversion_complete(backend) -> dict:
+    """The STARTUP form of :func:`conversion_complete`: a read failure is REPORTED, never folded into
+    "not converted" (packet 1361-01, round 4).
+
+    Both answers stop a startup attempt, so this is not a behaviour change at the gate — it is an
+    honesty change in the record and the log. "This corpus has not been converted" and "I could not
+    read whether it has" want different actions from an administrator, and the second is an outage
+    that will clear itself.
+
+    Returns ``{"ok", "read_failed", "reason"}``. Never raises.
+    """
+    out = {"ok": False, "read_failed": False, "structural": False, "reason": ""}
+    if not supported(backend):
+        from corpusfm.lifecycle import runtime_storage
+        try:
+            active = runtime_storage.fm_storage_active()
+        except Exception as exc:                                    # noqa: BLE001
+            out["read_failed"] = True
+            out["reason"] = ("the published storage authority could not be read: "
+                             f"{type(exc).__name__}: {exc}")
+            return out
+        # Nothing published → the dev/test path, which has no corpus and no conversion to perform.
+        # Published WITH a corpus, handed a backend that cannot be asked the version question, is a
+        # contradiction rather than the dev path.
+        out["ok"] = not active
+        if active:
+            out["reason"] = ("this installation owns a corpus but was handed a backend that cannot "
+                             "be asked its projection version")
+            # STRUCTURAL, and therefore DETERMINISTIC (packet 1361-01, round 7). The published
+            # authority was read SUCCESSFULLY and says a corpus exists; the backend this process
+            # composed cannot be asked the question at all. Neither fact can change while the
+            # process runs, so retrying is a repeat of a decided answer, not a second chance.
+            out["structural"] = True
+        return out
+    from corpusfm.storage import fm_registry as reg
     try:
-        eng = getattr(backend, "engine", None)
-        if eng is not None:
-            for logical in ("USER", "GITREG", "SERVER", "MCPTOKEN"):
-                for r in eng.list_all(logical):
-                    bad = jor_secret_keys(r.jor)
-                    if bad:
-                        logger.warning("projections: secret keys in %s jor %s, stripping: %s",
-                                       logical, r.key, bad)
-                        cleaned = {k: v for k, v in r.jor.items() if k not in SECRET_JOR_KEYS}
-                        eng.update(logical, r.key, cleaned)
-                        removed_all += bad
-    except Exception:
-        logger.debug("projections: USER/GITREG secret strip failed", exc_info=True)
-    return {"ok": True, "removed": removed_all}
+        stored = backend.load_fm_settings(strict=True)
+    except Exception as exc:                                        # noqa: BLE001
+        out["read_failed"] = True
+        out["reason"] = f"the SETTING record could not be read: {type(exc).__name__}: {exc}"
+        return out
+    value = (stored or {}).get("ProjectionVersion")
+    if isinstance(value, bool) or not isinstance(value, int):
+        value = None
+    out["ok"] = value == reg.PROJECTION_VERSION
+    if not out["ok"]:
+        out["reason"] = (f"the stored ProjectionVersion is {value!r}; this build requires "
+                         f"{reg.PROJECTION_VERSION}, so the JOB identity conversion has not "
+                         "completed")
+    return out
 
 
 def _convert_job_identity(backend) -> dict:

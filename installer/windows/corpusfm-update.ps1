@@ -51,9 +51,16 @@ $LibDir = '@@LIB_DIR@@'
 # An ABSOLUTE git, rendered rather than composed, so it is the installation's own record that says
 # which binary runs.
 $Git = '@@GIT@@'
-# The scheduler is restarted and verified here. The web process waiting for the root-owned outcome
-# schedules its own supervised restart after the success response flushes.
-$Services = @('corpusfm-scheduler')
+# NOTHING IS RESTARTED HERE ANY MORE (application packet 1361-01, round 3).
+#
+# This step used to restart and verify `corpusfm-scheduler`, and deliberately NOT the web service:
+# the web process is the caller waiting for this operation's outcome, and it schedules its own
+# supervised restart after the success response flushes.
+#
+# The scheduler is no longer a service. Scheduling is a background component of the web process, so
+# the ONE service on this box is the one this script must not touch, and the restart set is empty.
+# The import probe below is what proves the new code loads; the web service's own supervised restart
+# is what brings it up.
 $Cleaner = Join-Path $InstallDir 'bin\bytecode_cleanup.py'
 
 # -- WHY THE SILENCE BOUNDARY ENCLOSES THIS WHOLE BODY -------------------------------------------
@@ -428,7 +435,7 @@ function Restore-Previous {
     } catch {
         Write-Log 'build stamp rollback failed'
     }
-    foreach ($svc in $Services) { Restart-Service $svc -ErrorAction SilentlyContinue }
+    # No service restart: this script starts none, so a rollback has none to undo.
 }
 
 Write-Log ("advancing to " + $script:Observed.Substring(0,12))
@@ -469,17 +476,6 @@ if ($probe.ExitCode -ne 0) {
     Restore-Previous
     $script:ResultHead = $oldHead
     Stop-With 'refused' 'import_probe_failed' 'the new code did not load in a fresh interpreter; rolled back' $true
-}
-
-foreach ($svc in $Services) { Restart-Service $svc -ErrorAction SilentlyContinue }
-Start-Sleep -Seconds 3
-# The Windows boolean/status equivalents of `systemctl is-active`. `-ErrorAction SilentlyContinue`
-# is what contains their error stream; without it a missing service writes to the console.
-$failed = @($Services | Where-Object { (Get-Service $_ -ErrorAction SilentlyContinue).Status -ne 'Running' })
-if ($failed.Count -gt 0) {
-    Restore-Previous
-    $script:ResultHead = $oldHead
-    Stop-With 'failed' 'service_did_not_start' (($failed -join ', ') + ' did not come back; rolled back') $true
 }
 
 $script:ResultHead = (Invoke-Git @('-C', $Src, 'rev-parse', 'HEAD')).StdOut.Trim()

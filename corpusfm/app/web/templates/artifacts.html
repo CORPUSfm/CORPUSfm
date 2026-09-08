@@ -13,7 +13,11 @@
 {% block content %}
 {% from "_help.html" import doc_help %}
 
-<div x-data="libraryPage()" @cfm-imported.window="load(); loadTagNames()"
+{# `cfm-catalog-frozen` is the FREEZE half of the one catalog condition (packet 1361-01): when a
+   database read fails, catalog-dependent interaction stops FIRST and the explanation follows.
+   `aria-busy` carries the same fact to assistive technology. #}
+<div x-data="libraryPage()" :class="{'cfm-catalog-frozen': catalogFailed}" :aria-busy="catalogFailed"
+     @cfm-imported.window="load(); loadTagNames()"
      @cfm-index-batch-done.window="load()" @paste.window="onGlobalPaste($event)"
      @dragenter.window="onWinDragEnter($event)" @dragover.window="onWinDragOver($event)"
      @dragleave.window="onWinDragLeave($event)" @drop.window="onWinDrop($event)">
@@ -280,7 +284,7 @@
     </div>
   </template>
 
-  {# ── Empty state (only when NOT an outage) ─────────────────────────────────── #}
+  {# ── Empty state (only when NOT an outage — an outage is not an empty catalog) ─ #}
   <template x-if="rows.length === 0 && !loading && !unavailable">
     <div class="cfm-list-empty">
       <p x-text="anyFilter ? 'No artifacts match the current filters.' : 'No artifacts stored yet. Import a schema XML or addon package to add one.'"></p>
@@ -648,7 +652,13 @@
               <template x-if="detailRelatedLoading">
                 <p class="cfm-muted">Checking the catalog…</p>
               </template>
-              <template x-if="!detailRelatedLoading && detailRelated !== null && relatedCount === 0">
+              {# A failed catalog read is NOT "nothing related" — that is a positive claim only a
+                 catalog that could actually be read is entitled to make (packet 1361-01). #}
+              <template x-if="!detailRelatedLoading && relatedFailed">
+                <p class="cfm-muted">Storage unreachable — this artifact's relationships can't be read right now.</p>
+              </template>
+              <template x-if="!detailRelatedLoading && detailRelated !== null && relatedCount === 0
+                              && !relatedFailed">
                 <p class="cfm-muted">Nothing related in the catalog — no byte-identical copies, no other snapshots of this file, and no merges built from it.</p>
               </template>
               <template x-if="!detailRelatedLoading && detailRelated !== null && relatedCount > 0">
@@ -1137,6 +1147,13 @@ function libraryPage() {
     unavailable:   false,
     unavailReason: '',   // 'storage' = FM backend down (app up); 'server' = app/network unreachable
 
+    // ONE catalog condition (packet 1361-01, final rulings). Ordinary synchronization of the
+    // persistent catalog is invisible — there is no `initializing`, `stale` or `refreshing` state to
+    // render. `catalogFailed` means a database read genuinely failed: the catalog-dependent
+    // interaction FREEZES first and the explanation follows, and the stored artifacts are untouched
+    // behind the freeze.
+    catalogFailed: false,
+
     // Drag-to-select: drag a grid card up into the Action space
     dragActive: false,
     _dragRow:   null,
@@ -1168,6 +1185,10 @@ function libraryPage() {
     detailHistoryLoading: false,
     detailRelated: null,          // {same_root, built_from_this} or null (lazy)
     detailRelatedLoading: false,
+    // The Related tab is a catalog consumer like every other surface (packet 1361-01): a FAILED
+    // catalog read must never render as "nothing related", which is a positive claim about the
+    // artifact rather than a statement about the catalog.
+    relatedFailed: false,
     get relatedCount() {
       const r = this.detailRelated;
       return r ? (r.same_root.length + r.built_from_this.length) : 0;
@@ -1743,6 +1764,7 @@ function libraryPage() {
       this.detailHistoryLoading = false;
       this.detailRelated = null;
       this.detailRelatedLoading = false;
+      this.relatedFailed = false;
       this.detailConfirmDel = false;
       this.detailConfirmDeindex = false;
       try { window.location.hash = 'detail=' + encodeURIComponent(uuid); } catch (_) {}
@@ -1801,20 +1823,27 @@ function libraryPage() {
       }
     },
 
-    // Related tab (packet 085 U3d): lazy — three bounded indexed reads (byte-identical /
-    // same-file / built-from-this), only on first tab open.
+    // Related tab (packet 085 U3d): lazy, on first tab open. The rows come from ONE catalog
+    // generation and the merge relationships from HISTORY (packet 1361-01) — so the response
+    // carries the catalog condition, and a catalog whose database read failed is said out loud
+    // rather than rendered as an empty relationship set.
     async loadRelated() {
       if (this.detailRelated !== null || this.detailRelatedLoading) return;
       this.detailRelatedLoading = true;
       try {
         const r = await fetch('/api/library/artifacts/' + encodeURIComponent(this.detailUuid) + '/related');
         const d = await r.json();
+        this.relatedFailed = !!(d && (d.catalog_failed || d.unavailable));
+        if (this.relatedFailed) {
+          // Leave `detailRelated` null so a later tab open retries instead of caching "nothing".
+          return;
+        }
         this.detailRelated = {
           same_root: (d && d.same_root) || [],
           built_from_this: (d && d.built_from_this) || [],
         };
       } catch (_) {
-        this.detailRelated = { same_root: [], built_from_this: [] };
+        this.relatedFailed = true;
       } finally {
         this.detailRelatedLoading = false;
       }
@@ -2142,9 +2171,11 @@ function libraryPage() {
         this.loading = true;
         const r = await fetch('/api/library/artifacts?' + params);
         const d = await r.json();
+        this._applyCatalogCondition(d);
         if (d.unavailable) {
-          // App responded, but a named backend (storage/FM) is down — NOT an empty catalog.
-          this.unavailable = true; this.unavailReason = d.reason || 'storage';
+          // App responded, but the catalog has no answer to give — a named backend (storage/FM) is
+          // down, or the first generation is still building. Either way, NOT an empty catalog.
+          this.unavailable = !!d.unavailable; this.unavailReason = d.reason || 'storage';
           this.rows = []; this.total = 0; this.hasMore = false;
           return;
         }
@@ -2195,6 +2226,7 @@ function libraryPage() {
         // tick just wants the current page's rows.
         const r = await fetch('/api/library/artifacts?' + this._listParams(false), { cache: 'no-store' });
         const d = await r.json();
+        this._applyCatalogCondition(d);
         if (d.unavailable) { this._refreshRetrying(d.reason || 'storage'); return; }
         // Recovered (or steady) — clear any retrying banner, then reconcile only on a real change.
         this.unavailable = false; this.unavailReason = '';
@@ -2217,10 +2249,29 @@ function libraryPage() {
       } finally { this._refreshBusy = false; }
     },
     // Outage during a background tick: mark retrying WITHOUT wiping the last good rows (unlike the
-    // foreground load(), which has no prior page to keep). The banner rides above the stale list;
-    // the next good tick clears it.
+    // foreground load(), which has no prior page to keep). The banner rides above the last good
+    // list; the next good tick clears it.
     _refreshRetrying(reason) {
       this.unavailable = true; this.unavailReason = reason;
+    },
+
+    // ── The ONE catalog condition (packet 1361-01, final rulings) ──────────────
+    // A failed database read FREEZES catalog-dependent interaction FIRST and explains itself
+    // SECOND — in that order, so nobody acts on a view the server has just told us it cannot
+    // vouch for. Recovery clears both. Ordinary synchronization never reaches here: there is no
+    // `initializing`, no `stale`, no age and no refresh state to render.
+    _applyCatalogCondition(d) {
+      const failed = !!(d && d.catalog_failed);
+      if (failed === this.catalogFailed) return;
+      this.catalogFailed = failed;                    // 1. freeze
+      if (failed) {                                   // 2. explain
+        window.cfmNotify && window.cfmNotify.error(
+          'The artifact catalog could not be read from storage. Actions are paused until it '
+          + 'recovers — your stored artifacts are safe.');
+      } else {
+        window.cfmNotify && window.cfmNotify.info &&
+          window.cfmNotify.info('Artifact catalog recovered.');
+      }
     },
 
     async loadTagNames() {

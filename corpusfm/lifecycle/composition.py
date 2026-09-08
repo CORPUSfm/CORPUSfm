@@ -46,11 +46,15 @@ from .locator import locator_for
 from .result import COMPLETED, NO_CHANGE
 from .manifest import ManifestStore
 from .service_identity import (
+    SCHEDULER_ROLE,
     WEB_ROLE,
     canonical_service_records,
     expected_service_identity,
 )
 from .schema import (
+    JOURNAL_CHECKPOINTED,
+    JOURNAL_NEEDS_RECOVERY,
+    JOURNAL_OPEN,
     JOURNAL_RESOLVED,
     OWNERSHIP_KINDS_BY_PRODUCER,
     OWNERSHIP_KIND_CLI_SHIM,
@@ -151,6 +155,22 @@ class InstallerIdentityResult:
     previous_schema: int
     installer_entry_point: str | None = None
     adopted: bool = False
+
+
+@dataclass(frozen=True)
+class SchedulerAuthorityResult:
+    """What A001's authority-retirement tail did."""
+
+    result: str
+    operation_id: str
+    generation: int
+    removed: bool = False
+    resumed: bool = False
+
+
+#: A001's mode word. Narrow on purpose: it names ONE adapter's tail, so a journal left by anything
+#: else — including another adapter's, if one ever exists — is foreign to it and refuses.
+A001_MODE = "a001_scheduler_authority"
 
 
 # ── foundation ───────────────────────────────────────────────────────────────
@@ -761,6 +781,209 @@ def _block_equals(manifest: InstallationManifest, provider: str, block) -> bool:
 
 
 # ── the journal boundary ─────────────────────────────────────────────────────
+
+
+# ── A001: authority retirement ───────────────────────────────────────────────
+#
+# PHYSICAL retirement and AUTHORITY retirement are two different things, and A001 owes both.
+#
+# The installers already prove the physical half: the service is unregistered, its definition and
+# wrapper are gone, or on Linux the unit file is gone and systemd reports no loadable unit. What
+# neither installer did was retire the AUTHORITY — the published `installation.json` kept recording
+# a `scheduler` service with an identity that no longer resolves and a unit path that no longer
+# exists. Measured on w-test-private, 2026-09-03: after a green upgrade and a green idempotent
+# rerun, `services` still read `web, scheduler, updater` at generation 8.
+#
+# This is that missing half, and it is deliberately NOT a general migration facility:
+#
+#   * the retired role is FIXED to A001's own. No caller selects it, so no request can ever aim
+#     this at `web` or `updater`;
+#   * it removes ONE entry. It does not regenerate `services` from the current roles, because a
+#     rebuild would silently repair anything else that had drifted — which is a different, larger
+#     and unreviewed claim;
+#   * every other field of every other block is carried through by identity and PROVEN unchanged on
+#     the read-back, so "we only removed the scheduler" is a measurement rather than an intention.
+
+
+def _semantic_view(manifest: InstallationManifest) -> dict:
+    """Everything a comparison must hold constant: the whole manifest except `services`, and except
+    the two fields a write is expected to move."""
+    payload = manifest.to_dict()
+    payload.pop("services", None)
+    payload.pop("generation", None)
+    payload.pop("updated_utc", None)
+    return payload
+
+
+def retire_scheduler_authority(
+    *,
+    installation_id: str,
+    expected_generation: int,
+    install_dir: Path | str,
+    lock,
+    journal: Journal,
+    lifecycle_layout,
+) -> SchedulerAuthorityResult:
+    """Remove A001's retired `scheduler` entry from the published manifest, once.
+
+    Ordering is the caller's obligation and is not re-proved here: an installer calls this only
+    after its own physical postconditions hold. What this owns is that the RECORD then matches.
+
+    Resumable at both boundaries. Interrupted before the write, the entry is still present and the
+    journal is re-entered. Interrupted after the write but before the commit and journal retirement,
+    the entry is already absent and a matching journal is finished honestly **without a second
+    write** — which is why an already-absent entry is not, by itself, `no_change`.
+    """
+    store = ManifestStore(install_dir, layout=lifecycle_layout)
+    current = store.read()
+    wanted_id = str(installation_id).lower()
+    if current.installation_id != wanted_id:
+        raise CompositionError(
+            f"the published manifest is for {current.installation_id}, not {wanted_id}")
+
+    entries = [s for s in current.services if s.role == SCHEDULER_ROLE]
+    if len(entries) > 1:
+        raise CompositionError(
+            f"the manifest records {len(entries)} {SCHEDULER_ROLE!r} services; exactly one is "
+            "removable and a record naming it twice is not one anyone should delete from")
+    present = bool(entries)
+
+    record = _journal_record(journal)
+    mine = (record is not None and record.installation_id == wanted_id
+            and record.mode == A001_MODE)
+    if record is not None and not mine:
+        raise CompositionError(
+            f"lifecycle operation {record.operation_id} ({record.mode}) is present; resolve it "
+            "before retiring scheduler authority")
+    if mine:
+        # THE TRANSACTION'S STATE MATRIX, ENFORCED AS ONE THING.
+        #
+        # Validating the journal's fields separately accepted combinations this operation's own
+        # ordering cannot produce. A record and a manifest are not independent facts here: the
+        # journal is only ever begun while the entry is PRESENT, and it is only ever resolved after
+        # the write that made it ABSENT. So a state is legitimate only as a PAIR.
+        #
+        #   journal state          subsystem      scheduler entry
+        #   ─────────────────────  ─────────────  ───────────────────────────
+        #   (none)                 —              present -> begin; absent -> true no-op
+        #   open                   none           MUST be present
+        #   checkpointed           A001's         may be present or absent
+        #   resolved + completed   A001's         MUST be absent
+        #
+        # Anything else is a history this operation could not have written. `open` with the entry
+        # already gone, and `resolved` with it still recorded, are the two that previously slipped
+        # through — the first would have retired a journal it cannot explain, the second would have
+        # rewritten a manifest whose write had already been resolved.
+        #
+        # EVALUATED BEFORE ANY MUTATION. Nothing below this block runs for a refused pair: no
+        # checkpoint, no write, no commit, no resolve, no discard.
+        if record.state == JOURNAL_NEEDS_RECOVERY:
+            raise CompositionError(
+                f"the {A001_MODE} journal is marked needs_recovery; it is a matter for recovery, "
+                "not for a resumed retirement")
+        if record.state == JOURNAL_OPEN:
+            if record.current_subsystem is not None:
+                raise CompositionError(
+                    f"the {A001_MODE} journal is open yet names subsystem "
+                    f"{record.current_subsystem!r}; the record contradicts itself")
+            if not present:
+                raise CompositionError(
+                    f"the {A001_MODE} journal is open but the manifest records no "
+                    f"{SCHEDULER_ROLE} service; this operation only opens a journal while the "
+                    "entry is present, so the pair is a history it could not have written")
+        elif record.state == JOURNAL_CHECKPOINTED:
+            if record.current_subsystem != A001_MODE:
+                raise CompositionError(
+                    f"the {A001_MODE} journal is checkpointed under subsystem "
+                    f"{record.current_subsystem!r}; the record contradicts its own mode")
+        elif record.state == JOURNAL_RESOLVED:
+            if record.result != COMPLETED:
+                raise CompositionError(
+                    f"the {A001_MODE} journal is resolved {record.result!r}; only a completed "
+                    "retirement may be finished")
+            if record.current_subsystem != A001_MODE:
+                raise CompositionError(
+                    f"the {A001_MODE} journal is resolved under subsystem "
+                    f"{record.current_subsystem!r}; the record contradicts its own mode")
+            if present:
+                raise CompositionError(
+                    f"the {A001_MODE} journal is resolved completed but the manifest still records "
+                    f"the {SCHEDULER_ROLE} service; resolution follows the write that removes it, "
+                    "so the pair is a history it could not have written")
+        else:
+            raise CompositionError(
+                f"the {A001_MODE} journal reads state {record.state!r}, which is not a resumable "
+                "retirement")
+
+    # TRUE NO-OP. No journal of ours, nothing to remove: no write, no generation, no journal.
+    # A current installation and a second run of the same installer both land here.
+    if record is None and not present:
+        return SchedulerAuthorityResult(
+            result=NO_CHANGE, operation_id="", generation=current.generation, removed=False)
+
+    if record is None:
+        if current.generation != expected_generation:
+            raise CompositionError(
+                f"manifest generation is {current.generation}, not the inspected generation "
+                f"{expected_generation}; re-observe before retiring scheduler authority")
+        operation_id = str(uuid.uuid4())
+        journal.begin(lock=lock, operation_id=operation_id, installation_id=wanted_id,
+                      mode=A001_MODE)
+        journal.checkpoint(
+            lock=lock, subsystem=A001_MODE,
+            intended_change=f"remove the retired {SCHEDULER_ROLE} service from the installation record",
+            resume_hint="re-run the same verified installer bundle")
+        resumed = False
+    else:
+        operation_id = record.operation_id
+        resumed = True
+        if record.current_subsystem is None:
+            journal.checkpoint(
+                lock=lock, subsystem=A001_MODE,
+                intended_change=(f"remove the retired {SCHEDULER_ROLE} service from the "
+                                 "installation record"),
+                resume_hint="re-run the same verified installer bundle")
+        # Before the write the generation is still what was inspected; after it, one beyond.
+        if current.generation not in (expected_generation, expected_generation + 1):
+            raise CompositionError(
+                f"resumed {A001_MODE} operation expected generation {expected_generation} or "
+                f"{expected_generation + 1}, found {current.generation}")
+
+    removed = False
+    if present:
+        if current.generation != expected_generation:
+            raise CompositionError(
+                f"the {A001_MODE} journal exists but its manifest write does not agree with this "
+                "request")
+        before = _semantic_view(current)
+        keep = tuple(s for s in current.services if s.role != SCHEDULER_ROLE)
+        proposed = replace(current, services=keep)
+        written = store.write(proposed, lock=lock, expected_generation=expected_generation)
+
+        # AUTHORITATIVE READ-BACK. The write returning is an intent; this is the state.
+        current = store.read()
+        if current.generation != written.generation:
+            raise CompositionError(
+                f"the manifest read back at generation {current.generation}, not "
+                f"{written.generation}")
+        if any(s.role == SCHEDULER_ROLE for s in current.services):
+            raise CompositionError(
+                f"the retired {SCHEDULER_ROLE} service is still recorded after the write; "
+                "authority retirement may not be reported complete")
+        if [s.to_dict() for s in current.services] != [s.to_dict() for s in keep]:
+            raise CompositionError(
+                "the surviving services did not read back exactly as written")
+        if _semantic_view(current) != before:
+            raise CompositionError(
+                "a manifest field outside `services` changed across the write; A001 removes one "
+                "entry and nothing else")
+        removed = True
+
+    store.commit(lock=lock)
+    _resolve_and_discard(journal, lock)
+    return SchedulerAuthorityResult(
+        result=COMPLETED if removed else NO_CHANGE, operation_id=operation_id,
+        generation=current.generation, removed=removed, resumed=resumed)
 
 
 def _journal_record(journal):

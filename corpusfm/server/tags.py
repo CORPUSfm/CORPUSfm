@@ -16,16 +16,13 @@ tags. The authoritative "which files form one FM solution" grouping is derivable
 from the files' external data sources (the intrinsic connector — see the cross-file
 reconstruction work), so the manual labels are free to be general-purpose.
 
-Public API:
-    load_tags() -> dict[str, list[str]]         # {rel_path: [tag, …]}
-    get_tags(rel_path) -> list[str]
+Public API (READS come from the persistent catalog; WRITES go to FileMaker — packet 1361-01):
     set_record_tags(rel_path, tags) -> None     # per-record set; [] clears
     parse_tags(text) -> list[str]               # comma-separated string → clean list
     rename_tag(old, new) -> int                 # assignments updated
     delete_tag(name) -> int                     # assignments removed
     commit_tag(original_name, name, members) -> dict
     list_tag_names() -> list[str]               # distinct, sorted (incl. named-but-empty)
-    grouped_tags() -> list[dict]                # [{name, members}] (incl. named-but-empty)
     validate_tag_name(name) -> (normalized, error)
 """
 
@@ -90,20 +87,11 @@ def _coerce(value) -> list[str]:
     return []
 
 
-def load_tags() -> dict[str, list[str]]:
-    """The per-record USER-tag map: {artifact_uuid: [tag, …]} — strictly per record, no root
-    union, keyed by the record UUID (packet 085 U3f). Empty when the tag tables aren't live."""
-    v2 = _v2_backend()
-    if v2 is None:
-        return {}
-    from corpusfm.server import tags_store
-    return tags_store.load_record_view(v2)
-
-
-def get_tags(artifact_uuid: str) -> list[str]:
-    if not artifact_uuid:
-        return []
-    return load_tags().get(artifact_uuid, [])
+# `get_tags()` is GONE (packet 1361-01, final ruling). Its one caller was the download envelope,
+# and reading the catalog per artifact made an N-member bundle N lookups — each of which could
+# become the sweep leader and pay a three-table read on a path that is only ever best-effort
+# portable metadata. A download now takes ONE already-published snapshot and reuses its tag map
+# (`routes/api/library.download_tag_map`), and never falls back to the database for tags.
 
 
 def set_record_tags(artifact_uuid: str, tags) -> None:
@@ -185,22 +173,11 @@ def commit_tag(original_name: str, name: str, members) -> dict:
 
 
 def list_tag_names() -> list[str]:
-    """Distinct USER tag names, sorted — from the TAGS registry, so named-but-empty tags
-    (persisted by commit_tag) are included."""
+    """Distinct USER tag names, sorted — from the persistent catalog's TAG records, so
+    named-but-empty tags (persisted by commit_tag) are included (packet 1361-01)."""
     v2 = _v2_backend()
     if v2 is None:
         return []
-    from corpusfm.server import tags_store
-    return tags_store.list_user_tag_names(v2)
-
-
-def grouped_tags() -> list[dict]:
-    """Tags grouped by name. Each entry: {name, members} where members are the rel_paths the
-    tag is assigned to — per-record membership, no union. A named-but-empty tag appears with
-    an empty member list."""
-    v2 = _v2_backend()
-    if v2 is None:
-        return []
-    from corpusfm.server import tags_store
-    groups, _recs = tags_store.grouped_user_tags(v2)
-    return groups
+    from corpusfm.server import catalog
+    view = catalog.view(v2)
+    return view.tag_names if view.servable else []

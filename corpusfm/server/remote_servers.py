@@ -86,9 +86,14 @@ def migrate_job_callbacks_to_servers() -> "tuple[int, list]":
         import yaml
         from corpusfm.storage import get_backend
         eng = get_backend().engine
-        rows = eng.list_all("JOB")
     except Exception:
+        return (0, [])              # no composed corpus to migrate — a safe decline
+    if eng is None:
         return (0, [])
+    # DELIBERATELY UNGUARDED (packet 1361-01, round 3): a JOB read that fails is a database
+    # availability failure, and the startup authority stops the whole attempt on it rather than
+    # recording "nothing to promote" for a table it never managed to read.
+    rows = eng.list_all("JOB")
     for row in rows:
         try:
             cfg = yaml.safe_load(row.jor.get("ConfigJSON", "") or "") or {}
@@ -111,11 +116,14 @@ def migrate_job_callbacks_to_servers() -> "tuple[int, list]":
         if existing:
             continue
         srv.callback_url = raw
-        try:
-            add_server(srv, overwrite=True)
-            promoted += 1
-        except Exception:
-            conflicts.append((job_name, raw, "could not write the server record"))
+        # DELIBERATELY UNGUARDED (packet 1361-01, round 4). A failed SERVER write is a database
+        # failure, and recording it as a "conflict" said the opposite of what happened: a conflict is
+        # a value this migration deliberately declined to move, which is a correct outcome an
+        # administrator resolves in Settings. This is neither — the callback is still on the JOB, the
+        # server still has none, and nothing was decided. It propagates, and the startup authority
+        # stops the attempt on it.
+        add_server(srv, overwrite=True)
+        promoted += 1
     return (promoted, conflicts)
 
 

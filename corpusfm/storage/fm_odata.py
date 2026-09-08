@@ -59,9 +59,25 @@ logger = logging.getLogger(__name__)
 # (connect, read) seconds injected on EVERY FM OData call that doesn't set its own. Without a timeout a
 # stalled FMS/proxy connection blocks the calling thread FOREVER — which wedged an import-queue worker
 # (multi-threaded FM writes) with no recovery and no logged error (packet 055 live debugging). `read` is
-# the max inactivity between bytes, NOT total transfer, so a large-but-progressing store (a 146 MB source
-# XML takes ~40s) is unaffected; only a truly stalled socket trips it.
-_FM_HTTP_TIMEOUT = (15, 300)
+# the max inactivity between bytes, NOT total transfer, so a large-but-progressing response is
+# unaffected; only a truly stalled socket trips it.
+#
+# WHY 20 AND NOT 300 (packet 1377). This value is not a lone judgement about how slow FileMaker may
+# be — it MULTIPLIES with the retry policy below. Paired with the old `read=3` it bought FOUR 300s
+# windows, so a live fmOData that accepted the connection and then returned no bytes held CORPUSfm
+# inside ONE failed catalog read for 20m08s while the readiness coordinator advertised a five-second
+# recovery cadence. Nothing can publish the outage until this call returns, so the ordinary bound IS
+# the time to detect a stalled channel, and it is chosen to sit inside it. Ordinary reads are
+# metadata: the live box answered an unfiltered TABLE0 GET in milliseconds.
+_FM_HTTP_TIMEOUT = (15, 20)
+
+# Container transfer is the ONE ordinary operation whose response legitimately lags, so it is exempt
+# BY NAME rather than by widening the bound every other caller pays (packet 1377). urllib3 resets the
+# socket timeout to the `read` value only for `getresponse()`, so on an UPLOAD this budget covers
+# FileMaker committing the blob after the last byte was sent — a 146 MB source XML takes ~40s. Under
+# the ordinary bound a healthy large store would not merely fail: `_TimeoutSession.request` reports
+# every RequestException to the availability boundary, so it would also PAUSE the whole process.
+_FM_CONTAINER_TIMEOUT = (15, 300)
 
 
 class SettingsWriteNotDispatched(RuntimeError):
@@ -128,6 +144,38 @@ def _note_channel_outcome(url: str, *, ok: bool, detail: str) -> None:
         logger.info("FileMaker OData storage is reachable again at %s.", channel)
 
 
+def _note_availability_if_down(status_code: int) -> None:
+    """Pause the process only for a status that means the CHANNEL is down.
+
+    Split out from the session so the classification is a single named rule rather than an inline
+    condition: the down-family (502/503/504) is a genuine availability failure; every other status —
+    a 404 for a missing record, a 400 validation refusal, a 409 conflict, an expected write rejection
+    — is not, and a status below 500 is positive evidence the channel is UP (packet 1361-01).
+    """
+    if status_code in _CHANNEL_DOWN_STATUSES:
+        _note_availability(f"HTTP {status_code}")
+
+
+def _note_availability(detail: str) -> None:
+    """PAUSE the process on a genuine FileMaker availability failure (packet 1361-01).
+
+    This is the "an ordinary keyed database operation observed it first" half of the readiness gate,
+    and it lives HERE because `_TimeoutSession.request` is the one place every FileMaker HTTP call
+    already passes through — so no caller has to know the gate exists and none can be forgotten. The
+    classification is the session's, not a new one: a transport exception the retry adapter could not
+    absorb, or the 502/503/504 down-family. A 4xx — a missing record, a validation refusal, a
+    conflict, an expected write rejection — is NOT an availability failure and is counted as evidence
+    the channel is UP, which is exactly the distinction the ruling draws.
+
+    Never raises: an observation must not become a second failure on a path already failing.
+    """
+    try:
+        from corpusfm.server import availability
+        availability.note_database_unreachable(detail)
+    except Exception:                       # pragma: no cover - bookkeeping must never raise
+        pass
+
+
 def _reset_channel_state_for_testing() -> None:
     """Tests only: this is process-global, so it must not leak between them."""
     with _CHANNEL_LOCK:
@@ -139,7 +187,12 @@ class _TimeoutSession(requests.Session):
     funnel through Session.request(), so one override covers the whole backend's ~40 call sites.
 
     It is also where channel availability is observed — after the retry adapter has exhausted itself,
-    so a transient blip the adapter absorbs never opens an episode."""
+    so a transient blip the adapter absorbs never opens an episode. That still holds for the STATUS
+    class (a received 502/503/504 the adapter retries), but NOT for the read class since packet 1377:
+    ``read=0`` means a read timeout — and urllib3's other read errors, notably a mid-response
+    connection reset — reach here on the first occurrence and open an episode. That is the trade the
+    packet buys, and it is bounded: the failure is fast, and a channel that is actually healthy is
+    reopened by the readiness coordinator's next five-second attempt."""
 
     def request(self, method, url, **kwargs):  # type: ignore[override]
         kwargs.setdefault("timeout", _FM_HTTP_TIMEOUT)
@@ -147,6 +200,7 @@ class _TimeoutSession(requests.Session):
             resp = super().request(method, url, **kwargs)
         except requests.RequestException as exc:
             _note_channel_outcome(url, ok=False, detail=type(exc).__name__)
+            _note_availability(type(exc).__name__)
             raise
         if resp.status_code in _CHANNEL_DOWN_STATUSES:
             _note_channel_outcome(url, ok=False, detail=f"HTTP {resp.status_code}")
@@ -154,6 +208,7 @@ class _TimeoutSession(requests.Session):
             _note_channel_outcome(url, ok=True, detail=f"HTTP {resp.status_code}")
         # Any other 5xx: not a down-family status, and not evidence of recovery either. Leave the
         # episode exactly as it is.
+        _note_availability_if_down(resp.status_code)
         return resp
 
 
@@ -162,9 +217,22 @@ def _fm_retry() -> Retry:
     502/503/504 blips (we saw a 502 live). Retried methods are PURE READS ONLY (GET/HEAD/OPTIONS): a
     POST/PATCH/DELETE must NEVER auto-retry on a received response — a 502 *after* the write landed would
     double-write (packet 056 HARD CONSTRAINT). Write idempotency is the app's job (
-    upsert); a failed write surfaces cleanly and the user/job re-runs it."""
+    upsert); a failed write surfaces cleanly and the user/job re-runs it.
+
+    ``read=0`` is deliberate (packet 1377) and is the half that keeps the deadline from multiplying.
+    A RECEIVED 502/503/504 is a fast answer, so retrying it is cheap and genuinely useful on a
+    co-located box. A READ TIMEOUT is the opposite: the socket was accepted and produced nothing, so
+    every retry buys another full inactivity window before anything can report the outage — which is
+    exactly the twenty minutes measured live. urllib3 keeps the two in separate retry classes and
+    they were measured to be independently settable, so the status family keeps its bounded retry
+    while a stalled read surfaces on its first window.
+
+    The cost, named rather than hidden: a mid-response connection RESET is also a urllib3 read error,
+    so it no longer retries either. That failure is fast, its caller sees it immediately, and the
+    readiness coordinator reattempts within its five-second cadence — which is the behaviour this
+    packet is buying in the first place."""
     return urllib3.util.retry.Retry(
-        total=3, connect=3, read=3, status=3, backoff_factor=0.5,
+        total=3, connect=3, read=0, status=3, backoff_factor=0.5,
         status_forcelist=(502, 503, 504),
         allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"}),
         raise_on_status=False,
@@ -260,6 +328,41 @@ def _parse_jor(record: dict, *, strict: bool = False) -> tuple[str, dict]:
             outer = {}
     record_uuid = outer.get("UUID") or record.get("UUID", "")
     return record_uuid, _as_dict(outer.get("JSONOfRecord", {}))
+
+
+# ── catalog publication (packet 1361-01) ──────────────────────────────────────
+# These fire only after FileMaker confirmed the write (`raise_for_status()` has already passed) and
+# never raise: a publication failure costs freshness, and must never be reported as a write failure.
+#
+# They sit on the BACKEND methods, not on `StorageEngine`, and that placement is load-bearing. This
+# backend writes STORAGE both through the engine and directly (`_patch_json` / `_post_json` /
+# `_session.delete`), while LocalBackend routes the same six operations through its engine — so an
+# engine-level hook would be complete on SQLite and silently incomplete here, green in a dev/test
+# suite that never runs FileMaker.
+
+def _publish_response(backend, resp, record_uuid: str, *, operation: str = "write") -> None:
+    """Publish the record FileMaker RETURNED for a confirmed write — or record why it could not.
+
+    ``resp`` is the actual POST/PATCH response, passed through the SAME admission function the
+    engine path uses (``write_response_record``): ``UUID`` + the opaque ``JSONOfRecord`` only, and
+    ``None`` for anything that is not a usable full record. The mutation contract forbids publishing
+    the request document in that case, so the fallback is the counted failure + the synchronization
+    request. No confirming read is performed either way.
+
+    Never raises: the database operation is already committed, and a publication problem must never
+    reach the caller as a failure or a rollback."""
+    from corpusfm.server import catalog
+    from corpusfm.storage.engine import write_response_record
+    try:
+        written = write_response_record(resp)
+    except Exception:
+        written = None
+    catalog.publish_write(backend, catalog.TABLE_STORAGE, record_uuid, written, operation=operation)
+
+
+def _publish_removed(backend, record_uuid: str) -> None:
+    from corpusfm.server import catalog
+    catalog.publish_deleted(backend, catalog.TABLE_STORAGE, record_uuid)
 
 
 class FileMakerODataBackend:
@@ -402,7 +505,7 @@ class FileMakerODataBackend:
         field = reg.container_field(table, field)
         url = self._url(f"{self._phys(table)}('{record_uuid}')/{field}/$value")
         try:
-            resp = self._session.get(url)
+            resp = self._session.get(url, timeout=_FM_CONTAINER_TIMEOUT)
             if resp.status_code == 404 or not resp.content:
                 return None
             resp.raise_for_status()
@@ -429,6 +532,7 @@ class FileMakerODataBackend:
                 "Content-Type": "application/octet-stream",
                 "Content-Disposition": 'attachment; filename="data.bin"',
             },
+            timeout=_FM_CONTAINER_TIMEOUT,
         )
         resp.raise_for_status()
 
@@ -491,17 +595,20 @@ class FileMakerODataBackend:
         except Exception:
             return len(self.iter_artifact_metas())
 
-    def _delete_record_best_effort(self, record_uuid: str) -> None:
+    def _delete_record_best_effort(self, record_uuid: str) -> bool:
         """Compensating delete of a just-created STORAGE record when a follow-up container upload failed
         (packet 064). Best-effort — logs on failure (a failed compensate leaves a narrow orphan window,
-        far better than an unconditional orphan)."""
+        far better than an unconditional orphan). Returns whether the delete was confirmed, so the
+        caller can publish the removal (packet 1361-01)."""
         try:
             self._session.delete(
                 self._url(f"{self._phys('STORAGE')}('{record_uuid}')")
             ).raise_for_status()
+            return True
         except Exception:
             logger.error("FM OData: compensating delete failed for orphan record %s", record_uuid,
                          exc_info=True)
+            return False
 
     def store_artifact(
         self,
@@ -515,10 +622,10 @@ class FileMakerODataBackend:
         addon_package=None,
         keep_source_xml: bool = False,
     ) -> ArtifactMeta:
-        # Shared engine write path (artifact_store): staged-create → blobs → one visibility
-        # commit — the publish-after-blob invariant (077-E). Supersedes the packet-064
-        # compensating-delete-only model: the record is INVISIBLE until its blobs land, so a
-        # mid-upload crash can no longer leave a catalog-visible row with no ArtifactData.
+        # Shared engine write path (artifact_store): typed create → containers → publish
+        # (packet 1361-01). The blank-Type staging phase and its visibility PATCH are retired; a
+        # caught failure compensates on this exact record, and a hard crash may leave a
+        # containerless row for an administrator rather than for a startup sweep to delete.
         from corpusfm.storage.artifact_store import store_artifact as _store
         return _store(self, artifact, xml_bytes, label=label, origin=origin,
                       job_uuid=job_uuid, run_uuid=run_uuid, addon_package=addon_package,
@@ -565,7 +672,12 @@ class FileMakerODataBackend:
             # Re-run safety (packet 1002/B): a pre-supplied uuid is stable across a Restart, so a
             # re-run must REPLACE its prior output, not 500 on the duplicate key. Drop any prior
             # attempt first (best-effort no-op when absent) — one QUEUE record → one STORAGE artifact.
-            self._delete_record_best_effort(record_uuid)
+            #
+            # The removal is published even though a create follows: if that create or its container
+            # upload fails, the prior record is genuinely gone and the catalog must not keep serving
+            # it (packet 1361-01). LocalBackend already did this; the asymmetry was the defect.
+            if self._delete_record_best_effort(record_uuid):
+                _publish_removed(self, record_uuid)
 
         jor = {
             "Type": artifact_type,
@@ -574,7 +686,6 @@ class FileMakerODataBackend:
             "Origin": origin,
             "RootUUID": root_uuid,
             "ArtifactTimestamp": timestamp,
-            "IsLatest": True,
             "HasSummaries": False,
             "Description": description,
             "Memory": memory,
@@ -585,10 +696,11 @@ class FileMakerODataBackend:
             "gap_unmapped": [],
             "xml_bytes": len(xml_bytes),
         }
-        self._post_json(
+        _created = self._post_json(
             self._url(self._phys("STORAGE")),
             self._jor_payload("STORAGE", jor, record_uuid=record_uuid),
-        ).raise_for_status()
+        )
+        _created.raise_for_status()
 
         # Raw XML into the shared content container (encoded per encrypt_blobs; reuses the
         # ArtifactData slot). Compensating delete on upload failure (packet 064) — no orphan record.
@@ -598,9 +710,14 @@ class FileMakerODataBackend:
                 encode_blob(compress(xml_bytes), encrypt_on=self._encrypt_blobs()),
             )
         except Exception:
-            self._delete_record_best_effort(record_uuid)
+            # The removal is published ONLY when the delete was confirmed. A compensating delete that
+            # itself failed leaves the record in FileMaker, and telling the catalog it is gone would
+            # be the one claim that misleads an administrator (packet 1361-01).
+            if self._delete_record_best_effort(record_uuid):
+                _publish_removed(self, record_uuid)
             raise
 
+        _publish_response(self, _created, record_uuid)
         return ArtifactMeta(
             uuid=record_uuid,
             file_name=file_name,
@@ -650,7 +767,7 @@ class FileMakerODataBackend:
         cfield = reg.container_field("QUEUE", "SourceXML")
         curl = self._url(f"{self._phys('QUEUE')}('{queue_id}')/{cfield}/$value")
         try:
-            cresp = self._session.get(curl)
+            cresp = self._session.get(curl, timeout=_FM_CONTAINER_TIMEOUT)
             if cresp.status_code == 404:
                 return None  # container/row absent
             cresp.raise_for_status()
@@ -721,6 +838,7 @@ class FileMakerODataBackend:
         except Exception:
             logger.error("FM OData: delete_artifact failed for %s", rel_path, exc_info=True)
             raise
+        _publish_removed(self, record["UUID"])
 
     def delete_source(self, rel_path: str) -> bool:
         """Packet 059: clear the retained compressed source XML (the SourceXML container) + flip the
@@ -740,11 +858,14 @@ class FileMakerODataBackend:
             logger.debug("FM OData: clearing SourceXML failed for %s", rel_path, exc_info=True)
         jor["has_source"] = False
         try:
-            self._patch_json(self._url(f"{self._phys('STORAGE')}('{uuid}')"),
-                             {"JSONOfRecord": json.dumps(jor, ensure_ascii=False)}).raise_for_status()
+            _patched = self._patch_json(
+                self._url(f"{self._phys('STORAGE')}('{uuid}')"),
+                {"JSONOfRecord": json.dumps(jor, ensure_ascii=False)})
+            _patched.raise_for_status()
         except Exception:
             logger.error("FM OData: delete_source JOR patch failed for %s", rel_path, exc_info=True)
             raise
+        _publish_response(self, _patched, uuid)
         return had
 
     def get_artifact_meta(self, rel_path: str) -> Optional[ArtifactMeta]:
@@ -787,10 +908,12 @@ class FileMakerODataBackend:
             return
         record_uuid, jor = _parse_jor(record)
         jor.update(editable)
-        self._patch_json(
+        _patched = self._patch_json(
             self._url(f"{self._phys('STORAGE')}('{record_uuid}')"),
             self._jor_payload("STORAGE", jor),
-        ).raise_for_status()
+        )
+        _patched.raise_for_status()
+        _publish_response(self, _patched, record_uuid)
 
     def load_artifact(self, record_uuid: str):
         """Load Artifact from ArtifactData container (encrypted artifact.json.gz). Addressed by the
@@ -1296,6 +1419,10 @@ class FileMakerODataBackend:
                     logger.warning("FM OData: reproject failed for %s row %s", logical, record_uuid,
                                    exc_info=True)
                     failed += 1
+        # NOTHING is published from here (packet 1361-01). This sweep rewrites every record's
+        # JSONOfRecord in bulk and holds no per-record response worth publishing, and a partial
+        # sweep must never be presented as a completed batch. The ordinary 15 s reconciliation is
+        # the recovery — there is no dirty-tick to raise and no counter to advance.
         if failed:
             # Partial completion is NOT success: signal incompleteness so the caller does NOT advance
             # ProjectionVersion (packet 1000 P2). Version-gating decoupled the sweep from the map diff
@@ -1348,22 +1475,11 @@ class FileMakerODataBackend:
             out.append(self._artifact_record_from_jor(record_uuid, jor))
         return out
 
-    def set_storage_is_latest(self, record_uuid: str, is_latest: bool) -> None:
-        """Set IsLatest inside a STORAGE record's JSONOfRecord (read-merge-write) AND its
-        indexed slot, so the latest-view $filter re-points."""
-        resp = self._session.get(
-            self._url(f"{self._phys('STORAGE')}('{record_uuid}')?$select=UUID,JSONOfRecord"))
-        resp.raise_for_status()
-        values = resp.json().get("value")
-        rec = values[0] if isinstance(values, list) and values else resp.json()
-        _, jor = _parse_jor(rec)
-        if bool(jor.get("IsLatest", False)) == bool(is_latest):
-            return
-        jor["IsLatest"] = bool(is_latest)
-        self._patch_json(
-            self._url(f"{self._phys('STORAGE')}('{record_uuid}')"),
-            self._jor_payload("STORAGE", jor),
-        ).raise_for_status()
+    # `set_storage_is_latest` is GONE (packet 1361-01). It read-merge-wrote an `IsLatest` boolean
+    # into a STORAGE record's JSONOfRecord, which made "which artifact is current" a property spread
+    # across N records that nothing could assert as a whole — and that no deleter reliably repaired.
+    # Promotion is now ONE `STORAGELINK` row per job lineage at a deterministic key; see
+    # `corpusfm.server.latest`.
 
     def _filtered_recent(self, filters: list, limit: int) -> list[ArtifactMeta]:
         """Bounded newest-first STORAGE read for an AND-list of documented-OData ``$filter`` clauses
@@ -1442,7 +1558,7 @@ class FileMakerODataBackend:
     # The migrate-into-new-file data engine (export_table / import_table_record /
     # upload_container / legacy_export_table / legacy_download_container) is RETIRED —
     # packet 085 is fresh-install-only (no in-place migration; a stale DB is handled by
-    # storage_migration's build-mismatch gate). The generic single-container read wrapper
+    # storage_migration's build-mismatch probe). The generic single-container read wrapper
     # stays for callers that need one blob by (table, field).
 
     def download_container(self, record_uuid: str, field: str, table: str) -> Optional[bytes]:
@@ -1455,38 +1571,14 @@ class FileMakerODataBackend:
     # over the StorageEngine (``self.engine``).
 
     # ── Pruning ───────────────────────────────────────────────────────────────────
-
-    def _prune_snapshots(self, file_name: str, max_keep: int) -> None:
-        if max_keep <= 0:
-            return
-        fn = _slot_lit(file_name)
-        filter_str = f"{reg.slot('STORAGE', 'FileName')} eq '{fn}'"
-        url = (
-            self._url(self._phys("STORAGE"))
-            + "?$filter=" + _quote(filter_str)
-            + "&$select=UUID,JSONOfRecord"
-        )
-        try:
-            resp = self._session.get(url)
-            resp.raise_for_status()
-            raw_records = resp.json().get("value", [])
-        except Exception:
-            return
-
-        def _ts(r: dict) -> str:
-            _, jor = _parse_jor(r)
-            return jor.get("ArtifactTimestamp", "")
-
-        records = sorted(raw_records, key=_ts, reverse=True)
-        for rec in records[max_keep:]:
-            try:
-                self._session.delete(
-                    self._url(f"{self._phys('STORAGE')}('{rec['UUID']}')")
-                ).raise_for_status()
-                _, jor = _parse_jor(rec)
-                logger.debug("FM OData: pruned %s/%s", file_name, jor.get("ArtifactTimestamp"))
-            except Exception:
-                logger.debug("FM OData: prune failed for %s", rec.get("UUID"))
+    #
+    # `_prune_snapshots` is DELETED (packet 1361-01, availability correction). It had no caller
+    # anywhere in the product or the suite, it selected by the mutable `FileName` rather than by the
+    # job lineage, and it deleted STORAGE rows without publishing the removal — so had anything ever
+    # reached it, the catalog would have gone on serving records FileMaker no longer held. The
+    # authoritative retention path is `overlimit_job_artifacts` below (selection only) plus
+    # `server.artifact_delete.prune_job_artifacts`, which runs the full cascade and publishes each
+    # confirmed removal.
 
     def overlimit_job_artifacts(self, job_uuid: str, max_keep: int) -> list[str]:
         """The uuids of a job's artifacts BEYOND the newest ``max_keep`` (oldest-first tail), for
@@ -1545,10 +1637,12 @@ class FileMakerODataBackend:
             self._upload_container(record_uuid, "SummariesData", blob)
             # Set the indexed HasSummaries flag (whole-JOR PATCH, like update_record).
             jor["HasSummaries"] = bool(summaries)   # slotted bool — one JOR representation
-            self._patch_json(
+            _patched = self._patch_json(
                 self._url(f"{self._phys('STORAGE')}('{record_uuid}')"),
                 self._jor_payload("STORAGE", jor, record_uuid=record_uuid),
-            ).raise_for_status()
+            )
+            _patched.raise_for_status()
+            _publish_response(self, _patched, record_uuid)
         except Exception:
             logger.debug("FM OData: store_summaries failed for %s", ref, exc_info=True)
         # Derived local cache (best-effort) — keeps the catalog scan + index reads working.

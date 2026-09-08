@@ -21,67 +21,47 @@ async def tag_names() -> JSONResponse:
 
 @router.get("/tags", dependencies=[Depends(require_auth)])
 async def list_tags(ctx: AppContext = Depends(get_ctx)) -> JSONResponse:
-    """Return all tags in use, each with its per-record member count + resolved display names.
+    """Every tag with its per-record members + resolved display names.
 
-    Members are artifact records (keyed by rel_path on the live per-record path); a tag spans
-    only the records it's actually assigned to — no root_uuid union."""
-    from corpusfm.server.tags import grouped_tags
+    Served EXCLUSIVELY from the persistent catalog (packet 1361-01). TAG and STORAGELINK are
+    first-class records in it, validated alongside visible STORAGE, so this page needs no read of
+    its own — names, named-but-empty tags and grouped membership all fall out of the one model.
+    There is no direct-FileMaker fallback: a catalog whose database read FAILED says so rather than
+    rendering an empty tag vocabulary, which would read as "you have no tags".
+
+    It reports NO integrity verdict and offers no cleanup. A link whose endpoints do not resolve is
+    simply not a membership fact here; deleting one is the tag subsystem's own startup pass
+    (``server.tag_integrity``), which proves absence by a keyed read before it removes anything."""
     from corpusfm.server import tags_store
 
-    # Storage via the composed runtime context (packet 006, S4); same backend get_backend()
-    # would return — overriding get_ctx in a test redirects this read.
     backend = ctx.storage()
+    _fail = {"groups": [], "catalog_failed": True, "unavailable": True, "reason": "storage"}
+    try:
+        view, groups, recs = tags_store.tag_page_view(backend)
+    except Exception:
+        return JSONResponse(_fail)
+    if view.failed:
+        return JSONResponse(_fail)
+
     # artifact_uuid → {display, timestamp, type} (packet 048: timestamp + type chip disambiguate
     # member rows when several versions of the same file share a display name). Members are keyed
     # by the record UUID (the canonical address, packet 085 U3f).
-    uuid_to_meta: dict[str, dict] = {}
-    groups = None
-
-    # Live path (both backends via the engine): ONE read of STORAGE+TAG+STORAGELINK
-    # (grouped_user_tags) yields the groups — INCLUDING named-but-empty tags, which the
-    # commit editor deliberately persists — plus the lineage records to resolve display
-    # names with no second STORAGE scan (packet 013 audit, fix #2).
-    try:
-        if tags_store.tables_available(backend):
-            groups, recs = tags_store.grouped_user_tags(backend)
-            for rec in recs:
-                au = rec.get("uuid") or ""
-                if au:
-                    uuid_to_meta[au] = {
-                        "display": (rec.get("name")
-                                    or rec.get("file_name") or au),
-                        "timestamp": rec.get("timestamp", ""),
-                        "type": rec.get("artifact_type", ""),
-                    }
-    except Exception:
-        groups = None
-
-    # Fallback (an engine-less backend): grouped_tags() is empty there, but keep the
-    # two-read shape so a test double that stubs grouped_tags still renders.
-    if groups is None:
-        groups = grouped_tags()
-        try:
-            for meta in backend.iter_artifact_metas():
-                if getattr(meta, "uuid", ""):
-                    uuid_to_meta[meta.uuid] = {
-                        "display": meta.name or meta.file_name,
-                        "timestamp": getattr(meta, "timestamp", "") or "",
-                        "type": getattr(meta, "artifact_type", "") or "",
-                    }
-        except Exception:
-            pass
-
-    if not groups:
-        return JSONResponse({"groups": []})
+    uuid_to_meta = {
+        rec["uuid"]: {"display": rec.get("name") or rec.get("file_name") or rec["uuid"],
+                      "timestamp": rec.get("timestamp", ""),
+                      "type": rec.get("artifact_type", "")}
+        for rec in recs if rec.get("uuid")}
 
     result = []
     for g in groups:
         members = []
-        for k in g["members"]:
-            m = uuid_to_meta.get(k) or {}
+        for au in g["members"]:
+            m = uuid_to_meta.get(au)
+            if not m:
+                continue
             members.append({
-                "uuid": k,
-                "display": m.get("display", k),
+                "uuid": au,
+                "display": m["display"],
                 "timestamp": m.get("timestamp", ""),
                 "type": m.get("type", ""),
             })
@@ -165,7 +145,8 @@ async def adjust_tags(request: Request, ctx: AppContext = Depends(get_ctx)) -> J
     from corpusfm.server import tags_store
     requested = [str(u or "").strip() for u in uuids]
     requested = [u for u in dict.fromkeys(requested) if u]
-    visible = tags_store.visible_record_uuids(ctx.storage(), requested)
+    backend = ctx.storage()
+    visible = tags_store.visible_record_uuids(backend, requested)
     unknown = [u for u in requested if u not in visible]
     valid = [u for u in requested if u in visible]
     if not valid:
@@ -177,19 +158,26 @@ async def adjust_tags(request: Request, ctx: AppContext = Depends(get_ctx)) -> J
     assignments_added = assignments_removed = records_changed = 0
     failed: list[str] = []
     tags_by_uuid: dict[str, list[str]] = {}
-    for u in valid:
-        try:
-            res = adjust_record_tags(u, add_names, remove_names)
-        except Exception:
-            res = None
-        if res is None:
-            failed.append(u)
-            continue
-        assignments_added += res["added"]
-        assignments_removed += res["removed"]
-        if res["added"] or res["removed"]:
-            records_changed += 1
-        tags_by_uuid[u] = res["tags"]
+    # ONE catalog publication for the whole operation (packet 1361-01). Each `adjust_record_tags` is
+    # itself multi-row, so without this outer scope a 200-record selection published 200 times and
+    # copied the generation's record map on each — O(N x catalog) for one atomic change to the tag
+    # dimension. A record that fails marks the operation unpublishable: memory may not hold half of
+    # it, and the ordinary reconciliation recovers.
+    with tags_store.publishing(backend):
+        for u in valid:
+            try:
+                res = adjust_record_tags(u, add_names, remove_names)
+            except Exception:
+                res = None
+            if res is None:
+                failed.append(u)
+                tags_store.mark_unpublishable()
+                continue
+            assignments_added += res["added"]
+            assignments_removed += res["removed"]
+            if res["added"] or res["removed"]:
+                records_changed += 1
+            tags_by_uuid[u] = res["tags"]
     return JSONResponse({
         "ok": not failed,
         "assignments_added": assignments_added,

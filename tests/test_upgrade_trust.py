@@ -98,7 +98,6 @@ def _admin_client():
     from corpusfm.app.web.app import create_app
     user = SimpleNamespace(username="a", has_gate=lambda g: True)
     with patch("corpusfm.config.is_server_mode", return_value=True), \
-         patch("corpusfm.storage.storage_migration.gate_active", return_value=False), \
          patch("corpusfm.app.web.deployment.needs_proxy_migration", return_value=False), \
          patch("corpusfm.app.web.auth.is_server_mode", return_value=True), \
          patch("corpusfm.app.web.auth.current_user", return_value=user):

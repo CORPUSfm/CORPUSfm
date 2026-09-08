@@ -1,26 +1,25 @@
-"""Job state sidecar (.state file per job in jobs/ folder).
+"""Job last-run state — fields on the JOB record, read for fast display in the jobs list.
 
-Tracks last run timestamp, status, and error — used for fast display
-in the jobs list without reading full history.
+The `<job_uuid>.state` sidecar is REMOVED with the YAML job store it sat beside (packet 1361-01):
+filesystem-selected job state belongs to a job model the product does not support. State lives on the
+JOB record, over whichever engine the live backend exposes.
 
 Public API:
     JobState
-    read_state(job_uuid, jobs_dir) -> JobState
-    update_state(job_uuid, run, jobs_dir)
+    read_state(job_uuid) -> JobState
+    update_state(job_uuid, run)
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 from corpusfm.server.jobs.history import RunRecord
 
 
 def _repo():
-    """The JobsRepo on a server (fm_odata) install, else None — one gate with jobs/store."""
+    """The JobsRepo over the live backend's engine — one gate with jobs/store."""
     from corpusfm.server.jobs.store import _repo as _store_repo
     return _store_repo()
 
@@ -34,50 +33,14 @@ class JobState:
     last_duration: Optional[str] = None  # seconds as string; None if not yet run
 
 
-def _state_path(job_uuid: str, jobs_dir: Path) -> Path:
-    """The sidecar beside `<job_uuid>.yaml` (packet 1372-02). It used to be keyed by an encoded
-    NAME, so renaming a job orphaned its state and two case-variant names shared one file."""
-    return jobs_dir / f"{job_uuid}.state"
+def read_state(job_uuid: str) -> JobState:
+    """Last-run state for a job, from its JOB record."""
+    return _repo().read_state(job_uuid)
 
 
-def read_state(job_uuid: str, jobs_dir: Path) -> JobState:
-    """Read last-run state for a job. Server mode: from the JOB record. Local: .state sidecar."""
-    r = _repo()
-    if r is not None:
-        return r.read_state(job_uuid)
-    path = _state_path(job_uuid, jobs_dir)
-    if not path.exists():
-        return JobState()
+def update_state(job_uuid: str, run: RunRecord) -> None:
+    """Persist run state onto the JOB record. Best-effort — a display field never fails a run."""
     try:
-        d = json.loads(path.read_text(encoding="utf-8"))
-        return JobState(
-            last_run_ts=d.get("last_run_ts"),
-            last_status=d.get("last_status"),
-            last_error=d.get("last_error"),
-            last_archive_path=d.get("last_archive_path"),
-            last_duration=d.get("last_duration"),
-        )
+        _repo().update_state(job_uuid, run)
     except Exception:
-        return JobState()
-
-
-def update_state(job_uuid: str, run: RunRecord, jobs_dir: Path) -> None:
-    """Persist run state. Server mode: merges into the JOB record. Local: .state sidecar."""
-    r = _repo()
-    if r is not None:
-        try:
-            r.update_state(job_uuid, run)
-        except Exception:
-            pass
-        return
-    jobs_dir.mkdir(parents=True, exist_ok=True)
-    path = _state_path(job_uuid, jobs_dir)
-    duration_s = getattr(run, "duration_s", None)
-    state = {
-        "last_run_ts": run.ts,
-        "last_status": run.status,
-        "last_error": run.error,
-        "last_archive_path": run.archive_path,
-        "last_duration": str(duration_s) if duration_s is not None else None,
-    }
-    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        pass

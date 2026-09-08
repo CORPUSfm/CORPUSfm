@@ -3,8 +3,16 @@
 Public API:
     pull_source(source, credentials, *, timeout=300) -> bytes — raw FM DDR XML bytes
 
+Every source pulls from a HOSTED FileMaker file. `local_file` — "read XML from a filesystem path" —
+is REMOVED (packet 1361-01): it made a Job out of something that is not a Job. Ordinary direct-file
+ingestion is still fully supported; it is INGESTION (upload, drop, paste, `corpusfm ingest`), which
+lands an artifact without inventing a scheduled automation unit, a credential exemption and a pull
+method around a path on disk.
+
+`source.path` survives and is unrelated: it is where `fms_local`'s fmsadmin export WRITES, which the
+co-located CORPUSfm then reads. That is a mechanism detail of a hosted pull, not a source.
+
 Implemented sources:
-    local_file    — reads XML from a local filesystem path
     fms_local     — fmsadmin CLI on same host, reads from local path
     fms_save_to_documents — co-located zero-admin pull: FM SaveToDocumentsFolder
                     script writes XML to FM's Documents folder and returns its path
@@ -15,8 +23,6 @@ Implemented sources:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from corpusfm.server.jobs.config import JobSource
 
 
@@ -26,25 +32,16 @@ def pull_source(source: JobSource, credentials: dict, *, timeout: float = 300.0)
     Args:
         source:      JobSource describing where to pull from.
         credentials: Resolved target-file account and password.
-        timeout:     Bound for a blocking FileMaker export operation. Ignored by local_file.
+        timeout:     Bound for a blocking FileMaker export operation.
 
     Returns:
         Raw FM DDR XML bytes (UTF-16 encoded, ready for parser.load_file()).
 
     Raises:
-        FMSError:          for FMS API errors.
-        FileNotFoundError: for local_file when path does not exist.
-        ValueError:        for unknown source type or missing config.
+        FMSError:   for FMS API errors.
+        ValueError: for unknown source type or missing config.
     """
     stype = (source.type or "").strip()
-
-    if stype == "local_file":
-        if not source.path:
-            raise ValueError("source.path is required for source type 'local_file'")
-        path = Path(source.path)
-        if not path.exists():
-            raise FileNotFoundError(f"local_file source: file not found: {path}")
-        return path.read_bytes()
 
     if stype == "fms_local":
         from corpusfm.server.fms_client import pull_fms_local
@@ -65,6 +62,6 @@ def pull_source(source: JobSource, credentials: dict, *, timeout: float = 300.0)
         )
 
     raise ValueError(
-        f"Unknown source type: '{stype}'. Valid types: local_file, fms_local, "
-        "fms_save_to_documents, fms_save_to_file_path, fms_push"
+        f"Unknown source type: '{stype}'. Valid types: fms_local, fms_save_to_documents, "
+        "fms_save_to_file_path, fms_push"
     )

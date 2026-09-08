@@ -63,47 +63,110 @@ def catalog_is_empty(backend) -> bool:
     return backend.count_artifacts() == 0
 
 
-def _reabsorb_one(backend, path: Path, label: str) -> str:
-    """Reabsorb one shipped seed file. Returns its rel_path, or "" if skipped (missing/invalid)."""
-    if not path.exists():
-        log.debug("seed artifact not shipped at %s — skipping", path)
-        return ""
+def _prepare_one(path: Path, label: str):
+    """The LOCAL half of seeding one shipped file: read the bytes, parse the envelope, validate it.
+
+    Returns the reabsorb payload, or ``None`` when this seed DECLINES for a local/data reason — the
+    asset is not shipped, its bytes cannot be read, it is not a CORPUSfm artifact, or it fails
+    reabsorb validation. Every one of those is a fact about a file on this machine and requires no
+    successful database assertion, which is precisely what makes them nonfatal (packet 1361-01,
+    round 4). It performs no database operation of any kind, so nothing it swallows can be one.
+    """
     from corpusfm.ingestion.reabsorb import parse_uploaded_envelope, validate_reabsorb_payload
-    payload = parse_uploaded_envelope(path.name, path.read_bytes())
+    try:
+        if not path.exists():
+            log.debug("seed artifact not shipped at %s — skipping", path)
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        log.warning("seed artifact %s could not be read from disk — skipping", path, exc_info=True)
+        return None
+    try:
+        payload = parse_uploaded_envelope(path.name, raw)
+    except Exception:                                       # noqa: BLE001 - a malformed bundled file
+        log.warning("seed artifact %s could not be parsed — skipping", path.name, exc_info=True)
+        return None
     if payload is None or payload.kind != "schema" or payload.artifact is None:
         log.warning("seed artifact %s could not be read as a CORPUSfm artifact — skipping", path.name)
-        return ""
-    ok, reason = validate_reabsorb_payload(payload)
+        return None
+    try:
+        ok, reason = validate_reabsorb_payload(payload)
+    except Exception:                                       # noqa: BLE001 - a malformed bundled file
+        log.warning("seed artifact %s could not be validated — skipping", path.name, exc_info=True)
+        return None
     if not ok:
         log.warning("seed artifact %s failed reabsorb validation (%s) — skipping", path.name, reason)
+        return None
+    return payload
+
+
+def _reabsorb_one(backend, path: Path, label: str) -> str:
+    """Reabsorb one shipped seed file. Returns its uuid, or "" when the seed DECLINED locally.
+
+    **The store call is deliberately unguarded** (packet 1361-01, round 4): a write that FAILS is a
+    database failure, not a skipped seed, and the caller stops the startup attempt on it. Every
+    local/data condition is decided by :func:`_prepare_one` before a byte reaches the substrate.
+    """
+    payload = _prepare_one(path, label)
+    if payload is None:
         return ""
     meta = backend.store_artifact(payload.artifact, label=label, origin="Seed")
     log.info("seeded default artifact %s -> %s", label, meta.uuid)
     return meta.uuid
 
 
-def seed_default_artifacts(backend) -> "list[str]":
+def seed_default_artifacts(backend) -> dict:
     """Reabsorb every shipped seed artifact — but ONLY when the catalog is empty of all artifacts.
 
-    Returns the rel_paths seeded (possibly empty). NEVER raises — a seed failure must not break startup.
+    Returns ``{"ok", "seeded", "declined", "read_failed", "write_failed", "reason"}``, and it still
+    never raises. What changed in packet 1361-01 round 4 is that it no longer LIES: it used to answer
+    ``[]`` for every outcome, so "the catalog already has artifacts", "the assets are not shipped",
+    "I could not read STORAGE" and "I could not write the seed" were one answer. The last two are
+    database failures and the startup authority stops the attempt on either; the first two are local
+    facts and stay nonfatal.
+
+    * ``read_failed`` — the empty-catalog gate could not be established. It must NOT seed on that
+      (an unreadable catalog is not an empty one, and seeding into a corpus that already has work is
+      the outcome the gate exists to prevent), and it must not report success either.
+    * ``write_failed`` — a prepared, validated seed could not be stored. Seeding STOPS there rather
+      than trying the next file: the substrate is not answering, and three more writes against it
+      are three more failures, not three more chances.
+    * ``declined`` — the local/data conditions listed on :func:`_prepare_one`.
     """
+    out = {"ok": False, "seeded": [], "declined": [], "read_failed": False,
+           "write_failed": False, "reason": ""}
     try:
-        # Empty-catalog gate — the only reason to seed. Fail SAFE on a read error (don't seed).
+        paths = seed_artifact_paths()
+    except Exception as exc:                                # noqa: BLE001 - the asset root is local
+        out["ok"] = True
+        out["reason"] = f"the seed asset root could not be resolved: {type(exc).__name__}: {exc}"
+        log.warning("seed: %s — nothing to seed", out["reason"])
+        return out
+
+    # Empty-catalog gate — the only reason to seed, and the one read this function performs.
+    try:
+        empty = catalog_is_empty(backend)
+    except Exception as exc:                                # noqa: BLE001
+        out["read_failed"] = True
+        out["reason"] = f"the empty-catalog gate could not be read: {type(exc).__name__}: {exc}"
+        log.warning("seed: the catalog could not be inspected; nothing was seeded", exc_info=True)
+        return out
+    if not empty:
+        out["ok"] = True
+        out["reason"] = "the catalog already holds artifacts"
+        return out
+
+    for path, label in paths:
         try:
-            if not catalog_is_empty(backend):
-                return []
-        except Exception:
-            log.debug("seed: catalog readability check failed — skipping", exc_info=True)
-            return []
-        seeded = []
-        for path, label in seed_artifact_paths():
-            try:
-                rel = _reabsorb_one(backend, path, label)
-                if rel:
-                    seeded.append(rel)
-            except Exception:
-                log.warning("seeding %s failed (non-fatal)", label, exc_info=True)
-        return seeded
-    except Exception:
-        log.warning("seeding the default artifacts failed (non-fatal)", exc_info=True)
-        return []
+            uuid = _reabsorb_one(backend, path, label)
+        except Exception as exc:                            # noqa: BLE001
+            out["write_failed"] = True
+            out["reason"] = f"seeding {label} could not be stored: {type(exc).__name__}: {exc}"
+            log.error("seed: %s — seeding STOPS here", out["reason"], exc_info=True)
+            return out
+        if uuid:
+            out["seeded"].append(uuid)
+        else:
+            out["declined"].append(str(path))
+    out["ok"] = True
+    return out

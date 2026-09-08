@@ -16,18 +16,9 @@ from corpusfm.runtime import AppContext
 router = APIRouter()
 
 
-def _latest_map(backend) -> dict:
-    """{uuid: is_latest} when the IsLatest schema is live, else {} — empty means "no latest
-    filtering" (non-FM backends / pre-migration show everything). Keyed on the record UUID
-    (collision-free), matching the write side (server.latest keys IsLatest on the record uuid)."""
-    try:
-        from corpusfm.server import latest as _latest
-        if _latest.latest_available(backend):
-            return {r.get("uuid"): bool(r.get("is_latest", False))
-                    for r in backend.list_fm_artifact_records()}
-    except Exception:
-        pass
-    return {}
+# `_latest_map()` is GONE (packet 1361-01): it enumerated `list_fm_artifact_records()` per request
+# to answer a question the persistent catalog's own records already answer (`is_latest` rides the
+# projection). One row source, one answer.
 
 
 def _csv(s: str) -> list[str]:
@@ -107,21 +98,24 @@ def invalidate_indexed_cache() -> None:
     _indexed_cache["at"] = 0.0
 
 
-def _indexed_rows() -> list:
+def _indexed_rows(cfg) -> list:
     """TTL-cached list_indexed() rows ({file_name, timestamp, count}), or [] when no embedder
     is configured / the index is unavailable. ONE expensive metadata scan serves the whole
     process for the TTL — the `indexed` badge (every list) AND per-artifact status (every
     detail open) read from here instead of re-scanning. Membership is mutable only via
-    index/unindex, which bust the cache (see invalidate_indexed_cache)."""
+    index/unindex, which bust the cache (see invalidate_indexed_cache).
+
+    `cfg` is the caller's already-loaded `AppConfig` (packet 1361-01). Loading one here made a TTL
+    MISS cost a second settings read on top of the two the request already owed — the cache existed
+    to make the miss rare, not to make it expensive."""
     import time
     now = time.monotonic()
     rows = _indexed_cache["rows"]
     if rows is not None and (now - _indexed_cache["at"]) < _INDEXED_TTL_S:
         return rows
     try:
-        from corpusfm.app.app_config import load_app_config
         from corpusfm.server.ai.vector_index import get_vector_index
-        idx = get_vector_index(load_app_config())
+        idx = get_vector_index(cfg)
         rows = [] if idx is None else list(idx.list_indexed())
     except Exception:
         rows = []
@@ -130,33 +124,33 @@ def _indexed_rows() -> list:
     return rows
 
 
-def _indexed_keys() -> frozenset:
+def _indexed_keys(cfg) -> frozenset:
     """{uuid} currently in the vector index — drives the derived `indexed` system tag. PER-ARTIFACT
     (keyed by the FM record UUID; each artifact is indexed independently), so only the actually-indexed
     snapshot reads indexed, not every version sharing a name. Never materialized into TAGASSIGN;
     membership is mutable. Reads the cache."""
-    return frozenset(r.get("uuid", "") for r in _indexed_rows())
+    return frozenset(r.get("uuid", "") for r in _indexed_rows(cfg))
 
 
-def indexed_status(uuid: str) -> tuple:
+def indexed_status(uuid: str, cfg) -> tuple:
     """(indexed: bool, count: int) for ONE artifact — per-artifact (matched on the record uuid). Count is
     that artifact's indexed-object count. Used by /indexed/check (the detail pop-over)."""
     total = 0
     hit = False
-    for r in _indexed_rows():
+    for r in _indexed_rows(cfg):
         if r.get("uuid") == uuid:
             hit = True
             total += int(r.get("count", 0))
     return (True, total) if hit else (False, 0)
 
 
-def _embedder_on() -> bool:
+def _embedder_on(cfg) -> bool:
     """True when a semantic-search embedder is configured (so the indexed/unindexed split is
-    meaningful). Cheap config check — no index read."""
+    meaningful). Reads no index and, since packet 1361-01, no settings: it is handed the request's
+    `AppConfig`. It used to load one, which is why every list cost a settings read it did not need."""
     try:
-        from corpusfm.app.app_config import load_app_config
         from corpusfm.server.ai.vector_index import embedding_ready
-        return embedding_ready(load_app_config())
+        return embedding_ready(cfg)
     except Exception:
         return False
 
@@ -194,13 +188,12 @@ def _ensure_index_facets(facets, embedder_on):
 # flag rides each record, so nothing to scan or invalidate.
 
 
-def _summarizer_on() -> bool:
+def _summarizer_on(cfg) -> bool:
     """True when an AI summary (chat) provider is configured — so the summarized/unsummarized
-    split is meaningful. Cheap config check."""
+    split is meaningful. Handed the request's `AppConfig` (packet 1361-01); reads no settings."""
     try:
-        from corpusfm.app.app_config import load_app_config
         from corpusfm.server.ai import summary_provider_ready
-        return summary_provider_ready(load_app_config())
+        return summary_provider_ready(cfg)
     except Exception:
         return False
 
@@ -239,51 +232,11 @@ def _rec_has_summaries(rec) -> bool:
     return bool(getattr(rec.get("meta"), "has_summaries", False))
 
 
-def facets_from_records(records, tags_map, *, latest_only: bool,
-                        indexed_keys=frozenset(), embedder_on: bool = False,
-                        summarizer_on: bool = False) -> dict:
-    """Compute the facets block from the cheap STORAGE *lineage* records (record_views already
-    fetched them) instead of the heavy pull-all of full artifact metadata. Counts are over the
-    base set (latest applied here; search/date are never active on the DB-page path, and the
-    type/tag SELECTIONS are deliberately not applied — facets show the full vocabulary). Same
-    shape as apply_facets_and_page's facets so the two paths are interchangeable.
-
-    ``tags_map`` is PER-RECORD (keyed by the record UUID, packet 085 U3f) — a record's tags come
-    from its own assignments only, never a root_uuid union. System tags (type:/origin:/fm:) are
-    COMPUTED per record from its own fields (packet 085 U3e — never stored)."""
-    from collections import Counter
-    tag_c, sys_c = Counter(), Counter()
-    untagged_n = base_total = 0
-    for rec in records:
-        if latest_only and not rec.get("is_latest", True):
-            continue
-        base_total += 1
-        au = rec.get("uuid", "")
-        rtags = tags_map.get(au, []) if au else []
-        if rtags:
-            tag_c.update(set(rtags))
-        else:
-            untagged_n += 1
-        # System tags are computed from the record: type:/origin:/fm:; `indexed`/`summarized`
-        # derived live. No stored system-tag base (packet 085 U3e).
-        sys = _inject_type([], _xml_type_rec(rec))
-        sys = _inject_origin(sys, rec.get("origin", "Import"))
-        sys = _inject_fm(sys, rec.get("fm_version", ""))
-        sys = _with_indexed(sys, rec.get("uuid", ""), indexed_keys, embedder_on)
-        sys = _with_summarized(sys, _rec_has_summaries(rec), summarizer_on)
-        # packet 1121 — the computed gap/analyzer/acceptance signals fall out of the same faceting (count +
-        # filter for free), read from the cheap meta carried on the lineage record (no blob).
-        _m = rec.get("meta")
-        sys = _inject_signals(sys, gap_issues=getattr(_m, "gap_issues", 0),
-                              analyzer_failed=getattr(_m, "analyzer_failed", []),
-                              acceptance_state=getattr(_m, "acceptance_state", ""))
-        sys_c.update(sys)
-    return {
-        "tags":        [{"name": n, "count": c} for n, c in sorted(tag_c.items())],
-        "system_tags": [{"name": n, "count": c} for n, c in sorted(sys_c.items())],
-        "untagged":    untagged_n,
-        "base_total":  base_total,
-    }
+# `facets_from_records()` is GONE (packet 1361-01). It computed the facet block from the cheap
+# lineage records so the retired direct-FileMaker pager (`_try_db_page`) could answer without a
+# pull-all. That pager went with the read model, taking the only production caller with it — and a
+# facet computation nothing renders is a second answer waiting to disagree with the one that does.
+# `apply_facets_and_page` computes the block from the enriched rows, and is the single path now.
 
 
 def apply_facets_and_page(
@@ -305,6 +258,11 @@ def apply_facets_and_page(
     want_facets: bool = True,
 ) -> dict:
     """Pure faceted filter + sort + paginate over enriched artifact rows.
+
+    Every row here comes from ONE complete persistent catalog (packet 1361-01), so an empty tag list
+    means the record carries no tags — never "the tag view could not be read". The partial
+    tag-degradation vocabulary this function used to carry is gone with the partial fold that
+    produced it: the catalog retains every STORAGE, TAG and STORAGELINK record.
 
     Facet counts are computed over the *base set* (search + date + latest applied;
     tag / system-tag selections NOT applied) so the pop-over always shows the full
@@ -415,7 +373,6 @@ def _refresh_gap_badges(backend, rows: list[dict]) -> list[dict]:
     Bounded to flagged AND stale rows — current rows (the overwhelming majority, born stamped) and
     unflagged rows cost nothing (no body load). packet 014 #5."""
     from corpusfm.artifact.types import GAP_COUNT_VERSION
-    healed = False
     for r in rows:
         if (r.get("gap_issues", 0) and r.get("is_schema") and r.get("uuid")
                 and int(r.get("gap_count_version", 0) or 0) < GAP_COUNT_VERSION):
@@ -430,19 +387,13 @@ def _refresh_gap_badges(backend, rows: list[dict]) -> list[dict]:
                     try:
                         backend.update_record(r["uuid"],
                                               {"gap_issues": fresh, "gap_count_version": GAP_COUNT_VERSION})
-                        healed = True
                     except Exception:
                         pass
             except Exception:
                 pass
-    if healed:
-        # Rows now build from the record_views snapshot — without a bust, the stale carried
-        # meta would re-trigger this heal (a blob load) on every request until the TTL.
-        try:
-            from corpusfm.server.tags_store import invalidate_record_views
-            invalidate_record_views()
-        except Exception:
-            pass
+    # No bust needed (packet 1361-01): `update_record` publishes the record it committed, so the
+    # corrected count is in the catalog and the heal cannot re-trigger on the next read. The
+    # `healed` flag that used to drive that bust has no reader left, and is gone with it (review N8).
     return rows
 
 
@@ -514,34 +465,20 @@ def _enrich_meta(fm_file, meta, tags_map, is_latest, indexed_keys=frozenset(),
     }
 
 
-def _snapshot_metas(art_records) -> list | None:
-    """(fm_file, meta) pairs carried by the record_views snapshot records, or None when any
-    record lacks the carried meta (stub backends in tests) — the caller then falls back to
-    the full ``iter_artifact_metas()`` scan."""
-    if art_records is None:
-        return None
-    pairs = []
+def _enriched_rows(tags_map, latest_map, indexed_keys=frozenset(),
+                   embedder_on=False, summarizer_on=False, art_records=()) -> list[dict]:
+    """Enrich every catalog record with tags / system tags / latest / size.
+
+    ``art_records`` are the catalog's projections; each already carries the canonical ``meta``
+    from the same JSONOfRecord parse, so this costs no read at all. The old ``_snapshot_metas``
+    fallback to ``backend.iter_artifact_metas()`` is GONE (packet 1361-01) — the catalog is the
+    sole row source for this surface, and a fallback that enumerates FileMaker per request is the
+    second refreshing view approved invariant 13 forbids."""
+    rows: list[dict] = []
     for r in art_records:
         meta = r.get("meta") if isinstance(r, dict) else None
-        if meta is None:
-            return None
-        if meta.file_name:
-            pairs.append((meta.file_name, meta))
-    return pairs
-
-
-def _enriched_rows(backend, tags_map, latest_map, indexed_keys=frozenset(),
-                   embedder_on=False, summarizer_on=False,
-                   art_records=None) -> list[dict]:
-    """Enrich every artifact with tags / system tags / latest / size. When the record_views
-    snapshot's records are supplied (each carrying the canonical ``meta`` from the same
-    JSONOfRecord parse), rows build from THEM — the filtered path then costs no second full
-    STORAGE scan in the same request (audit #2 FETCH-ONCE)."""
-    pairs = _snapshot_metas(art_records)
-    if pairs is None:
-        pairs = [(meta.file_name, meta) for meta in backend.iter_artifact_metas()]
-    rows: list[dict] = []
-    for fm_file, meta in pairs:
+        if meta is None or not meta.file_name:
+            continue
         # Defensive skip-on-load (packet 040): a single un-loadable record (e.g. a stored
         # artifact carrying a retired type value → ArtifactType() ValueError) is logged and
         # omitted so it can never blank the whole catalog listing. The is_latest lookup (on the
@@ -549,64 +486,27 @@ def _enriched_rows(backend, tags_map, latest_map, indexed_keys=frozenset(),
         # skipped, not fatal.
         try:
             is_latest = latest_map.get(meta.uuid, True)
-            rows.append(_enrich_meta(fm_file, meta, tags_map, is_latest, indexed_keys,
+            rows.append(_enrich_meta(meta.file_name, meta, tags_map, is_latest, indexed_keys,
                                      embedder_on, summarizer_on))
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "skipping un-loadable artifact record %s/%s: %s",
-                fm_file, getattr(meta, "timestamp", "?"), exc)
+                meta.file_name, getattr(meta, "timestamp", "?"), exc)
     return rows
 
 
-def _try_db_page(backend, *, latest_only, direction, page, per_page,
-                 tags_map, tag="", art_records=None, want_facets=False,
-                 indexed_keys=frozenset(), embedder_on=False,
-                 summarizer_on=False, job_uuid="") -> dict | None:
-    """Huge-scale drop-in: one bounded indexed page via ArtifactsRepo.page_metas over the
-    backend's engine (a tag filter is the repo's JOIN(sql)→get_by_keys). The displayed page's
-    full meta crosses the wire; the facet counts (when wanted) come from the cheap lineage
-    records `art_records` — so the default FACETED view no longer triggers a pull-all.
-    Returns the response dict, or None to signal "fall back to the pull-all path"."""
-    try:
-        from corpusfm.server import latest as _latest
-        from corpusfm.storage.repos import artifacts_repo
-        repo = artifacts_repo(backend)
-        if repo is None or not _latest.latest_available(backend):
-            return None
-        if want_facets and art_records is None:
-            return None                     # can't build facets without the lineage records
-        # Engine-uniform page (audit #2): one bounded indexed read; a tag filter is the
-        # repo's JOIN(sql)→get_by_keys — no backend-bespoke OData/SQL on this path.
-        metas, total = repo.page_metas(latest_only=latest_only, desc=(direction != "asc"),
-                                       page=page, per_page=per_page, tag=tag, job_uuid=job_uuid)
-    except Exception:
-        return None
-    rows = []
-    for m in metas:
-        try:
-            rows.append(_enrich_meta(m.file_name, m, tags_map, True,
-                                     indexed_keys, embedder_on, summarizer_on))
-        except Exception as exc:
-            logging.getLogger(__name__).warning(
-                "skipping un-loadable artifact record %s/%s: %s",
-                getattr(m, "file_name", "?"), getattr(m, "timestamp", "?"), exc)
-    per_page = max(1, min(int(per_page or 25), 200))
-    page = max(1, int(page or 1))
-    out = {
-        "rows":     rows,
-        "total":    total,
-        "page":     page,
-        "per_page": per_page,
-        "has_more": (page - 1) * per_page + per_page < total,
-        "facets":   facets_from_records(art_records, tags_map, latest_only=latest_only,
-                                        indexed_keys=indexed_keys, embedder_on=embedder_on,
-                                        summarizer_on=summarizer_on)
-                    if want_facets else {},
-        "db_paged": True,
-    }
-    if art_records is not None:
-        out["fm_files"] = sorted({r.get("file_name") for r in art_records if r.get("file_name")})
-    return out
+# `_try_db_page` is GONE (packet 1361-01). It was the "huge-scale drop-in": one bounded indexed
+# `ArtifactsRepo.page_metas` straight at FileMaker, per list request, with the facets still coming
+# from the folded lineage records. Two reasons it does not survive the read model:
+#
+#   * the catalog is now the SOLE row source for this surface, and a second path that pages the
+#     database directly is exactly the "two independently refreshing views" approved invariant 13
+#     forbids — it could disagree with the facets rendered beside it; and
+#   * its whole purpose was to avoid a full STORAGE enumeration per request. There is no per-request
+#     enumeration left to avoid: the rows are already resident, and paging them is a slice.
+#
+# FileMaker reads now happen during synchronization or an explicitly authoritative direct lookup —
+# never per search request or keystroke (developer ruling, 2026-09-01).
 
 
 @router.get("/library/artifact-types", dependencies=[Depends(require_auth)])
@@ -660,101 +560,125 @@ def list_artifacts(
 ) -> JSONResponse:
     # Storage via the composed runtime context (packet 006, S4); ctx.storage() is get_backend()
     # under the hood, so behaviour is unchanged and a test can override get_ctx to point elsewhere.
-    backend = ctx.storage()
+    # Guarded: a backend/archive-dir/installation-authority failure degrades to the approved
+    # `unavailable` response, never an HTTP 500 (independent review N1).
+    backend, view = read_catalog(ctx.storage)
+    if view.failed:
+        return JSONResponse(_catalog_failure_response(page, per_page))
     try:
+        # ONE settings read for the whole request, asked of the CONTEXT — which reads it through the
+        # backend it already retains (packet 1361-01). The three capability checks below used to
+        # resolve a backend and read settings EACH: three handshakes for one answer that cannot
+        # change mid-request. This handler resolves nothing itself; composition is the context's job.
+        cfg = ctx.app_config()
         return _list_artifacts_result(
-            backend, search=(q or search).strip(), file=file, tags=tags, tag_mode=tag_mode,
+            backend, view, cfg=cfg, search=(q or search).strip(), file=file, tags=tags, tag_mode=tag_mode,
             untagged=untagged, sys_tags=sys_tags, from_date=from_date, to_date=to_date,
             latest_only=latest_only, job_uuid=job_uuid, page=page, per_page=per_page,
             sort=sort, dir=dir, facets=facets)
     except Exception:
-        # Three-state read (packet 071): the backend RAISED (storage momentarily unreachable) —
-        # distinct from a genuinely empty catalog. Signal `unavailable` so the page shows a
+        # The catalog answered, so this is a failure BELOW it — the gap-badge self-heal's blob
+        # load, or an un-projectable row reaching the enrichment. Signal `unavailable` so the
+        # page shows a
         # "storage unreachable — retrying" banner instead of a blank "no artifacts" grid that
         # reads as data loss. The traceback stays in the log so a real bug is still diagnosable.
         logging.getLogger(__name__).warning("catalog list read failed — storage unavailable",
                                              exc_info=True)
-        return JSONResponse({
-            "rows": [], "total": 0, "page": page, "per_page": per_page,
-            "facets": {}, "fm_files": [], "latest_tracked": False,
-            "unavailable": True, "reason": "storage",
-        })
+        return JSONResponse(_catalog_failure_response(page, per_page))
+
+
+def read_catalog(resolve_backend):
+    """``(backend | None, CatalogView)`` — backend resolution AND the catalog read INSIDE the routes'
+    honest-degradation boundary.
+
+    Packet 071's contract on these routes is that a storage read which cannot answer returns the
+    `unavailable` response, never an HTTP 500 that the browser then mislabels as "the app is
+    unreachable". The catalog itself never raises, but its store-identity resolution is not inside
+    that guard: `store_key()` reads `backend.archive_dir`, which on the FM backend resolves the
+    published installation layout and RAISES `InstallationStateUnclear` when that authority is
+    missing or disputed — and `getattr(..., default)` suppresses only `AttributeError`.
+
+    `resolve_backend` is passed as a CALLABLE so the acquisition is inside the guard too: the same
+    installation-authority failure reaches these routes through `ctx.storage()` / `get_backend()` as
+    readily as through the store-key read. `backend` is `None` exactly when the read is not servable,
+    so no caller can use one that was never obtained.
+    """
+    from corpusfm.server import catalog
+    try:
+        backend = resolve_backend()
+        return backend, catalog.view(backend)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "catalog read failed before the model could be consulted — storage unavailable",
+            exc_info=True)
+        return None, catalog.failed_view()
+
+
+def _catalog_failure_keys(view) -> dict:
+    """The ONE catalog condition a response carries (packet 1361-01, final rulings).
+
+    Ordinary synchronization is invisible: there is no `catalog_state`, no age, no `stale`, no
+    `initializing` and no `refreshing`. The persistent model is always the same model, so the only
+    thing a consumer is entitled to be told is that a database read genuinely FAILED — which freezes
+    the catalog-dependent UI and explains itself, rather than rendering rows nobody can vouch for or
+    an emptiness nobody established."""
+    if not view.failed:
+        return {}
+    return {"catalog_failed": True, "unavailable": True, "reason": "storage"}
+
+
+def _catalog_failure_response(page: int, per_page: int) -> dict:
+    """The response for a catalog whose database read failed. It is never an empty result: "we
+    cannot read storage" and "you have nothing" are different claims and the page renders them
+    differently."""
+    return {
+        "rows": [], "total": 0, "page": page, "per_page": per_page,
+        "facets": {}, "fm_files": [], "latest_tracked": False,
+        "catalog_failed": True, "unavailable": True, "reason": "storage",
+    }
 
 
 def _list_artifacts_result(
-    backend, *, search, file, tags, tag_mode, untagged, sys_tags, from_date, to_date,
+    backend, view, *, cfg, search, file, tags, tag_mode, untagged, sys_tags, from_date, to_date,
     latest_only, page, per_page, sort, dir, facets, job_uuid="",
 ) -> JSONResponse:
-    from corpusfm.server.tags import load_tags
+    """The catalog list, built ENTIRELY from the ONE persistent catalog (packet 1361-01).
 
-    indexed_keys = _indexed_keys()   # {uuid} in the vector index → per-artifact `indexed` system tag
-    embedder_on = _embedder_on()     # when configured, the complement gets `unindexed` (filterable)
-    summarizer_on = _summarizer_on()  # when configured, the un-summarized complement gets `unsummarized`
+    There is no direct-FileMaker paging and no ``iter_artifact_metas()`` fallback left on this
+    surface. The catalog is the sole row source: it carries the visible STORAGE records (each with
+    the canonical ``meta`` from the same parse), the user-tag membership map, and the promotion index
+    every lineage decision reads.
 
-    # One-stop tag/lineage fetch. When the v2 tables are live, user tags + the STORAGE lineage
-    # records (which carry IsLatest + the fields system tags are computed from) come from a
-    # SINGLE read of STORAGE+TAG+STORAGELINK, gated by ONE Build check — instead of independent
-    # view-builders that each re-read the tables and re-ran the Build probe. A backend outage
-    # here RAISES (not the silent load_tags() fallback), so the caller can honestly report
-    # `unavailable` rather than a catalog that looks empty. System tags are computed per-row
-    # (packet 085 U3e — no stored system-tag map to fetch).
-    art_records = None
-    try:
-        from corpusfm.server import tags_store
-        _tables = tags_store.tables_available(backend)
-    except Exception:
-        _tables = False
-    if _tables:
-        # 60s TTL snapshot (audit #2): the per-request/per-keystroke FULL STORAGE+TAG+STORAGELINK
-        # read is served from one cached fetch; tag writes + the artifact add/delete chokepoints
-        # bust it (tags_store.invalidate_record_views), so it's fresh where it matters.
-        tags_map, art_records = tags_store.record_views_cached(backend)
-    else:
-        tags_map = load_tags()
+    **Identities are intersected before anything is copied.** The catalog's keyed indexes
+    (file · job · type · origin · root · latest · normalized search) answer the narrowing as sets of
+    UUIDs; only the survivors are projected, copied and enriched. A filtered request therefore costs
+    what its result costs, not what the catalog costs — which is what makes removing the old
+    direct-FileMaker pager affordable rather than merely tidy.
 
-    # Huge-scale drop-in: facet-less paging with only DB-expressible filters
-    # (latest_only + timestamp order, optionally ONE user tag on the indexed Tags
-    # calc — no type/sys-tag/search/date) pages STORAGE server-side instead of
-    # pulling every record.
-    tag_list = _csv(tags)
-    db_expressible = (
-        latest_only and sort == "timestamp"
-        and not search and len(tag_list) <= 1
-        and not _csv(sys_tags) and not untagged
-        and not from_date and not to_date and (not file or file == "All")
-        # facets, when wanted, are computed from the lineage records — which only the v2
-        # tag tables provide; without them, fall through to the pull-all facet path.
-        and (not facets or art_records is not None)
-    )
-    if db_expressible:
-        fast = _try_db_page(
-            backend, latest_only=latest_only, direction=dir,
-            page=page, per_page=per_page, tags_map=tags_map,
-            tag=(tag_list[0] if tag_list else ""),
-            art_records=art_records, want_facets=facets, indexed_keys=indexed_keys, embedder_on=embedder_on,
-            summarizer_on=summarizer_on, job_uuid=job_uuid)
-        if fast is not None:
-            fast["latest_tracked"] = True
-            _ensure_index_facets(fast.get("facets"), embedder_on)
-            _ensure_summary_facets(fast.get("facets"), summarizer_on)
-            _refresh_gap_badges(backend, fast.get("rows", []))
-            return JSONResponse(fast)
+    ``view`` is not under the failure latch by construction — the route returns the failure response
+    before reaching here — so an empty result here means the catalog genuinely holds nothing
+    matching."""
+    # All three read `cfg` — the request's single settings read. A TTL miss inside _indexed_keys
+    # costs a vector-index scan, never another settings read.
+    indexed_keys = _indexed_keys(cfg)   # {uuid} in the vector index → per-artifact `indexed` system tag
+    embedder_on = _embedder_on(cfg)     # when configured, the complement gets `unindexed` (filterable)
+    summarizer_on = _summarizer_on(cfg)  # when configured, the un-summarized complement gets `unsummarized`
 
-    # Latest-version map: derive from the lineage records record_views already fetched
-    # (they carry is_latest), else fall back to a dedicated read. Keyed on the record UUID
-    # (collision-free — packet 1021 A2), matching the write side.
-    if art_records is not None:
-        latest_map = {r.get("uuid"): bool(r.get("is_latest", False)) for r in art_records}
-    else:
-        latest_map = _latest_map(backend)
-    rows = _enriched_rows(backend, tags_map, latest_map, indexed_keys, embedder_on,
-                          summarizer_on, art_records=art_records)
-    if file and file != "All":
-        rows = [r for r in rows if r["fm_file"] == file]
-    if job_uuid:
-        # "Artifacts produced by this job" (packet 1143). Lineage is UUIDJob alone — never the
-        # file name, which many unrelated artifacts can share.
-        rows = [r for r in rows if r.get("job_uuid") == job_uuid]
+    tags_map = view.tags
+    # The file dropdown is derived from the file/job narrowing ONLY — the same set the incumbent
+    # computed `fm_files` from, before search/date/latest/tag narrowed it further.
+    scoped = view.candidate_uuids(file=("" if file == "All" else file), job_uuid=job_uuid)
+    scoped = set() if scoped is None else scoped
+    fm_files = view.files_of(scoped)
+    # Then the cheap index narrowings the facet base set shares. `apply_facets_and_page` re-applies
+    # search and latest over the enriched rows, which is a no-op on an already-narrowed set and
+    # keeps the two paths' semantics literally identical.
+    narrowed = view.candidate_uuids(file=("" if file == "All" else file), job_uuid=job_uuid,
+                                    search=search, latest_only=latest_only)
+    art_records = view.projections_of(set() if narrowed is None else narrowed)
+    latest_map = {r.get("uuid"): bool(r.get("is_latest", False)) for r in art_records}
+    rows = _enriched_rows(tags_map, latest_map, indexed_keys, embedder_on, summarizer_on,
+                          art_records)
 
     result = apply_facets_and_page(
         rows,
@@ -766,17 +690,19 @@ def _list_artifacts_result(
         from_date=from_date,
         to_date=to_date,
         latest_only=latest_only,
-        latest_tracked=bool(latest_map),
+        latest_tracked=view.has_records,
         sort=sort,
         direction=dir,
         page=page,
         per_page=per_page,
+        want_facets=facets,
     )
-    result["fm_files"] = sorted({r["fm_file"] for r in rows})
-    result["latest_tracked"] = bool(latest_map)
+    result["fm_files"] = fm_files
+    result["latest_tracked"] = view.has_records
     _ensure_index_facets(result.get("facets"), embedder_on)
     _ensure_summary_facets(result.get("facets"), summarizer_on)
     _refresh_gap_badges(backend, result.get("rows", []))
+    result.update(_catalog_failure_keys(view))
     return JSONResponse(result)
 
 
@@ -818,85 +744,57 @@ def search_artifacts(
     page: int = 1,
     per_page: int = 20,
 ) -> JSONResponse:
-    """Paginated artifact search used by the Artifact Picker dialog and Explorer session modal.
+    """Paginated artifact search used by the Artifact Picker dialog, the Explorer session modal and
+    the Patch (ISV) page's "Recent ISV patches" strip.
 
     `origin` filters by creation flow ({WebUI, Job, Merge, Patch (ISV), MCP, Reabsorb, Seed}; `Import`
     remains a recognized legacy value — packet 1169) — e.g. the Patch (ISV) page lists recent ISV
-    patches via origin="Patch (ISV)"."""
+    patches via origin="Patch (ISV)".
+
+    Served ENTIRELY from the persistent catalog (packet 1361-01). The two FileMaker paths this route
+    used to carry — a bounded ``ArtifactsRepo.page_metas`` when the projection backfill was complete,
+    and an ``iter_artifact_metas()`` scan otherwise — are both gone. A picker keystroke no longer
+    reaches the database at all: the rows are resident, and every narrowing below is a slice over
+    them. This route carries the same four-state contract as the list route (ruling D3), because a
+    picker that silently shows no artifacts during an outage is the defect class packet 1369 closed
+    on the Jobs side."""
     from corpusfm.storage import get_backend
-    from corpusfm.server.tags import load_tags
 
     per_page = max(1, min(per_page, 100))
     page = max(1, page)
 
-    backend = get_backend()
-    # Tag chips from the record_views snapshot (audit #6): the per-keystroke load_tags() was a
-    # full STORAGE+TAGS+TAGASSIGN read BEFORE the bounded page — the 60s snapshot (busted on
-    # every tag/artifact mutation chokepoint) serves it for ~0 reads. Non-v2 backends keep the
-    # legacy load_tags path.
-    try:
-        from corpusfm.server import tags_store
-        if tags_store.tables_available(backend):
-            tags_map, _recs = tags_store.record_views_cached(backend)
-        else:
-            tags_map = load_tags()
-    except Exception:
-        tags_map = load_tags()
+    _backend, view = read_catalog(get_backend)
+    if view.failed:
+        return JSONResponse({
+            "rows": [], "total": 0, "page": page, "per_page": per_page, "has_more": False,
+            "catalog_failed": True, "unavailable": True, "reason": "storage",
+        })
+    tags_map = view.tags
 
-    # Server-side path (packet 014 #1; Phase 4: on the repo, not a backend-bespoke method): when
-    # the projection backfill is complete AND there's no tag filter (the picker's tag filter is
-    # rare — it keeps the scan), the engine pages on the indexed slots (root_uuid / the Type
-    # fence / Origin + contains() across the search slots for q, an engine-side `exclude` for the
-    # compared-against artifact) — no full-scan. Falls back to the scan below on LocalBackend, a
-    # pending backfill, a tag filter, or any OData error, so results are always correct.
-    from corpusfm.storage import projections
-    from corpusfm.storage.repos import artifacts_repo
-    repo = artifacts_repo(backend)
-    if not tag and repo is not None and projections.ready(backend):
-        try:
-            metas, total = repo.page_metas(
-                latest_only=False, q=q, type=type, origin=origin, root_uuid=root_uuid,
-                requires_artifact=requires_artifact, exclude_uuid=exclude,
-                page=page, per_page=per_page)
-            rows = [_picker_item(m.file_name, m, tags_map) for m in metas]
-            return JSONResponse({
-                "rows":     rows,
-                "total":    total,
-                "page":     page,
-                "per_page": per_page,
-                "has_more": (page - 1) * per_page + per_page < total,
-            })
-        except Exception:
-            pass  # any OData error → fall through to the always-correct scan
-
-    all_items: list[dict] = []
-    for meta in backend.iter_artifact_metas():
-        all_items.append(_picker_item(meta.file_name, meta, tags_map))
-
+    # Index-narrowed BEFORE anything is projected or copied: type / origin / root / tag / exclude
+    # are keyed lookups, and the picker's own substring surface (primary name + file name) is
+    # matched on the catalog's normalized name text. A keystroke touches neither the database
+    # nor the whole catalog.
+    ids = view.candidate_uuids(type=type, origin=origin, root_uuid=root_uuid,
+                               tag=("" if tag == "__untagged__" else tag),
+                               exclude_uuid=exclude)
+    ids = set() if ids is None else ids
     q_lower = q.strip().lower()
+    if q_lower:
+        ids = {u for u in ids if view.matches_name(u, q_lower)}
+    if tag == "__untagged__":
+        ids = {u for u in ids if not tags_map.get(u)}
+
     filtered: list[dict] = []
-    for item in all_items:
-        if type and item["artifact_type"] != type:
+    for rec in view.projections_of(ids):
+        meta = rec.get("meta")
+        if meta is None or not meta.file_name:
             continue
-        if origin and item["origin"] != origin:
-            continue
+        item = _picker_item(meta.file_name, meta, tags_map)
         if requires_artifact and not item["is_schema"]:
-            continue
-        if q_lower and q_lower not in item["name"].lower() and q_lower not in item["fm_file"].lower():
-            continue
-        if tag:
-            if tag == "__untagged__":
-                if item["tags"]:
-                    continue
-            elif tag not in item["tags"]:
-                continue
-        if root_uuid and item["root_uuid"] != root_uuid:
-            continue
-        if exclude and item["uuid"] == exclude:
             continue
         filtered.append(item)
 
-    filtered.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
     total = len(filtered)
     start = (page - 1) * per_page
     page_items = filtered[start:start + per_page]
@@ -907,6 +805,7 @@ def search_artifacts(
         "page":     page,
         "per_page": per_page,
         "has_more": start + per_page < total,
+        **_catalog_failure_keys(view),
     })
 
 
@@ -1032,7 +931,8 @@ def artifact_download(ref: str, form: str = None, container: str = None):
         return _zipped(f"{base}.xml", xml)
 
     # form == "artifact": the portable .artifact envelope (zip = meta.json sidecar + one payload).
-    built = _build_artifact_envelope(backend, uuid, meta)
+    # ONE view of the persistent catalog for the tag round-trip; never a database read.
+    built = _build_artifact_envelope(backend, uuid, meta, tags_map=download_tag_map(backend))
     if built is None:
         raise HTTPException(status_code=404, detail="No artifact to download")
     _base, blob = built
@@ -1070,7 +970,23 @@ def _envelope_base(meta) -> str:
         or (getattr(meta, "file_name", "") or "artifact")
 
 
-def _build_artifact_envelope(backend, uuid: str, meta):
+def download_tag_map(backend) -> dict:
+    """The tag map ONE download or bundle reuses — taken from the persistent catalog ONCE.
+
+    A download is not a catalog surface. It is a best-effort portable-metadata round-trip riding
+    beside one, so it must never provoke a database read and must never fall back to FileMaker for
+    tags (developer ruling): it uses `catalog.peek`, which cannot construct or validate anything, and
+    with no usable model it simply ships without tags. Taken ONCE per download/bundle, so an
+    N-artifact bundle costs one lookup rather than N."""
+    from corpusfm.server import catalog
+    try:
+        view = catalog.peek(backend)
+        return view.tags if view.servable else {}
+    except Exception:
+        return {}
+
+
+def _build_artifact_envelope(backend, uuid: str, meta, *, tags_map: dict):
     """Build the externalized artifact — ONE document, zipped (packet 1226).
 
     Returns (base, zip_bytes), or None when the payload can't be read. Shared by the single-artifact
@@ -1086,7 +1002,6 @@ def _build_artifact_envelope(backend, uuid: str, meta):
     import zipfile
     from corpusfm.artifact.capabilities import DELIVERABLE_TYPES
     from corpusfm.artifact.document import build_document
-    from corpusfm.server import tags as _tags
     base = _envelope_base(meta)
     atype = getattr(meta, "artifact_type", "")
     if atype in DELIVERABLE_TYPES:
@@ -1101,10 +1016,7 @@ def _build_artifact_envelope(backend, uuid: str, meta):
             payload = backend.load_artifact(uuid).to_dict()
         except Exception:
             return None
-    try:
-        record_tags = _tags.get_tags(uuid)
-    except Exception:
-        record_tags = []
+    record_tags = list(tags_map.get(uuid) or [])
     # The icon travels base64 (packet 1254). Read through the storage protocol's `load_icon` rather
     # than the jor's already-base64 `icon_b64`: the protocol method exists on both backends, raw jor
     # access does not, and one decode+encode of a few KB does not justify a backend-specific path.
@@ -1151,6 +1063,9 @@ async def artifacts_download_bundle(request: Request):
         raise HTTPException(status_code=400, detail="No artifacts selected.")
     containers = [c for c in (body.get("containers") or []) if isinstance(c, str) and c in _cd.CONTAINER_NAMES]
     backend = get_backend()
+    # ONE view for the whole bundle (packet 1361-01): never a database read, never
+    # a per-member lookup.
+    tag_map = download_tag_map(backend)
     outer = io.BytesIO()
     used: dict = {}
     n_added = 0
@@ -1201,7 +1116,7 @@ async def artifacts_download_bundle(request: Request):
                 meta = backend.get_artifact_meta(uuid)
                 if meta is None:
                     continue
-                built = _build_artifact_envelope(backend, uuid, meta)
+                built = _build_artifact_envelope(backend, uuid, meta, tags_map=tag_map)
                 if built is None:
                     continue
                 base, blob = built
@@ -1332,21 +1247,40 @@ def artifact_history(ref: str) -> JSONResponse:
     return JSONResponse({"events": list_history_for(backend, uuid)})
 
 
-def _related_row(v) -> dict:
-    return {"uuid": v.uuid, "file_name": v.file_name, "name": v.name, "type": v.type,
-            "origin": v.origin, "timestamp": v.timestamp, "is_latest": v.is_latest}
+def _related_row(rec: dict) -> dict:
+    """One `same_root` row, from a persistent-catalog projection (packet 1361-01)."""
+    return {"uuid": rec.get("uuid", ""), "file_name": rec.get("file_name", ""),
+            "name": rec.get("name", ""), "type": rec.get("artifact_type", ""),
+            "origin": rec.get("origin", ""), "timestamp": rec.get("timestamp", ""),
+            "is_latest": bool(rec.get("is_latest", False))}
 
 
 @router.get("/library/artifacts/{ref:path}/related", dependencies=[Depends(require_auth)])
 def artifact_related(ref: str) -> JSONResponse:
-    """The detail pop-over's Related tab — two neutral relationship sections, each ONE bounded
-    indexed read, the viewed artifact excluded. Lazy: fetched only when the tab is opened.
-    Duplicates are surfaced, never prevented (packet 077-D principle).
+    """The detail pop-over's Related tab — two neutral relationship sections, the viewed artifact
+    excluded. Lazy: fetched only when the tab is opened. Duplicates are surfaced, never prevented
+    (packet 077-D principle).
 
     - ``same_root``: the same FM file lineage (same RootUUID) — other snapshots of the file, the
       addon companion, merged children.
     - ``built_from_this``: the merges built FROM this artifact (HISTORY reverse lookup on the
       parent's record UUID; a child no longer in the catalog renders inert from its snapshot).
+
+    **Where each half comes from, and why they differ (developer ruling, 2026-09-01).** The rows are
+    STORAGE records, so they come from ONE persistent catalog: `same_root` off its root-UUID index,
+    and each merge child hydrated from the same catalog. The old path ran
+    `ArtifactsRepo.same_root()` plus a `repo.get()` per child straight at FileMaker — a per-request
+    STORAGE query and N keyed reads on a tab the user opens casually, and a second view of the same
+    catalog that could disagree with the page around it.
+
+    **HISTORY stays a direct indexed read**, deliberately: it is outside the synchronized catalog,
+    it is the AUTHORITY on which merges were built from this record, and the catalog cannot answer
+    it. That asymmetry is the point — the relationship comes from HISTORY, the rows come from the
+    catalog.
+
+    A catalog whose database read FAILED is reported as such rather than as an empty relationship
+    set: "this artifact is related to nothing" and "we cannot tell you" are different claims, and the
+    second must not be rendered as the first.
 
     Packet 1216 removed a third section, ``same_source`` ("byte-identical stored source"). It
     answered "these are the same snapshot", a distinction that only mattered to dedup — and dedup
@@ -1354,32 +1288,43 @@ def artifact_related(ref: str) -> JSONResponse:
     file's own identity."""
     from corpusfm.app.web.artifact_ref import resolve_ref
     from corpusfm.storage import get_backend
-    from corpusfm.storage.repos import artifacts_repo
     from corpusfm.server.history import list_merges_built_from
-    backend = get_backend()
-    repo = artifacts_repo(backend)
-    empty = {"same_root": [], "built_from_this": []}
-    if repo is None:
-        return JSONResponse(empty)
+
+    backend, view = read_catalog(get_backend)
+    if view.failed:
+        return JSONResponse({
+            "same_root": [], "built_from_this": [],
+            "catalog_failed": True, "unavailable": True, "reason": "storage",
+        })
     uuid, err = resolve_ref(backend, ref)
     if err is not None:
         return err
-    view = repo.get(uuid)
-    if view is None:
+    viewed = view.projection(uuid)
+    if viewed is None:
         return JSONResponse({"error": "artifact not found"}, status_code=404)
-    same_root = [_related_row(c) for c in repo.same_root(view.root_uuid, exclude_uuid=uuid)]
+
+    # Newest-first, the order this tab has always presented — the catalog's root index is a
+    # membership index, not an ordering, so the surface sorts its own rows.
+    same_root = [_related_row(r)
+                 for r in sorted(view.same_root(viewed.get("root_uuid", ""), exclude_uuid=uuid),
+                                 key=lambda r: r.get("timestamp", ""), reverse=True)]
     built: list = []
     for m in list_merges_built_from(backend, uuid):
         child = m.get("child_ref", "")   # the merge child's record UUID (085 U3f)
-        cv = repo.get(child) if child else None
+        cv = view.projection(child) if child else None
         if cv is not None:
-            built.append({"uuid": cv.key, "name": cv.name or cv.file_name,
-                          "type": cv.type, "timestamp": cv.timestamp, "exists": True})
+            built.append({"uuid": cv.get("uuid", child),
+                          "name": cv.get("name") or cv.get("file_name", ""),
+                          "type": cv.get("artifact_type", ""),
+                          "timestamp": cv.get("timestamp", ""), "exists": True})
         else:
+            # The child left the catalog. The HISTORY event's own snapshot is the only record of
+            # what it was, and rendering it inert is how a deleted merge child stays visible.
             snap = m.get("snapshot") or {}
             built.append({"uuid": child, "name": snap.get("label") or child or "(removed)",
                           "type": "MergedXML", "timestamp": m.get("ts", ""), "exists": False})
-    return JSONResponse({"same_root": same_root, "built_from_this": built})
+    return JSONResponse({"same_root": same_root, "built_from_this": built,
+                         **_catalog_failure_keys(view)})
 
 
 # ── Object evidence (detail pop-over Evidence tab) ────────────────────────────────
@@ -1667,8 +1612,6 @@ def _gap_analysis(backend, uuid: str, meta, record: "dict | None" = None) -> dic
                     try:
                         backend.update_record(uuid, {"gap_issues": out["gap_issues"],
                                                      "gap_count_version": GAP_COUNT_VERSION})
-                        from corpusfm.server.tags_store import invalidate_record_views
-                        invalidate_record_views()
                     except Exception:
                         pass
             except Exception:
@@ -1723,11 +1666,7 @@ def _edit_field(ref: str, field: str, body: dict) -> JSONResponse:
     if backend.get_artifact_meta(uuid) is None:
         return JSONResponse({"ok": False, "error": "Not found"}, status_code=404)
     value = "" if body is None else body.get(field, "")
-    backend.update_record(uuid, {field: value})
-    # The catalog list is snapshot-served (audit #2) and name/description/memory show on the
-    # card — bust so the edit is visible on the next list read, not after the TTL.
-    from corpusfm.server.tags_store import invalidate_record_views
-    invalidate_record_views()
+    backend.update_record(uuid, {field: value})   # publishes the edited record (packet 1361-01)
     return JSONResponse({"ok": True})
 
 
@@ -1878,11 +1817,8 @@ def delete_artifact_source(ref: str) -> JSONResponse:
         meta = backend.get_artifact_meta(uuid)
         if meta is None:
             return JSONResponse({"ok": False, "error": "Not found"}, status_code=404)
+        # has_source rides the catalog rows; delete_source publishes the record it committed.
         removed = bool(backend.delete_source(uuid))
-        if removed:
-            # has_source rides the snapshot-served catalog rows (audit #2)
-            from corpusfm.server.tags_store import invalidate_record_views
-            invalidate_record_views()
         return JSONResponse({"ok": True, "removed": removed})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)

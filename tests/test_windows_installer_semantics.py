@@ -484,11 +484,16 @@ def test_the_default_install_dir_is_the_canonical_windows_software_root(ps1):
 
 
 def test_the_canonical_windows_definitions_are_unprivileged_and_carry_no_global_token():
-    """Both canonical definitions are unprivileged and carry no retired global credential."""
+    """Every canonical definition is unprivileged and carries no retired global credential.
+
+    ONE definition since application packet 1361-01 round 3 — the standalone scheduler service is
+    retired — so the roles are read from `SERVICE_ROLES` rather than listed, and a role that comes
+    back is covered without an edit here."""
     from corpusfm.lifecycle import os_layout, service_identity as si
 
     layout = os_layout.windows_os_layout()
-    for role, sid in (("web", "corpusfm-web"), ("scheduler", "corpusfm-scheduler")):
+    for role in si.SERVICE_ROLES:
+        sid = si.WINDOWS_SERVICE_NAMES[role]
         # `install_dir` is an explicit authority now (correction E); this is the value install.ps1
         # supplies, i.e. what a stock installation chooses.
         spec = si.winsw_service_spec(role, layout, install_dir=si.DEFAULT_WINDOWS_INSTALL_DIR,

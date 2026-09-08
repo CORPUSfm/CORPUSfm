@@ -4,8 +4,12 @@ Listens for POST /webhook/{job_uuid}/{token} and fires job runs.
 Also exposes GET /health for liveness checks.
 
 Usage (run as subprocess or directly):
-    python -m corpusfm.server.jobs.webhook [--port 8765] [--jobs-dir PATH]
-                                   [--archive-dir PATH] [--history-dir PATH]
+    python -m corpusfm.server.jobs.webhook [--port 8765]
+
+**The custom-path flags are gone (packet 1361-01):** `--jobs-dir`, `--archive-dir` and
+`--history-dir` selected a job store, an archive and a run history off disk, which is the
+filesystem job model the product does not support. Jobs come from the JOB table, the run goes on
+the QUEUE, and the artifact is stored internally.
 
 The listener runs blocking in the calling thread. To launch from code:
 
@@ -14,16 +18,14 @@ The listener runs blocking in the calling thread. To launch from code:
                              "--port", "8765"])
 
 Public API (for testing / embedding):
-    make_handler(jobs_dir, archive_dir, history_dir)
+    make_handler()
     webhook_url(job_uuid, token, host, port) -> str
 """
 
 from __future__ import annotations
 
 import json
-import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from typing import Optional
 
 DEFAULT_PORT = 8765
@@ -39,12 +41,8 @@ def webhook_url(
     return f"http://{host}:{port}/webhook/{job_uuid}/{token}"
 
 
-def make_handler(
-    jobs_dir: Path,
-    archive_dir: Path,
-    history_dir: Path,
-):
-    """Return a BaseHTTPRequestHandler class configured for the given directories."""
+def make_handler():
+    """Return the BaseHTTPRequestHandler class for the webhook listener."""
 
     class WebhookHandler(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -57,7 +55,7 @@ def make_handler(
 
             try:
                 from corpusfm.server.jobs.store import load_job
-                job = load_job(job_uuid, jobs_dir)
+                job = load_job(job_uuid)
             except KeyError:
                 self._respond(404, {"status": "error", "message": f"Job '{job_uuid}' not found"})
                 return
@@ -71,19 +69,32 @@ def make_handler(
                 self._respond(400, {"status": "error", "message": "Job has no webhook trigger"})
                 return
 
-            # Fire job in background thread; respond immediately
-            def _run():
-                from corpusfm.server.jobs.runner import run_job
-                run_job(
-                    job_uuid,
-                    jobs_dir=jobs_dir,
-                    archive_dir=archive_dir,
-                    history_dir=history_dir,
-                    trigger="webhook",
-                )
-
-            threading.Thread(target=_run, daemon=True).start()
-            self._respond(202, {"status": "accepted", "job": job_uuid})
+            # ENQUEUE, never execute (packet 1361-01, ruling 10). This used to spawn a daemon
+            # thread running the synchronous runner inside the standalone webhook listener — a
+            # second production pull path outside the QUEUE worker's mutual exclusion, in a process
+            # that is not the worker host. It now puts a Job Run on the QUEUE exactly as the
+            # scheduler, the browser and MCP do, and answers 202 with the identifiers that let the
+            # caller follow it.
+            try:
+                from corpusfm.server import queue_handlers as QH
+                from corpusfm.server import queue_workers as W
+                from corpusfm.storage import queue_record as Q
+                from corpusfm.storage import get_backend
+                backend = get_backend()
+                qid, run_id = QH.enqueue_job_run(
+                    backend, job_name=job.name, job_uuid=job_uuid,
+                    file_name=getattr(job.source, "file_name", "") or "",
+                    trigger="webhook")
+                try:
+                    W.poke(Q.ACQUIRE)
+                except Exception:
+                    pass
+            except Exception as exc:  # noqa: BLE001
+                self._respond(500, {"status": "error",
+                                    "message": f"could not queue the run: {exc}"})
+                return
+            self._respond(202, {"status": "accepted", "job": job_uuid,
+                                "queue_id": qid, "run_id": run_id})
 
         def do_GET(self):
             if self.path in ("/health", "/health/"):
@@ -111,24 +122,11 @@ def _main():
 
     parser = argparse.ArgumentParser(description="corpusfm webhook listener")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--jobs-dir", type=str, default=None)
-    parser.add_argument("--archive-dir", type=str, default=None)
-    parser.add_argument("--history-dir", type=str, default=None)
     args = parser.parse_args()
 
-    from corpusfm.server.jobs.history import default_history_dir
-    from corpusfm.server.jobs.store import default_jobs_dir
-    from corpusfm.storage import get_backend
-
-    jobs_dir = Path(args.jobs_dir) if args.jobs_dir else default_jobs_dir()
-    archive_dir = get_backend(Path(args.archive_dir) if args.archive_dir else None).archive_dir
-    history_dir = Path(args.history_dir) if args.history_dir else default_history_dir()
-
-    handler_cls = make_handler(jobs_dir, archive_dir, history_dir)
-    server = HTTPServer(("", args.port), handler_cls)
+    server = HTTPServer(("", args.port), make_handler())
     print(f"corpusfm webhook listener running on port {args.port}", flush=True)
-    print(f"  Jobs dir:   {jobs_dir}", flush=True)
-    print(f"  Archive:    {archive_dir}", flush=True)
+    print("  Jobs come from the JOB table; a trigger enqueues a Job Run.", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -1399,8 +1399,15 @@ def test_NO_RAW_CHILD_OUTPUT_FROM_ANY_LINUX_PHASE_SURVIVES(tmp_path, monkeypatch
     and the service commands were piped straight into `update.log`. None of that passes a fence, and
     a fetch failure is precisely where a REMOTE gets to choose the text.
 
-    The run is driven all the way past consent into the apply phase, so merge, the import probe and
-    the rollback all execute.
+    The run is driven all the way past consent through the apply phase, so merge, the build stamp
+    and the import probe all execute.
+
+    RE-EXPRESSED for application packet 1361-01, round 3. It used to make the import probe SUCCEED
+    only so the run would continue into the SERVICE phase, and then asserted `service_did_not_start`
+    as proof it had got that far. There is no service phase: the scheduler service is retired and
+    this script restarts nothing. The probe is still made to succeed — that is what carries the run
+    through merge, the stamp and the probe, the noisiest children — and the completion outcome is
+    what now proves the run reached the end rather than refusing early.
     """
     life, locator, install_dir, _os_l = _ui.publish(tmp_path)
     _ui.install_administrator_files(install_dir)
@@ -1410,9 +1417,8 @@ def test_NO_RAW_CHILD_OUTPUT_FROM_ANY_LINUX_PHASE_SURVIVES(tmp_path, monkeypatch
 
     _ui.noisy_interpreter(install_dir, secret=_PLANTED)
     _ui.noisy_helper(install_dir, secret=_PLANTED)
-    # Make the import probe SUCCEED, so the run continues into the service phase. Without this it
-    # stopped at `import_probe_failed` and `systemctl is-active` — the last unredirected child —
-    # was never executed at all.
+    # Make the import probe SUCCEED, so the run reaches the END of the apply phase rather than
+    # refusing at `import_probe_failed` before merge, the stamp and the probe have all run.
     # Expose a complete application package to the import probe through the same single package
     # symlink this test used before build stamping became part of the updater transaction. The
     # private copy keeps the test from ever writing the application checkout's real stamp.
@@ -1432,8 +1438,9 @@ def test_NO_RAW_CHILD_OUTPUT_FROM_ANY_LINUX_PHASE_SURVIVES(tmp_path, monkeypatch
     result = _subprocess.run(["bash", str(script)], capture_output=True, text=True, timeout=180)
 
     outcome = _ui.outcome(state)
-    assert outcome is not None and outcome["reason_code"] == "service_did_not_start", (
-        f"the run did not reach the service phase, so the noisiest children never ran: {outcome}"
+    assert outcome is not None and outcome["reason_code"] == "ok", (
+        f"the run did not reach the end of the apply phase, so the noisiest children never ran: "
+        f"{outcome}"
     )
     searched = _ui.everything_produced(state, logs,
                                        extra=[("stdout", result.stdout), ("stderr", result.stderr)])
@@ -1442,8 +1449,8 @@ def test_NO_RAW_CHILD_OUTPUT_FROM_ANY_LINUX_PHASE_SURVIVES(tmp_path, monkeypatch
     assert not leaked, f"raw child output survived in: {leaked}"
 
     # THE ELEVATED UPDATER WRITES NOTHING TO ITS OWN STREAMS. On an installed box those are the
-    # journal, and this is what catches the classes a planted secret cannot reach: `systemctl` is
-    # invoked bare and cannot be substituted here, but an unredirected one makes the SHELL speak.
+    # journal, and this is what catches the classes a planted secret cannot reach: an unredirected
+    # child of any kind makes the SHELL speak.
     assert result.stderr == "", f"the updater wrote to its own stderr: {result.stderr[:400]!r}"
     assert result.stdout == "", f"the updater wrote to its own stdout: {result.stdout[:400]!r}"
 
@@ -1452,12 +1459,13 @@ def test_NO_RAW_CHILD_OUTPUT_FROM_ANY_LINUX_PHASE_SURVIVES(tmp_path, monkeypatch
 def test_NO_RAW_CHILD_OUTPUT_FROM_ANY_WINDOWS_PHASE_SURVIVES(tmp_path, monkeypatch):
     """The same sweep on the Windows artifact, stopped one phase earlier — and said so.
 
-    PowerShell on a POSIX host cannot reach the apply phase: `Restart-Service` does not exist there
-    and `$ErrorActionPreference = 'Stop'` makes that fatal inside the rollback. So this drives the
-    run to the CLASSIFICATION refusal, which is after git's remote/fetch/rev-parse/merge-base/diff
-    and after the installed helper and the classifier, and before merge, the import probe and the
-    service commands. **Those last three are covered on Linux and not here**, which is a real limit
-    of running the Windows artifact off Windows rather than something this test proves.
+    This drives the run to the CLASSIFICATION refusal, which is after git's
+    remote/fetch/rev-parse/merge-base/diff and after the installed helper and the classifier, and
+    before merge, the build stamp and the import probe. **Those last three are covered on Linux and
+    not here**, which is a real limit of running the Windows artifact off Windows rather than
+    something this test proves. (The reason used to be `Restart-Service`, which does not exist on a
+    POSIX host; that call is gone with the retired scheduler service, but driving the PowerShell
+    artifact through a real apply off Windows remains out of this test's reach.)
     """
     life, locator, install_dir, _os_l = _ui.publish(tmp_path)
     _ui.install_administrator_files(install_dir)

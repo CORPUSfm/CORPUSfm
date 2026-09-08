@@ -41,17 +41,39 @@ def write_case(backend, uuid: str, case: dict) -> None:
     backend.update_record(uuid, {"acceptance_case": case})
 
 
+class CatalogUnavailable(Exception):
+    """The catalog's database read has FAILED, so no answer about batch membership is available.
+
+    Distinct from "no such batch" on purpose (packet 1361-01, ruling 11): during the failure latch a
+    membership question has no answer, and reporting `batch_not_found` would assert something nobody
+    observed."""
+
+
+def _batch_member_uuids(backend, batch_id: str) -> list:
+    """Every catalog record carrying this batch id — read from the PERSISTENT CATALOG, not from a
+    fresh STORAGE enumeration (packet 1361-01). `acceptance_batch` is a cheap scalar on the meta the
+    catalog already carries, so this is a scan of resident rows and no database read at all.
+
+    Raises :class:`CatalogUnavailable` under the failure latch rather than answering "none": an
+    unanswerable question must not be rendered as a negative answer."""
+    from corpusfm.server import catalog
+    view = catalog.view(backend)
+    if view.failed:
+        raise CatalogUnavailable("the artifact catalog could not be read from the database")
+    return [r["uuid"] for r in view.records
+            if getattr(r.get("meta"), "acceptance_batch", "") == batch_id]
+
+
 def iter_batch_cases(backend, batch_id: str) -> "list[tuple[str, dict]]":
-    """Every (uuid, case) in a batch, in case-id order — found from the CHEAP `acceptance_batch` meta scalar
-    (no blob), then the full case read from the JOR. Structured metadata is the ONLY batch authority; no
-    description/memory string is ever searched."""
+    """Every (uuid, case) in a batch, in case-id order — members found in the persistent catalog,
+    then each full case read AUTHORITATIVELY from its own record (it is a mutation prerequisite for
+    `evaluate_acceptance_return`, so it is a keyed database read, never a catalog projection).
+    Structured metadata is the ONLY batch authority; no description/memory string is ever searched."""
     hits = []
-    for meta in backend.iter_artifact_metas():
-        if getattr(meta, "acceptance_batch", "") != batch_id:
-            continue
-        case = read_case(backend, meta.uuid)
+    for uuid in _batch_member_uuids(backend, batch_id):
+        case = read_case(backend, uuid)
         if case is not None:
-            hits.append((meta.uuid, case))
+            hits.append((uuid, case))
     hits.sort(key=lambda uc: uc[1].get("case_id", 0))
     return hits
 
@@ -79,7 +101,7 @@ def _generate(art, item, ctx, *, strict: bool) -> dict:
         flavor="xmsc", strict=strict, context=ctx)
     if unsupported:
         return {"ok": False, "reason": f"{len(unsupported)} step(s) refuse", "unsupported": unsupported}
-    # Static validation (block balance) — an unbalanced clip is a generation FAILURE, never stored.
+    # Static validation (block balance) — an unbalanced clip is a GENERATION failure, never stored.
     from corpusfm.core.clip_validate import validate_clip, TargetIndex
     res = validate_clip(clip_xml, TargetIndex.from_artifact(art))
     if not res.blocks_balanced:
@@ -119,23 +141,32 @@ def _rename_script(clip_xml: str, old_name: str, new_name: str) -> str:
 def _store_case(backend, *, batch_id, label, case_id, case_name, clip_xml, source_artifact_uuid,
                 source_script_item_id, source_script_name, gen_state, expected_shapes, step_count,
                 description, memory) -> "tuple[dict | None, dict | None]":
-    """store_deliverable → new_case → write_case for ONE prepared case. Returns (stored_entry, None) on
-    success or (None, failed_entry) on a storage failure — never raises. The single funnel both the
-    artifact-script batch path and the compiler acceptance bridge (packet 1131) go through, so there is one
-    naming / expected-shape / storage / record authority, never a second acceptance model."""
+    """ENQUEUE one prepared case onto the fast deliverable queue. Returns (queued_entry, None) or
+    (None, failed_entry) — never raises.
+
+    **One queue item per case, linked by batch id (packet 1361-01).** The payload carries the whole
+    acceptance record, so the worker stores the clip AND writes the case metadata as one unit of
+    work that is complete only when both succeed — and its retry resumes the pre-generated record
+    uuid instead of minting a second artifact for the same case. Nothing waits: a batch used to
+    block per case behind the ingest worker, which turned a many-case batch into a serialized wait.
+
+    This is the single funnel both the artifact-script batch path and the compiler acceptance bridge
+    (packet 1131) go through, so there is one naming / expected-shape / storage / record authority."""
+    from corpusfm.server import queue_handlers as QH
+    record_uuid = str(_uuid.uuid4())
     try:
-        meta = backend.store_deliverable(
-            clip_xml.encode("utf-8"), artifact_type="fmClip", origin="MCP", name=case_name,
-            description=description[:200], memory=memory)
         case = acceptance.new_case(
             batch_id=batch_id, batch_label=label, case_id=case_id, case_name=case_name,
             source_artifact_uuid=source_artifact_uuid, source_script_item_id=source_script_item_id,
             source_script_name=source_script_name, generation_state=gen_state,
             expected_shapes=expected_shapes, step_count=step_count)
-        write_case(backend, meta.uuid, case)
-        return ({"case_id": case_id, "case_name": case_name, "artifact_uuid": meta.uuid,
-                 "source_script": source_script_name, "generation_state": gen_state,
-                 "step_count": step_count}, None)
+        res = QH.enqueue_deliverable(
+            backend, clip_xml.encode("utf-8"), artifact_type="fmClip", origin="MCP",
+            name=case_name, description=description[:200], memory=memory,
+            record_uuid=record_uuid, acceptance_case=case)
+        return ({"case_id": case_id, "case_name": case_name, "artifact_uuid": res["uuid"],
+                 "queue_id": res["queue_id"], "source_script": source_script_name,
+                 "generation_state": gen_state, "step_count": step_count}, None)
     except Exception as exc:
         return (None, {"case_id": case_id, "case_name": case_name, "source_script": source_script_name,
                        "error": str(exc)})
@@ -144,9 +175,13 @@ def _store_case(backend, *, batch_id, label, case_id, case_name, clip_xml, sourc
 # ── create ──────────────────────────────────────────────────────────────────────
 
 def create_batch(backend, art, art_uuid: str, requested: "list[str]", *, label: str, strict: bool) -> dict:
-    """Preflight the WHOLE batch, then store one isolated fmClip per case. Returns a structured manifest.
-    Stores NOTHING unless every case preflights; a mid-storage failure is reported honestly (no false atomicity
-    claim, no rollback the backend cannot guarantee)."""
+    """Preflight the WHOLE batch, then ENQUEUE one isolated fmClip per case. Returns a structured
+    manifest. Enqueues NOTHING unless every case preflights; a mid-enqueue failure is reported
+    honestly (no false atomicity claim, no rollback the backend cannot guarantee).
+
+    The cases travel the fast deliverable queue and this call does not wait for them (packet
+    1361-01): the manifest reports the artifact uuid each case is anchored on, which is stable from
+    the moment it is enqueued."""
     if not acceptance.valid_label(label):
         return {"ok": False, "error": "invalid_label",
                 "detail": "batch label must be 1-60 chars of letters/digits/space/_/- (it is echoed; no "
@@ -171,12 +206,16 @@ def create_batch(backend, art, art_uuid: str, requested: "list[str]", *, label: 
 
     token = acceptance.batch_token(art_uuid, label, [it.name for it in resolved])
     batch_id = token
-    # Catalog uniqueness — a token collision means this exact batch already exists.
-    for meta in backend.iter_artifact_metas():
-        if getattr(meta, "acceptance_batch", "") == batch_id:
+    # Catalog uniqueness — a token collision means this exact batch already exists. Under the
+    # failure latch there is no answer, so the honest outcome is to refuse rather than to create a
+    # batch on an unverified claim of uniqueness.
+    try:
+        if _batch_member_uuids(backend, batch_id):
             return {"ok": False, "error": "batch_exists",
                     "detail": f"an acceptance batch {batch_id} already exists for this source+label+scripts; "
                               "change the label to make a new one"}
+    except CatalogUnavailable as exc:
+        return {"ok": False, "error": "catalog_unavailable", "detail": str(exc)}
 
     ctx = ClipEmitContext(external_data_sources=build_external_data_source_index(art))
 
@@ -203,7 +242,7 @@ def create_batch(backend, art, art_uuid: str, requested: "list[str]", *, label: 
             memory=f"acceptance batch {batch_id} case {i}; source {art_uuid}::{item.name}")
         if fail_entry is not None:
             failed.append(fail_entry)
-            break   # stop on first storage failure; report honestly (no rollback we can't guarantee)
+            break   # stop on the first enqueue failure; report honestly (no rollback to claim)
         stored.append(ok_entry)
 
     return {"ok": not failed, "batch_id": batch_id, "label": label, "strict": strict,
@@ -233,11 +272,13 @@ def register_compiler_case(backend, *, clip_xml: str, ddr_steps_blob: str, scrip
                 "detail": "could not derive the expected step-shape sequence from the lowered DDR"}
 
     token = acceptance.batch_token("", label, [script_name])
-    for meta in backend.iter_artifact_metas():
-        if getattr(meta, "acceptance_batch", "") == token:
+    try:
+        if _batch_member_uuids(backend, token):
             return {"ok": False, "error": "batch_exists",
                     "detail": f"an acceptance batch {token} already exists for this label+script; change the "
                               "label to make a new one"}
+    except CatalogUnavailable as exc:
+        return {"ok": False, "error": "catalog_unavailable", "detail": str(exc)}
     case_name = acceptance.case_script_name(token, 1)
     renamed = _rename_script(clip_xml, script_name, case_name)
     ok_entry, fail_entry = _store_case(
@@ -275,7 +316,11 @@ def evaluate_return(backend, batch_id: str, returned_art, returned_uuid: str, *,
     """Correlate a returned SaveAsXML to a batch's cases and record conservative observations. Idempotent
     against the same returned artifact; a DIFFERENT returned artifact requires override and keeps a bounded
     prior-observation history."""
-    cases = iter_batch_cases(backend, batch_id)
+    try:
+        cases = iter_batch_cases(backend, batch_id)
+    except CatalogUnavailable as exc:
+        return {"ok": False, "error": "catalog_unavailable", "detail": str(exc),
+                "batch_id": batch_id}
     if not cases:
         return {"ok": False, "error": "batch_not_found", "detail": f"no acceptance cases for batch {batch_id!r}"}
     # Require a genuine SaveAsXML return; a non-SaveAsXML never yields a false match.

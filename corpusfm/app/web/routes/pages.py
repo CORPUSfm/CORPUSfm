@@ -110,8 +110,10 @@ def _ctx(request: Request, **kwargs) -> dict:
         # Hard, fixed upload ceiling (NOT a setting) surfaced read-only on Settings → Storage. The
         # value is the single source of truth in upload.MAX_UPLOAD_BYTES.
         "max_upload_label": _max_upload_label(),
-        # Platform-correct, copy-pasteable installer command for the gate pages (build-mismatch /
-        # needs-upgrade) — Linux sudo install.sh vs Windows elevated install.ps1.
+        # Platform-correct, copy-pasteable installer command for the `/needs-upgrade` gate page —
+        # Linux sudo install.sh vs Windows elevated install.ps1. (The build-mismatch page it also
+        # served is retired: a proven mismatch pauses the process, and the local supervisory page
+        # carries that guidance — packet 1361-01, round 12.)
         "upgrade_command": _upgrade_command(),
         **kwargs,
     }
@@ -508,33 +510,6 @@ async def jobs_edit_redirect(request: Request, name: str | None = None):
 @router.get("/settings", response_class=HTMLResponse, dependencies=[Depends(require_auth), Depends(require_gate("settings"))])
 async def settings(request: Request):
     return templates.TemplateResponse(request, "settings.html", _ctx(request))
-
-
-@router.get("/build-mismatch", response_class=HTMLResponse)
-async def build_mismatch_page(request: Request):
-    # The "fresh install required" gate. Reachable while locked (allowlisted);
-    # self-dismisses once the DB schema matches this build (after a fresh install).
-    # Pass the live/target builds + direction so the page gives ACCURATE guidance: 085 is
-    # fresh-install-only (no in-place migration), and an older-app-over-newer-DB rollback needs
-    # the CODE upgraded, not the DB touched.
-    live_build = target_build = ""
-    db_newer = False
-    try:
-        from corpusfm.storage import storage_migration as sm, get_backend
-        target_build = sm.expected_build()
-        live_build = str(get_backend().load_fm_build()).strip()
-
-        def _n(b):
-            try:
-                return int(str(b).strip().lstrip("."))
-            except Exception:
-                return -1
-        db_newer = _n(live_build) >= 0 and _n(live_build) > _n(target_build)
-    except Exception:
-        pass
-    return templates.TemplateResponse(
-        request, "build_mismatch.html",
-        _ctx(request, live_build=live_build, target_build=target_build, db_newer=db_newer))
 
 
 @router.get("/needs-upgrade", response_class=HTMLResponse)

@@ -171,12 +171,26 @@ def record_diff(
     append_diff_history(entry, limit=MAX_DIFF_HISTORY, path=path)
 
 
-def existing_artifact_paths(backend=None, candidates=None) -> set:
-    """The record UUIDs the backend currently holds (packet 085 U3f — history references artifacts
-    by their canonical UUID address now). With ``candidates`` (the bounded set of UUIDs a history
-    page references), resolution is ONE indexed ``get_by_keys`` read (audit #7) — never a full
-    STORAGE scan. Without candidates (or on an engine-less backend) it falls back to the listing.
-    Backend-agnostic (name kept for the diff/explore-history callers)."""
+def existing_artifact_paths(backend=None, candidates=None) -> Optional[set]:
+    """The record UUIDs the backend currently holds, or ``None`` when existence CANNOT be
+    established (packet 085 U3f — history references artifacts by their canonical UUID address).
+
+    Two answering paths, in order:
+
+    * with ``candidates`` (the bounded set of UUIDs a history page references) and an engine, a
+      CHUNKED, fully paged ``keys_present`` read — the authoritative form, and never a full STORAGE
+      scan. It is ``keys_present`` and not ``get_by_keys`` for the reason that method exists (packet
+      1361-01): ``get_by_keys`` issues ONE un-paged request naming every key, so a server that pages
+      the response or refuses the URL answers "absent" — and here absence is a DELETION. A short read
+      must raise, and it does;
+    * otherwise the PERSISTENT CATALOG, not a `iter_artifact_metas()` enumeration per history render
+      (packet 1361-01, ruling 9): "which of these records still exist" is ordinary artifact
+      discovery.
+
+    **``None`` is the honest answer when neither can answer**, and the distinction matters because
+    the callers DELETE on absence: an empty set says "none of them exist", which would groom a whole
+    history away on a storage failure. `None` says "we could not tell", and every caller keeps what
+    it has (ruling 3 — a failed read never destroys anything)."""
     if backend is None:
         from corpusfm.storage import get_backend
         backend = get_backend()
@@ -185,21 +199,29 @@ def existing_artifact_paths(backend=None, candidates=None) -> set:
         eng = getattr(backend, "engine", None)
         if eng is not None:
             try:
-                return {r.key for r in eng.get_by_keys("STORAGE", wanted)}
+                return set(eng.keys_present("STORAGE", wanted))
             except Exception:
-                pass   # fall through to the full listing
-    paths: set = set()
+                # An incomplete or failed keyed read is NOT "these records are gone". Fall through
+                # to the catalog, and to `None` if that cannot answer either.
+                pass
     try:
-        for m in backend.iter_artifact_metas():
-            if getattr(m, "uuid", ""):
-                paths.add(m.uuid)
+        from corpusfm.server import catalog
+        view = catalog.view(backend)
+        if not view.failed:
+            return set(view.candidate_uuids())
     except Exception:
         pass
-    return paths
+    return None
 
 
-def _path_exists(ref: str, existing: set, archive_dir: Optional[Path]) -> bool:
-    """True when the record UUID ``ref`` is among the currently-held ``existing`` set (085 U3f)."""
+def _path_exists(ref: str, existing: Optional[set], archive_dir: Optional[Path]) -> bool:
+    """True when the record UUID ``ref`` is among the currently-held ``existing`` set (085 U3f).
+
+    ``existing is None`` means existence could not be established at all, and the answer is then
+    True: the callers delete on False, and "we could not read storage" must never be spent as
+    "this artifact is gone"."""
+    if existing is None:
+        return bool(ref)
     return bool(ref) and ref in existing
 
 

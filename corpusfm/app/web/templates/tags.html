@@ -8,7 +8,7 @@
 
 {% block content %}
 {% from "_help.html" import doc_help %}
-<div x-data="tagsPage()">
+<div x-data="tagsPage()" :class="{'cfm-catalog-frozen': catalogFailed}" :aria-busy="catalogFailed">
 
   <div class="cfm-page-hdr">
     <h1>Tags</h1>
@@ -19,7 +19,17 @@
   </div>
   <p class="cfm-muted cfm-mt-6">Click a tag to view its records; Detail to edit.</p>
 
-  <template x-if="groups.length === 0 && !loading">
+  {# ── The one catalog condition (packet 1361-01). This page reads the tag registry and
+     membership exclusively from the persistent catalog, so a FAILED database read says so rather
+     than rendering "no tags in use" over a catalog nobody could read. Ordinary synchronization is
+     invisible here, as everywhere. #}
+  <template x-if="catalogFailed">
+    <div class="cfm-unavailable" role="status">
+      <span>Storage unreachable — the tag registry can't be read right now. Your tags are safe.</span>
+    </div>
+  </template>
+
+  <template x-if="groups.length === 0 && !loading && !catalogFailed">
     <p class="cfm-list-empty">No tags in use yet. Tag an artifact from the Artifacts page to create one.</p>
   </template>
 
@@ -111,12 +121,28 @@ function tagsPage() {
     groups: [], loading: false,
     detail: null, isNew: false, nameDraft: '', memberDraft: [], confirmDel: false, _trap: null,
     delBusy: false,                      // per-operation in-flight guard (packet 1186)
+    // The ONE catalog condition (packet 1361-01) — a failed database read, nothing else. Ordinary
+    // synchronization of the persistent catalog is invisible on every surface, this one included.
+    catalogFailed: false,
 
     async init() { await this.load(); },
     async load() {
       this.loading = true;
-      try { const r = await fetch('/api/tags'); const d = await r.json(); this.groups = d.groups || []; }
-      catch (_) {} finally { this.loading = false; }
+      try {
+        const r = await fetch('/api/tags');
+        const d = await r.json();
+        this.groups = d.groups || [];
+        // FREEZE first, explain second (ruling 3).
+        const failed = !!(d.catalog_failed || d.unavailable);
+        if (failed !== this.catalogFailed) {
+          this.catalogFailed = failed;
+          if (failed && window.cfmNotify) {
+            window.cfmNotify.error('The tag registry could not be read from storage. '
+              + 'Editing is paused until it recovers — your tags are safe.');
+          }
+        }
+      }
+      catch (_) { this.catalogFailed = true; } finally { this.loading = false; }
     },
 
     jump(name) { window.location = '{{ url_prefix }}/artifacts?tags=' + encodeURIComponent(name); },

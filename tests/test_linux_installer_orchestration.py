@@ -737,7 +737,7 @@ def test_the_canonical_units_grant_no_writable_installed_secret():
     rendered = {r: si.render_systemd_unit(
                     si.systemd_unit_spec(r, osl, install_dir=si.DEFAULT_POSIX_INSTALL_DIR,
                                          description=f"CORPUSfm {r}"))
-                for r in ("web", "scheduler")}
+                for r in si.SERVICE_ROLES}
     def grants(text):
         return {l.split("=", 1)[1] for l in text.splitlines() if l.startswith("ReadWritePaths=")}
 

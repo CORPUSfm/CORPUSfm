@@ -5,19 +5,31 @@ table shapes, no compatibility shims). The old *migrate-into-new-file* data engi
 (export → close → swap → import → verify, carrying pre-generic named tables forward)
 is RETIRED — it only ever migrated the pre-``.500`` NAMED schema into the generic
 substrate, which no supported box runs, and the packet forbids carrying data across a
-schema change. What survives is the **build-mismatch gate**: when the deployed code
-expects a newer schema than the live DB, we lock the UI to a "fresh install required"
-page rather than silently running against a stale DB.
+schema change. What survives is **build-mismatch DETECTION**: when the deployed code
+expects a different schema than the live DB, startup refuses.
 
-The gate is CACHED + FAIL-OPEN (any read error → not gated; never brick a working
-box) and SELF-CLEARING (a transient boot read that can't reach OData won't stick
-until a manual restart — an ACTIVE gate re-evaluates on access, throttled).
+**There is no cached UI gate any more (packet 1361-01, round 12).** `refresh_gate()`,
+`gate_active()`, the `_GATE` cache, its throttled self-clearing re-check and the
+`/build-mismatch` page it redirected to are all retired. They existed to lock a SERVING
+box's UI, and a box with a proven mismatch is not serving: round 11 made it a
+deterministic startup refusal, so the process pauses before anything is published and the
+local paused supervisory page carries the guidance. Nothing could reach the cached gate
+after that, which is why it is gone rather than kept "just in case".
+
+Two detectors survive, for two different questions:
+
+* :func:`probe_build` — the STRICT startup probe. One live-Build read, unguarded, returning
+  the structured facts the startup authority needs for BOTH its classification and its
+  administrator guidance.
+* :func:`is_pending` — the FAIL-OPEN convenience its remaining runtime consumers use
+  (`latest.latest_available`, `tags_store`) to decide whether a schema-dependent feature is
+  usable. Fail-open is right there: those callers must never brick a working box.
 """
 
 from __future__ import annotations
 
 import logging
-import time as _time
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -56,40 +68,41 @@ def is_pending(backend) -> bool:
     return live != target
 
 
-# ── Build-mismatch gate ──────────────────────────────────────────────────────
-# When the running code expects a newer schema than the live DB (is_pending), the
-# in-app pull can't fix it (085 is fresh-install-only — there is no in-place
-# migration). We lock the UI to a "fresh install required" page and pause in-app
-# updates. Cached + FAIL-OPEN (any error → not gated; never brick a working box).
-#
-# Self-clearing: the gate is computed once at startup, but a transient boot read (FMS/
-# OData not answering yet) must not stick until a manual restart. When the gate is
-# ACTIVE we re-evaluate is_pending on access (throttled to at most _GATE_RECHECK_SECS),
-# so once OData is healthy the gate clears WITHOUT a restart. The INACTIVE state stays
-# cached/cheap — no per-request FM read when nothing is gated.
+# ── The strict startup probe ─────────────────────────────────────────────────
 
-_GATE_RECHECK_SECS = 30.0
-_GATE: dict = {"active": False, "backend": None, "last_check": 0.0}
+@dataclass(frozen=True)
+class BuildProbe:
+    """What ONE successful live-Build read established.
 
+    Structured rather than a bare bool because the startup authority needs the same facts twice
+    (packet 1361-01, round 12): once to CLASSIFY — a proven mismatch is a deterministic refusal —
+    and once to compose the direction-specific guidance the paused supervisory page shows. It used
+    to get the verdict from the probe and then read the Build a SECOND time to build the sentence,
+    which is two reads of one fact and two chances for them to disagree.
+    """
 
-def refresh_gate(backend) -> bool:
-    _GATE["backend"] = backend
-    _GATE["last_check"] = _time.monotonic()
-    try:
-        _GATE["active"] = bool(is_pending(backend))
-    except Exception:
-        _GATE["active"] = False
-    return _GATE["active"]
+    mismatch: bool
+    live: str
+    expected: str
 
 
-def gate_active() -> bool:
-    if not _GATE.get("active"):
-        return False
-    backend = _GATE.get("backend")
-    if backend is not None and (_time.monotonic() - _GATE.get("last_check", 0.0)) >= _GATE_RECHECK_SECS:
-        _GATE["last_check"] = _time.monotonic()
-        try:
-            _GATE["active"] = bool(is_pending(backend))
-        except Exception:
-            logger.debug("gate_active: re-check failed", exc_info=True)
-    return bool(_GATE.get("active"))
+def probe_build(backend) -> BuildProbe:
+    """Read the live Build ONCE and say what it proves. RAISES on an unreadable Build.
+
+    :func:`is_pending` fails open on every exception, which is right for a running box's feature
+    check and WRONG as a startup prerequisite (packet 1361-01, round 3): "I could not read the
+    Build" is not evidence the schema matches, and recording it as "no mismatch" is exactly the
+    fail-open the ruling forbids. This lets the read error out so the startup authority can stop the
+    attempt and retry the whole chain.
+
+    * unreadable → raises (the caller classifies it transient);
+    * successfully read EMPTY → ``mismatch False`` and stays indeterminate, because a fresh corpus
+      has no stamp yet and refusing to boot on it would brick every new installation;
+    * read and DIFFERENT → ``mismatch True``, which is typed, authoritative and deterministic;
+    * read and equal → ``mismatch False``, and startup proceeds normally.
+    """
+    target = expected_build()
+    if not target or not hasattr(backend, "load_fm_build"):
+        return BuildProbe(False, "", target)
+    live = str(backend.load_fm_build()).strip()       # ONE read, deliberately UNGUARDED
+    return BuildProbe(bool(live and live != target), live, target)

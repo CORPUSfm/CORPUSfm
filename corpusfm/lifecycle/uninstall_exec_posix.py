@@ -59,7 +59,7 @@ from . import uninstall_pending as pending
 from .errors import LifecycleError
 from .layout import POSIX, WINDOWS
 from .lock import LockNotHeld, require_lock
-from .service_identity import SERVICE_ROLES, UNIT_KIND_SERVICE
+from .service_identity import REMOVABLE_SERVICE_ROLES, UNIT_KIND_SERVICE
 
 # ── the closed outcome vocabulary ─────────────────────────────────────────────
 
@@ -1591,7 +1591,11 @@ class UninstallExecutor:
         record = self._record()
         planned = [op for op in record.remaining
                    if isinstance(op, pending.ManagedUnitOperation)
-                   and op.unit_kind == UNIT_KIND_SERVICE and op.role in SERVICE_ROLES]
+                   # REMOVABLE, not rendered (packet 1361-01, round 3): a box installed by an
+                   # earlier build still carries the retired `corpusfm-scheduler` service, and this
+                   # quiesce must stop it. `SERVICE_ROLES` is now the RENDERED set and would skip it.
+                   and op.unit_kind == UNIT_KIND_SERVICE
+                   and op.role in REMOVABLE_SERVICE_ROLES]
         seen = []
         failures = []
         refusals = []

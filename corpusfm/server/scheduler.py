@@ -1,74 +1,82 @@
-"""Job scheduler for server deployment mode — one observation per server-local minute.
+"""Job scheduling — a WEB-OWNED background component, one observation per server-local minute.
 
-Runs as a standalone background process separate from the FastAPI web process
-(the corpusfm-scheduler service). Shares state with the web process through the
-storage backend (FM OData in production) plus the local jobs/history dirs.
+**It is no longer a separate process** (packet 1361-01, availability correction round 2). The
+standalone `corpusfm-scheduler` service was a second process with its own unsupervised in-memory
+readiness gate: while the web process was PAUSED it went on reading the JOB table, reading the
+projection version, writing HISTORY, evaluating ALERTs and enqueueing QUEUE work against a FileMaker
+the product had just declared unreadable. That is the exact state the two-state ruling forbids —
 
-Usage:
-    python -m corpusfm.server.scheduler [options]
+    CORPUSfm is either database-ready or paused. There is no partially operational state.
 
-Options:
-    --jobs-dir PATH          directory containing job YAML files (default: project_root/jobs/)
-    --archive-dir PATH       XML archive directory (default: project_root/archive/)
-    --history-dir PATH       run history directory (default: project_root/history/)
+— and a second process cannot honour a process-wide gate. So the clock moved into the one process
+that owns readiness. It starts from the SAME resume path that starts the catalog synchronizer and
+the queue workers, it consults the SAME `availability` gate before every cycle, and it stops with
+the web process.
 
-THE OCCURRENCE MODEL (packet 1185, tranche A)
+**The occurrence model is unchanged** (packet 1185, tranche A), and none of it is negotiable here:
+
     A schedule is a description of *which minutes match*, evaluated against the server's own local
     wall clock (``core.servertime``). Each cycle asks one question — "does the minute I am standing
     in match?" — and that is the whole contract.
 
-    Three behaviours fall out of it, and each replaces a defect:
-
-    - **No catch-up.** A minute that passed while the scheduler was down is simply gone. The old
-      model computed the next fire *after the last run* and asked whether it had passed, so a job
-      idle over a weekend fired the instant the process came back — a stampede dressed as recovery.
-    - **A never-run job is not due.** Absence of run state used to mean "fire immediately", so
-      saving a schedule ran the job. It now waits for its next matching minute; **Run now** is the
-      only immediate action (packet 1185 decision 7).
-    - **Minute resolution only.** Seconds-level scheduling is retired (decision 5). Schedules are
-      the structured ``once``/``weekly`` shapes in ``server.jobs.schedule``; a stored cron
-      expression is translated once on load, and an expression the model cannot express stops
-      firing and says so rather than being approximated.
+    - **No catch-up.** A minute that passed while the process was down — or PAUSED — is simply gone.
+      The only minute ever observed is the current one. Pausing therefore needs no special rule: a
+      cycle that returns early has not consumed a minute and has not deferred one.
+    - **A never-run job is not due.** Absence of run state is not a reason to fire. **Run now** is
+      the only immediate action (packet 1185 decision 7).
+    - **Minute resolution only.** Seconds-level scheduling is retired (decision 5). A stored cron
+      expression is translated once on load; one the model cannot express stops firing and says so.
 
     **Not at-most-once, and the packet says so.** An occurrence is enqueued once in normal
-    operation. A process restart landing inside a matching minute can observe that minute again,
-    and a crash between the enqueue and its durable record can run it twice. HISTORY is best-effort
+    operation. A restart landing inside a matching minute can observe that minute again, and a crash
+    between the enqueue and its durable record can run it twice. HISTORY is best-effort
     instrumentation, not an authority that refuses a second attempt (ruled in packet 1209 — do not
     build a duplicate-refusal check on top of it). ``_fire``'s in-flight guard covers the common
     case; the rest is stated honestly rather than defended against.
 
-Design:
-    - One cycle per server-local minute boundary, recomputed from the clock so work duration
-      cannot make the observation drift forward through the minute
-    - A Job Run is enqueued onto the QUEUE workspace; the pull worker executes it
-    - Graceful shutdown on SIGINT / SIGTERM
+**What the readiness gate changes, precisely.** Before every cycle the component asks
+``availability.is_open()``. While it is closed the cycle performs NO JOB, HISTORY, QUEUE, ALERT or
+any other FileMaker operation and enqueues nothing — it records that it is paused in memory and
+parks until the next boundary. It creates no recovery mechanism of its own: the availability
+coordinator is the only component that contacts FileMaker while paused, and this one simply waits
+for it to succeed.
+
+**It asks no projection-version question of its own** (packet 1361-01, round 3). That check was a
+per-cycle FileMaker read asking whether this build may address this corpus at all — a STARTUP
+question whose answer cannot change without the conversion only startup performs. It is asked once,
+by :mod:`corpusfm.server.startup`, before this component is started; a clock that is running is
+therefore running on a corpus this build may address, and the `waiting` status it used to report is
+gone with it.
+
+**Status is in MEMORY, not a file.** The old `scheduler.json` liveness file existed so another
+process could tell whether the scheduler was alive. There is no other process now, so the surface
+that reports it lives where the answer is exact — and reading it touches no database, which is what
+lets an operator ask while the box is paused.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
 import logging
-import signal
-import sys
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 from corpusfm.core import servertime
 from corpusfm.server.jobs import schedule as _schedule
-from corpusfm.server.jobs.store import default_jobs_dir, list_jobs
+from corpusfm.server.jobs.store import list_jobs
 
 log = logging.getLogger("corpusfm.scheduler")
 
-STATUS_FILE = "scheduler.json"
+# `STATUS_FILE` and `state_dir()` are GONE (packet 1361-01, round 2). They existed so a SEPARATE
+# process could publish its liveness for the web process to read, and staleness stood in for "is it
+# alive". There is no separate process, so the answer is exact and lives in memory — and asking for
+# it touches neither the filesystem nor FileMaker, which is what makes it answerable while paused.
 
 # One cycle per server-local minute. Schedules have minute resolution, so a faster cadence buys
 # nothing and costs a duplicate: a schedule matches for the WHOLE minute, so a 30-second poll
-# matched the same minute twice and fired twice. Monitoring reads this back out of the status file
-# to decide staleness, so the two stay in step by construction.
+# matched the same minute twice and fired twice. It is fixed, and there is no longer any surface
+# through which an operator can ask for a different one.
 CYCLE_SECONDS = 60
 
 # Wake a beat past the boundary. A timer that fires a few milliseconds EARLY lands on :59.99x of the
@@ -116,38 +124,43 @@ def _resolve(trigger) -> Optional[object]:
 class Scheduler:
     """Fires jobs whose schedule matches the current server-local minute."""
 
-    def __init__(
-        self,
-        jobs_dir: Path,
-        archive_dir: Path,
-        history_dir: Path,
-        poll_interval: Optional[int] = None,
-    ):
-        self.jobs_dir = jobs_dir
-        self.archive_dir = archive_dir
-        self.history_dir = history_dir
-        # Accepted, reported, and NOT honoured. Callers (the service unit, the CLI, older configs)
-        # still pass it; refusing to start over a retired knob would be a worse trade than saying
-        # plainly that the cadence is fixed. Sub-minute polling is not a shipped mode any more —
-        # it double-fired, because a match is true for the whole minute.
-        if poll_interval is not None and int(poll_interval) != CYCLE_SECONDS:
-            log.info("poll interval %ss ignored — the scheduler observes one server-local minute "
-                     "per cycle (schedules have minute resolution)", poll_interval)
+    def __init__(self):
+        # NO CONSTRUCTOR ARGUMENTS AT ALL (packet 1361-01, round 2). `archive_dir`, `poll_interval`
+        # and `status_dir` were process-only knobs: a standalone service selected its own archive,
+        # asked for its own cadence and published its own liveness file. A web-owned component reads
+        # the one backend the process already composed, runs the one fixed cadence, and reports its
+        # state from memory — so there is nothing left to configure and nothing left to disagree.
         self.poll_interval = CYCLE_SECONDS
         self._stop = threading.Event()
         self._last_minute: Optional[datetime] = None
         self._warned_seconds: set[str] = set()
-        # One log line per gated stretch, not one per cycle (see `_job_work_permitted`).
-        self._version_gate_logged = False
+        # One log line per paused stretch, not one per cycle (see `_check_and_fire`).
+        self._paused_logged = False
+        # ── the in-memory status surface ────────────────────────────────────────
+        self._status_lock = threading.Lock()
+        # starting → running (firing) | paused (CORPUSfm cannot read the database) → stopped.
+        # `starting` exists so a component whose thread has been created but has not yet reached its
+        # first cycle never reports `stopped`, which would read as "the clock died" during the start
+        # race. There is no `waiting` state: the projection-version question is answered once by the
+        # startup authority, before this component is started at all (packet 1361-01, round 3).
+        self._state = "starting"
+        self._last_cycle_utc = ""
+        self._active_jobs: list = []
+        self._cycles = 0
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def run(self) -> None:
-        """Block and run the scheduler loop until stop() is called."""
+        """Block and run the scheduler loop until stop() is called.
+
+        Runs on the web process's own background thread (see :func:`ensure_started`); nothing calls
+        this from a `__main__`."""
         info = servertime.clock_info()
         log.info("Scheduler started — one cycle per minute, server clock %s%s",
                  info.label(), " (DST not predicted)" if not info.predicts_dst else "")
-        self._write_status("running")
+        # The status is NOT set to "running" here. The first cycle decides what this component is
+        # actually doing — and on a paused box the honest word is `paused`, not a "running" that the
+        # next tick corrects. It stays `starting` until then (set in `__init__`).
 
         consecutive_failures = 0
         try:
@@ -156,11 +169,12 @@ class Scheduler:
                     self._check_and_fire()
                     consecutive_failures = 0
                 except Exception as exc:
-                    # A transient backend blip (storage DB down / OData refusing) must NOT kill the
-                    # scheduler: an unguarded raise here exits the loop → the process dies → Restart=always
-                    # crash-loops it, re-importing the whole dep tree every cycle (a sustained CPU burn
-                    # until the backend returns). Log, keep running, and ride it out to the next poll —
-                    # self-recovers when storage is back. (Mirrors _check_alerts, already guarded.)
+                    # A transient backend blip must NOT kill the clock: an unguarded raise here exits
+                    # the loop and the component is simply gone for the life of the process, with
+                    # only the `scheduler_stopped` alert to say so. Log, keep running, ride it out.
+                    # (When the blip is a genuine availability failure the readiness gate has already
+                    # closed and the next cycle returns at the gate — this guard is for everything
+                    # else. Mirrors _check_alerts, already guarded.)
                     # Traceback ONCE (first failure of a run of them); after that a terse one-line per
                     # cycle so a sustained outage doesn't spew a full stack every minute (packet 1067).
                     consecutive_failures += 1
@@ -172,12 +186,35 @@ class Scheduler:
                                  consecutive_failures, exc)
                 self._sleep_until_next_cycle()
         finally:
-            self._write_status("stopped")
+            self._set_status("stopped")
             log.info("Scheduler stopped")
 
     def stop(self) -> None:
         """Signal the scheduler to stop after the current poll."""
         self._stop.set()
+
+    # ── the in-memory status surface ───────────────────────────────────────────
+
+    def _set_status(self, state: str, active_jobs: Optional[list] = None) -> None:
+        """Record what this component is doing. MEMORY ONLY — no file, no database.
+
+        That is what lets an operator ask while the box is paused: the honest answer to "is the
+        scheduler alive and is it firing" must not itself require the thing that is unavailable."""
+        with self._status_lock:
+            self._state = state
+            self._last_cycle_utc = datetime.now(tz=timezone.utc).isoformat()
+            self._cycles += 1
+            if active_jobs is not None:
+                self._active_jobs = list(active_jobs)
+
+    def status(self) -> dict:
+        """This component's own state. Costs one lock and reads nothing."""
+        with self._status_lock:
+            return {"status": self._state,
+                    "ts": self._last_cycle_utc,
+                    "poll_interval": self.poll_interval,
+                    "cycles": self._cycles,
+                    "active_jobs": list(self._active_jobs)}
 
     # ── Internal ───────────────────────────────────────────────────────────────
 
@@ -221,59 +258,60 @@ class Scheduler:
                 return
             self._stop.wait(timeout=min(_STOP_CHECK_SECONDS, remaining))
 
-    def _job_work_permitted(self) -> bool:
-        """May this cycle fire anything? (packet 1372-01)
-
-        The scheduler is a SEPARATE PROCESS from the web service and it never converts. The web
-        service owns the `ProjectionVersion` 1 → 2 transition that re-keys every JOB record; until
-        that stamp lands, a schedule fired from here would enqueue work against a table this build
-        cannot address. So the scheduler reads the stored version and, while it is absent, behind,
-        malformed or unreadable, fires nothing and says so.
-
-        WAITING IS THE WHOLE MECHANISM AND IT NEEDS NO NEW ONE: the loop already runs a cycle per
-        minute, so returning False here IS the recheck. There is no separate poller, no timeout and
-        no give-up — a corpus that never converts simply never fires, which is the honest outcome.
-
-        A failure to READ is treated exactly like "not converted". Firing a job because storage was
-        briefly unreachable is the opposite of what an unreadable answer should license.
-        """
-        from corpusfm.storage import get_backend, projections
-        try:
-            permitted = projections.conversion_complete(get_backend(self.archive_dir))
-        except Exception:
-            log.warning("scheduler: could not read the corpus projection version; firing nothing "
-                        "this cycle", exc_info=True)
-            permitted = False
-        if permitted:
-            self._version_gate_logged = False
-            return True
-        if not self._version_gate_logged:
-            # ONCE per gated stretch, not once a minute: a corpus that sits unconverted overnight
-            # would otherwise write 480 identical lines into the journal, which is how a real signal
-            # gets tuned out.
-            log.warning("scheduler: this corpus is not at the projection version this build "
-                        "requires, so the JOB identity conversion has not completed. No schedule "
-                        "will fire until the web service converts and stamps it. Re-checking every "
-                        "cycle; nothing is being skipped permanently.")
-            self._version_gate_logged = True
-        return False
-
     def _check_and_fire(self) -> None:
-        """Observe the current server-local minute; fire every schedule that matches it."""
+        """Observe the current server-local minute; fire every schedule that matches it.
+
+        **THE READINESS GATE IS THE FIRST THING THIS DOES, before any database operation at all**
+        (packet 1361-01, round 2). A paused CORPUSfm performs no JOB, HISTORY, QUEUE or ALERT read
+        or write, and enqueues nothing — so the check cannot live inside the schedule enumeration,
+        which is itself a FileMaker read, nor inside `_fire`, which is already past it.
+
+        **A PAUSED CYCLE STILL OBSERVES ITS MINUTE.** This is the whole of the hot-loop correction
+        (packet 1361-01). The paused branch used to return WITHOUT advancing `_last_minute`, and
+        `_seconds_to_next_minute` answers `0.0` for a minute nobody has looked at — so every paused
+        cycle asked for a zero-length wait and the loop spun. Measured on u-test-private,
+        2026-09-03: one thread at 100.07% of a core for as long as the database stayed closed, with
+        no FileMaker traffic at all, because the spin never got past this gate.
+
+        Recording the minute is a CLOCK read and nothing else — no JOB, HISTORY, QUEUE or ALERT
+        access, no enqueue, no schedule evaluation — so the paused contract is untouched.
+
+        It also keeps "a minute missed while paused is not caught up" true, and makes it stronger
+        rather than weaker. The minute is CONSUMED here, so a recovery landing inside that same
+        minute finds `minute == self._last_minute` and does not fire it; the following minute is a
+        new observation and fires normally when eligible. The old comment claimed the no-catch-up
+        rule came from NOT advancing the marker. That reasoning was wrong on both halves: it is the
+        forward-only observation that provides the rule, and not advancing bought nothing except
+        the spin.
+        """
+        from corpusfm.server import availability
+        if not availability.is_open():
+            if not self._paused_logged:
+                # ONCE per paused stretch. An outage lasting a shift would otherwise write one line
+                # a minute into the journal, which is how a real signal gets tuned out.
+                log.info("scheduler: CORPUSfm is paused — no schedule is evaluated and nothing is "
+                         "enqueued until one complete database validation succeeds. Missed minutes "
+                         "are not caught up.")
+                self._paused_logged = True
+            self._set_status("paused")
+            # OBSERVE, DO NOT FIRE. Consuming the minute is what turns the next
+            # `_seconds_to_next_minute` into a real boundary wait instead of zero.
+            self._last_minute = servertime.local_now().replace(second=0, microsecond=0)
+            return
+        self._paused_logged = False
         now = servertime.local_now()
         minute = now.replace(second=0, microsecond=0)
-        # THE GATE SUPPRESSES FIRING AND NOTHING ELSE (packet 1372-01). Status and alerts still run
-        # below: a box sitting unconverted is exactly when an operator needs monitoring to keep
-        # working, and silencing the alert path would turn one problem into two invisible ones.
-        permitted = self._job_work_permitted()
+        # THERE IS NO PER-CYCLE PROJECTION-VERSION READ ANY MORE (packet 1361-01, round 3). The
+        # `ProjectionVersion` / JOB-identity conversion question is asked ONCE, by the startup
+        # authority, before this component or a queue worker exists — so a clock that is running at
+        # all is running on a corpus this build may address. The old per-cycle read was a FileMaker
+        # operation on a repeating clock asking a question whose answer cannot change without the
+        # conversion that only startup performs, and its `waiting` state went with it.
+        #
         # An early-firing timer, a manual poke, or a retry after a failed cycle can land twice in
         # one minute. This is loop hygiene, NOT an occurrence authority: a process that restarts
         # inside a matching minute starts with no marker and observes it again (packet 1209).
-        #
-        # THE MINUTE IS NOT CONSUMED WHILE GATED: `_last_minute` only advances on a cycle that was
-        # allowed to fire, so the minute in which the conversion lands is still observed rather than
-        # having been marked seen by a cycle that fired nothing.
-        if permitted and minute != self._last_minute:
+        if minute != self._last_minute:
             self._last_minute = minute
             self._fire_matching_schedules(minute)
 
@@ -281,11 +319,11 @@ class Scheduler:
         try:
             from corpusfm.server.jobs.run_queue import active_runs
             from corpusfm.storage import get_backend
-            active = sorted({m.get("job_name", "") for m in active_runs(get_backend(self.archive_dir))
+            active = sorted({m.get("job_name", "") for m in active_runs(get_backend())
                              if m.get("job_name")})
         except Exception:
             active = []
-        self._write_status("running" if permitted else "waiting", active_jobs=active)
+        self._set_status("running", active_jobs=active)
 
         # Evaluate and dispatch alerts (errors here never kill the scheduler)
         self._check_alerts()
@@ -296,11 +334,10 @@ class Scheduler:
             from corpusfm.server.monitor.alerts import evaluate_alerts, append_alert
             from corpusfm.server.monitor.notify import dispatch_alert
             from corpusfm.server.monitor.config import load_monitor_config
+            from corpusfm.storage import get_backend
 
             config = load_monitor_config()
-            new_alerts = evaluate_alerts(
-                self.jobs_dir, self.history_dir, self.archive_dir, config
-            )
+            new_alerts = evaluate_alerts(get_backend().archive_dir, config)
             for alert in new_alerts:
                 # Guard EACH alert: append_alert is now an OData write (packet 1019), far more
                 # failure-prone than the retired jsonl append — an unguarded raise here would skip
@@ -320,7 +357,7 @@ class Scheduler:
         away the identity it was already holding, and with duplicate names now ordinary it could
         reload a DIFFERENT job than the one whose schedule matched.
         """
-        for job_cfg, _load_error in list_jobs(self.jobs_dir):
+        for job_cfg, _load_error in list_jobs():
             if job_cfg is None:
                 continue
             for trigger in (t for t in (job_cfg.triggers or []) if t.type == "schedule"):
@@ -359,7 +396,7 @@ class Scheduler:
         error — better a rare double-run than a silently never-fired schedule. A MANUAL run bypasses
         this guard (it's the web/MCP path, which always enqueues)."""
         from corpusfm.storage import get_backend
-        backend = get_backend(self.archive_dir)
+        backend = get_backend()
         job_uuid = getattr(job, "id", "") or ""
         if not job_uuid:
             # Unreachable after the 1372-01 conversion, which gives every job a sound id, and worth
@@ -382,126 +419,131 @@ class Scheduler:
             # log and move on (the schedule re-fires next tick).
             log.error("Job '%s' fire failed: %s", getattr(job, "name", "?"), exc)
 
-    def _write_status(self, status: str, active_jobs: Optional[list] = None) -> None:
-        status_path = self.jobs_dir / STATUS_FILE
-        try:
-            status_path.write_text(
-                json.dumps(
-                    {
-                        "status": status,
-                        "ts": datetime.now(tz=timezone.utc).isoformat(),
-                        "poll_interval": self.poll_interval,
-                        "active_jobs": active_jobs or [],
-                    },
-                    indent=2,
-                )
-            )
-        except Exception:
-            pass  # status writes are best-effort
+# ── The one web-owned component, and its status surface ───────────────────────
+
+_component: Optional[Scheduler] = None
+_thread: Optional[threading.Thread] = None
+_ever_started = False
+_component_lock = threading.Lock()
 
 
-# ── Status helpers (used by UI) ───────────────────────────────────────────────
+def ensure_started() -> bool:
+    """Start the scheduler clock on this process's own thread. Returns True on the START edge only.
 
-def read_scheduler_status(jobs_dir: Path) -> dict:
-    """Read scheduler.json; returns empty dict if not present or invalid."""
-    status_path = jobs_dir / STATUS_FILE
-    try:
-        return json.loads(status_path.read_text())
-    except Exception:
-        return {}
+    **Called from the readiness RESUME path and from nowhere else** — the same callback that starts
+    the catalog synchronizer and the queue workers, on every closed→open edge. It is idempotent by
+    the same discipline `catalog.start_synchronizer` uses: the whole start happens under ONE lock
+    acquisition, so two concurrent resumes cannot produce two clocks, and repeated pause/recovery
+    cycles cannot accumulate threads.
+
+    The component is NOT stopped when readiness closes. It stays alive and no-ops its cycles, which
+    is what "sleeps until readiness reopens" means here — one loop, one clock, and no second recovery
+    mechanism competing with the availability coordinator for the database.
+    """
+    global _component, _thread, _ever_started
+    with _component_lock:
+        if _thread is not None and _thread.is_alive():
+            return False
+        _component = Scheduler()
+        t = threading.Thread(target=_component.run, name="cfm-scheduler", daemon=True)
+        _thread = t
+        _ever_started = True
+        t.start()
+        return True
 
 
-#: Status words a LIVE scheduler process writes. `waiting` (packet 1372-01) means the process is
-#: alive and cycling but firing nothing, because the corpus has not reached the projection version
-#: this build requires. It is deliberately a distinct word rather than a flag on `running`, and both
-#: consumers were updated to say so: `corpusfm scheduler status` prints "waiting" with the reason,
-#: and the Recent-activity pop-over says "Scheduler waiting — jobs paused". Writing the word without
-#: teaching the readers it would have left every surface reporting "running" while nothing could
-#: fire, which is the comfortable answer rather than the true one.
-_LIVE_STATUSES = ("running", "waiting")
+def stop_scheduler(timeout: float = 5.0) -> None:
+    """Stop the component and join it. Web shutdown, and the test seam."""
+    global _component, _thread
+    with _component_lock:
+        component, thread = _component, _thread
+        _component = None
+        _thread = None
+    if component is not None:
+        component.stop()
+    if thread is not None:
+        thread.join(timeout=timeout)
 
 
-def scheduler_is_running(jobs_dir: Path) -> bool:
-    """True if a scheduler PROCESS has written a recent live status.
+def reset_for_testing() -> None:
+    """Stop the component AND forget that one ever ran (test seam / process shutdown)."""
+    global _ever_started
+    stop_scheduler()
+    with _component_lock:
+        _ever_started = False
+
+
+def scheduler_is_running() -> bool:
+    """Is the web-owned scheduler clock alive in THIS process?
 
     Liveness, not productivity — the callers use it to decide whether a scheduler exists at all (the
-    monitor raises a "scheduler down" alert from it). A gated scheduler is up: reporting it as down
-    would raise the wrong alarm and, worse, would make the real problem look like a dead process.
+    monitor raises a "scheduler down" alert from it). A PAUSED scheduler is alive: reporting it as
+    down would raise the wrong alarm and, worse, would make the real problem look like a dead clock.
+
+    It used to be a staleness judgement over a file another process wrote. There is no other process,
+    so this is now the exact answer, and it reads nothing.
     """
-    info = read_scheduler_status(jobs_dir)
-    if info.get("status") not in _LIVE_STATUSES:
-        return False
-    ts_str = info.get("ts")
-    if not ts_str:
-        return False
-    try:
-        ts = datetime.fromisoformat(ts_str)
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        now = datetime.now(tz=timezone.utc)
-        # Stale if last write is more than 3× the cycle interval ago. The interval is read back out
-        # of the file the running scheduler wrote, so a box still running an older build is judged
-        # by ITS cadence rather than this one.
-        poll = int(info.get("poll_interval", CYCLE_SECONDS))
-        return (now - ts).total_seconds() < poll * 3
-    except Exception:
-        return False
+    with _component_lock:
+        return bool(_thread is not None and _thread.is_alive())
 
 
-# ── CLI entry point ───────────────────────────────────────────────────────────
-
-def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="python -m corpusfm.server.scheduler",
-        description="corpusfm scheduler — runs jobs on the server's own local clock, checking once a minute",
-    )
-    p.add_argument("--jobs-dir", default=None, help="Job YAML directory (default: project_root/jobs/)")
-    p.add_argument("--archive-dir", default=None, help="XML archive directory")
-    p.add_argument("--history-dir", default=None, help="Run history directory")
-    # Still parsed so an installed service unit or an operator's muscle memory does not fail to
-    # start; the value is reported as ignored rather than silently dropped.
-    p.add_argument("--poll-interval", type=int, default=None,
-                   help=argparse.SUPPRESS)
-    p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
-    return p
+def scheduler_ever_started() -> bool:
+    """Has this process ever started the clock? The in-memory successor to "a status file exists"."""
+    with _component_lock:
+        return _ever_started
 
 
-def main(argv=None) -> None:
-    args = _build_parser().parse_args(argv)
-    level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+def read_scheduler_status() -> dict:
+    """The web-owned scheduler's own state, from memory. Empty when it has never run.
 
-    # Resolve directories
-    from corpusfm.server.jobs.store import default_history_dir
+    Keys are the ones the operator surfaces already read (`status` / `ts` / `poll_interval` /
+    `active_jobs`), so the Recent-activity pop-over and the monitor needed no change. `status` is
+    one of `running` (firing), `paused` (alive, but CORPUSfm cannot read the database) or
+    `stopped`.
 
-    jobs_dir = Path(args.jobs_dir) if args.jobs_dir else default_jobs_dir()
-    archive_dir = Path(args.archive_dir) if args.archive_dir else jobs_dir.parent / "archive"
-    history_dir = Path(args.history_dir) if args.history_dir else default_history_dir()
-
-    for d in (jobs_dir, archive_dir, history_dir):
-        d.mkdir(parents=True, exist_ok=True)
-
-    # No startup sweep (packet 086): a Job Run is a durable [pull] QUEUE record — a run interrupted by
-    # a restart is NOT orphaned, it's re-run by the pull worker (existence = not-done). Failed runs
-    # park durably for a human Restart/Delete. clear_all_runs is gone.
-
-    scheduler = Scheduler(
-        jobs_dir=jobs_dir,
-        archive_dir=archive_dir,
-        history_dir=history_dir,
-        poll_interval=args.poll_interval,
-    )
-
-    def _handle_signal(signum, frame):
-        log.info("Received signal %d — stopping scheduler", signum)
-        scheduler.stop()
-
-    signal.signal(signal.SIGINT, _handle_signal)
-    signal.signal(signal.SIGTERM, _handle_signal)
-
-    scheduler.run()
-    sys.exit(0)
+    **It reads no file and no database**, which is the point: the honest answer to "is the scheduler
+    alive" must not itself require the thing that may be unavailable.
+    """
+    with _component_lock:
+        component = _component
+    return component.status() if component is not None else {}
 
 
-if __name__ == "__main__":
-    main()
+# ── There is no standalone scheduler process ──────────────────────────────────
+#
+# `main()`, `_build_parser()`, the argparse surface and the signal handling are DELETED (packet
+# 1361-01, round 2). They started a second process with its own unsupervised readiness state, which
+# is the defect this round exists to remove.
+#
+# What remains is a REFUSAL, not an entry point. It is here rather than absent for one reason: an
+# obsolete `corpusfm-scheduler` unit still runs `python -m corpusfm.server.scheduler`, and a module
+# with no `__main__` would import cleanly, exit 0, and be restarted forever by `Restart=always` —
+# a silent crash-loop. Exiting non-zero with the reason is the loud outcome an operator can act on.
+#
+# ⚠ OWED, DELIBERATELY NOT DONE HERE: the private installer repository must remove or rewrite the
+# `corpusfm-scheduler` service unit. That change is not authorized in this round and this repository
+# does not touch the installer.
+
+_STANDALONE_REFUSAL = (
+    "corpusfm.server.scheduler is no longer a runnable process.\n"
+    "\n"
+    "Scheduling is part of the CORPUSfm web service now: it starts with the catalog synchronizer "
+    "and the queue workers when the database becomes readable, and it stops when the web service "
+    "stops. A second process could not honour the process-wide database-readiness gate — it kept "
+    "reading and writing FileMaker while CORPUSfm was paused.\n"
+    "\n"
+    "Stop and remove the corpusfm-scheduler service. Nothing else is needed: the web service "
+    "already schedules.\n"
+)
+
+
+def main(argv=None) -> int:                       # pragma: no cover - exercised by its own test
+    """Refuse, loudly and non-zero. This is not an entry point; it is the absence of one."""
+    import sys
+    sys.stderr.write(_STANDALONE_REFUSAL)
+    return 2
+
+
+if __name__ == "__main__":                        # pragma: no cover - process entry
+    import sys as _sys
+    _sys.exit(main())

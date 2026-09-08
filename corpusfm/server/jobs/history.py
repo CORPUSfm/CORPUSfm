@@ -6,20 +6,20 @@ backends (LocalBackend SQLite mirror + FM OData) — see :mod:`corpusfm.server.h
 one system of record and no local file mirror; ``RunRecord`` is just the in-memory shape a run
 is described in, and the two functions here delegate to the HISTORY layer.
 
+``default_history_dir`` is REMOVED (packet 1361-01). It resolved a directory nothing wrote to and
+nothing read from, and it existed only to keep the ``history_dir`` plumbing of a filesystem-executed
+job model resolving — a model the product does not support.
+
 Public API:
     RunRecord
-    default_history_dir()                                   — vestigial dir (nothing is written)
-    record_run(backend, run)                                — write a HISTORY Type=Run row
-    list_runs_for(job_uuid, history_dir, limit, backend) — read Type=Run for one job
+    record_run(backend, run)                    — write a HISTORY Type=Run row
+    list_runs_for(job_uuid, limit, backend)     — read Type=Run for one job
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
-
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 
 @dataclass
@@ -38,30 +38,19 @@ class RunRecord:
     job_name: Optional[str] = None
 
 
-def default_history_dir() -> Path:
-    """Vestigial: the JSONL run mirror is retired (085 U3c). Kept only so the historical
-    ``history_dir`` plumbing still resolves; nothing is written or read here now."""
-    return _PROJECT_ROOT / "history"
-
-
 def record_run(backend, run: RunRecord) -> None:
     """Persist a run outcome as a HISTORY Type=Run row (best-effort)."""
     from corpusfm.server.history import record_run as _record
     _record(backend, run)
 
 
-def list_runs_for(
-    job_uuid: str,
-    history_dir: Path = None,
-    limit: int = 50,
-    backend=None,
-) -> list[RunRecord]:
+def list_runs_for(job_uuid: str, limit: int = 50, backend=None) -> list[RunRecord]:
     """Run history for one job, newest first — HISTORY Type=Run scoped by `UUIDJob`.
 
     **The first positional is the job's UUID.** It used to be `job_name`, which the body then
     ignored in favour of a `job_uuid=` keyword — a dead parameter that made every call site read as
-    though history were name-scoped, and an open invitation to reintroduce exactly that.
-    `history_dir` is accepted for call-site compatibility and unused (there is no JSONL).
+    though history were name-scoped, and an open invitation to reintroduce exactly that. The dead
+    `history_dir` second positional went the same way (packet 1361-01).
     """
     from corpusfm.server.history import list_run_records
     return list_run_records(backend, job_uuid, limit=limit)

@@ -193,11 +193,21 @@ async def settings_data(request: Request) -> JSONResponse:
 async def archive_info() -> JSONResponse:
     try:
         from corpusfm.storage import get_backend
+        from corpusfm.server import catalog
         backend = get_backend()
+        # Counts are ordinary artifact discovery, so they come from the persistent catalog rather
+        # than a STORAGE enumeration per settings page load (packet 1361-01, ruling 9). The
+        # filesystem size below is still measured from the filesystem, which is the only authority
+        # for it.
+        _view = catalog.view(backend)
+        if _view.failed:
+            return JSONResponse({"exists": True, "catalog_failed": True, "unavailable": True,
+                                 "reason": "storage"})
+        _metas = [r["meta"] for r in _view.records]
 
         # FM backend: no filesystem — return snapshot counts only
         if not hasattr(backend, 'archive_dir'):
-            metas = backend.iter_artifact_metas()
+            metas = _metas
             snap_count = len(metas)
             fm_files = len({m.file_name for m in metas})
             return JSONResponse({
@@ -212,7 +222,7 @@ async def archive_info() -> JSONResponse:
         arc = backend.archive_dir
         if not arc.exists():
             return JSONResponse({"exists": False})
-        all_metas = backend.iter_artifact_metas()
+        all_metas = _metas
         snap_count = len(all_metas)
         # Group flat metas by file_name locally for the per-file display (no backend grouping).
         by_file: dict = {}

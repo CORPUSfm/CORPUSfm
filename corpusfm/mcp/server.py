@@ -155,9 +155,9 @@ if _SERVER_MODE:
     )
     from corpusfm.server.monitor.config import load_monitor_config
     from corpusfm.server.monitor.history import get_job_health
-    from corpusfm.server.jobs.history import default_history_dir, list_runs_for
+    from corpusfm.server.jobs.history import list_runs_for
     from corpusfm.server.jobs.state import read_state
-    from corpusfm.server.jobs.store import default_jobs_dir, list_jobs as _list_jobs, load_job as _load_job
+    from corpusfm.server.jobs.store import list_jobs as _list_jobs, load_job as _load_job
 
 def _canonical_public_base_url() -> "Optional[str]":
     """The canonical HTTPS base of the SUPPORTED CORPUSfm deployment to advertise in RFC 9728 / RFC 8414
@@ -638,6 +638,35 @@ def _require_patching_enabled() -> None:
                         "(enable_patching_mcp_tools is off — an admin can enable it in Settings).")
 
 
+# The tools that answer while the process is PAUSED (packet 1361-01). Each reads process state or
+# the installation record — never the FileMaker database — and together they are how an operator or
+# an agent finds out WHY everything else is refusing.
+#
+# `list_server_logs` and `read_server_log` were REMOVED from this set (round 3). The log FILES are
+# local, but both tools are in `_FMS_TOOLS`, so calling either runs `_require_fms_admin_enabled()` →
+# `load_app_config()` → the FM SETTINGS record. Their authorization switch is database-backed, which
+# makes the tools database-backed however local their payload is. A paused box's logs are read from
+# the box, which is where the Unknowable-Install Principle already says the out-of-band copy lives.
+#
+# `get_health` and `get_server_info` stay, and each carries an explicit PAUSED branch that reports
+# only in-memory and local facts (see their bodies). `server_capabilities`, `update_check` and
+# `update_status` were re-inspected in this round: `update_service` performs no database access at
+# all, and `server_capabilities` reads the version, the git head and module state.
+_READINESS_EXEMPT_TOOLS = frozenset({
+    "get_health", "get_server_info", "server_capabilities",
+    "update_check", "update_status",
+})
+
+
+def _require_database_ready() -> None:
+    """Refuse a database-dependent tool while CORPUSfm is paused. One check, every tool."""
+    from corpusfm.server import availability
+    if availability.is_open():
+        return
+    from fastmcp.exceptions import ToolError
+    raise ToolError(availability.unavailable_message())
+
+
 def _build_gate_middleware():
     from fastmcp.server.middleware import Middleware
 
@@ -649,6 +678,24 @@ def _build_gate_middleware():
             tools = await call_next(context)
             at = _current_access_token()
             scopes = None if at is None else set(getattr(at, "scopes", None) or [])
+
+            def _scoped(name) -> bool:
+                gate = _TOOL_GATES.get(name)
+                return not (gate is not None and scopes is not None and gate not in scopes)
+
+            # A PAUSED LISTING LOADS NEITHER SERVER-WIDE SWITCH (packet 1361-01, round 3). Both
+            # `_fms_admin_mcp_enabled` and `_patching_mcp_enabled` read the FM SETTINGS record, so
+            # discovery — which a client issues on every reconnect — was a database operation on a
+            # paused box. It also could not have answered honestly: both fail closed on a read error,
+            # so an outage silently presented a REDUCED tool surface as if an administrator had
+            # switched those families off. While paused the listing is the pause-safe tools the
+            # token's own scopes allow, and normal database-backed visibility resumes with readiness.
+            from corpusfm.server import availability
+            if not availability.is_open():
+                return [t for t in tools
+                        if getattr(t, "name", None) in _READINESS_EXEMPT_TOOLS
+                        and _scoped(getattr(t, "name", None))]
+
             fms_on = _fms_admin_mcp_enabled()
             patching_on = _patching_mcp_enabled()
             visible = []
@@ -658,14 +705,21 @@ def _build_gate_middleware():
                     continue
                 if name in _PATCHING_TOOLS and not patching_on:
                     continue
-                gate = _TOOL_GATES.get(name)
-                if gate is not None and scopes is not None and gate not in scopes:
+                if not _scoped(name):
                     continue
                 visible.append(tool)
             return visible
 
         async def on_call_tool(self, context, call_next):
             name = getattr(context.message, "name", None)
+            # THE PROCESS-WIDE PAUSE, enforced once for every tool (packet 1361-01). A paused
+            # CORPUSfm does not operate from a catalog it cannot vouch for, and a tool that answered
+            # from memory anyway would make a claim the process has just disowned — which is how
+            # `find_external_references` came to report "No stored file references X" during an
+            # outage. The exempt few carry no database read and are how an operator LEARNS the
+            # process is paused.
+            if name not in _READINESS_EXEMPT_TOOLS:
+                _require_database_ready()
             if name in _FMS_TOOLS:
                 _require_fms_admin_enabled()
             if name in _PATCHING_TOOLS:
@@ -788,16 +842,6 @@ mcp.add_middleware(_build_response_size_middleware())
 # ── Path helpers ───────────────────────────────────────────────────────────────
 
 
-def _bust_catalog_snapshot() -> None:
-    """Bust the catalog tag/lineage snapshot after an MCP-side artifact store (audit #2) —
-    the new row shows on the next catalog read, not after the TTL. Best-effort."""
-    try:
-        from corpusfm.server.tags_store import invalidate_record_views
-        invalidate_record_views()
-    except Exception:
-        pass
-
-
 def _artifact_uuid(ref: str, archive_dir: Optional[Path] = None) -> str:
     """Resolve an MCP artifact ref to its canonical record UUID (packet 085 U3f). ``ref`` is a
     record UUID or a human alias (PrimaryName / FileName / tag). Ambiguity raises with the
@@ -848,71 +892,66 @@ def _load_artifact(path_str: str, archive_dir: Optional[Path] = None) -> Artifac
 # ── Archive tools ──────────────────────────────────────────────────────────────
 
 def _catalog_view(backend):
-    """ONE catalog read serving artifact metas, user tags and the IsLatest view.
+    """``(metas, tags_map, latest_by_uuid, view)`` for the artifact-listing tools, from the ONE
+    persistent catalog (packet 1361-01).
 
-    Returns ``(metas, tags_map, latest_by_uuid)``. These were three independent exhaustive reads
-    inside a single tool call: `iter_artifact_metas()`, `load_tags()`'s uncached three-table fold,
-    and — for `latest_only` — the cached fold again moments later (packet 1370). They are one read
-    because `record_from_jor` already carries the canonical `meta` from the same parse, so the
-    catalog's records ARE the metas; nothing new is derived here.
+    Three independent full reads used to run inside a single tool call: ``iter_artifact_metas()``,
+    ``load_tags()``'s uncached three-table fold, and ``list_fm_artifact_records()`` for the IsLatest
+    view. They are one resident read model now. ``record_from_jor`` already carries the canonical
+    ``meta`` from the same JSONOfRecord parse, so the catalog's records ARE the metas; nothing new is
+    derived here, and nothing here touches the database.
 
-    `tags_store.catalog_view` is the reading half, and it is the reading half rather than
-    `record_views` for a reason Codex named: `record_views` reads all three tables unconditionally,
-    so an EMPTY catalog and a store without live v2 tag tables both paid a TAG and a STORAGELINK
-    read that the predecessor pair never performed. Visible STORAGE is read once; TAG/STORAGELINK
-    only when there is something to tag and the tables are available. The IsLatest view is derived
-    from the STORAGE records either way, so legacy latest filtering is unaffected.
+    **Packet 1370 deliberately left this UNCACHED and this packet reverses that — with its ground
+    removed, not overruled.** 1370's reason was specific and was caught by a test: the 60-second
+    record_view snapshot was busted by CORPUSfm's mutation chokepoints *but not by a bare*
+    ``store_artifact()``, so a warm-but-stale read reported "Archive is empty." for a just-stored
+    artifact. That case cannot occur now — every confirmed write goes straight into the persistent
+    model, so it carries the record before the store returns. What remains is an out-of-process write
+    (a person editing FileMaker directly), reconciled by the ordinary validation cycle. 1370 is closed
+    and its reasoning is provenance; this states why the answer now differs rather than citing the
+    closure.
 
-    ``latest_by_uuid`` is `None` whenever the catalog read was INCOMPLETE — the STORAGE read failed,
-    or the optional tag fold raised — never for an empty or legacy store. That is what keeps the
-    latest-only filter degrading to a no-op instead of hiding everything, and it is why the fallback
-    still enumerates metas rather than reporting an empty archive.
-
-    A tag-fold failure specifically keeps the records this call already read: it degrades the tags
-    and the latest view, and re-enumerates nothing. Suppressing the latest view there is NOT a
-    logical necessity — IsLatest lives on the STORAGE records, which are in hand — it is the
-    incumbent contract being preserved deliberately, because before this packet a raising fold left
-    `latest_only` unfiltered. Do not "fix" it into filtering without changing that contract first.
-
-    Deliberately UNCACHED. A tool result must be as fresh as `iter_artifact_metas()` was — the
-    record_views snapshot is busted by CORPUSfm's mutation chokepoints but not by a bare
-    `store_artifact()`, and reading a stale catalog is a different defect from the one this fixes.
-    The saving here is removing reads, not adding a cache.
+    ``metas`` is ``None`` only when the catalog's database read FAILED. That is not "the archive is
+    empty" — it is "the catalog could not be read", and the callers say so by name. There is no
+    fallback to ``backend.iter_artifact_metas()``: the persistent catalog is the sole row source for
+    MCP artifact listing (developer ruling).
     """
-    import logging
+    from corpusfm.server import catalog
+    view = catalog.view(backend)
+    if view.failed:
+        return None, {}, None, view
+    recs = view.records
+    metas = [r["meta"] for r in recs]
+    latest_by_uuid = {r["uuid"]: bool(r.get("is_latest", False)) for r in recs if r.get("uuid")}
+    return metas, view.tags, latest_by_uuid, view
 
-    from corpusfm.server import tags_store
-    metas = None
-    tags_map: dict = {}
-    latest_by_uuid = None
-    try:
-        recs, tags_map, tag_fold_failed = tags_store.catalog_view(backend)
-        metas = [r["meta"] for r in recs]
-        if not tag_fold_failed:
-            latest_by_uuid = {r["uuid"]: bool(r.get("is_latest", False))
-                              for r in recs if r.get("uuid")}
-    except Exception:
-        # The STORAGE read itself failed — nothing is in hand, so fall back to the plain
-        # enumeration and degrade to untagged rows and an unfiltered latest view. Logged rather
-        # than silent: a catalog read that has stopped working should be findable without someone
-        # noticing that the tag column went quiet.
-        tags_map = {}
-        logging.getLogger(__name__).warning("catalog view unavailable; listing metadata only",
-                                            exc_info=True)
-    if metas is None:
-        metas = list(backend.iter_artifact_metas())
-    return metas, tags_map, latest_by_uuid
+
+def _catalog_unavailable_message(view=None) -> str:
+    """The honest one-liner for a tool whose rows come from a catalog that could not be read.
+
+    It takes the view the caller ALREADY obtained and never reads again (packet 1361-01): a second
+    catalog read would describe a different moment than the one that produced the refusal."""
+    return ("Catalog unavailable — the artifact catalog could not be read from FileMaker. "
+            "The stored artifacts are unaffected; retry shortly.")
 
 
 def _latest_per_file(backend, metas=None) -> list:
     """The newest ArtifactMeta per FM file (file-less deliverables excluded) — for corpus /
-    cross-file SCANNING that wants one representative snapshot per file. (Packet 1026 retired the
-    old `_group_by_file` display helper; the user-facing `list_artifacts` is now record-centric.)
+    cross-file SCANNING that wants one representative snapshot per file.
 
-    ``metas`` lets a caller that already holds the enumeration pass it in rather than paying a
-    second one (packet 1370)."""
+    ``metas`` lets a caller that already holds the metas pass them in. Otherwise they come from the
+    PERSISTENT CATALOG, never from `backend.iter_artifact_metas()` (packet 1361-01, ruling 9):
+    ordinary artifact discovery is a catalog-index question, and a per-call STORAGE enumeration on a
+    tool path is exactly the broad scan the read model exists to remove. A catalog that could not be
+    read answers with nothing rather than reaching past it to the database."""
+    if metas is None:
+        from corpusfm.server import catalog
+        view = catalog.view(backend)
+        if view.failed:
+            return []
+        metas = [r["meta"] for r in view.records]
     latest: dict = {}
-    for m in (backend.iter_artifact_metas() if metas is None else metas):
+    for m in metas:
         if not m.file_name:
             continue
         cur = latest.get(m.file_name)
@@ -952,7 +991,10 @@ def list_artifacts(archive_dir: str = None, type: str = None, tag: str = None,
     from corpusfm.core.filenames import ensure_fmp12
     backend = get_backend(Path(archive_dir) if archive_dir else None)
     # One fold, not three (packet 1370): metas, user tags and the IsLatest view all come from here.
-    metas, tags_map, latest_by_uuid = _catalog_view(backend)
+    metas, tags_map, latest_by_uuid, _view = _catalog_view(backend)
+    if metas is None:
+        # NOT "empty" — the catalog has no answer to give (packet 1361-01).
+        return _catalog_unavailable_message(_view)
     if not metas:
         return "Archive is empty."
 
@@ -2819,7 +2861,7 @@ def fms_list_schedules() -> str:
 
 if _SERVER_MODE:
     @mcp.tool()
-    def list_jobs(jobs_dir: str = None, database: str = None) -> str:
+    def list_jobs(database: str = None) -> str:
         """List configured jobs so you can pick the one that OWNS a hosted file, then run it.
 
         Each valid job reports: name, stable job UUID, owner file, source type, schedule, and last-run
@@ -2829,8 +2871,7 @@ if _SERVER_MODE:
         never auto-creates a job. Jobs are the authority for source method, credentials, scheduling, and
         owner file — this only helps you find and start the right one."""
         from corpusfm.core.filenames import ensure_fmp12
-        jdir = Path(jobs_dir) if jobs_dir else default_jobs_dir()
-        pairs = _list_jobs(jdir)
+        pairs = _list_jobs()
         want = ensure_fmp12(database.strip()) if (database and database.strip()) else ""
         valid = invalid = 0
         lines = []
@@ -2844,7 +2885,7 @@ if _SERVER_MODE:
             if want and owner != want:
                 continue
             valid += 1
-            state = read_state(getattr(cfg, 'id', '') or '', jdir)
+            state = read_state(getattr(cfg, 'id', '') or '')
             src_type = cfg.source.type if cfg.source else "?"
             schedule = ""
             if cfg.triggers:
@@ -2885,7 +2926,6 @@ if _SERVER_MODE:
     @mcp.tool()
     def run_job(
         job_uuid: str,
-        jobs_dir: str = None,
         archive_dir: str = None,
     ) -> str:
         """Trigger a job (BY UUID) to pull fresh XML from the configured FMS source and store it.
@@ -2901,16 +2941,15 @@ if _SERVER_MODE:
         """
         from corpusfm.server import queue_handlers
         from corpusfm.server.jobs.store import (
-            JobWorkUnavailable, assert_job_work_permitted, load_job, default_jobs_dir)
+            JobWorkUnavailable, assert_job_work_permitted, load_job)
         from corpusfm.storage import get_backend
-        jdir = Path(jobs_dir) if jobs_dir else default_jobs_dir()
         adir = Path(archive_dir) if archive_dir else None
         try:
             assert_job_work_permitted()
         except JobWorkUnavailable as exc:
             return f"ERROR: {exc}"
         try:
-            cfg = load_job(job_uuid, jdir)
+            cfg = load_job(job_uuid)
         except Exception as exc:
             return f"ERROR: no job with id '{job_uuid}': {exc}"
         qid, run_id = queue_handlers.enqueue_job_run(
@@ -2985,20 +3024,14 @@ if _SERVER_MODE:
                 "row — check the id, or the run never started.")
 
     @mcp.tool()
-    def get_job_history(
-        job_uuid: str,
-        limit: int = 10,
-        history_dir: str = None,
-    ) -> str:
+    def get_job_history(job_uuid: str, limit: int = 10) -> str:
         """Return the most recent run records for a job, BY UUID (newest first).
 
-        Backend-aware: reads HISTORY Type="Run" rows (source of truth) on the FM backend,
-        the local JSONL on LocalBackend. The run-record fields are unchanged either way."""
-        hdir = Path(history_dir) if history_dir else default_history_dir()
+        Reads HISTORY Type="Run" rows — the single system of record on both backends."""
         from corpusfm.storage import get_backend
         cfg = _find_job(job_uuid)
         job_name = getattr(cfg, "name", "") or job_uuid          # display only
-        runs = list_runs_for(job_uuid, hdir, limit=limit, backend=get_backend())
+        runs = list_runs_for(job_uuid, limit=limit, backend=get_backend())
         if not runs:
             return f"No history for job {job_uuid}."
         lines = [f"History for job '{job_name}' ({job_uuid}, last {len(runs)} runs):"]
@@ -3192,10 +3225,21 @@ def _newest_schema_artifact_for(filename: str):
     """
     try:
         from corpusfm.storage import get_backend
+        from corpusfm.server import catalog
         backend = get_backend()
-        metas = [m for m in backend.iter_artifact_metas()
-                 if (m.file_name or "").lower() == filename.lower()
-                 and (m.artifact_type or "") in ("SaveAsXML", "Merged")]
+        # Selection comes from the catalog's FILE index (packet 1361-01, ruling 9) — the artifact
+        # BODY still comes from a keyed, authoritative load below. The incumbent enumerated every
+        # STORAGE record on a tool call to find one file's newest snapshot.
+        view = catalog.view(backend)
+        if view.failed:
+            return None, None
+        metas = []
+        wanted = {f for f in view.file_names if f.lower() == filename.lower()}
+        for f in wanted:
+            for rec in view.select(file=f):
+                m = rec.get("meta")
+                if m is not None and (m.artifact_type or "") in ("SaveAsXML", "Merged"):
+                    metas.append(m)
         if not metas:
             return None, None
         newest = max(metas, key=lambda m: m.timestamp or "")
@@ -3816,24 +3860,79 @@ def list_registrations() -> str:
 # ── Monitor tools (server mode only) ──────────────────────────────────────────
 
 if _SERVER_MODE:
+    def _local_health_lines() -> list:
+        """The parts of the health report that read NOTHING but this process's own memory.
+
+        Split out because a PAUSED CORPUSfm answers with these alone (packet 1361-01, round 3): the
+        artifact catalog's condition, the readiness state, and the web-owned scheduler clock. Each
+        costs one lock. None of them touches FileMaker, the monitor config, JOB, ALERT or SETTINGS,
+        which is exactly what makes `get_health` answerable while everything else refuses.
+        """
+        lines: list = []
+        try:
+            from corpusfm.server import catalog
+            d = catalog.diagnostics()
+            last = d.get("last_pass") or {}
+            state = ("READ FAILED — retrying" if d.get("failed")
+                     else ("ok" if d.get("built") else "not built"))
+            lines.append(f"Artifact catalog: {state}  ({d.get('records', 0)} records, "
+                         f"{d.get('visible_storage', 0)} visible)")
+            if last.get("at_utc"):
+                lines.append(f"  last scan: {last.get('duration_s')}s  "
+                             f"counts={last.get('counts')}  bytes={last.get('raw_bytes')}")
+            lines.append(f"  cycle: {d.get('sync_interval_s')}s  "
+                         f"running={d.get('synchronizer_running')}")
+            r = d.get("readiness") or {}
+            lines.append(f"  readiness: {r.get('state', '?')}"
+                         + (f" ({r.get('reason')})" if r.get("reason") else "")
+                         + (f"  detail: {r.get('detail')}" if r.get("detail") else "")
+                         + (f"  recovering after {r.get('recovery_attempts')} attempt(s)"
+                            if r.get("recovering") else ""))
+        except Exception:
+            lines.append("Artifact catalog: (diagnostics unavailable)")
+        try:
+            from corpusfm.server import scheduler as _sched
+            st = _sched.read_scheduler_status()
+            if not _sched.scheduler_ever_started():
+                lines.append("Scheduler: not started (the database has not become readable yet)")
+            elif not _sched.scheduler_is_running():
+                lines.append("Scheduler: STOPPED inside this web service")
+            else:
+                lines.append(f"Scheduler: {st.get('status', '?')}  "
+                             f"(cycle {st.get('poll_interval')}s, {st.get('cycles', 0)} observed)")
+                if st.get("active_jobs"):
+                    lines.append(f"  active: {', '.join(st['active_jobs'])}")
+        except Exception:
+            lines.append("Scheduler: (status unavailable)")
+        return lines
+
     @mcp.tool()
-    def get_health(
-        jobs_dir: str = None,
-        archive_dir: str = None,
-        history_dir: str = None,
-    ) -> str:
+    def get_health(archive_dir: str = None) -> str:
         """Return current health status: firing alerts + job health summary.
 
         Use this before running a job or after an unexpected result to check
         whether any known problems exist.
+
+        **While CORPUSfm is PAUSED it reports LOCAL state only** (packet 1361-01, round 3) — the
+        availability gate, the catalog's condition and the scheduler clock, all from memory. It reads
+        no JOB, no ALERT, no SETTINGS and no other FileMaker table, because this tool is exempt from
+        the pause precisely so an operator can find out WHY the box is paused; a health check that
+        had to reach the unreachable thing would be the one tool guaranteed to fail when it matters.
         """
-        jdir = Path(jobs_dir) if jobs_dir else default_jobs_dir()
+        from corpusfm.server import availability
+        if not availability.is_open():
+            return "\n".join(
+                ["CORPUSfm is PAUSED — the FileMaker database could not be read.",
+                 "Alerts and job health are NOT reported while paused: reading them would require "
+                 "the database this box cannot reach.",
+                 "Recovery is automatic and retries on a bounded cadence; nothing needs restarting.",
+                 ""] + _local_health_lines())
+
         adir = Path(archive_dir) if archive_dir else get_backend().archive_dir
-        hdir = Path(history_dir) if history_dir else default_history_dir()
         config = load_monitor_config()
 
-        firing = check_conditions(jdir, hdir, adir, config)
-        health = get_job_health(jdir, config)
+        firing = check_conditions(adir, config)
+        health = get_job_health(config)
 
         lines = []
         if not firing:
@@ -3853,6 +3952,13 @@ if _SERVER_MODE:
                 status = r.last_status or "never run"
                 ts = r.last_run_ts.replace("T", " ")[:16] if r.last_run_ts else "—"
                 lines.append(f"  {r.name}  {status}  {ts}{overdue}")
+
+        # The artifact catalog's own condition, the readiness state and the WEB-OWNED scheduler
+        # clock — the same in-memory report the paused branch above returns on its own. It is here so
+        # a LIVE box can be measured rather than guessed at: the 15 s cycle is meant to come down,
+        # and the number that decides how far is the last scan's duration.
+        lines.append("")
+        lines += _local_health_lines()
 
         return "\n".join(lines)
 
@@ -4247,18 +4353,32 @@ def get_server_info() -> str:
     Reports the running CORPUSfm version (0.<git-commit-count>), the deployment mode, how many MCP
     tools this server exposes, the supported FileMaker version window, and whether the semantic-search
     index is configured. Use it to confirm exactly which build you are talking to.
+
+    **While CORPUSfm is PAUSED the answer is purely LOCAL** (packet 1361-01, round 3): the build and
+    version, the deployment mode, the tool count, the FM support window and the server clock — all
+    read from this process and this machine. The search-index line then reports `unavailable
+    (CORPUSfm is paused)` rather than a verdict, because establishing it means `load_app_config()`,
+    which reads the FM SETTINGS record and can reach an AI-key container. Reporting "not configured"
+    from a failed read would be a claim about the administrator's configuration that the box is in no
+    position to make.
     """
     from corpusfm import __version__
-    from corpusfm.app.app_config import load_app_config
-    from corpusfm.server.ai.vector_index import get_vector_index
+    from corpusfm.server import availability
+    _paused = not availability.is_open()
     try:
         n_tools = len(_TOOL_GATES)
     except Exception:
         n_tools = "?"
-    try:
-        idx_on = get_vector_index(load_app_config()) is not None
-    except Exception:
-        idx_on = False
+    if _paused:
+        idx_line = "  search index: unavailable (CORPUSfm is paused)"
+    else:
+        from corpusfm.app.app_config import load_app_config
+        from corpusfm.server.ai.vector_index import get_vector_index
+        try:
+            idx_on = get_vector_index(load_app_config()) is not None
+        except Exception:
+            idx_on = False
+        idx_line = f"  search index: {'configured' if idx_on else 'not configured'}"
     # The server clock, stated rather than left for a caller to guess (packet 1363). This surface is
     # PLAIN TEXT, so the line carries a stable `server clock:` label and a fixed field order; a
     # compatibility test pins the label, because a positional reader would otherwise be broken by a
@@ -4277,9 +4397,10 @@ def get_server_info() -> str:
         f"  mode:         {'co-located server' if _SERVER_MODE else 'local (dev/test)'}",
         f"  MCP tools:    {n_tools} (co-located; fewer register in local mode)",
         "  FM support:   FM 21+ (schema 2.2.0.0–2.3.0.0; FM 2026 first-class)",
-        f"  search index: {'configured' if idx_on else 'not configured'}",
+        idx_line,
         clock,
-    ])
+    ] + (["  database:     PAUSED — CORPUSfm cannot read FileMaker; it recovers automatically"]
+         if _paused else []))
 
 
 # ── Temporal diff ─────────────────────────────────────────────────────────────
@@ -4290,7 +4411,6 @@ def temporal_diff(
     days: int = 30,
     since: str = None,
     archive_dir: str = None,
-    history_dir: str = None,
 ) -> str:
     """Compare what changed in an FM file between two points in time.
 
@@ -4302,20 +4422,18 @@ def temporal_diff(
         days:        Look back this many days (default 30). Ignored if 'since' is set.
         since:       ISO date or datetime string for start of window (e.g. "2026-01-01")
         archive_dir: Override archive directory (optional)
-        history_dir: Override history directory (optional)
 
     Returns a section-by-section summary of added/removed/changed items.
     """
     from datetime import datetime, timezone, timedelta
-    from corpusfm.server.jobs.history import list_runs_for, default_history_dir
+    from corpusfm.server.jobs.history import list_runs_for
     from corpusfm.storage import get_backend
 
-    hdir = Path(history_dir) if history_dir else default_history_dir()
     adir = Path(archive_dir) if archive_dir else None
 
     cfg = _find_job(job_uuid)
     job_name = getattr(cfg, "name", "") or job_uuid              # display only
-    runs = list_runs_for(job_uuid, hdir, limit=500, backend=get_backend())
+    runs = list_runs_for(job_uuid, limit=500, backend=get_backend())
     ok_runs = [r for r in runs if r.status == "ok" and r.archive_path]
 
     if not ok_runs:
@@ -4544,7 +4662,9 @@ def get_step_exemplar(
         backend = get_backend(adir)
         # The same one fold as list_artifacts (packet 1370): this used to enumerate STORAGE for the
         # metas and then rebuild the whole three-table tag view independently.
-        all_metas, tags_map, _latest = _catalog_view(backend)
+        all_metas, tags_map, _latest, _view = _catalog_view(backend)
+        if all_metas is None:
+            return _catalog_unavailable_message(_view)
         latest_metas = _latest_per_file(backend, all_metas)
         if not latest_metas:
             return "Archive is empty."
@@ -4736,7 +4856,6 @@ def reimport_after_patch(
         _rec(False, outcome.error or "ingest failed")
         return (f"ERROR: Ingestion failed for '{database}': "
                 f"{outcome.error or 'the re-exported schema could not be parsed.'}")
-    _bust_catalog_snapshot()
     artifact, meta = outcome.artifact, outcome.meta
 
     _rec(True)
@@ -6586,17 +6705,16 @@ def create_script_acceptance_batch(artifact_path: str, script_names: str, batch_
         art_uuid = ""
     backend = get_backend(Path(archive_dir) if archive_dir else None)
     res = acceptance_ops.create_batch(backend, art, art_uuid, requested, label=batch_label, strict=strict)
-    if res.get("stored"):
-        _bust_catalog_snapshot()
     if not res.get("ok"):
         head = (f"REFUSED — acceptance batch not created ({res.get('error')}): {res.get('detail')}"
                 if not res.get("partial") else
-                f"PARTIAL — {len(res.get('stored', []))} case(s) stored then a storage failure occurred; "
-                "the batch is INCOMPLETE (no atomic rollback).")
+                f"PARTIAL — {len(res.get('stored', []))} case(s) queued then an enqueue failure "
+                "occurred; the batch is INCOMPLETE (no atomic rollback).")
         return "\n".join([head, "", "--- STRUCTURED (machine-readable JSON) ---", _json.dumps(res)])
-    lines = [f"Created acceptance batch {res['batch_id']} ({res['label']!r}) — {len(res['stored'])} case(s), "
-             f"strict={strict}. Paste each into ONE disposable FileMaker file, export SaveAsXML, upload it, then "
-             "call evaluate_acceptance_return.",
+    lines = [f"Created acceptance batch {res['batch_id']} ({res['label']!r}) — {len(res['stored'])} case(s) "
+             f"QUEUED, strict={strict}. Each case is stored by the ingestion queue at the artifact uuid "
+             "below (list_artifacts shows them as they land). Paste each into ONE disposable FileMaker "
+             "file, export SaveAsXML, upload it, then call evaluate_acceptance_return.",
              "", "Cases (case · name · artifact · source script · generation state · steps):"]
     for c in res["stored"]:
         lines.append(f"  {c['case_id']} · {c['case_name']} · {c['artifact_uuid']} · {c['source_script']} · "
@@ -6643,8 +6761,6 @@ def evaluate_acceptance_return(batch_id: str, returned_artifact_path: str, rejec
     backend = get_backend(Path(archive_dir) if archive_dir else None)
     res = acceptance_ops.evaluate_return(backend, batch_id, returned, returned_uuid,
                                          rejected_ids=rejected, override=override)
-    if res.get("cases"):
-        _bust_catalog_snapshot()
     if not res.get("ok"):
         return "\n".join([f"REFUSED — {res.get('error')}: {res.get('detail')}",
                           "", "--- STRUCTURED (machine-readable JSON) ---", _json.dumps(res)])
@@ -6766,7 +6882,6 @@ def compile_script_clip(target_artifact_path: str, ast: str, script_name: str, a
                 saved_uuid = sv["uuid"]
                 lines.append(f"SAVED — new fmClip artifact  uuid: {sv['uuid']}"
                              + (f"  (lineage: from {src_uuid})" if src_uuid else ""))
-            _bust_catalog_snapshot()
         except Exception as exc:
             lines.append(f"SAVE FAILED — {exc} (clip was valid; nothing persisted).")
 
@@ -6777,7 +6892,6 @@ def compile_script_clip(target_artifact_path: str, ast: str, script_name: str, a
             backend, clip_xml=res.clip, ddr_steps_blob=res.ddr_blob, script_name=script_name,
             label=acceptance_label, gen_state=res.result_state)
         if acceptance.get("ok"):
-            _bust_catalog_snapshot()
             c = acceptance["stored"][0]
             lines.append(f"ACCEPTANCE — registered case {c['case_name']} in batch {acceptance['batch_id']} "
                          f"(uuid {c['artifact_uuid']}). Paste it into a disposable file, export SaveAsXML, then "
@@ -7294,9 +7408,17 @@ def download_container_data(
                 continue
             selected.append((uuid, backend.get_artifact_meta(uuid)))
     elif all or type or file:
+        # Selection from the persistent catalog's indexes (packet 1361-01, ruling 9); the container
+        # BYTES are still read keyed and authoritatively, per record, below. The incumbent
+        # enumerated STORAGE on every call and then discarded most of it.
+        from corpusfm.server import catalog
+        view = catalog.view(backend)
+        if view.failed:
+            return "ERROR: " + _catalog_unavailable_message(view)
         want_file = ensure_fmp12(file).lower() if file else ""
-        for m in backend.iter_artifact_metas():
-            if type and getattr(m, "artifact_type", "") != type:
+        for rec in view.select(type=type or ""):
+            m = rec.get("meta")
+            if m is None:
                 continue
             if want_file and (getattr(m, "file_name", "") or "").lower() != want_file:
                 continue
@@ -7383,7 +7505,6 @@ def set_artifact_memory(artifact_path: str, memory: str, archive_dir: str = None
         backend.update_record(uuid, {"memory": memory})
     except Exception as exc:
         return f"ERROR: could not set memory — {exc}"
-    _bust_catalog_snapshot()   # memory shows on the snapshot-served catalog card
     # set_memory is a metadata mutation, not artifact-activity history (085 U3c) — not a HISTORY event.
     return f"Memory set on {artifact_path} ({len(memory)} chars)."
 
@@ -7414,8 +7535,6 @@ def delete_source(artifact_path: str, archive_dir: str = None) -> str:
         removed = backend.delete_source(uuid)
     except Exception as exc:
         return f"ERROR: could not delete source — {exc}"
-    if removed:
-        _bust_catalog_snapshot()   # has_source rides the snapshot-served catalog rows
     # delete_source is a mutation, not artifact-activity history (085 U3c) — not a HISTORY event.
     return (f"Deleted the source XML for {artifact_path} (the analyzed artifact is kept)."
             if removed else f"No source XML was present for {artifact_path}.")

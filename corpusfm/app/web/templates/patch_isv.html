@@ -32,6 +32,11 @@
         <button type="button" class="cfm-btn cfm-btn--sm" @click="$dispatch('cfm-open-docs', 'isv-workflow')">Learn more →</button>
       </div>
     </div>
+    <template x-if="!recentPatches.length && recentCatalogFailed">
+      <div class="cfm-unavailable" role="status">
+        <span>Storage unreachable — recent ISV patches can't be listed right now.</span>
+      </div>
+    </template>
     <template x-if="recentPatches.length">
       <div class="cfm-panel cfm-table-wrap">
         <p class="cfm-field-label">Recent ISV patches</p>
@@ -481,6 +486,7 @@ function patchWorkspace() {
 
     // Recent ISV patches (shown on the empty state)
     recentPatches: [],
+    recentCatalogFailed: false,   // packet 1361-01 — never render an outage as "none"
 
     // Diff
     diffError: '',
@@ -615,13 +621,17 @@ function patchWorkspace() {
     // ── Recent ISV patches (catalog) ──────────────────────────────────────────
 
     async _fetchRecentPatches() {
+      // The strip is a catalog consumer (packet 1361-01): a FAILED catalog read must not silently
+      // render as "no recent patches", which reads as data loss on a page whose whole job is to
+      // continue prior work.
       try {
         const r = await fetch('/api/library/artifacts/search?' + new URLSearchParams({
           origin: 'Patch (ISV)', per_page: '10',
         }));
         const d = await r.json();
+        this.recentCatalogFailed = !!(d.catalog_failed || d.unavailable);
         this.recentPatches = d.rows || [];
-      } catch(e) {}
+      } catch(e) { this.recentCatalogFailed = true; }
     },
 
     // ── Picker ──────────────────────────────────────────────────────────────

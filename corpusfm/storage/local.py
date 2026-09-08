@@ -152,6 +152,26 @@ def _safe_join(archive_dir: Path, rel_path: str) -> Path:
     return Path(target)
 
 
+# ── catalog publication (packet 1361-01) ──────────────────────────────────────
+# Placed on the BACKEND methods rather than on `StorageEngine`, for symmetry with
+# `FileMakerODataBackend`, which writes STORAGE directly for six of these operations and would be
+# missed entirely by an engine-level hook. Both helpers run only after the write was confirmed and
+# neither can raise — a publication failure costs freshness, never a write's outcome.
+
+def _publish_committed(backend, committed, record_uuid: str, *, operation: str = "write") -> None:
+    """``committed`` is the engine's ``WriteRow`` (UUID + the opaque JSONOfRecord). ``None`` means
+    the substrate returned no usable record — publish nothing derived from the request, record the
+    failure, and let the next read synchronize."""
+    from corpusfm.server import catalog
+    catalog.publish_write(backend, catalog.TABLE_STORAGE, record_uuid, committed,
+                          operation=operation)
+
+
+def _publish_removed(backend, record_uuid: str) -> None:
+    from corpusfm.server import catalog
+    catalog.publish_deleted(backend, catalog.TABLE_STORAGE, record_uuid)
+
+
 class LocalBackend:
     """StorageBackend over the local SqliteEngine — the FM substrate model without FileMaker.
 
@@ -233,8 +253,8 @@ class LocalBackend:
         addon_package=None,
         keep_source_xml: bool = False,
     ) -> ArtifactMeta:
-        # Shared engine write path (artifact_store): staged-create → blobs → one visibility
-        # commit — the publish-after-blob invariant (077-E), identical on both backends.
+        # Shared engine write path (artifact_store): typed create → containers → publish, identical
+        # on both backends (packet 1361-01).
         from corpusfm.storage.artifact_store import store_artifact as _store
         return _store(self, artifact, xml_bytes, label=label, origin=origin,
                       job_uuid=job_uuid, run_uuid=run_uuid, addon_package=addon_package,
@@ -283,6 +303,7 @@ class LocalBackend:
             # prior attempt first (no-op when there is none) — one QUEUE record → one STORAGE artifact.
             try:
                 self._engine.delete(_STORAGE, record_uuid)
+                _publish_removed(self, record_uuid)
             except Exception:
                 pass
 
@@ -293,7 +314,6 @@ class LocalBackend:
             "Origin": origin,
             "RootUUID": root_uuid,
             "ArtifactTimestamp": timestamp,
-            "IsLatest": True,
             "HasSummaries": False,
             "Description": description,
             "Memory": memory,
@@ -304,9 +324,10 @@ class LocalBackend:
             "gap_unmapped": [],
             "xml_bytes": len(xml_bytes),
         }
-        self._engine.create(_STORAGE, record_uuid, jor)
+        committed = self._engine.create(_STORAGE, record_uuid, jor)
         self._engine.blob_put(_STORAGE, record_uuid, "ArtifactData",
                               encode_blob(compress(xml_bytes), encrypt_on=self._encrypt_blobs()))
+        _publish_committed(self, committed, record_uuid)
         return meta_from_jor(jor, uuid=record_uuid)
 
     def load_deliverable_xml(self, record_uuid: str) -> Optional[bytes]:
@@ -333,6 +354,7 @@ class LocalBackend:
         row = self._row(rel_path)
         if row is not None:
             self._engine.delete(_STORAGE, row.key)
+            _publish_removed(self, row.key)
 
     def delete_source(self, rel_path: str) -> bool:
         """Packet 059: drop the retained compressed source XML (the SourceXML blob) + flip the
@@ -344,7 +366,7 @@ class LocalBackend:
         self._engine.blob_delete(_STORAGE, row.key, "SourceXML")
         jor = dict(row.jor)
         jor["has_source"] = False
-        self._engine.update(_STORAGE, row.key, jor)
+        _publish_committed(self, self._engine.update(_STORAGE, row.key, jor), row.key)
         return had
 
     # ── QUEUE workspace source staging (packet 086) ──────────────────────────────
@@ -406,7 +428,7 @@ class LocalBackend:
             self._engine.blob_put(_STORAGE, row.key, "SummariesData", blob)
             jor = dict(row.jor)
             jor["HasSummaries"] = bool(summaries)   # slotted bool — one JOR representation
-            self._engine.update(_STORAGE, row.key, jor)
+            _publish_committed(self, self._engine.update(_STORAGE, row.key, jor), row.key)
         except Exception:
             logger.debug("store_summaries failed (best-effort)", exc_info=True)
         try:
@@ -473,7 +495,7 @@ class LocalBackend:
             return
         jor = dict(row.jor)
         jor.update(editable)
-        self._engine.update(_STORAGE, row.key, jor)
+        _publish_committed(self, self._engine.update(_STORAGE, row.key, jor), row.key)
 
     def get_artifact_meta(self, ref: str) -> Optional[ArtifactMeta]:
         from corpusfm.storage.artifact_record import meta_from_jor

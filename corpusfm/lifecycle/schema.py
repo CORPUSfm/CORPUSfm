@@ -193,6 +193,11 @@ def assert_transition(current: str | None, target: str) -> None:
 #   recovery_create       1246-02  corpusfm-recovery create
 #   recovery_adopt        1246-02  corpusfm-recovery adopt
 #   uninstall             1246-09  removal, including a resumed pending cleanup
+#   a001_scheduler_authority
+#                         1361-01  adapter A001's authority tail: remove the retired `scheduler`
+#                                  entry from the installation record, after the installer has
+#                                  proved the physical retirement. Its OWN mode word, deliberately,
+#                                  so a journal left by anything else is foreign to it and refuses.
 LIFECYCLE_MODES: tuple[str, ...] = (
     "fresh_install",
     "forward_update",
@@ -203,6 +208,7 @@ LIFECYCLE_MODES: tuple[str, ...] = (
     "recovery_create",
     "recovery_adopt",
     "uninstall",
+    "a001_scheduler_authority",
 )
 
 _UUID_RE = re.compile(

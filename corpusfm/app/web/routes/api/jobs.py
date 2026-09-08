@@ -26,14 +26,13 @@ def runs_list(
     trigger: str = "",
 ) -> JSONResponse:
     try:
-        from corpusfm.server.jobs.store import list_jobs, default_jobs_dir
+        from corpusfm.server.jobs.store import list_jobs
         from corpusfm.server.history import list_all_runs
         from corpusfm.storage import get_backend
 
-        jobs_dir    = default_jobs_dir()
         backend     = get_backend()
 
-        pairs = list_jobs(jobs_dir)
+        pairs = list_jobs()
 
         # Enumerate RUNS, not live job configs (packet 1149). Iterating configs silently dropped the
         # history of a deleted job even though its HISTORY rows were intact — and a deleted job's
@@ -61,11 +60,18 @@ def runs_list(
                 present_artifacts = set()
                 uuid_to_file = {}
         if not resolved:
+            # Ordinary artifact discovery — so it reads the persistent catalog, not a fresh STORAGE
+            # enumeration (packet 1361-01, ruling 9). A catalog that could not be read leaves the
+            # sets empty, exactly as the previous failure branch did.
             try:
-                for m in backend.iter_artifact_metas():
-                    if getattr(m, "is_schema", False) and getattr(m, "uuid", ""):
-                        present_artifacts.add(m.uuid)
-                        uuid_to_file[m.uuid] = getattr(m, "file_name", "")
+                from corpusfm.server import catalog
+                view = catalog.view(backend)
+                if not view.failed:
+                    for rec in view.records:
+                        m = rec.get("meta")
+                        if m is not None and getattr(m, "is_schema", False) and getattr(m, "uuid", ""):
+                            present_artifacts.add(m.uuid)
+                            uuid_to_file[m.uuid] = getattr(m, "file_name", "")
             except Exception:
                 pass
 

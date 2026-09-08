@@ -120,7 +120,7 @@ def test_the_winsw_definition_names_a_service_account():
     from corpusfm.lifecycle import os_layout as ol, service_identity as si
 
     os_l = ol.windows_os_layout()
-    for role in ("web", "scheduler"):
+    for role in si.SERVICE_ROLES:
         xml = si.render_winsw_service(si.winsw_service_spec(
             role, os_l, install_dir=r"C:\Program Files\CORPUSfm", service_id=f"corpusfm-{role}",
             display_name=f"CORPUSfm {role}", description=f"CORPUSfm {role}"))
@@ -175,7 +175,7 @@ def test_the_cutover_definitions_never_grant_the_mixed_legacy_directory():
         (lm.POSIX, ol.posix_os_layout(), "/opt/CORPUSfm"),
         (lm.WINDOWS, ol.windows_os_layout(), r"C:\Program Files\CORPUSfm"),
     ):
-        for role in ("web", "scheduler"):
+        for role in si.SERVICE_ROLES:
             if flavour == lm.POSIX:
                 rendered = si.render_systemd_unit(
                     si.systemd_unit_spec(role, os_l, install_dir=install_dir,
@@ -210,7 +210,7 @@ def test_neither_definition_carries_a_writable_secret_exception():
         role: si.render_systemd_unit(
             si.systemd_unit_spec(role, os_l, install_dir="/opt/CORPUSfm",
                                  description=f"CORPUSfm {role}"))
-        for role in ("web", "scheduler")
+        for role in si.SERVICE_ROLES
     }
     for role, definition in rendered.items():
         for line in definition.splitlines():
@@ -581,19 +581,24 @@ def test_neither_unit_grants_the_secrets_DIRECTORY(sh):
         assert not value.rstrip("/").endswith("secrets"), f"the secrets directory is writable: {line}"
 
 
-def test_the_scheduler_unit_has_no_writable_secret_exception(sh):
-    """The scheduler shares the same no-writable-installed-secret rule as the web service."""
+def test_the_retired_scheduler_ROLE_CANNOT_BE_RENDERED_AT_ALL(sh):
+    """RE-EXPRESSED for application packet 1361-01, round 3, and the guarantee is STRONGER.
+
+    This used to render a scheduler unit and assert it granted no writable installed secret. There
+    is no scheduler unit any more: scheduling is a background component of the web process, and
+    `corpusfm.server.scheduler` refuses to run as a `__main__`. So the rule that matters now is that
+    the renderer cannot produce that definition — a unit nobody can render grants nothing at all,
+    and it cannot come back by accident. The no-writable-secret rule is asserted over every role the
+    renderer DOES produce, by `test_neither_definition_carries_a_writable_secret_exception` above."""
     from corpusfm.lifecycle import os_layout as ol, service_identity as si
 
     os_l = ol.posix_os_layout()
-    sched = si.render_systemd_unit(si.systemd_unit_spec(
-        "scheduler", os_l, install_dir="/opt/CORPUSfm", description="CORPUSfm scheduler"))
-    assert "ProtectSystem=strict" in sched, "the control: the scheduler IS hardened"
-    assert not any(
-        line.startswith("ReadWritePaths=") and
-        line.split("=", 1)[1].startswith(str(os_l.secrets_dir))
-        for line in sched.splitlines()
-    )
+    assert si.SCHEDULER_ROLE not in si.SERVICE_ROLES
+    with pytest.raises(si.PrivilegedIdentityRefused):
+        si.systemd_unit_spec(si.SCHEDULER_ROLE, os_l, install_dir="/opt/CORPUSfm",
+                             description="CORPUSfm scheduler")
+    # Still REMOVABLE by name, which is what an upgrade and an uninstall need.
+    assert si.service_name(si.SCHEDULER_ROLE, "posix") == "corpusfm-scheduler"
 
 
 # ── E4: the privileged update path is installed, and the grant is one command ─────────

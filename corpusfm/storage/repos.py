@@ -5,7 +5,8 @@ exposes entity-shaped verbs returning **shaped views** (only the fields a surfac
 never touch OData/SQL and a list read never carries detail-only fields. Reads are keyed/indexed by
 default via the engine; the repo just knows WHICH slots and how to shape the result.
 
-This module starts with :class:`ArtifactsRepo` (STORAGE) — the template every other repo follows.
+The STORAGE repo this module started with is retired (packet 1361-01); the persistent catalog
+is that table's reader now. `QueueRepo` is the template the rest follow.
 """
 from __future__ import annotations
 
@@ -31,229 +32,13 @@ def _bool(v) -> bool:
     return v in (True, 1, "1", "true")
 
 
-@dataclass(frozen=True)
-class ArtifactListView:
-    """The fields one catalog/picker row needs — no detail-only payload, no blob."""
-    uuid: str          # canonical record address (engine key); packet 085 U3f
-    rel_path: str
-    file_name: str
-    name: str
-    type: str
-    origin: str
-    timestamp: str
-    root_uuid: str
-    is_schema: bool
-    is_latest: bool
+# `ArtifactsRepo` / `artifacts_repo()` are GONE (packet 1361-01). They were the entity-shaped
+# STORAGE reader behind the catalog's direct-FileMaker pager (`_try_db_page`) and the Related tab's
+# per-request `same_root()`. Both callers now read the one synchronized persistent catalog, which
+# answers the same questions from resident, intersected indexes — so the repo had no production
+# caller left, and every one of its reads carried an `IsLatest` predicate that no longer exists.
+# The other repos (queue/jobs/alerts) are untouched: they front tables the catalog does not hold.
 
-
-@dataclass(frozen=True)
-class ArtifactDetailView:
-    """The pop-over payload — everything hydrated from ONE record read, no blob. ``key`` is the
-    opaque engine key (for a follow-up body load / field update without re-resolving)."""
-    key: str
-    rel_path: str
-    name: str
-    type: str
-    origin: str
-    description: str
-    memory: str
-    job_uuid: str
-    run_uuid: str
-    file_name: str
-    root_uuid: str
-    fm_version: str
-    timestamp: str
-    provenance: dict
-    is_schema: bool
-    has_summaries: bool
-    has_source: bool
-    xml_bytes: int
-    summarizable_count: int
-    merge_parent_refs: list
-    analyzer_incomplete: list
-
-
-def _list_view(r: Row) -> ArtifactListView:
-    j = r.jor
-    return ArtifactListView(
-        uuid=r.key, rel_path=_rel(j), file_name=j.get("FileName", ""), name=j.get("PrimaryName", ""),
-        type=j.get("Type", ""), origin=j.get("Origin", ""), timestamp=j.get("ArtifactTimestamp", ""),
-        root_uuid=j.get("RootUUID", ""),
-        is_schema=is_schema_type(j.get("Type", "")), is_latest=_bool(j.get("IsLatest")))
-
-
-def _detail_view(r: Row) -> ArtifactDetailView:
-    j = r.jor
-    return ArtifactDetailView(
-        key=r.key, rel_path=_rel(j), name=j.get("PrimaryName", ""), type=j.get("Type", ""),
-        origin=j.get("Origin", ""), description=j.get("Description", ""), memory=j.get("Memory", ""),
-        job_uuid=j.get("UUIDJob", ""), run_uuid=j.get("RunUUID", ""), file_name=j.get("FileName", ""),
-        root_uuid=j.get("RootUUID", ""),
-        fm_version=j.get("FMVersion", "") or j.get("fm_version", ""),
-        timestamp=j.get("ArtifactTimestamp", ""),
-        provenance={k: j.get(k, "") for k in ("created_at", "corpusfm_build", "catalog_version")},
-        is_schema=is_schema_type(j.get("Type", "")), has_summaries=_bool(j.get("HasSummaries")),
-        has_source=_bool(j.get("has_source")), xml_bytes=int(j.get("xml_bytes", 0) or 0),
-        summarizable_count=int(j.get("summarizable_count", 0) or 0),
-        merge_parent_refs=list(j.get("MergeParentRefs", []) or []),
-        # projected at ingest (audit prereq); empty until then — a JOR-only field, never a slot.
-        analyzer_incomplete=list(j.get("analyzer_failed", []) or []))
-
-
-class ArtifactsRepo:
-    """STORAGE, entity-shaped. Every read is one indexed engine call; the blob is a separate verb."""
-
-    def __init__(self, engine: StorageEngine):
-        self._e = engine
-
-    # -- detail (one indexed read → the whole pop-over, no blob) ---------------
-    def get(self, ref: str) -> Optional[ArtifactDetailView]:
-        """One record by its canonical UUID address (packet 085 U3f) — a direct engine-key read."""
-        if not ref:
-            return None
-        rows = self._e.get_by_keys(_STORAGE, [ref])
-        return _detail_view(rows[0]) if rows else None
-
-    def _exclude_slots(self, exclude_uuid: str) -> Optional[dict]:
-        """The engine `exclude` conjunction that drops ONE record from a PAGED read — resolved to its
-        indexed FileName/ArtifactTimestamp slots (the native UUID column isn't a filter slot, and a
-        paged read can't post-filter without breaking the page/count). A cheap direct-key read; None
-        when the ref is empty/absent.
-
-        Residual collision (packet 1021, deferred to Tier C): a *different* record sharing that
-        FileName+Timestamp would also be excluded — here a low-severity search-result omission, not the
-        Related-tab corruption (same_root() was moved to a native-UUID post-filter). A full fix
-        needs a UUID-exclude engine primitive, folded into the list_artifacts()-retirement work."""
-        if not exclude_uuid:
-            return None
-        rows = self._e.get_by_keys(_STORAGE, [exclude_uuid])
-        if not rows:
-            return None
-        j = rows[0].jor
-        return {"FileName": j.get("FileName", ""), "ArtifactTimestamp": j.get("ArtifactTimestamp", "")}
-
-    # -- catalog / picker page (one bounded indexed read) ----------------------
-    def _page_rows(self, *, latest_only: bool, type: str, origin: str, root_uuid: str,
-                   q: str, requires_artifact: bool, exclude_uuid: str, desc: bool,
-                   page: int, per_page: int, count: bool,
-                   job_uuid: str = "") -> tuple[list[Row], int]:
-        """Visibility is Type-driven (packet 085): every read carries the VISIBLE_TYPES fence
-        (or the narrower SCHEMA_TYPES / an explicit type), so an untyped mid-landing row or an
-        unknown Type is structurally invisible — no sentinel exclusions."""
-        eq: dict = {}
-        isin: dict = {}
-        if latest_only:
-            eq["IsLatest"] = True
-        if type:
-            if requires_artifact and not is_schema_type(type):
-                return [], 0
-            eq["Type"] = type
-        elif requires_artifact:
-            isin["Type"] = sorted(SCHEMA_TYPES)
-        else:
-            isin["Type"] = sorted(VISIBLE_TYPES)
-        if origin:
-            eq["Origin"] = origin
-        if job_uuid:
-            # "Artifacts produced by THIS job" (packet 1143) — an indexed UUIDJob read. Lineage is
-            # job_uuid alone; a shared file NAME never joins two jobs' outputs.
-            eq["UUIDJob"] = job_uuid
-        if root_uuid:
-            eq["RootUUID"] = root_uuid
-        contains = {k: q for k in _SEARCH_KEYS} if (q and q.strip()) else None
-        exclude = self._exclude_slots(exclude_uuid)
-        return self._e.page(_STORAGE, eq=eq, isin=isin or None, contains=contains,
-                            exclude=exclude, orderby="ArtifactTimestamp", desc=desc, page=page,
-                            per_page=per_page, count=count)
-
-    def page(self, *, latest_only: bool = True, type: str = "", origin: str = "",
-             root_uuid: str = "", q: str = "", desc: bool = True, page: int = 1,
-             per_page: int = 25, count: bool = True,
-             job_uuid: str = "") -> tuple[list[ArtifactListView], int]:
-        rows, total = self._page_rows(latest_only=latest_only, type=type, origin=origin,
-                                      root_uuid=root_uuid, q=q, requires_artifact=False,
-                                      exclude_uuid="", desc=desc, page=page,
-                                      per_page=per_page, count=count, job_uuid=job_uuid)
-        return [_list_view(r) for r in rows], total
-
-    # -- catalog / picker page as canonical metas (audits #2 + #6) ---------------
-    def page_metas(self, *, latest_only: bool = True, type: str = "", origin: str = "",
-                   root_uuid: str = "", q: str = "", requires_artifact: bool = False,
-                   exclude_uuid: str = "", desc: bool = True, page: int = 1,
-                   per_page: int = 25, tag: str = "", job_uuid: str = "") -> tuple[list, int]:
-        """A DB-side page as canonical ``ArtifactMeta``s — the catalog's shape AND the picker's
-        (both cards show most of the record; the shaped ListView stays for callers that want
-        the thin row). A ``tag`` filter is the one legit ``sql()``: a STORAGE↔STORAGELINK↔TAG
-        join resolves the bounded UUID page (+ COUNT), then ``get_by_keys`` hydrates in one
-        read — uniform over both engines (FM QUERY / native SQLite)."""
-        from corpusfm.storage.artifact_record import meta_from_jor
-        if tag:
-            rows, total = self._tag_page_rows(latest_only=latest_only, desc=desc,
-                                              page=page, per_page=per_page, tag=tag)
-        else:
-            rows, total = self._page_rows(latest_only=latest_only, type=type, origin=origin,
-                                          root_uuid=root_uuid, q=q,
-                                          requires_artifact=requires_artifact,
-                                          exclude_uuid=exclude_uuid, desc=desc, page=page,
-                                          per_page=per_page, count=True, job_uuid=job_uuid)
-        metas = [meta_from_jor(r.jor, uuid=r.key) for r in rows]
-        return [m for m in metas if m.file_name], total
-
-    def _tag_page_rows(self, *, latest_only: bool, desc: bool, page: int, per_page: int,
-                       tag: str) -> tuple[list[Row], int]:
-        per_page = max(1, min(int(per_page or 25), 200))
-        skip = (max(1, int(page or 1)) - 1) * per_page
-        s, a, t = self._e.phys(_STORAGE), self._e.phys("STORAGELINK"), self._e.phys("TAG")
-        a_art, a_tag = reg.slot("STORAGELINK", "UUIDStorage"), reg.slot("STORAGELINK", "UUIDTag")
-        t_name, s_ts = reg.slot("TAG", "Name"), reg.slot(_STORAGE, "ArtifactTimestamp")
-        tg = tag.strip().lower().replace("'", "''")
-        where = [f"{t}.{t_name} = '{tg}'", f"{a}.{a_art} = {s}.UUID", f"{a}.{a_tag} = {t}.UUID"]
-        if latest_only:
-            where.append(f"{s}.{reg.slot(_STORAGE, 'IsLatest')} = 1")
-        base = f"FROM {s}, {a}, {t} WHERE " + " AND ".join(where)
-        # DISTINCT on the artifact key: a join row is per STORAGELINK, so a doubly-assigned
-        # artifact would otherwise page/count twice. (DISTINCT wants the ORDER BY column in
-        # the SELECT list, hence the ts column we then drop.)
-        count_rows = self._e.sql(f"SELECT COUNT(DISTINCT {s}.UUID) {base}")
-        try:
-            total = int(str(count_rows[0]).strip() or 0) if count_rows else 0
-        except (TypeError, ValueError):
-            total = 0
-        page_rows = self._e.sql(
-            f"SELECT DISTINCT {s}.UUID, {s}.{s_ts} {base} "
-            f"ORDER BY {s}.{s_ts} {'DESC' if desc else 'ASC'} "
-            + self._e.sql_page_clause(skip, per_page), columns=True)
-        uuids = [r[0] for r in page_rows if r and r[0]]
-        by_key = {r.key: r for r in self._e.get_by_keys(_STORAGE, uuids)}
-        return [by_key[u] for u in uuids if u in by_key], total
-
-    # -- lineage (indexed; duplicates are surfaced, never prevented) -----------
-    def same_root(self, root_uuid: str, exclude_uuid: str = "") -> list[ArtifactListView]:
-        """Every landed record sharing this RootUUID — the same FM file lineage (the Related tab's
-        "same file" section): other snapshots of the file, its addon companion, its merged children.
-        The viewed artifact is excluded by its native record UUID (packet 1021 — never the
-        FileName/Timestamp slots, which could drop a *different* colliding record). Since packet
-        1216 this is the ONLY relatedness section: re-exports of one file relate through the file's
-        own identity, which is what root_uuid always was. ONE bounded indexed read."""
-        if not root_uuid:
-            return []
-        rows, _ = self._e.page(
-            _STORAGE, eq={"RootUUID": root_uuid},
-            isin={"Type": sorted(VISIBLE_TYPES)},
-            orderby="ArtifactTimestamp", desc=True, per_page=200)
-        return [_list_view(r) for r in rows if r.key != exclude_uuid]
-
-    # -- the body (explicit, opt-in — the blob is never in a view) -------------
-    def load_body(self, view: ArtifactDetailView) -> Optional[bytes]:
-        return self._e.blob_get(_STORAGE, view.key, "ArtifactData")
-
-
-def artifacts_repo(backend) -> Optional[ArtifactsRepo]:
-    """The ArtifactsRepo over a backend's engine (LocalBackend + FileMakerODataBackend both
-    expose ``.engine``), or None for a backend without one (test doubles) — callers fall back
-    to the legacy per-call path."""
-    eng = getattr(backend, "engine", None)
-    return ArtifactsRepo(eng) if eng is not None else None
 
 
 _JOBS = "JOB"
@@ -266,6 +51,15 @@ _JOB_STATE_KEYS = ("LastRunTS", "LastStatus", "LastError", "LastDuration")
 # jor — only its presence flag + the display account name; the secret lives in the CredentialData
 # container. Preserved across a config save() so editing a job never drops its credential/verify.
 _JOB_CRED_KEYS = ("AccountName", "HasCredential", "IsVerified", "VerifyReason")
+
+
+class AlertReadUnavailable(RuntimeError):
+    """The ALERT table could not be read — raised only for a caller that asked to hear about it.
+
+    The counterpart to `JobReadUnavailable`, and it exists for the same reason: an empty alert
+    history and an unreadable one are different facts, and a poller that reports the second as
+    "no alerts" tells the browser everything is fine while storage is down.
+    """
 
 
 class JobReadUnavailable(RuntimeError):

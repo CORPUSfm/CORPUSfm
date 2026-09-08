@@ -78,19 +78,18 @@ A schedule means the wall clock of the machine CORPUSfm is installed on — not 
 clock on the computer you are reading this from. A job set for `02:00` runs at two in the morning
 **there**. The job form shows the server's current time beside the fields so you can set a schedule
 without working anything out, and every scheduled time CORPUSfm shows you is labelled with the clock
-it is in. `corpusfm scheduler status` prints the same clock from the command line. If the server
-cannot tell CORPUSfm what its time zone is, schedules fall back to UTC and say so rather than
-quietly pretending to be local.
+it is in. If the server cannot tell CORPUSfm what its time zone is, schedules fall back to UTC and
+say so rather than quietly pretending to be local.
 
 Four things follow from that, and they are worth knowing before you rely on a schedule:
 
 - **Saving a schedule does not run the job.** It waits for its next matching time — and the very
   next minute counts, so a schedule set at 08:30:12 for 08:31 does run at 08:31. **Run now** is the
   only thing that starts a job immediately.
-- **A missed time is not made up later.** CORPUSfm checks once a minute. If the server or the
-  scheduler was down when a job was due, that occurrence is simply gone — it does not fire the
-  moment the machine comes back. This matters most after a long outage, where the alternative is
-  every idle job in the system starting at once.
+- **A missed time is not made up later.** CORPUSfm checks once a minute. If CORPUSfm was down — or
+  **paused** because it could not read its database — when a job was due, that occurrence is simply
+  gone. It does not fire the moment the machine or the database comes back. This matters most after
+  a long outage, where the alternative is every idle job in the system starting at once.
 - **A job already running does not stack.** If the previous run is still going when the next time
   comes round, that occurrence is skipped rather than queued behind it.
 - **A crash can occasionally run a job twice.** If the server dies in the moment between starting a

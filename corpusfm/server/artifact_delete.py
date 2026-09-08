@@ -43,16 +43,16 @@ def delete_artifact_fully(backend, uuid: str) -> bool:
     except Exception:
         logger.debug("delete cascade: deindex failed for %s", uuid, exc_info=True)
 
-    backend.delete_artifact(uuid)   # also purges the artifact's history (both backends)
+    # Publishes the removal itself (packet 1361-01); also purges the artifact's history (both backends).
+    backend.delete_artifact(uuid)
 
-    # Bust the catalog tag/lineage snapshot — the deleted row must vanish immediately.
-    try:
-        from corpusfm.server.tags_store import invalidate_record_views
-        invalidate_record_views()
-    except Exception:
-        logger.debug("delete cascade: invalidate_record_views failed for %s", uuid, exc_info=True)
-
-    # If we deleted the latest of a job's lineage, promote the next-newest (no-op if latest survives).
+    # Repoint this job's PROMOTION link at the newest survivor (packet 1361-01). With no survivor
+    # the link is kept with a blank target, and the lineage's remaining artifacts — if any ever
+    # return — read as temporarily latest rather than as none.
+    #
+    # It lives HERE, in the cascade, and deliberately NOT in `backend.delete_artifact`: a low-level
+    # deletion method must not carry lineage policy, or every caller of it silently acquires a
+    # promotion side effect it never asked for.
     try:
         from corpusfm.server import latest as _latest
         if _latest.latest_available(backend):

@@ -1,25 +1,28 @@
-"""Shared artifact-store WRITE path over the StorageEngine (packet 084 Phase 4 + 077-E + 085 U3a).
+"""Shared artifact-store WRITE path over the StorageEngine (packet 084 Phase 4 + 085 U3a).
 
-One implementation of the artifact write choreography for both backends, built on the
-publish-after-blob invariant (RELEASE-GATING, dev-ratified 2026-07-03): **a record is never
-catalog-visible before its required blobs exist.** Packet 085 makes this STRUCTURAL — a record
-becomes visible only when its ``Type`` (a VISIBLE_TYPES member) appears; the staged phase is a
-Type-LESS row (invisible under the Type fence), so there is no sentinel value anymore.
+One implementation of the artifact write choreography for both backends.
 
-- :func:`store_artifact` — the DIRECT store path (deliverables, reabsorb, job runs, MCP saves):
-  create the record STAGED (Type-less → invisible), upload the blobs, then ONE full-jor update
-  is the atomic visibility commit (Type appears). A blob failure compensates with a best-effort
-  delete of the (never visible) staged record.
-- :func:`land_artifact` — the QUEUE-workspace landing path (packet 085): land a QUEUE "Artifact
-  Ingestion" row into a FRESH STORAGE record. Bare Type-less create → artifact blobs → the staged
-  source container is MOVED FM-internally into the new record (``move_container``, no bytes back
-  through the app) on the schema-XML+keep path (addon/keep re-uploads the extracted XML; no-keep
-  skips it) → one visibility commit. Crash-idempotent: a prior partial (Type-less) STORAGE row
-  anchored on the QUEUE row is deleted before re-landing, so one QUEUE row yields exactly one
-  landed record.
-- :func:`heal_publish_integrity` — the 077-E startup heal: drop aged Type-less staged-store crash
-  residue and any catalog-VISIBLE row whose required ArtifactData blob is missing (poison rows
-  from pre-invariant code). Best-effort, fail-open — never blocks startup.
+**A STORAGE record carries its real ``Type`` from its initial create (packet 1361-01, final
+ruling).** The blank-``Type`` staging phase and the visibility PATCH that ended it are GONE. They
+existed to keep a record out of the catalog until its container landed, and they bought that with
+two writes per artifact, a second row state every reader had to know about, and a startup sweep
+that scanned STORAGE for the residue — a policing job the product does not want. What replaces
+them is ordinary, local, and anchored:
+
+1. CREATE the record, typed;
+2. upload the container;
+3. on a caught failure at either step, best-effort DELETE that exact record and report the
+   failure. If the compensation itself fails, the record is PRESERVED for administration and the
+   failure says so — it is never reported as removed.
+
+A hard process death between (1) and (2) can leave a containerless record. That is accepted: it is
+visible, it is addressable, and an administrator can act on it. Nothing scans for it, and nothing
+deletes it behind the operator's back.
+
+- :func:`store_artifact` — the DIRECT store path (reabsorb, job runs, MCP/queue saves).
+- :func:`land_artifact` — the QUEUE-workspace landing path (packet 085). The QUEUE row's
+  ``UUIDStorage`` anchor is written BEFORE the create, so a re-land inspects and cleans only the
+  exact UUID its own unfinished queue operation anchored — never a global STORAGE scan.
 """
 from __future__ import annotations
 
@@ -35,20 +38,12 @@ logger = logging.getLogger(__name__)
 _STORAGE = "STORAGE"
 _QUEUE = "QUEUE"
 
-# Staged crash residue younger than this is left alone (an in-flight store on another worker
-# thread may still be uploading its blobs).
-_STAGED_RESIDUE_MIN_AGE_S = 3600
-
 
 def _now_ts() -> str:
     # UTC, microsecond precision (packet 1005 / 064): the ArtifactTimestamp lineage key. Same
     # lexically-sortable %Y-%m-%d_%H%M%S_%f shape as before — only the basis is now UTC, so ordering
     # is unambiguous across boxes/DST. Fresh-install substrate (085), so no old-local/new-UTC mixing.
     return datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S_%f")
-
-
-def _staged_stamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _encoded_blobs(artifact, *, addon_package, xml_bytes, keep_source_xml, encrypt_on) -> list:
@@ -67,6 +62,30 @@ def _encoded_blobs(artifact, *, addon_package, xml_bytes, keep_source_xml, encry
     return blobs
 
 
+# ── catalog publication (packet 1361-01) ──────────────────────────────────────
+# The persistent catalog is published only from a CONFIRMED write, and never before. Both helpers
+# swallow their own failures: a publication that fails costs freshness (the next read synchronizes),
+# and it must never be mistaken for the write failing.
+
+def publish_committed(backend, committed, record_uuid: str, *, operation: str = "store") -> None:
+    """Publish one confirmed record.
+
+    ``committed`` is the engine's ``WriteRow`` — ``UUID`` + the opaque ``JSONOfRecord`` exactly as
+    the substrate returned them, narrowed at the engine boundary. ``None`` means the response was
+    not a usable full record; the mutation contract forbids publishing the request document in that
+    case, so nothing is published and the ordinary reconciliation age recovers. The write itself is
+    already confirmed and is never reported as failed either way."""
+    from corpusfm.server import catalog
+    catalog.publish_write(backend, catalog.TABLE_STORAGE, record_uuid, committed,
+                          operation=operation)
+
+
+def publish_removed(backend, record_uuid: str) -> None:
+    """Publish one record's confirmed removal."""
+    from corpusfm.server import catalog
+    catalog.publish_deleted(backend, catalog.TABLE_STORAGE, record_uuid)
+
+
 def _record_arrival(backend, meta, *, origin: str = "", filename: str = "", owner: str = "",
                     byte_size: int = 0) -> None:
     """Write the HISTORY Arrival event for a freshly landed record (best-effort, 085 U3c) —
@@ -79,22 +98,42 @@ def _record_arrival(backend, meta, *, origin: str = "", filename: str = "", owne
         logger.debug("arrival history write failed (best-effort)", exc_info=True)
 
 
+def _compensate(backend, record_uuid: str, what: str) -> bool:
+    """Best-effort delete of the EXACT record this operation created, after it failed.
+
+    Returns whether the record is gone. A failed compensation is not silent and is not dressed up:
+    the record is PRESERVED, the log names it, and the caller's failure carries that fact — the one
+    thing that must never happen is claiming a removal that did not occur (packet 1361-01)."""
+    eng = backend.engine
+    try:
+        eng.delete(_STORAGE, record_uuid)
+    except Exception:
+        logger.error("%s failed AND its compensating delete failed — STORAGE record %s is "
+                     "PRESERVED with no usable content and needs administrator attention",
+                     what, record_uuid, exc_info=True)
+        return False
+    publish_removed(backend, record_uuid)
+    return True
+
+
 def store_artifact(backend, artifact, xml_bytes: Optional[bytes] = None, *, label: str = "",
                    origin: str = "Import", job_uuid: str = "", run_uuid: str = "",
                    addon_package=None, keep_source_xml: bool = False):
-    """Store an artifact directly (deliverables, reabsorb, job runs, MCP saves) under the
-    publish-after-blob invariant (077-E order):
+    """Store an artifact directly (deliverables, reabsorb, job runs, MCP/queue saves).
 
-    1. CREATE the record STAGED: the final identity jor with ``Type`` blanked (+ ``IsLatest`` off).
-       A Type-less row is outside VISIBLE_TYPES, so it is structurally invisible to the catalog /
-       picker / facets / lineage / enrichment — no sentinel value.
-    2. Upload the blobs (separate writes — neither substrate has a multi-write transaction).
-    3. ONE full-jor update sets the real ``Type`` — the atomic visibility commit (slots re-derive:
-       FM auto-enter CF / SQLite generated columns).
+    1. CREATE the record with its REAL ``Type`` — one write, catalog-visible immediately;
+    2. upload the containers (separate writes — neither substrate has a multi-write transaction);
+    3. publish what the substrate confirmed.
 
-    A blob/commit failure compensates by best-effort deleting the staged (never visible) record
-    and re-raising. A hard crash mid-store leaves an invisible Type-less row the startup heal
-    reaps once aged."""
+    An ordinary caught failure at either step best-effort deletes this exact record and re-raises.
+    If that compensation fails the record is preserved and the raised error says so, because
+    claiming a removal that did not happen is the one outcome that would mislead an administrator.
+
+    There is no anchor hook here (packet 1361-01, ruling 10). The path that genuinely needs one —
+    a pull job — does not come through this function at all: it lands through :func:`land_artifact`
+    from its own QUEUE row, which writes ``UUIDStorage`` before the create. The hook this function
+    briefly carried had no production caller and anchored nothing while looking as though it did.
+    """
     from corpusfm.storage.artifact_record import build_record, meta_from_jor
 
     eng = backend.engine
@@ -103,23 +142,20 @@ def store_artifact(backend, artifact, xml_bytes: Optional[bytes] = None, *, labe
     jor = build_record(artifact, timestamp=timestamp, label=label, origin=origin,
                        job_uuid=job_uuid, run_uuid=run_uuid, addon_package=addon_package,
                        xml_bytes=xml_bytes, keep_source_xml=keep_source_xml)
-    staged = {**jor, "Type": "", "IsLatest": False, "staged_created": _staged_stamp()}
-    eng.create(_STORAGE, record_uuid, staged)
+    committed = eng.create(_STORAGE, record_uuid, jor)
     try:
         for field, data in _encoded_blobs(artifact, addon_package=addon_package,
                                           xml_bytes=xml_bytes, keep_source_xml=keep_source_xml,
                                           encrypt_on=backend._encrypt_blobs()):
             eng.blob_put(_STORAGE, record_uuid, field, data)
-        eng.update(_STORAGE, record_uuid, jor)
-    except Exception:
-        # Compensate: the staged record was never visible, so this only prevents invisible
-        # residue; a failed compensate is reaped by the startup heal.
-        try:
-            eng.delete(_STORAGE, record_uuid)
-        except Exception:
-            logger.warning("store compensate-delete failed for %s (staged residue; the startup "
-                           "heal reaps it)", record_uuid, exc_info=True)
-        raise
+    except Exception as exc:
+        if _compensate(backend, record_uuid, "artifact store"):
+            raise
+        raise RuntimeError(
+            f"artifact store failed ({exc}) and the record could not be removed — STORAGE record "
+            f"{record_uuid} is preserved with no content and needs administrator attention"
+        ) from exc
+    publish_committed(backend, committed, record_uuid)
     # NB: the direct store path does NOT write an Arrival — Arrival is the IMPORT provenance
     # event, written at the landing chokepoint (land_artifact, §5). A direct store (MCP save,
     # reabsorb, job-run artifact) is not an "arrival"; job runs carry their own Run event.
@@ -131,19 +167,21 @@ def land_artifact(backend, queue_id: str, artifact, *, xml_bytes: Optional[bytes
                   keep_source_xml: bool = False):
     """Land a QUEUE "Artifact Ingestion" row (``queue_id``) into a FRESH STORAGE record.
 
-    Bare Type-less create → artifact blobs → (schema-XML+keep) MOVE the staged source container
-    from the QUEUE row into the new record FM-internally, no bytes back through the app → one
-    full-jor visibility commit. The addon+keep path re-uploads the extracted XML (its staged blob
-    is the .fmaddon package, not the SourceXML); no-keep uploads no source and the staged blob
-    dies with the QUEUE row (the caller deletes it after landing).
+    Typed create → artifact containers → (schema-XML+keep) MOVE the staged source container from the
+    QUEUE row into the new record FM-internally, no bytes back through the app. The addon+keep path
+    re-uploads the extracted XML (its staged blob is the .fmaddon package, not the SourceXML);
+    no-keep uploads no source and the staged blob dies with the QUEUE row.
 
-    Crash idempotency: the QUEUE row carries a ``UUIDStorage`` anchor set BEFORE the STORAGE
-    create; a re-land after a mid-landing crash first deletes the prior partial (Type-less) STORAGE
-    row, so one QUEUE row yields exactly one landed record.
+    **Crash idempotency is ANCHORED, never scanned.** The QUEUE row's ``UUIDStorage`` is written
+    BEFORE the STORAGE create, so a re-land after a mid-landing crash inspects exactly ONE record —
+    the one this queue operation itself anchored. A prior attempt whose ArtifactData container is
+    definitely absent is deleted and re-landed; anything else (present, or uncertain) is treated as
+    already landed and short-circuits, so a completed landing whose QUEUE row never advanced is
+    never destroyed and re-minted under a different UUID. Nothing here reads any other record.
 
     Lineage: ``UUIDJob``/``RunUUID`` are read from the QUEUE row (its ``UUIDJob`` slot and
     ``Payload.run_id``), never from a parameter — the record is the authority. The caller owns the
-    IsLatest demote (``server.latest.mark_latest_on_store``), as the pull path does."""
+    promotion (``server.latest.mark_latest_on_store``), as the pull path does."""
     from corpusfm.storage.artifact_record import build_record, meta_from_jor
 
     eng = backend.engine
@@ -151,23 +189,18 @@ def land_artifact(backend, queue_id: str, artifact, *, xml_bytes: Optional[bytes
     qjor = dict(qrows[0].jor) if qrows else {}
     prior = (qjor.get("UUIDStorage") or "") if qrows else ""
     if prior:
-        # The anchor may point at a prior attempt in one of two states (packet 1009/F1). A Type-LESS
-        # row is an interrupted partial (crash BEFORE the visibility commit) → delete and re-land.
-        # But a crash AFTER the visibility commit + its Arrival, yet BEFORE the QUEUE row advanced,
-        # leaves the anchor pointing at a FULLY LANDED, catalog-visible artifact — blindly deleting
-        # it would destroy a live record (that Arrival history already references) and mint a
-        # DIFFERENT UUID. Detect the completed landing and short-circuit so the caller just advances
-        # the QUEUE row. `blob_exists is None` (uncertain) counts as present here: on doubt we keep
-        # the visible record rather than delete it (mirrors the startup heal's fail-safe).
         prows = eng.get_by_keys(_STORAGE, [prior])
-        pjor = dict(prows[0].jor) if prows else {}
-        if pjor.get("Type") and eng.blob_exists(_STORAGE, prior, "ArtifactData") is not False:
-            return meta_from_jor(pjor, uuid=prior)
-        try:
-            eng.delete(_STORAGE, prior)   # drop a prior interrupted (Type-less/poison) partial row
-        except Exception:
-            logger.debug("land: prior-partial delete failed for %s (heal reaps it)", prior,
-                         exc_info=True)
+        if prows:
+            # `blob_exists is None` (uncertain) counts as present: on doubt KEEP the record rather
+            # than delete it. Only a definite absence proves the prior attempt never finished.
+            if eng.blob_exists(_STORAGE, prior, "ArtifactData") is not False:
+                return meta_from_jor(dict(prows[0].jor), uuid=prior)
+            try:
+                eng.delete(_STORAGE, prior)
+                publish_removed(backend, prior)
+            except Exception:
+                logger.warning("land: could not clean the incomplete prior attempt %s anchored on "
+                               "queue %s — it is preserved", prior, queue_id, exc_info=True)
 
     record_uuid = str(_uuidlib.uuid4())
     # Job identity comes off the QUEUE row itself (packet 1145) — the record carries what it needs, so
@@ -186,22 +219,29 @@ def land_artifact(backend, queue_id: str, artifact, *, xml_bytes: Optional[bytes
     if qrows:
         qjor["UUIDStorage"] = record_uuid
         eng.update(_QUEUE, queue_id, qjor)
-    staged = {**jor, "Type": "", "IsLatest": False, "staged_created": _staged_stamp()}
-    eng.create(_STORAGE, record_uuid, staged)
+    committed = eng.create(_STORAGE, record_uuid, jor)
 
     # The staged source is byte-identical to the final SourceXML only on the plain schema-XML
     # path (an addon's staged blob is the .fmaddon package). Move it in; else upload fresh/skip.
     move_source = bool(keep_source_xml and xml_bytes and addon_package is None)
-    for field, data in _encoded_blobs(
-            artifact, addon_package=addon_package, xml_bytes=xml_bytes,
-            keep_source_xml=(keep_source_xml and not move_source),
-            encrypt_on=backend._encrypt_blobs()):
-        eng.blob_put(_STORAGE, record_uuid, field, data)
-    if move_source:
-        if not backend.move_container(_QUEUE, queue_id, "SourceXML",
-                                      _STORAGE, record_uuid, "SourceXML"):
-            raise RuntimeError(f"staged source container move/verify failed for {queue_id}")
-    eng.update(_STORAGE, record_uuid, jor)   # atomic visibility commit
+    try:
+        for field, data in _encoded_blobs(
+                artifact, addon_package=addon_package, xml_bytes=xml_bytes,
+                keep_source_xml=(keep_source_xml and not move_source),
+                encrypt_on=backend._encrypt_blobs()):
+            eng.blob_put(_STORAGE, record_uuid, field, data)
+        if move_source:
+            if not backend.move_container(_QUEUE, queue_id, "SourceXML",
+                                          _STORAGE, record_uuid, "SourceXML"):
+                raise RuntimeError(f"staged source container move/verify failed for {queue_id}")
+    except Exception as exc:
+        if _compensate(backend, record_uuid, "artifact landing"):
+            raise
+        raise RuntimeError(
+            f"artifact landing failed ({exc}) and the record could not be removed — STORAGE record "
+            f"{record_uuid} is preserved with no content and needs administrator attention"
+        ) from exc
+    publish_committed(backend, committed, record_uuid)
     meta = meta_from_jor(jor, uuid=record_uuid)
     _record_arrival(backend, meta, origin=origin,
                     filename=(qjor.get("filename") or "") or label,
@@ -217,7 +257,7 @@ def land_artifact(backend, queue_id: str, artifact, *, xml_bytes: Optional[bytes
 # provenance) is taken FRESH from the re-ingest — that is the whole point of refreshing.
 _REINGEST_PRESERVE_KEYS = (
     "ArtifactTimestamp",   # the lineage/version key — MUST NOT change (this is a refresh, not a snapshot)
-    "IsLatest", "Description", "Memory", "Origin", "UUIDJob", "RunUUID",
+    "Description", "Memory", "Origin", "UUIDJob", "RunUUID",
     "icon_b64", "addon_version", "addon_locale", "has_name_map",
 )
 
@@ -319,72 +359,20 @@ def reingest_artifact(backend, record_uuid: str, *, keep_source_xml: bool = True
             if field == "SourceXML":
                 continue     # never touch the retained source
             eng.blob_put(_STORAGE, record_uuid, field, data)
-        eng.update(_STORAGE, record_uuid, merged)
+        committed = eng.update(_STORAGE, record_uuid, merged)
     except Exception as exc:
         logger.warning("reingest: blob/jor write failed for %s", record_uuid, exc_info=True)
         return ReingestResult(False, error=f"re-ingest write failed: {exc}")
 
-    try:
-        from corpusfm.server.tags_store import invalidate_record_views
-        invalidate_record_views()
-    except Exception:
-        pass
+    publish_committed(backend, committed, record_uuid)
     return ReingestResult(True, meta=meta_from_jor(merged, uuid=record_uuid), was_addon=was_addon)
 
 
-def heal_publish_integrity(backend) -> dict:
-    """The 077-E startup heal. Two sweeps, both best-effort and fail-open:
-
-    1. **Staged crash residue** — Type-LESS STORAGE rows (a store/landing crashed between create
-       and the visibility commit; the row was never visible) older than an hour → delete.
-    2. **Poison rows** — catalog-VISIBLE rows (a SCHEMA_TYPES ``Type``) whose required ArtifactData
-       blob is missing/empty (pre-invariant crash residue; the new write order cannot create these)
-       → delete, loudly. Existence is checked with the engine's cheap ``blob_exists`` (never a
-       download) and BOUNDED to the newest 25 rows per boot — a crash's residue is by nature the
-       most recent writes; the bound is logged, never silent. ``blob_exists`` returning None
-       (uncertain) NEVER deletes.
-
-    Returns {"staged_residue": n, "poison": n}."""
-    out = {"staged_residue": 0, "poison": 0}
-    eng = getattr(backend, "engine", None)
-    if eng is None:
-        return out
-    try:
-        now = datetime.now(timezone.utc)   # UTC to match _staged_stamp (packet 1005); both tz-aware
-        rows, _ = eng.page(_STORAGE, eq={"Type": ""}, per_page=200)
-        for r in rows:
-            created = r.jor.get("staged_created", "")
-            try:
-                age_s = (now - datetime.fromisoformat(created)).total_seconds()
-            except Exception:
-                age_s = _STAGED_RESIDUE_MIN_AGE_S + 1
-            if age_s > _STAGED_RESIDUE_MIN_AGE_S:
-                eng.delete(_STORAGE, r.key)
-                out["staged_residue"] += 1
-                logger.warning("heal: reaped Type-less staged crash residue %s (%s)",
-                               r.key, r.jor.get("FileName", "?"))
-    except Exception:
-        logger.debug("heal: staged-residue sweep failed (skipped)", exc_info=True)
-    try:
-        limit = 25
-        from corpusfm.artifact.capabilities import SCHEMA_TYPES
-        rows, _ = eng.page(_STORAGE, isin={"Type": sorted(SCHEMA_TYPES)},
-                           orderby="ArtifactTimestamp", desc=True, page=1, per_page=limit)
-        if len(rows) == limit:
-            logger.info("heal: poison sweep bounded to the newest %d visible rows", limit)
-        for r in rows:
-            if eng.blob_exists(_STORAGE, r.key, "ArtifactData") is False:
-                eng.delete(_STORAGE, r.key)
-                out["poison"] += 1
-                logger.warning("heal: removed poison row %s (%s/%s) — schema type with no "
-                               "ArtifactData blob", r.key, r.jor.get("FileName", "?"),
-                               r.jor.get("ArtifactTimestamp", "?"))
-    except Exception:
-        logger.debug("heal: poison-row sweep failed (skipped)", exc_info=True)
-    if out["staged_residue"] or out["poison"]:
-        try:
-            from corpusfm.server.tags_store import invalidate_record_views
-            invalidate_record_views()
-        except Exception:
-            pass
-    return out
+# `heal_publish_integrity` is GONE (packet 1361-01, final ruling). It scanned STORAGE at every
+# startup for two things the product has decided it does not police: Type-less staged residue (a
+# state that no longer exists, because a record is typed from its create) and "poison" rows whose
+# ArtifactData container was missing. The second was a container-integrity verdict reached from a
+# listing, acted on by DELETING a database record — and a `blob_exists` that answered False for a
+# transport reason would have destroyed a real artifact. Container existence is nobody's startup
+# business now: queue recovery cleans only the exact UUID its own unfinished operation anchored,
+# and anything else is an administrator's call.

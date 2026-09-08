@@ -25,7 +25,11 @@ from corpusfm.storage.local import ArtifactMeta, _safe_dir_name
 def build_record(artifact, *, timestamp: str, label: str = "", origin: str = "Import",
                  job_uuid: str = "", run_uuid: str = "", addon_package=None,
                  xml_bytes: Optional[bytes] = None, keep_source_xml: bool = False) -> dict:
-    """The canonical artifact-record/2 jor. Every newly-stored artifact is IsLatest at creation."""
+    """The canonical artifact-record/2 jor.
+
+    ``IsLatest`` is NOT written here any more (packet 1361-01): "which artifact of this lineage is
+    current" is one ``STORAGELINK`` promotion row per job, not a boolean every producer had to
+    remember to flip and every deleter to repair. See ``server.latest``."""
     from corpusfm.artifact.types import GAP_COUNT_VERSION, count_summarizable
 
     identity = getattr(artifact, "identity", None)
@@ -68,7 +72,6 @@ def build_record(artifact, *, timestamp: str, label: str = "", origin: str = "Im
         "UUIDJob": job_uuid,
         "RootUUID": getattr(identity, "root_uuid", "") or "",
         "ArtifactTimestamp": timestamp,
-        "IsLatest": True,
         "HasSummaries": False,
         "Description": "",
         "Memory": "",
@@ -95,9 +98,14 @@ def build_record(artifact, *, timestamp: str, label: str = "", origin: str = "Im
 
 
 def record_from_jor(record_uuid: str, jor: dict) -> dict:
-    """The lineage/identity record dict the latest-flag + tag layers consume, from one canonical
+    """The lineage/identity record dict the catalog's derived indexes consume, from one canonical
     jor. One converter for both backends (the FM backend and the engine-read paths), so the
-    record shape never drifts. Carries the full canonical ``meta`` from the same parse (free)."""
+    record shape never drifts. Carries the full canonical ``meta`` from the same parse (free).
+
+    It carries **no** ``is_latest``: that is not a property of a record any more (packet 1361-01).
+    The catalog stamps the verdict onto each per-read copy from its promotion index, so a consumer
+    reading ``row["is_latest"]`` off a catalog projection is unchanged, and nothing else can invent
+    an answer from a stale flag in the payload."""
     return {
         "uuid": record_uuid,
         "root_uuid": jor.get("RootUUID", ""),
@@ -108,7 +116,6 @@ def record_from_jor(record_uuid: str, jor: dict) -> dict:
         "artifact_type": jor.get("Type", ""),
         "origin": jor.get("Origin", "Import"),
         "fm_version": jor.get("FMVersion", ""),
-        "is_latest": bool(jor.get("IsLatest", False)),
         "name": jor.get("PrimaryName", ""),
         "meta": meta_from_jor(jor, uuid=record_uuid),
     }

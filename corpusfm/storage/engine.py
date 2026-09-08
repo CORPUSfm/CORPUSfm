@@ -16,7 +16,7 @@ existing ``FileMakerODataBackend``; the fat backend folds into the engine once c
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Iterator, Optional, Protocol
 from urllib.parse import quote as _quote
 
 from corpusfm.storage import fm_registry as reg
@@ -26,6 +26,12 @@ from corpusfm.storage import fm_registry as reg
 # this is far more rows than a table list_all should ever be pointed at.
 _LIST_ALL_MAX_PAGES = 500
 
+# How many record keys one `keys_present` request may name. A keyed presence read is the basis of a
+# DELETION decision (server.tag_integrity), so it must never be the request that a server truncates
+# or a URL length refuses: chunking keeps every request bounded, and each chunk is then followed to
+# exhaustion. Sized to stay well inside both an ordinary URL limit and SQLite's host-parameter cap.
+_KEY_CHUNK = 100
+
 
 @dataclass(frozen=True)
 class Row:
@@ -33,6 +39,19 @@ class Row:
     JSONOfRecord dict (never a blob). Repos address records by ``key`` without knowing which it is."""
     key: str
     jor: dict
+
+
+@dataclass(frozen=True)
+class WriteRow:
+    """What the substrate RETURNED for a confirmed write: the record key + the ``JSONOfRecord``
+    value **exactly as it came back**, unparsed and unjudged (packet 1361-01, 2026-09-01 ruling).
+
+    Deliberately NOT a :class:`Row`. A ``Row`` carries a parsed dict, and parsing here would force
+    the boundary to decide what a malformed document means — which is the caller's decision, not
+    the transport's. A response carrying a UUID and a JSONOfRecord is publishable even when that
+    JSON does not parse; the catalog retains it and marks its projection unavailable."""
+    key: str
+    raw: object
 
 
 class StorageEngine(Protocol):
@@ -50,8 +69,10 @@ class StorageEngine(Protocol):
     def list_all(self, logical: str) -> list[Row]: ...
     def list_where(self, logical: str, *, eq: Optional[dict] = None, ne: Optional[dict] = None,
                    isin: Optional[dict] = None) -> list[Row]: ...
-    def create(self, logical: str, key: str, jor: dict) -> None: ...
-    def update(self, logical: str, key: str, jor: dict) -> None: ...
+    def iter_raw(self, logical: str) -> "Iterator[tuple[str, object]]": ...
+    def keys_present(self, logical: str, keys: list) -> set: ...
+    def create(self, logical: str, key: str, jor: dict) -> Optional["WriteRow"]: ...
+    def update(self, logical: str, key: str, jor: dict) -> Optional["WriteRow"]: ...
     def delete(self, logical: str, key: str) -> None: ...
     def blob_get(self, logical: str, key: str, field: str) -> Optional[bytes]: ...
     def blob_put(self, logical: str, key: str, field: str, data: bytes) -> None: ...
@@ -60,6 +81,47 @@ class StorageEngine(Protocol):
     def sql(self, query: str, *, columns: bool = False) -> list: ...
     def phys(self, logical: str) -> str: ...
     def sql_page_clause(self, skip: int, top: int) -> str: ...
+
+
+def write_response_record(resp) -> Optional[WriteRow]:
+    """The record the substrate returned for a confirmed write, or ``None`` — ``UUID`` and
+    ``JSONOfRecord`` ONLY, both kept **opaque**.
+
+    Packet 1361-01, restated by the 2026-09-01 ruling. A successful OData write returns the full
+    committed record, so the catalog can publish it with no confirming read. Three fences:
+
+    * **Admission.** A POST/PATCH response is not ``$select``-narrowed, so the body may carry any
+      column of the row — container fields included. Exactly two keys are read out of it and every
+      other one is discarded here, at the boundary, so container bytes, credentials and artifact
+      bodies cannot ride into memory on the back of a write.
+    * **No synthesis, ever.** This function takes no request key and no request document, so it
+      CANNOT fabricate an authoritative-looking record out of what we asked for. A response with no
+      body, a non-JSON body, a non-object body, a missing/blank ``UUID`` or an absent
+      ``JSONOfRecord`` returns ``None``; the caller then publishes nothing, records the failure and
+      requests reconciliation — it never rolls the database write back.
+    * **No rejection or rewriting of a PRESENT JSONOfRecord.** The value is carried through exactly
+      as returned. An earlier version parsed it and returned ``None`` when it did not yield an
+      object, which quietly converted "FileMaker holds a malformed document" into "FileMaker
+      returned nothing" — two different facts, and the catalog is entitled to know which it has.
+      Malformed raw is retained by the catalog and its projection marked unavailable.
+    """
+    try:
+        body = resp.json()
+    except Exception:
+        return None
+    if isinstance(body, dict) and isinstance(body.get("value"), list):
+        body = body["value"][0] if body["value"] else None
+    if not isinstance(body, dict):
+        return None
+    key = str(body.get("UUID") or "").strip()
+    if not key:
+        return None
+    if "JSONOfRecord" not in body:
+        return None
+    raw = body.get("JSONOfRecord")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    return WriteRow(key, raw)
 
 
 def _slot_kind(logical: str, key: str) -> str:
@@ -75,7 +137,7 @@ def _clause(logical: str, key: str, value, op: str = "eq") -> str:
     slot = reg.slot(logical, key)
     kind = _slot_kind(logical, key)
     if kind in ("bool", "number"):
-        v = (1 if value in (True, 1, "1", "true") else 0) if kind == "bool" else value
+        v = value if kind == "number" else (1 if value in (True, 1, "1", "true") else 0)
         return f"{slot} {op} {v}"
     return f"{slot} {op} '{str(value).lower().replace(chr(39), chr(39) * 2)}'"
 
@@ -253,14 +315,75 @@ class FMEngine:
             parts.append("$filter=" + _quote(_and(clauses), safe="(),'"))
         return self._follow(logical, "&".join(parts).replace(" ", "%20"), what="list_where")
 
-    # -- writes (JSONOfRecord + key only; slots are FM-derived) ----------------
-    def create(self, logical: str, key: str, jor: dict) -> None:
-        self._b._post_json(self._url(logical), self._b._jor_payload(logical, jor, record_uuid=key)
-                           ).raise_for_status()
+    def iter_raw(self, logical: str) -> "Iterator[tuple[str, object]]":
+        """STREAM ``(uuid, raw_JSONOfRecord)`` for EVERY row of ``logical``, page by page.
 
-    def update(self, logical: str, key: str, jor: dict) -> None:
-        self._b._patch_json(self._url(logical, key), self._b._jor_payload(logical, jor)
-                           ).raise_for_status()
+        The catalog's validation read (packet 1361-01). It is deliberately **unfiltered**: the
+        persistent catalog retains every row of all three tables, so there is no Type narrowing to
+        apply and — the reason that matters — no structurally bad document can hide behind a slot it
+        was never able to derive. The narrowing arm this method briefly carried (and the
+        ``IsValidJSON`` projection that existed only to make that arm safe) is retired with it.
+
+        It differs from ``list_where`` in the two ways that matter to a whole-table read:
+
+        * it **yields** rather than accumulating, so one validation pass never holds three complete
+          response lists in memory at once; and
+        * it hands back the raw ``JSONOfRecord`` value UNPARSED, so the caller can compare it byte
+          for byte against what it already holds and skip the parse entirely when nothing changed.
+
+        The nextLink cursor and the ``_LIST_ALL_MAX_PAGES`` runaway guard are ``_follow``'s, for the
+        same reasons: client-computed ``$skip`` paging over a table being written to can skip or
+        repeat rows, and a truncated read that looks complete is precisely the failure being guarded
+        against — so the guard RAISES, which fails the pass rather than reaping live records."""
+        payload = self._get(logical, "$select=UUID,JSONOfRecord")
+        for _ in range(_LIST_ALL_MAX_PAGES + 1):
+            for rec in payload.get("value", []):
+                yield (str(rec.get("UUID") or "").strip(), rec.get("JSONOfRecord"))
+            nxt = payload.get("@odata.nextLink") or payload.get("@nextLink")
+            if not nxt:
+                return
+            resp = self._b._session.get(nxt)
+            resp.raise_for_status()
+            payload = resp.json()
+        raise RuntimeError(
+            f"iter_raw({logical!r}) followed {_LIST_ALL_MAX_PAGES} pages without exhausting the "
+            "table; the validation pass fails rather than reconciling against a partial read.")
+
+    def keys_present(self, logical: str, keys: list) -> set:
+        """The subset of ``keys`` this table AUTHORITATIVELY holds — chunked, and every page of
+        every chunk followed to exhaustion.
+
+        ``get_by_keys`` issues ONE un-paged request, which is right for its callers (they ask about
+        a handful of keys) and catastrophically wrong for a caller that deletes what it does not see:
+        a server-paged response, or a URL the server refuses, would answer "absent" for a record that
+        exists. This method is the safe form and the only one an integrity pass may use — it chunks
+        the key set into bounded requests and follows ``@odata.nextLink`` for each, so a short read
+        RAISES instead of quietly shrinking the answer (packet 1361-01)."""
+        vals = [k for k in dict.fromkeys(keys) if k]
+        out: set = set()
+        for i in range(0, len(vals), _KEY_CHUNK):
+            chunk = vals[i:i + _KEY_CHUNK]
+            ors = " or ".join(f"UUID eq '{str(k).replace(chr(39), chr(39) * 2)}'" for k in chunk)
+            q = f"$select=UUID,JSONOfRecord&$filter={_quote(ors, safe=chr(39))}"
+            out.update(r.key for r in self._follow(logical, q, what="keys_present"))
+        return out
+
+    # -- writes (JSONOfRecord + key only; slots are FM-derived) ----------------
+    def create(self, logical: str, key: str, jor: dict) -> Optional[WriteRow]:
+        """Returns the record FileMaker RETURNED (UUID + opaque JSONOfRecord), or ``None`` when the
+        response is not a usable full record. ``None`` is not a write failure — the write is already
+        confirmed by ``raise_for_status`` — it means the caller must publish nothing, record the
+        failure and request reconciliation."""
+        resp = self._b._post_json(self._url(logical),
+                                  self._b._jor_payload(logical, jor, record_uuid=key))
+        resp.raise_for_status()
+        return write_response_record(resp)
+
+    def update(self, logical: str, key: str, jor: dict) -> Optional[WriteRow]:
+        """See ``create``: the RETURNED record, or ``None`` — never the request document."""
+        resp = self._b._patch_json(self._url(logical, key), self._b._jor_payload(logical, jor))
+        resp.raise_for_status()
+        return write_response_record(resp)
 
     def delete(self, logical: str, key: str) -> None:
         self._b._session.delete(self._url(logical, key)).raise_for_status()
@@ -354,13 +477,38 @@ def _sqlite_slot_type(kind: str) -> str:
 
 
 def _sqlite_slot_expr(kind: str, json_key: str) -> str:
-    """The GENERATED-column expression reproducing fm_registry's projection for this slot."""
+    """The GENERATED-column expression reproducing fm_registry's projection for this slot.
+
+    Every branch is guarded by ``json_valid(jor)`` for PARITY, not for tidiness: FileMaker's JSON
+    functions answer ``"?"`` for a document they cannot parse and the record commits anyway, while
+    SQLite's ``json_extract`` RAISES on malformed JSON — so an unguarded STORED generated column
+    makes a malformed row impossible to store here and possible to store there. The guard makes
+    both substrates agree: a structurally bad document derives NULL slots and is still a row, which
+    is what lets the catalog RETAIN it (packet 1361-01)."""
     get = f"json_extract(jor, '$.{json_key}')"
     if kind == "bool":
-        return f"CASE WHEN {get} IN (1, '1', 'true') THEN 1 ELSE 0 END"
+        return f"CASE WHEN json_valid(jor) AND {get} IN (1, '1', 'true') THEN 1 ELSE 0 END"
     if kind == "number":
-        return get
-    return f"lower({get})"   # text / textlower / textlist — the CF lowercases all text slots
+        return f"CASE WHEN json_valid(jor) THEN {get} END"
+    # text / textlower / textlist — the CF lowercases all text slots
+    return f"CASE WHEN json_valid(jor) THEN lower({get}) END"
+
+
+def _sqlite_jor(raw):
+    """The stored jor as a dict, or ``{}`` when it does not parse — PARITY with the FM path.
+
+    ``fm_odata._parse_jor`` answers ``{}`` for a payload it cannot read and logs; raising here
+    instead would make ONE malformed record poison every read that happens to include it, which is
+    the opposite of the fault containment the catalog is built on (packet 1361-01). A caller that
+    needs to tell "unreadable" from "empty" reads the raw value, which is exactly what the catalog's
+    ``iter_raw`` synchronization does."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = _json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 class SqliteEngine:
@@ -392,11 +540,28 @@ class SqliteEngine:
                 # indexable — so back-fill the missing slot as VIRTUAL (computed on read, data-preserving)
                 # while fresh tables keep STORED. Prod (FM backend) is unaffected (no physical slots).
                 existing = {r[1] for r in self._conn.execute(f"PRAGMA table_xinfo({logical})")}
+                # The table's own DDL, so a slot whose EXPRESSION drifted can be told from one that
+                # is merely absent. Packet 1361-01 made every slot expression `json_valid`-guarded so
+                # a malformed document can be STORED here exactly as FileMaker stores it; a dev store
+                # created before that carries the unguarded expressions, and the add-if-missing arm
+                # alone would leave them in place forever. Generated columns hold no data, so
+                # dropping and re-adding one is a pure re-derivation, never a migration.
+                ddl = (self._conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                    [logical]).fetchone() or [""])[0] or ""
                 for json_key, (slot, kind) in reg.SLOTS.get(logical, {}).items():
+                    expr = _sqlite_slot_expr(kind, json_key)
+                    if slot in existing and expr not in ddl:
+                        try:
+                            self._conn.execute(f"DROP INDEX IF EXISTS ix_{logical}_{slot}")
+                            self._conn.execute(f"ALTER TABLE {logical} DROP COLUMN {slot}")
+                            existing.discard(slot)
+                        except Exception:
+                            pass      # keep the stale-but-working column rather than break the store
                     if slot not in existing:
                         self._conn.execute(
                             f"ALTER TABLE {logical} ADD COLUMN {slot} {_sqlite_slot_type(kind)} "
-                            f"GENERATED ALWAYS AS ({_sqlite_slot_expr(kind, json_key)}) VIRTUAL")
+                            f"GENERATED ALWAYS AS ({expr}) VIRTUAL")
                     self._conn.execute(
                         f"CREATE INDEX IF NOT EXISTS ix_{logical}_{slot} ON {logical}({slot})")
             self._conn.execute("CREATE TABLE IF NOT EXISTS _blobs "
@@ -426,7 +591,7 @@ class SqliteEngine:
             sql += f" LIMIT {int(limit)} OFFSET {int(offset)}"
         with self._lock:
             cur = self._conn.execute(sql, params)
-            return [Row(r["uuid"], _json.loads(r["jor"])) for r in cur.fetchall()]
+            return [Row(r["uuid"], _sqlite_jor(r["jor"])) for r in cur.fetchall()]
 
     # -- reads ----------------------------------------------------------------
     def get_one(self, logical: str, **eq) -> Optional[Row]:
@@ -512,18 +677,53 @@ class SqliteEngine:
             params += [p for _, p in binds]
         return self._select(logical, _and(clauses), params)
 
-    # -- writes (jor + key only; slots auto-generate) -------------------------
-    def create(self, logical: str, key: str, jor: dict) -> None:
-        with self._lock:
-            self._conn.execute(f"INSERT INTO {logical}(uuid, jor) VALUES (?, ?)",
-                               [key or str(_uuidlib.uuid4()), _json.dumps(jor, ensure_ascii=False)])
-            self._conn.commit()
+    def iter_raw(self, logical: str) -> "Iterator[tuple[str, object]]":
+        """Mirror of :meth:`FMEngine.iter_raw` — every stored ``jor`` TEXT, unparsed, unfiltered.
 
-    def update(self, logical: str, key: str, jor: dict) -> None:
+        It materializes the result set before yielding, deliberately: SQLite has no server paging to
+        stream, and holding the connection lock across a lazy cursor while the caller parses each row
+        would serialize every concurrent write behind the read. The streaming contract that matters
+        is FileMaker's, where the pages are real."""
         with self._lock:
-            self._conn.execute(f"UPDATE {logical} SET jor = ? WHERE uuid = ?",
-                               [_json.dumps(jor, ensure_ascii=False), key])
+            rows = self._conn.execute(f"SELECT uuid, jor FROM {logical}").fetchall()
+        for r in rows:
+            yield (r["uuid"], r["jor"])
+
+    def keys_present(self, logical: str, keys: list) -> set:
+        """The subset of ``keys`` this table holds — chunked to stay inside SQLite's host-parameter
+        limit, which is the local mirror of the FM engine's URL/paging bound."""
+        vals = [k for k in dict.fromkeys(keys) if k]
+        out: set = set()
+        for i in range(0, len(vals), _KEY_CHUNK):
+            chunk = vals[i:i + _KEY_CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            with self._lock:
+                cur = self._conn.execute(
+                    f"SELECT uuid FROM {logical} WHERE uuid IN ({placeholders})", chunk)
+                out.update(r["uuid"] for r in cur.fetchall())
+        return out
+
+    # -- writes (jor + key only; slots auto-generate) -------------------------
+    def create(self, logical: str, key: str, jor: dict) -> Optional[WriteRow]:
+        # SQLite commits the document verbatim — there is no server-side derivation — so the text
+        # written IS the committed record, and it is returned in the same opaque form the FM path
+        # returns. This is not the request-document fallback the contract forbids; it is the local
+        # substrate's actual stored value, read back from the statement it committed.
+        written = key or str(_uuidlib.uuid4())
+        raw = _json.dumps(jor, ensure_ascii=False)
+        with self._lock:
+            self._conn.execute(f"INSERT INTO {logical}(uuid, jor) VALUES (?, ?)", [written, raw])
             self._conn.commit()
+        return WriteRow(written, raw)
+
+    def update(self, logical: str, key: str, jor: dict) -> Optional[WriteRow]:
+        raw = _json.dumps(jor, ensure_ascii=False)
+        with self._lock:
+            cur = self._conn.execute(f"UPDATE {logical} SET jor = ? WHERE uuid = ?", [raw, key])
+            self._conn.commit()
+            if not cur.rowcount:
+                return None          # nothing matched — there is no committed record to publish
+        return WriteRow(key, raw)
 
     def delete(self, logical: str, key: str) -> None:
         with self._lock:

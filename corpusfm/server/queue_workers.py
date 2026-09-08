@@ -205,7 +205,18 @@ class _Worker:
         return min(cands, key=lambda r: r.jor.get("created_at", ""))
 
     def process_next(self, repo) -> bool:
-        """Claim + run ONE record. Returns True if it processed something (test seam / loop body)."""
+        """Claim + run ONE record. Returns True if it processed something (test seam / loop body).
+
+        **A PAUSED process claims nothing** (packet 1361-01, availability correction). The readiness
+        gate is checked before the claim rather than inside a handler, so no new unit of work starts
+        against a database CORPUSfm has said it cannot read — and the check is here, at the one claim
+        chokepoint every worker type shares, rather than repeated per handler. Work already in flight
+        is NOT rolled back: it finishes or fails naturally, and its record parks like any other.
+        Returning False idles the loop, so a paused box polls at `_IDLE_WAIT` and drains nothing.
+        """
+        from corpusfm.server import availability
+        if not availability.is_open():
+            return False
         try:
             row = self._claim(repo)
         except Exception:

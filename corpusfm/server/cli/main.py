@@ -35,9 +35,15 @@ import sys
 from corpusfm.server.cli import (
     cmd_archive, cmd_compare, cmd_diff_companion, cmd_export, cmd_gap_analyze,
     cmd_ingest, cmd_jobs, cmd_migrate, cmd_patch, cmd_reencode,
-    cmd_registrations, cmd_scheduler, cmd_setup_embeddings,
+    cmd_registrations, cmd_setup_embeddings,
     cmd_status, cmd_update_notice, cmd_users,
 )
+
+# `cmd_scheduler` is GONE (packet 1361-01, round 3). `corpusfm scheduler status` was the last of it:
+# the scheduler is a component of the WEB process, so a CLI running in a different process cannot
+# observe it, and a command that can only explain that it cannot answer is not a command. The two
+# surfaces that CAN answer — the Recent-activity pop-over and the MCP `get_health` tool — read the
+# clock's own in-memory state inside the web process, and both answer while the box is paused.
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,7 +61,6 @@ def build_parser() -> argparse.ArgumentParser:
     cmd_jobs.add_parser(sub)
     cmd_registrations.add_parser(sub)
     cmd_export.add_parser(sub)
-    cmd_scheduler.add_parser(sub)
     cmd_gap_analyze.add_parser(sub)
     cmd_diff_companion.add_parser(sub)
     cmd_patch.add_parser(sub)

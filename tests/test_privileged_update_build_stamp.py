@@ -10,17 +10,21 @@ LINUX = (ROOT / "installer/linux/corpusfm-update.sh").read_text(encoding="utf-8"
 WINDOWS = (ROOT / "installer/windows/corpusfm-update.ps1").read_text(encoding="ascii")
 
 
-def test_linux_stamps_the_applied_head_before_loading_or_restarting_new_code():
+def test_linux_stamps_the_applied_head_before_LOADING_new_code():
+    """RE-EXPRESSED for application packet 1361-01, round 3: the chain used to end at the service
+    restart, and this script restarts no service now (the scheduler is retired; the web service is
+    the caller waiting for the outcome). The IMPORT PROBE is the last step that trusts the new code,
+    so it is the one the stamp must precede — which is what OP-031 was ever about."""
     merge = LINUX.index('merge --ff-only "$OBSERVED"')
     derive = LINUX.index('NEW_BUILD="$(read_release_build)"', merge)
     write = LINUX.index("printf '%s\\n' \"$NEW_BUILD\"", derive)
     readback = LINUX.index('!= "$NEW_BUILD"', write)
     probe = LINUX.index("import corpusfm.app.web.app", readback)
-    restart = LINUX.index('systemctl restart "$svc"', probe)
 
-    assert merge < derive < write < readback < probe < restart
+    assert merge < derive < write < readback < probe
     assert '[[ "$value" =~ ^[1-9][0-9]*$ ]]' in LINUX
     assert "rev-list --count HEAD" not in LINUX
+    assert "systemctl restart" not in LINUX
 
 
 def test_linux_rollback_restores_both_checkout_and_prior_stamp_state():
@@ -36,17 +40,18 @@ def test_linux_rollback_restores_both_checkout_and_prior_stamp_state():
     assert "build_stamp_mismatch" in LINUX
 
 
-def test_windows_stamps_the_applied_head_before_loading_or_restarting_new_code():
+def test_windows_stamps_the_applied_head_before_LOADING_new_code():
+    """The Windows twin of the Linux re-expression above (application packet 1361-01, round 3)."""
     merge = WINDOWS.index("'merge', '--ff-only', $script:Observed")
     derive = WINDOWS.index('$newBuild = Get-DeclaredReleaseBuild', merge)
     write = WINDOWS.index("Set-Content -Path $Stamp", derive)
     readback = WINDOWS.index("Get-Content $Stamp -Raw", write)
     probe = WINDOWS.index("import corpusfm.app.web.app", readback)
-    restart = WINDOWS.index("Restart-Service $svc", probe)
 
-    assert merge < derive < write < readback < probe < restart
+    assert merge < derive < write < readback < probe
     assert "$newBuild -notmatch '^[1-9][0-9]*$'" in WINDOWS
     assert "'rev-list', '--count', 'HEAD'" not in WINDOWS
+    assert "Restart-Service" not in WINDOWS
 
 
 def test_windows_rollback_restores_both_checkout_and_exact_prior_stamp_state():

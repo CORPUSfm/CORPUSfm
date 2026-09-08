@@ -18,30 +18,39 @@ router = APIRouter()
 
 @router.get("/merged-artifacts/candidates", dependencies=[Depends(require_auth)])
 async def merge_candidates() -> JSONResponse:
-    """Return SaveAsXML and AddonXML snapshots that have an artifact (can be merged)."""
+    """SaveAsXML and AddonXML snapshots that can be merged, from the catalog generation.
+
+    Served off the persistent catalog's TYPE index (packet 1361-01) — the incumbent enumerated
+    STORAGE with `iter_artifact_metas()` on every dialog open and then threw most of it away. A
+    catalog whose database read failed says so rather than rendering an empty candidate list, which
+    on this dialog reads as "you have nothing to merge"."""
     from corpusfm.storage import get_backend
+    from corpusfm.server import catalog
     from corpusfm.artifact.capabilities import has_capability, MERGE
+
     backend = get_backend()
+    view = catalog.view(backend)
+    if view.failed:
+        return JSONResponse({"saveas": [], "addons": [],
+                             "catalog_failed": True, "unavailable": True, "reason": "storage"})
+
     saveas = []
     addons = []
-    for meta in backend.iter_artifact_metas():
-        if not getattr(meta, "is_schema", False):
-            continue
-        atype = getattr(meta, "artifact_type", None) or (
-            "AddonXML" if meta.is_addon else "SaveAsXML")
+    for atype in ("SaveAsXML", "AddonXML"):
         if not has_capability(atype, MERGE):
             continue
-        entry = {
-            "uuid": meta.uuid,        # canonical record address (packet 085 U3f)
-            "fm_file": meta.file_name,
-            "timestamp": meta.timestamp,
-            "name": meta.name or "",
-            "is_addon": meta.is_addon,
-                        }
-        if meta.is_addon:
-            addons.append(entry)
-        else:
-            saveas.append(entry)
+        for rec in view.select(type=atype):
+            meta = rec.get("meta")
+            if meta is None or not getattr(meta, "is_schema", False):
+                continue
+            entry = {
+                "uuid": meta.uuid,        # canonical record address (packet 085 U3f)
+                "fm_file": meta.file_name,
+                "timestamp": meta.timestamp,
+                "name": meta.name or "",
+                "is_addon": meta.is_addon,
+            }
+            (addons if meta.is_addon else saveas).append(entry)
     return JSONResponse({"saveas": saveas, "addons": addons})
 
 
@@ -79,13 +88,9 @@ async def create_merged(request: Request) -> JSONResponse:
         # else the PRIMARY name — the source file's stem — NOT the raw ".fmp12" file_name.
         from corpusfm.core.filenames import primary_name_from_filename
         name = (body.get("name") or "").strip() or primary_name_from_filename(merged.identity.file_name)
+        # store_artifact publishes the record it committed (packet 1361-01) — the new MergedXML
+        # row is in the persistent catalog before this returns.
         meta = backend.store_artifact(merged, label=name, origin="Merge")
-        # Bust the catalog tag/lineage snapshot — the new MergedXML row shows immediately.
-        try:
-            from corpusfm.server.tags_store import invalidate_record_views
-            invalidate_record_views()
-        except Exception:
-            pass
         # Stamp the parent RECORD UUIDs into the cheap record so the detail's "Merged from" reads
         # them without loading the merged blob. This is the ONLY place the link is kept — never in
         # the artifact, which travels somewhere our UUIDs mean nothing (packet 1216).

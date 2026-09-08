@@ -280,11 +280,16 @@ $Repo = 'CORPUSfm/CORPUSfm'
 # installation. Their flags are retired; these remain because the blocks below still read them.
 $WebPrefix = '/corpusfm'
 $WebPort   = 8533
-# MCP and the scheduler ALWAYS install (section 4H.2). These stay as CONSTANTS because the blocks
-# below still read them; what is gone is every parameter that could set them. There is no opt-out to
-# express.
+# MCP ALWAYS installs (section 4H.2). It stays a CONSTANT because the blocks below still read it;
+# what is gone is every parameter that could set it. There is no opt-out to express.
+#
+# THE SCHEDULER IS NOT A SERVICE (application packet 1361-01, round 3), so it has no switch at all.
+# Scheduling is a background component of the ONE web process: it starts when the database becomes
+# readable and stops with the service. A second process could not honour the process-wide
+# database-readiness gate - it kept reading and writing FileMaker while CORPUSfm was PAUSED - and
+# `python -m corpusfm.server.scheduler` now exits 2 with that reason, so an obsolete service under
+# WinSW's restart policy would fail repeatedly. The name below survives ONLY as a removal target.
 $EnableMcp = $true
-$EnableScheduler = $true
 # The tracked branch is `main` and forward-only; there is no channel, tag or SHA to choose, so this
 # is a CONSTANT the git blocks read, not an input.
 $GitTrackedBranch = 'main'
@@ -294,9 +299,14 @@ $GitTrackedBranch = 'main'
 # definition naming a directory the application does not use.
 $ConfigHome = 'C:\ProgramData\CORPUSfm'
 
-$Service = @{ web = 'corpusfm-web'; scheduler = 'corpusfm-scheduler' }
+$Service = @{ web = 'corpusfm-web' }
 $WebService   = $Service.web
-$SchedService = $Service.scheduler
+# The retired standalone scheduler service. Named here so an upgrade can STOP, remove its ACL
+# entries, prove the one-service policy and only then DELETE it; nothing renders, registers, grants
+# to or starts it. See THE SCHEDULER RETIREMENT ADAPTER above for why that order is load-bearing.
+$SchedServiceRetired = 'corpusfm-scheduler'
+$SchedRetiredAccount = 'NT SERVICE\' + $SchedServiceRetired
+$SchedRetiredService = $SchedServiceRetired
 # The two accounts the patch-compartment request names. Ours is the WinSW virtual service account -
 # the same `NT SERVICE\<id>` spelling `service_identity.windows_virtual_account` produces, so the
 # compartment is asked about the identity phase 20 actually registers. FMS's own service runs as
@@ -1125,7 +1135,22 @@ function Test-CfmInstallationAuthority {
 
 $script:LcStateRaw = $null
 function Get-LcState {
-  if ($null -ne $script:LcStateRaw) { return $script:LcStateRaw }
+  # ONE OBSERVATION BY DEFAULT, and that default is load-bearing: phases 2 and 3 classify from the
+  # SAME status object, so a second read between them could route on a box that had changed under
+  # the classification. Ordinary callers must keep getting the memoized value.
+  #
+  # `-Refresh` IS THE EXPLICIT EXCEPTION, and it exists because the default silently defeated a
+  # verification. A001's post-recovery check called this expecting current state and received the
+  # phase-3 observation - taken when the journal was still `open` - so a recovery that had actually
+  # succeeded reported "a lifecycle journal is still retained" and aborted the invocation. Measured
+  # on w-test-private, 2026-09-03, at generation 9 with the journal already gone.
+  #
+  # A refresh runs the authoritative status command again, applies EVERY validation below, and
+  # stores the successful result back as the new shared observation. It never falls back to the
+  # cached value: each failure path here either dies or replaces the cache, so a failed refresh
+  # cannot hand a caller the pre-recovery answer it was asking to look past.
+  param([switch]$Refresh)
+  if (-not $Refresh -and $null -ne $script:LcStateRaw) { return $script:LcStateRaw }
   $lifecyclePackage = Join-Path $script:RecoverySource 'corpusfm\lifecycle\__main__.py'
   $orphanJournal = Join-Path $FixedState 'lifecycle-journal.json'
   if ((Test-Path -LiteralPath $orphanJournal -PathType Leaf) -and
@@ -1444,6 +1469,204 @@ function Lc-DiscardProvider($provider, $operationId, $installationId = $script:I
   Ok "$provider journal discarded"
 }
 
+function Lc-RecoverA001Authority {
+  # A001's ACCUMULATED RECOVERY ROUTE - and it is A001's alone, not a framework.
+  #
+  # THE PROBLEM IT SOLVES. Phase 3 routes every retained journal through the shared provider
+  # disposition, and `a001_scheduler_authority` is not a provider - `_provider_for_journal` answers
+  # None, `_preflight` raises "the unresolved lifecycle journal does not identify its provider", and
+  # the installer dies before it can ever reach A001 step 5. The composition operation is resumable;
+  # until now the installers could not reach it. So this recognizes the EXACT A001 journal ahead of
+  # generic disposition. A001 is still not a provider and the provider vocabulary is untouched.
+  #
+  # WHAT IT DOES NOT DO. It does not continue the installation. Recovery and new work are never
+  # combined - a run that repairs and then installs cannot say which half a later failure belongs
+  # to - so a successful recovery ENDS this invocation and the operator re-runs.
+  param($Record, $State)
+  $op     = "" + $Record.operation_id
+  $inst   = "" + $Record.installation_id
+  $st     = "" + $Record.state
+  $sub    = "" + $Record.current_subsystem
+  $result = "" + $Record.result
+
+  # -- the accepted interruption shapes --------------------------------------------
+  #
+  # A CHEAP EARLY SUBSET, NOT THE AUTHORITY. The full rule is a MATRIX pairing the journal state
+  # with whether the manifest still records the scheduler, and only the application operation can
+  # see both halves - this script has no manifest reader and must not grow one. So these refuse the
+  # shapes visible from the journal alone; the operation refuses the pairs, and because `Lc-Run`
+  # dies on a refusal, a pair rejected there ends this invocation with the journal untouched. A
+  # refusal is never reinterpreted as recoverable and nothing here discards a record.
+  switch ($st) {
+    'open' {
+      if ($sub -and $sub -ne 'None') {
+        Die ("The retained A001 journal is open yet names subsystem '" + $sub + "'; it contradicts itself and remains untouched.")
+      }
+    }
+    'checkpointed' {
+      if ($sub -ne 'a001_scheduler_authority') {
+        Die ("The retained A001 journal is checkpointed under subsystem '" + $sub + "', not a001_scheduler_authority; it remains untouched.")
+      }
+    }
+    'resolved' {
+      if ($sub -ne 'a001_scheduler_authority') {
+        Die ("The retained A001 journal is resolved under subsystem '" + $sub + "'; it remains untouched.")
+      }
+      if ($result -ne 'completed') {
+        Die ("The retained A001 journal is resolved '" + $result + "'; only a completed retirement may be finished. It remains untouched.")
+      }
+    }
+    default {
+      Die ("The retained A001 journal reads state '" + $st + "', which is not a resumable retirement. It remains untouched.")
+    }
+  }
+  # THE EXACT CANONICAL UUID, lowercase, as `schema._UUID_RE` spells it. The previous shape test
+  # was '^[0-9a-fA-F-]{36}$', which accepts thirty-six dashes and any hex/dash soup of the right
+  # length - a length check wearing an identity check's clothes. There is deliberately no second
+  # normalization rule here: a record whose identity is not already canonical is not one to tidy
+  # up, it is one to refuse.
+  if ($inst -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
+    Die ("The retained A001 journal's installation identity '" + $inst + "' is not a canonical lowercase UUID; it remains untouched.")
+  }
+  if (-not $op) { Die "The retained A001 journal names no operation; it remains untouched." }
+
+  # -- bound to the PUBLISHED identity, not to what the interrupted run believed ----
+  $locator   = "" + (Lc-Field $State 'locator')
+  $manifest  = "" + (Lc-Field $State 'manifest')
+  $recordDir = "" + (Lc-Field $State 'install_dir')
+  if ($locator -ne 'present') {
+    Die "A retained A001 journal is present but this installation publishes no locator; refusing to recover against unpublished authority."
+  }
+  if ($manifest -ne 'valid') {
+    Die ("A retained A001 journal is present but the manifest reads '" + $manifest + "'; refusing to recover against a record that cannot be read.")
+  }
+  # TWO SOURCES, COMPARED. `installation_id` is read from the published LOCATOR and
+  # `journal_operation` from the journal state block; $inst and $op come from reading the journal
+  # file directly. So these compare the retained record against published authority rather than
+  # against itself.
+  $statusInst = "" + (Lc-Field $State 'installation_id')
+  if ($inst -ne $statusInst) {
+    Die ("The retained A001 journal names installation '" + $inst + "' but the published locator names '" +
+         $statusInst + "'; refusing to recover a journal that belongs elsewhere. Nothing has been changed.")
+  }
+  if (("" + (Lc-Field $State 'journal_operation')) -ne $op) {
+    Die "The retained A001 journal and the status disagree about the operation; nothing has been changed."
+  }
+  if (-not $recordDir) {
+    Die "The published installation record names no software root; refusing to recover."
+  }
+
+  # -- the platform's physical postconditions, RE-PROVED ---------------------------
+  if (Get-Service $script:SchedServiceRetired -ErrorAction SilentlyContinue) {
+    Die ("A retained A001 journal is present but the " + $script:SchedServiceRetired +
+         " service is still registered. The physical retirement did not complete; re-run the" +
+         " installer, which will finish it. The journal remains untouched.")
+  }
+  foreach ($a in (Get-CfmRetiredSchedulerArtifacts)) {
+    if (Test-Path -LiteralPath $a) {
+      Die ("A retained A001 journal is present but " + $a + " still exists. The physical retirement" +
+           " did not complete; re-run the installer. The journal remains untouched.")
+    }
+  }
+
+  # -- THE CURRENT generation, never one the interrupted process remembered ---------
+  $gen = "" + (Lc-Field $State 'generation')
+  if ($gen -notmatch '^[0-9]+$' -or [int]$gen -lt 1) {
+    Die ("The published manifest reports generation '" + $gen + "'; refusing to recover A001 against it.")
+  }
+
+  Info ("Finishing the interrupted A001 authority retirement (operation " + $op + ", generation " + $gen + ")")
+  $req = Lc-Request 'retire-scheduler-authority' (Lc-Json ([ordered]@{
+    schema_version      = 1
+    installation_id     = $inst
+    expected_generation = [int]$gen
+    install_dir         = $recordDir
+    actor               = 'installer'
+  }))
+  # THE SAME OPERATION, through the runtime phase 3 already selected. No second mutation path.
+  $out = Lc-Run "A001 authority recovery" @('composition','retire-scheduler-authority','--request',$req)
+  $committed = "" + (Lc-Field $out 'committed_generation')
+  # THE OPERATION MUST HAVE FINISHED **THIS** OPERATION. A result naming another one means the
+  # composition joined a different record than the one phase 3 routed here.
+  $returnedOp = "" + (Lc-Field $out 'operation_id')
+  if ($returnedOp -ne $op) {
+    Die ("A001 recovery finished operation '" + $returnedOp + "', not the retained '" + $op +
+         "'; nothing further will be attempted.")
+  }
+
+  # -- read the STATE back; the call returning is not the proof --------------------
+  # -Refresh, NOT the default. The default is memoized and would return the phase-3 observation,
+  # which is the state BEFORE this recovery ran - the exact defect this call now avoids.
+  $after = Get-LcState -Refresh
+  if (("" + (Lc-Field $after 'journal')) -ne 'none') {
+    Die "A001 recovery ran but a lifecycle journal is still retained; nothing further will be attempted."
+  }
+  if (("" + (Lc-Field $after 'manifest')) -ne 'valid') {
+    Die "A001 recovery ran but the manifest no longer reads valid; nothing further will be attempted."
+  }
+  if (("" + (Lc-Field $after 'install_dir')) -ne $recordDir) {
+    Die "A001 recovery ran but the published software root changed; nothing further will be attempted."
+  }
+  if (("" + (Lc-Field $after 'installation_id')) -ne $statusInst) {
+    Die "A001 recovery ran but the published installation identity changed; nothing further will be attempted."
+  }
+  if (("" + (Lc-Field $after 'generation')) -ne $committed) {
+    Die ("A001 recovery reported generation '" + $committed + "' but the record reads '" +
+         (Lc-Field $after 'generation') + "'; nothing further will be attempted.")
+  }
+
+  Ok ("A001 authority retirement completed at generation " + $committed)
+  # RECOVERY IS THE WHOLE INVOCATION. It is never combined with the remaining phases.
+  Die "The interrupted A001 authority retirement is complete. Re-run this Series 2 package to begin a separate installation invocation."
+}
+
+function Lc-RetireSchedulerAuthority {
+  # A001 STEP 5 - AUTHORITY RETIREMENT, and it is a different thing from the physical retirement
+  # above. Steps 2-4b prove the OS no longer carries the service; this proves the published
+  # installation record no longer claims it.
+  #
+  # CALLED ONLY AFTER THE PHYSICAL POSTCONDITIONS HOLD, and it re-proves them here rather than
+  # trusting the order of two call sites: the service must be unregistered and both artifacts gone.
+  # Retiring the authority while the service still exists would publish a record that is wrong in
+  # the other direction.
+  #
+  # THE PREDICATE INCLUDES THE LEGACY MANIFEST ENTRY, not just OS residue. An installation
+  # interrupted after the OS retirement but before this write has no service and no artifacts, so an
+  # OS-only predicate would skip it forever and leave the record stale. The operation itself is what
+  # decides: it is a true no-op when the entry is already gone and no journal of its own exists.
+  if (Get-Service $script:SchedServiceRetired -ErrorAction SilentlyContinue) {
+    Die ("Refusing to retire scheduler authority while the " + $script:SchedServiceRetired +
+         " service is still registered; the physical retirement must complete first.")
+  }
+  foreach ($a in (Get-CfmRetiredSchedulerArtifacts)) {
+    if (Test-Path -LiteralPath $a) {
+      Die ("Refusing to retire scheduler authority while " + $a + " is still present; the physical" +
+           " retirement must complete first.")
+    }
+  }
+  $req = Lc-Request 'retire-scheduler-authority' (Lc-Json ([ordered]@{
+    schema_version      = 1
+    installation_id     = $script:InstallationId
+    expected_generation = [int]$script:CfmGeneration
+    install_dir         = $script:InstallDir
+    actor               = 'installer'
+  }))
+  # Lc-Run DIES on a refusal, which is the required behaviour: authority retirement that cannot be
+  # written or verified fails the installer rather than reporting A001 complete over a stale record.
+  $out = Lc-Run "scheduler authority retirement" @('composition','retire-scheduler-authority','--request',$req)
+  $committed = Lc-Field $out 'committed_generation'
+  if (-not ($committed -match '^[0-9]+$') -or [int]$committed -lt [int]$script:CfmGeneration) {
+    Die ("scheduler authority retirement returned generation '" + $committed + "'; expected at least " +
+         $script:CfmGeneration)
+  }
+  $script:CfmGeneration = [int]$committed
+  if ((Lc-Field $out 'removed') -eq 'True') {
+    Ok ("Retired scheduler authority: the installation record no longer names it (generation " + $committed + ")")
+  } else {
+    Ok ("Installation record already names no scheduler (generation " + $committed + ")")
+  }
+}
+
 function Lc-CommitProvider($provider, $operationId, $inspectedGeneration, $candidate) {
   if (-not $operationId) { Die "$provider returned no operation_id; refusing to invent one." }
   if ($null -eq $candidate) { Die "$provider composed no candidate; there is nothing to commit." }
@@ -1475,6 +1698,206 @@ function Lc-CommitProvider($provider, $operationId, $inspectedGeneration, $candi
 function Grant-OrDie($path, $spec, $what) {
   & icacls $path /grant $spec 2>&1 | Out-Null
   if ($LASTEXITCODE -ne 0) { Die ("Could not establish ACLs on " + $path + " (" + $what + ")") }
+}
+
+# == THE SCHEDULER RETIREMENT ADAPTER (Series 2) ==================================================
+#
+# ACCUMULATED ADAPTERS - developer ruling, 2026-09-03. The compatibility epoch begins with the first
+# genuinely public installer release, and from that epoch forward architectural migration adapters
+# ACCUMULATE. A later installer runs the accumulated set in dependency order, and each one is
+# governed by OBSERVED STATE.
+#
+# THE RECORDED INSTALLER VERSION IS CONTEXT, NEVER AUTHORITY. This adapter must never become a
+# `0.2791 -> 0.2792` branch, or key on anything a manifest claims about where the box has been: it
+# asks Windows whether the service is there. A version-keyed adapter is wrong for every box whose
+# history is not what its record says, and those are exactly the boxes that need it.
+#
+# It is PERMANENT and IDEMPOTENT. It is not retired or consolidated with its neighbours except at an
+# explicitly approved compatibility-epoch or installer-series boundary. Deleting it because no box
+# in front of you has a scheduler is the mistake its tests exist to catch.
+# =================================================================================================
+# DURABLE UPGRADE KNOWLEDGE. Keep this in every future installer. The standalone `corpusfm-scheduler`
+# service is retired (application packet 1361-01) and nothing renders one any more - but boxes that
+# carry it will keep arriving at this installer for as long as any of them exist, and each one needs
+# the same four steps in the same order.
+#
+# THE ORDER IS THE WHOLE POINT, and getting it wrong is what release 0.2792 did. A Windows virtual
+# service account exists only while its service is registered: unregister first and
+# `NT SERVICE\corpusfm-scheduler` stops resolving, `icacls /remove:g` answers 1332, and - measured on
+# w-test-private, 2026-09-03 - it then removes NOTHING AT ALL, including for the trustee that still
+# resolves. The install aborts, and every rerun aborts at the same line, because the orphaned SID it
+# failed to remove is still sitting in the DACL.
+#
+#   1. stop it, but leave it REGISTERED while its account is still needed   (phase 9 quiesce)
+#   2. remove its ACL entries while that account still resolves             (Remove-CfmRetiredSchedulerGrants)
+#   3. establish and read back the one-service ACL policy                   (Assert-CfmOneServiceAclPolicy)
+#   4a. only THEN unregister it, and require authoritative absence          (Remove-CfmRetiredSchedulerService)
+#   4b. remove its exact installer-owned artifacts and read back absence    (Remove-CfmRetiredSchedulerArtifacts)
+#
+# A001 RECOGNISES THREE SOURCE STATES, and they are not the same predicate:
+#
+#   (a) A REGISTERED SERVICE       -> full identity and service retirement: steps 1-4a, then 4b.
+#       The account resolves, so ACL work is possible and required.
+#
+#   (b) EXACT RETIRED ARTIFACTS, NO SERVICE -> bounded artifact cleanup only: step 4b alone.
+#       This is the box interrupted between 4a and 4b. There is no account to resolve and no ACL
+#       work to attempt; two named files are removed and proven gone. Guarding 4b on the captured
+#       SID - which is what an earlier version did - meant this box could never heal, because the
+#       next run correctly observes no service and captures no SID.
+#
+#   (c) AN UNEXPLAINED ORPHAN ACL WITH NO SERVICE -> UNSUPPORTED CORRUPTION. Not repaired, not
+#       silently normalised, and no code here looks for it. Removing an ACE for a principal this
+#       installer cannot account for is the blanket deletion the rules forbid, and inventing the
+#       SID to match is forbidden outright. Such a box is a developer matter.
+#
+# EVERY INTERRUPTION POINT IS RERUNNABLE. Before step 3 completes the service is still registered, so
+# a rerun repeats from step 1 with the identity available. Between steps 3 and 4 the grants are
+# already gone and the removal is idempotent, so a rerun re-proves the policy and proceeds to delete.
+# After step 4 the observation above is `$false`, nothing names the account, and no later phase wants
+# it.
+
+function Resolve-CfmServiceSid($account, $what) {
+  # ONE translation helper, so every SID in this adapter is obtained the same way and a failure is
+  # always a refusal. Nothing here computes, guesses or parses a SID: it asks LSA for a live one.
+  try {
+    $sid = (New-Object System.Security.Principal.NTAccount($account)
+           ).Translate([System.Security.Principal.SecurityIdentifier]).Value
+  } catch {
+    Die ("Could not resolve " + $account + " (" + $what + "): " + $_.Exception.Message)
+  }
+  if (-not $sid) { Die ("Resolving " + $account + " (" + $what + ") produced an empty SID.") }
+  return $sid
+}
+
+function Remove-CfmGrantBySid($path, $sidOperand, $who) {
+  # ONE PATH, ONE TRUSTEE, ONE CALL, ONE EXIT CODE.
+  #
+  # NEVER BATCHED. `icacls <path> /remove:g <a> <b>` is all-or-nothing: measured on w-test-private,
+  # 2026-09-03, a pair in which ONE operand failed to resolve returned 1332 and removed neither -
+  # "Successfully processed 0 files" - so the trustee that was perfectly valid kept its grant while
+  # the exit code blamed the other one. Separate calls make each removal's outcome its own fact.
+  #
+  # The operand is `*<numerical SID>`, never a friendly name, so icacls performs no name lookup and
+  # there is no lookup left to fail.
+  & icacls $path '/remove:g' $sidOperand 2>&1 | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    Die ("Could not remove the " + $who + " grant (" + $sidOperand + ") from " + $path +
+         "; icacls exited " + $LASTEXITCODE + ".")
+  }
+}
+
+function Remove-CfmRetiredSchedulerGrants($paths) {
+  # STEP 2. Remove exactly one trustee, by the SID captured at the preflight, and only where this
+  # installer's own two-service layout granted it. Nothing else is touched: an unexplained trustee
+  # is the proxy provider's refusal to raise, not this script's to normalise away.
+  if (-not $script:SchedRetiredIcaclsOperand) { return }
+  foreach ($path in $paths) {
+    if (-not (Test-Path $path)) { continue }
+    Remove-CfmGrantBySid $path $script:SchedRetiredIcaclsOperand "retired scheduler's"
+  }
+}
+
+function Assert-CfmOneServiceAclPolicy($paths) {
+  # STEP 3. READ THE STATE BACK AND COMPARE NUMERICAL SIDs. An icacls call that exits zero is an
+  # intent; a DACL that does not contain the SID is the fact, and only the second one can contradict
+  # the first. Both halves are asserted: the web identity HOLDS its grant everywhere, and the retired
+  # identity holds NOTHING anywhere.
+  #
+  # The retired SID is the EXACT value captured before phase 9 - not re-resolved here, because by
+  # design this runs while the service still exists but the whole point of capturing it early was to
+  # stop depending on that.
+  $retiredSid = $script:SchedRetiredSid
+  $webSidValue = $script:WebSidValue
+  foreach ($path in $paths) {
+    if (-not (Test-Path $path)) { continue }
+    $acl = Get-Acl $path
+    $sids = @($acl.Access | ForEach-Object {
+      try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }
+      catch { "" + $_.IdentityReference.Value }
+    })
+    if ($retiredSid -and ($sids -contains $retiredSid)) {
+      Die ("The retired scheduler (" + $retiredSid + ") still holds a grant on " + $path +
+           " after its removal; the one-service ACL policy is not established.")
+    }
+    if (-not ($sids -contains $webSidValue)) {
+      Die ("The web service (" + $webSidValue + ") holds no grant on " + $path +
+           "; the one-service ACL policy is not established.")
+    }
+  }
+  Ok ("One-service ACL policy read back across " + $paths.Count + " protected locations" +
+      $(if ($retiredSid) { " (the retired scheduler holds nothing)" } else { "" }))
+}
+
+function Get-CfmRetiredSchedulerArtifacts {
+  # THE EXACT installer-owned artifacts of the retired service. Named, never globbed: this list is
+  # what "bounded artifact cleanup" is bounded BY, and a wildcard here would be the blanket deletion
+  # the adapter's rules forbid.
+  return @(
+    (Join-Path $script:SvcDir ($script:SchedServiceRetired + '.xml')),
+    (Join-Path $script:SvcDir ($script:SchedServiceRetired + '.exe'))
+  )
+}
+
+function Remove-CfmRetiredSchedulerService {
+  # STEP 4a - SERVICE AND IDENTITY RETIREMENT, and only after step 3. Now the account may stop
+  # resolving: nothing left needs it.
+  #
+  # NOT OPTIONAL on a box that has one. `python -m corpusfm.server.scheduler` exits 2 under this
+  # build, so a surviving WinSW service fails every start attempt and fills its error log with a
+  # refusal an operator cannot act on from the service alone.
+  #
+  # THIS STEP DELETES NO FILES. Artifact cleanup is 4b, deliberately separate and separately
+  # guarded - see there for why.
+  if (-not $script:SchedRetiredSid) { return }
+  Info ("Retiring the standalone " + $script:SchedServiceRetired + " service (scheduling is inside the web app)...")
+  $schedExe = Join-Path $script:SvcDir ($script:SchedServiceRetired + '.exe')
+  if (Test-Path $schedExe) {
+    & $schedExe stop      2>&1 | Out-Null
+    & $schedExe uninstall 2>&1 | Out-Null
+  } else {
+    Stop-Service $script:SchedServiceRetired -Force -ErrorAction SilentlyContinue
+    & sc.exe delete $script:SchedServiceRetired 2>&1 | Out-Null
+  }
+  for ($i=0; $i -lt 20 -and (Get-Service $script:SchedServiceRetired -ErrorAction SilentlyContinue); $i++) {
+    Start-Sleep -Seconds 1
+  }
+  # AUTHORITATIVE ABSENCE, required before anything proceeds. `-ErrorAction SilentlyContinue` on the
+  # probe is how "is it gone" is asked; it is not how "it is gone" is proven.
+  if (Get-Service $script:SchedServiceRetired -ErrorAction SilentlyContinue) {
+    Die ("The retired " + $script:SchedServiceRetired + " service could not be removed. It cannot start" +
+         " under this build and must not be left registered; remove it and re-run the installer.")
+  }
+  Ok ("Standalone " + $script:SchedServiceRetired + " service unregistered; the web service schedules.")
+}
+
+function Remove-CfmRetiredSchedulerArtifacts {
+  # STEP 4b - BOUNDED ARTIFACT CLEANUP, and it runs WHETHER OR NOT this invocation captured a SID.
+  #
+  # THIS IS WHAT MAKES THE RERUNNABILITY CLAIM TRUE. An interruption between 4a and here leaves a
+  # box with no service and two orphaned installer-owned files. On the next invocation
+  # `$SchedRetiredPresent` is false and no SID is captured - correctly, there is no service to
+  # observe - so a cleanup guarded by the SID would never run again and the definition XML would
+  # survive forever. That XML is precisely what the canonical service read-back enumerates, so
+  # leaving it is not cosmetic.
+  #
+  # Guarded by ARTIFACT PRESENCE instead. No ACL work is attempted here and no SID is invented: this
+  # step removes two named files and proves they are gone. That is the whole of it.
+  $artifacts = Get-CfmRetiredSchedulerArtifacts
+  $present = @($artifacts | Where-Object { Test-Path -LiteralPath $_ })
+  if (-not $present) { return }
+  Info ("Removing " + $present.Count + " retired " + $script:SchedRetiredService + " artifact(s)...")
+  foreach ($path in $present) {
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  }
+  # READ BACK. `-ErrorAction SilentlyContinue` above hides a locked or in-use file, so the removal's
+  # silence proves nothing and the absence test is the proof.
+  $remaining = @($artifacts | Where-Object { Test-Path -LiteralPath $_ })
+  if ($remaining) {
+    Die ("The retired scheduler's installer-owned artifacts could not be removed: " +
+         ($remaining -join ', ') + ". A held file lock is the usual cause; release it and re-run" +
+         " the installer.")
+  }
+  Ok "Retired scheduler artifacts removed and read back absent."
 }
 
 function Register-CfmService($id) {
@@ -1616,7 +2039,46 @@ if ($lcStateEarly) {
                     ($lcRoot) -and ($lcRoot -eq $InstallDir.TrimEnd('\')))
 }
 $IsUpgrade = ((Test-Path $MarkerPath) -and (Test-Path $Src)) -or $PublishedHere
-$SchedServicePreexisted = [bool](Get-Service $SchedService -ErrorAction SilentlyContinue)
+# THE SCHEDULER RETIREMENT ADAPTER'S SID PREFLIGHT (application packet 1361-01).
+#
+# Taken HERE, before phase 9 quiesces anything, before phase 8 creates or re-permissions a
+# directory, and long before any installed byte is replaced - so a refusal costs nothing.
+#
+# PRESENCE IS THE TRIGGER, NOT THE FACT. An earlier version of this adapter reasoned that a
+# registered service implies a resolvable account and stopped there. That is an assumption about
+# LSA state, and the whole defect being corrected here was an assumption about exactly that. So
+# presence REQUIRES a translation, and the successful translation is what establishes the fact:
+# from here on the adapter carries a numerical SID it captured, never a name it hopes still
+# resolves. If the translation fails we refuse now, while the box is untouched.
+#
+# A box that never had the service and a box a previous run already retired it from are the SAME
+# case - no SID captured - and on that path nothing about the retired identity is resolved,
+# named, or removed.
+$SchedRetiredPresent = [bool](Get-Service $SchedServiceRetired -ErrorAction SilentlyContinue)
+$SchedRetiredSid = ''
+$SchedRetiredIcaclsOperand = ''
+if ($SchedRetiredPresent) {
+  try {
+    $SchedRetiredSid = (New-Object System.Security.Principal.NTAccount($SchedRetiredAccount)
+                       ).Translate([System.Security.Principal.SecurityIdentifier]).Value
+  } catch {
+    Die ("The retired " + $SchedServiceRetired + " service is registered but its account " +
+         $SchedRetiredAccount + " does not resolve to a SID, so its grants could not be removed" +
+         " or proven removed: " + $_.Exception.Message +
+         " Nothing has been stopped or replaced. Resolve the account, or remove the service, then" +
+         " re-run the installer.")
+  }
+  if (-not $SchedRetiredSid) {
+    Die ("The retired " + $SchedServiceRetired + " service resolved to an empty SID. Nothing has" +
+         " been stopped or replaced.")
+  }
+  # THE ICACLS OPERAND IS THE SID, ALWAYS. `*S-1-...` is icacls's own spelling for "this is a SID,
+  # do not look up a name" - and a name lookup is the single thing that must never happen again on
+  # this path, because it is what answers 1332 once the service is unregistered.
+  $SchedRetiredIcaclsOperand = '*' + $SchedRetiredSid
+  Info ("Retired " + $SchedServiceRetired + " service observed; its account resolved to " +
+        $SchedRetiredSid + " and that SID is what will be removed and proven gone.")
+}
 if ($PublishedHere) {
   Info ("Published installation record at generation " + (Lc-Field $lcStateEarly 'generation') + " for " + $InstallDir + " - update mode")
 } elseif ($IsUpgrade) { Info "Existing install found - update mode" } else { Info "Fresh install" }
@@ -1693,6 +2155,13 @@ if (-not (Test-Path $script:Py)) {
       if (-not $uninstallId) { Die "The interrupted uninstall journal names no installation identity." }
       Info "Resuming the interrupted uninstall with the verified package runtime"
       Resume-PackagedInterruptedUninstall $uninstallId
+    }
+    # A001 FIRST, and only for its exact mode. Generic provider disposition cannot route this
+    # journal at all - A001 is not a provider and is not being made one.
+    if ($lcJMode -eq 'a001_scheduler_authority') {
+      try { $a001Record = Get-Content -LiteralPath $CfmJournalFile -Raw | ConvertFrom-Json }
+      catch { Die "The retained A001 lifecycle journal is unreadable and remains untouched." }
+      Lc-RecoverA001Authority $a001Record $lcState
     }
     # One application-owned boundary maps both preflight journal state and provider results to the
     # same three operator conditions. Platform code neither guesses a recovery verb nor emits a
@@ -1919,7 +2388,7 @@ Info ("    - install the code + Python runtime in " + $InstallDir + ", stop the 
 if (-not $IsUpgrade) {
   Info ("    - create " + $InstallDir + " and " + $ConfigHome + ", and lock the config/data tree to SYSTEM+Administrators")
   Info ("    - publish this installation's record, compose patch, proxy, admin identity and storage")
-  Info ("    - register the " + $WebService + " + " + $SchedService + " services")
+  Info ("    - register the " + $WebService + " service")
 }
 if (-not $appMounted) { Info ("    - mount the isolated IIS application " + $WebPrefix + " under " + $Site) }
 else { Info ("    - IIS application " + $WebPrefix + " is already mounted under " + $Site + " - no FMS web-site change") }
@@ -2007,7 +2476,10 @@ Ok "Update inbox (service-writable at phase 20) and outcome (SYSTEM-owned) separ
 # stopped by a branch that had not been taken. One quiesce, here, covers both.
 if ($IsUpgrade) {
   Info "Stopping services"
-  foreach ($svc in @($WebService, $SchedService)) {
+  # The retired scheduler service is quiesced here too: an upgrade of a box that still carries it
+  # must stop it before the new code lands, or it keeps reading FileMaker under the old runtime.
+  # Phase 20 then deletes it.
+  foreach ($svc in @($WebService, $SchedServiceRetired)) {
     $s = Get-Service $svc -ErrorAction SilentlyContinue
     if ($s -and $s.Status -ne 'Stopped') {
       Info "Stopping $svc ..."
@@ -3156,9 +3628,12 @@ assert got == want, target + " differs from the canonical rendering"
 assert si.service_definition_names_an_identity(got), target + " names no unprivileged identity"
 '@ | Set-Content -Path $VerifyPy -Encoding ascii
 
-foreach ($role in @('web','scheduler')) {
+# ONE ROLE (application packet 1361-01, round 3). The `scheduler` role is retired: scheduling is a
+# background component of the web process, so there is no second definition to render, verify,
+# register or start.
+foreach ($role in @('web')) {
   $id = $Service[$role]
-  $display = if ($role -eq 'web') { 'CORPUSfm Web' } else { 'CORPUSfm Scheduler' }
+  $display = 'CORPUSfm Web'
   $xml = Join-Path $SvcDir ($id + '.xml')
   $renderOut = (& $Py $RenderPy $role $id $display $xml $InstallDir 2>&1 | Out-String)
   if ($LASTEXITCODE -ne 0) { Die ("Could not render the " + $role + " service definition: " + $renderOut) }
@@ -3185,10 +3660,22 @@ foreach ($role in @('web','scheduler')) {
 }
 Remove-Item $RenderPy,$VerifyPy -ErrorAction SilentlyContinue
 
-# The identities now EXIST, which is the whole point of moving this. Name them once; phase 20's
-# least-privilege pass uses the same two variables.
+# THE RETIRED SCHEDULER STAYS REGISTERED THROUGH PHASE 20 (application packet 1361-01). It was
+# stopped at phase 9 and it is deleted at the END of phase 20 - after its ACL entries are removed and
+# the one-service policy is read back - because its virtual account exists only while it does. See
+# THE SCHEDULER RETIREMENT ADAPTER above.
+
+# The identity now EXISTS, which is the whole point of moving this. Name it once; phase 20's
+# least-privilege pass uses the same variable.
 $WebSid   = 'NT SERVICE\' + $WebService
-$SchedSid = 'NT SERVICE\' + $SchedService
+# CAPTURED ONCE, the moment the account exists (registration is what creates it). Every removal
+# operand and every read-back comparison below uses this one numerical value, so an ACL is never
+# proven against a different spelling of the trustee than the one that was removed.
+$WebSidValue = Resolve-CfmServiceSid $WebSid 'the web service identity'
+$WebIcaclsOperand = '*' + $WebSidValue
+# ONE service identity (application packet 1361-01, round 3). The retired scheduler service is not
+# registered, so `NT SERVICE\corpusfm-scheduler` has no SID at all - naming it in any grant or
+# read-back below would make `LookupAccountName` refuse with error 1332.
 
 # THE ONE GRANT PHASE 16 DEPENDS ON. The compartment lives under the recorded hosting folder, and on
 # Windows `apply_compartment_permissions` deliberately does nothing - the folder inherits from its
@@ -3240,7 +3727,7 @@ try {
 } finally {
   Remove-Item $rightsProbe -Force -ErrorAction SilentlyContinue
 }
-Ok ($WebService + " and " + $SchedService + " registered (not started); " + $WebSid +
+Ok ($WebService + " registered (not started); " + $WebSid +
     " granted Modify+DeleteChild on " + $PatchHostingDir + ", read back against the compartment's" +
     " own required-rights constant")
 
@@ -3305,9 +3792,13 @@ foreach ($subject in $AuthorityChain) {
   & icacls $subject.Path /setowner '*S-1-5-32-544' 2>&1 | Out-Null
   if ($LASTEXITCODE -ne 0) { Die ("Could not take ownership of " + $subject.Path) }
   if ($subject.Kind -eq 'dir') {
-    & icacls $subject.Path /remove:g $WebSid $SchedSid 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-      Die ("Could not retire the prior service read grants from " + $subject.Path)
+    # TWO SEPARATE SINGLE-TRUSTEE REMOVALS, each by numerical SID and each checked on its own.
+    # These used to be one batched call naming both accounts, which is what failed: a batch is
+    # all-or-nothing, so one unresolvable operand removed neither grant and reported 1332.
+    # The retired half runs only on a box whose preflight captured a SID for it.
+    Remove-CfmGrantBySid $subject.Path $WebIcaclsOperand 'prior web service read'
+    if ($SchedRetiredIcaclsOperand) {
+      Remove-CfmGrantBySid $subject.Path $SchedRetiredIcaclsOperand "retired scheduler's"
     }
   }
   $grants = if ($subject.Kind -eq 'dir') { @('*S-1-5-18:(OI)(CI)(F)', '*S-1-5-32-544:(OI)(CI)(F)') }
@@ -3736,19 +4227,33 @@ $req = Lc-Request 'provision-keys-final' (Lc-Json ([ordered]@{
   database_search_dirs = @($FmDbDir, $PatchHostingDir)
   pre_service          = $false
   web_sid              = $WebSid
-  scheduler_sid        = $SchedSid
 }))
 Lc-Run "final secret protection" @('provision-keys','--request',$req) | Out-Null
-Ok ("Secrets protected for the registered services (SYSTEM owner, Administrators full, " +
-    $WebService + " and " + $SchedService + " read-only)")
+Ok ("Secrets protected for the registered service (SYSTEM owner, Administrators full, " +
+    $WebService + " read-only)")
 
 & icacls $OutcomeDir /reset 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Die ("Could not reset the ACL on " + $OutcomeDir) }
 & icacls $OutcomeDir /inheritance:r /grant:r ($SystemSid + ':(OI)(CI)(F)') ($AdminsSid + ':(OI)(CI)(F)') `
-    ($WebSid + ':(OI)(CI)(RX)') ($SchedSid + ':(OI)(CI)(RX)') 2>&1 | Out-Null
+    ($WebSid + ':(OI)(CI)(RX)') 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Die ("Could not protect the update outcome directory " + $OutcomeDir) }
 
-foreach ($sid in @($WebSid, $SchedSid)) {
+# THE ONE-SERVICE ACL POLICY, and the retirement adapter's steps 2-3 wrapped around it.
+#
+# These eight locations are exactly where this installer's OWN two-service layout granted a service
+# identity, so they are exactly where a retired scheduler's grant can still be sitting. The list is
+# the grant loop's own list - it cannot drift from what is granted, because it is what is granted.
+# (`$OutcomeDir` above and the secrets below are not here on purpose: both are rewritten WHOLE each
+# run - `/reset` + `/grant:r`, and the provider's protected DACLs - so neither can carry a stale
+# trustee forward.)
+$OneServiceAclPolicyPaths = @($LogDir, $FixedState, $FixedRun, $InboxDir,
+                              $InstallDir, $BinDir, $FixedConfig, $LegacyHome)
+
+# STEP 2 - remove the retired grants FIRST, while the account still resolves, so the grants below
+# author a fresh DACL rather than adding a second service to a two-service one.
+Remove-CfmRetiredSchedulerGrants $OneServiceAclPolicyPaths
+
+foreach ($sid in @($WebSid)) {
   Grant-OrDie $LogDir      ($sid + ':(OI)(CI)(M)')  'logs'
   Grant-OrDie $FixedState  ($sid + ':(OI)(CI)(M)')  'service state'
   Grant-OrDie $FixedRun    ($sid + ':(OI)(CI)(M)')  'service run directory'
@@ -3820,7 +4325,23 @@ foreach ($proof in @($FixedSecrets, $OutcomeDir) + @('corpus.key','machine.key' 
 # prove that only SYSTEM and Administrators remain before either service starts.
 Lock-FileAcl $InstallerEntryPoint
 Assert-InstallerBootstrapAcl
-Ok "Service ACLs granted (installed secrets protected read-only to both services)"
+Ok "Service ACLs granted (installed secrets protected read-only to the web service)"
+
+# STEP 3 - PROVE the one-service policy, against the state rather than against the calls that were
+# issued. The retired scheduler is still registered here, which is what makes "it holds nothing"
+# provable rather than merely unresolvable.
+Assert-CfmOneServiceAclPolicy $OneServiceAclPolicyPaths
+
+# STEP 4a - only now. Nothing after this line needs the retired identity, and phase 21 starts exactly
+# the definitions phase 20 verified, which is the web service alone.
+Remove-CfmRetiredSchedulerService
+
+# STEP 4b - UNCONDITIONAL on this invocation's SID. It heals a box interrupted between 4a and here,
+# whose next run sees no service and captures no SID but still carries the definition XML.
+Remove-CfmRetiredSchedulerArtifacts
+
+# STEP 5 - AUTHORITY RETIREMENT, after every physical postcondition above holds.
+Lc-RetireSchedulerAuthority
 
 
 # === PHASE 21 - Start exactly the definitions phase 20 verified, then readiness =================
@@ -3830,9 +4351,6 @@ Ok "Service ACLs granted (installed secrets protected read-only to both services
 # fresh install or an update. There is deliberately no $IsUpgrade branch here: an earlier design
 # left the update path alone "because the layout cutover owns the restart", and every update
 # finished with the product stopped.
-if ($IsUpgrade -and -not $SchedServicePreexisted) {
-  Warn "This update is activating the scheduler for the first time; previously inert scheduled Jobs may now run."
-}
 foreach ($id in $VerifiedServices) {
   $exe = Join-Path $SvcDir ($id + '.exe')
   & $exe start | Out-Null
@@ -4011,7 +4529,7 @@ Write-Host "    - If a PKI 'did not complete' warning appeared above, register t
 # The ENDPOINT stays: the Unknowable-Install Principle's consequence 5 requires the exact MCP address
 # to exist where no working connection is needed, and installer output is that place.
 Write-Host ("    - MCP endpoint: " + $Base + "/mcp/  (connect a client from Library -> MCP; browser sign-in needs no token)")
-Write-Host ("    - Services: " + $WebService + " + " + $SchedService + ".   Logs: " + $LogDir)
+Write-Host ("    - Service: " + $WebService + " (scheduling runs inside it).   Logs: " + $LogDir)
 if ($script:CfmLog) { Write-Host ("    - Install transcript: " + $script:CfmLog + "  (full detail; re-run with -Verbose to watch live)") }
 Write-Host ("    - Update later: use the in-app Updates button for code-only changes. When it asks for installer authority, run the Installer command above.")
 

@@ -906,8 +906,53 @@
         _lastAlertCount: -1,
         _lastJobTs: '',
 
+        // ── Notification cadence (packet 1361-01) ────────────────────────────
+        // 10s while the document is visible, 60s while it is hidden. It used to be a flat
+        // `setInterval(..., 10000)` with no visibility gate at all — the ONE poller in the product
+        // that kept a ten-second database beat running in a tab nobody was looking at, while the
+        // queue poller backed off to 60s and the artifacts refresh stopped entirely. Reaching the
+        // server less often when nobody can see the answer is the whole change; it never stops.
+        //
+        // ONE timer (a self-scheduling setTimeout, never setInterval) and at most ONE request in
+        // flight. Both matter because visibilitychange can fire repeatedly and in bursts: an
+        // interval plus a listener that started another loop would leave two beats running with no
+        // way to tell, and a slow request under a fast cadence would overlap itself.
+        NOTIF_VISIBLE_MS: 10000,
+        NOTIF_HIDDEN_MS: 60000,
+        _notifTimer: null,
+        _notifInflight: false,
+        _notifWired: false,
+
+        _notifDelay() {
+          const hidden = (typeof document !== 'undefined') && document.visibilityState === 'hidden';
+          return hidden ? this.NOTIF_HIDDEN_MS : this.NOTIF_VISIBLE_MS;
+        },
+        _scheduleNotificationPoll() {
+          // Always clear first: every scheduling path funnels through here, so exactly one timer
+          // can exist no matter how many visibility events or in-flight completions race.
+          if (this._notifTimer) { clearTimeout(this._notifTimer); this._notifTimer = null; }
+          this._notifTimer = setTimeout(() => this._notificationTick(), this._notifDelay());
+        },
+        async _notificationTick() {
+          if (this._notifTimer) { clearTimeout(this._notifTimer); this._notifTimer = null; }
+          try { await this._pollNotifications(); }
+          finally { this._scheduleNotificationPoll(); }
+        },
         _startNotificationPoll() {
-          setInterval(() => this._pollNotifications(), 10000);
+          // Idempotent: a second call must not start a second beat.
+          if (this._notifWired) return;
+          this._notifWired = true;
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+              // Foreground: answer NOW, then resume the visible cadence. Anything stale is on
+              // screen the moment the user looks at it.
+              this._notificationTick();
+            } else {
+              this._scheduleNotificationPoll();      // re-arm at the hidden interval
+            }
+          });
+          // First poll after one interval, exactly as the interval version did.
+          this._scheduleNotificationPoll();
         },
 
         // ── Update-available notice (admin only) ──────────────────────────────
@@ -999,6 +1044,10 @@
         },
 
         async _pollNotifications() {
+          // At most one in flight. A foreground transition during a slow request must not stack a
+          // second one on top of it.
+          if (this._notifInflight) return;
+          this._notifInflight = true;
           try {
             const r = await fetch('/api/status/notifications');
             if (!r.ok) { this._recordMiss(); return; }
@@ -1022,6 +1071,8 @@
             if (d.latest_job_ts) localStorage.setItem('fmc_last_job_ts', d.latest_job_ts);
           } catch (_) {
             this._recordMiss();
+          } finally {
+            this._notifInflight = false;
           }
         },
 
@@ -1072,10 +1123,16 @@
         </div>
 
         <div class="ap-results">
+          {# The ONE catalog condition (packet 1361-01). The picker's rows and tag chips ARE catalog
+             data, so a failed database read is said out loud here too — a picker that silently shows
+             nothing is the defect class packet 1369 closed on the Jobs side. #}
+          <template x-if="catalogFailed">
+            <div class="ap-empty">Storage unreachable — the artifact catalog can't be read right now.</div>
+          </template>
           <template x-if="loading && results.length === 0">
             <div class="ap-empty">Loading…</div>
           </template>
-          <template x-if="!loading && results.length === 0">
+          <template x-if="!loading && results.length === 0 && !catalogFailed">
             <div class="ap-empty">No artifacts found.</div>
           </template>
           <template x-for="row in results" :key="row.uuid">
@@ -1127,6 +1184,8 @@
       hasMore:      false,
       loading:      false,
       selected:     [],
+      // The one catalog condition: a failed database read (packet 1361-01).
+      catalogFailed: false,
       // Server-authored type registry (packet 040): value==display, never a hand-kept map.
       registryTypes: [],
 
@@ -1164,6 +1223,7 @@
         this.results          = [];
         this.page             = 1;
         this.hasMore          = false;
+        this.catalogFailed    = false;
         this.selected         = [];
         this.show             = true;
         this.search();
@@ -1195,6 +1255,7 @@
           if (this.excludeUuid)   params.set('exclude', this.excludeUuid);
           const r = await fetch('/api/library/artifacts/search?' + params);
           const d = await r.json();
+          this.catalogFailed = !!(d.catalog_failed || d.unavailable);
           let rows = d.rows || [];
           if (this.excludeSet.length) rows = rows.filter(row => !this.excludeSet.includes(row.uuid));
           this.results = page === 1 ? rows : [...this.results, ...rows];
@@ -1259,6 +1320,13 @@
    The two exits are Skip and the Settings action — no Escape, no click-away, no unlabelled close: the
    developer asked for semi-annoying, and a modal dismissed by accident is not that.
 
+   BOTH exits must actually exit (packet 1378). The Settings action used to be a plain anchor that only
+   wrote a session flag, so an administrator ALREADY on `/settings#updates` clicked it and nothing
+   happened: the destination equals the loaded URL, a browser does not reload for a hash-only change,
+   and the modal stayed up over the very page it offers to open. Escape and click-away are disabled, so
+   the only control that closed it was the durable Skip — the administrator had to suppress the update
+   in order to read about it.
+
    GATED IDENTICALLY TO ITS SCRIPT. `updateWaitingPrompt()` is defined inside the settings-gated
    server-mode block below, so emitting this `x-data` unconditionally mounted a component whose factory
    did not exist — twelve uncaught ReferenceErrors on every page for every non-admin user, and for
@@ -1299,7 +1367,7 @@
         <span class="cfm-spacer"></span>
         <a class="cfm-btn cfm-btn--sm cfm-btn--primary"
            :href="(window.CFM_PREFIX || '') + '/settings#updates'"
-           @click="markOffered()"
+           @click="openUpdates($event)"
            x-text="info.installer_required ? 'Open Settings' : 'Review and apply'"></a>
       </div>
     </div>
@@ -1430,10 +1498,53 @@
           })
           .catch(() => {});
       },
-      markOffered() {
-        // Session-local ONLY: stops Settings stacking the same prompt during this visit. It is NOT the
-        // durable skip — leaving without applying keeps this head eligible at a later sign-in.
-        try { sessionStorage.setItem('cfm-update-offered', this.info.target_head || ''); } catch (_) {}
+      openUpdates(ev) {
+        // A MODIFIER-CLICK IS THE BROWSER'S, NOT OURS. ⌘/Ctrl/Shift/Alt-click and middle-click open a
+        // new tab or window, and the anchor's real `href` is what makes that work — so those clicks
+        // are left alone rather than swallowed. `@click.prevent` cancelled them all, which quietly
+        // took away a plain anchor's most useful behaviour on the way to fixing it.
+        if (ev && (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button === 1)) return;
+        if (ev) ev.preventDefault();
+        // A Skip is in flight. Closing now would hide the dialog that its failure message is about,
+        // so the administrator would be told nothing at all. `busy` clears in skip()'s `finally`.
+        if (this.busy) return;
+
+        // THE NON-DESTRUCTIVE EXIT. It writes nothing — no skip, no acknowledgement, no request of any
+        // kind — so leaving this way keeps this head eligible at a later sign-in, which is the whole
+        // difference between it and `skip()`.
+        //
+        // It replaced a `sessionStorage['cfm-update-offered']` write whose comment claimed it stopped
+        // Settings stacking the same prompt. Nothing ever read that key — a repository-wide search
+        // found the setter and no reader — and suppression is already owned server-side: the single
+        // `update_prompt_opportunity` is created at real sign-in and popped by the first shell load
+        // that asks. A second key spelling the same rule could only drift from it.
+        //
+        // Named for its own component: the neighbouring initialMcpAddress() already has an unrelated
+        // openSettings().
+        const prefix = window.CFM_PREFIX || '';
+        const trim = (v) => v.replace(/\/+$/, '');
+        if (trim(window.location.pathname) === trim(prefix + '/settings')) {
+          // ALREADY THERE, so navigation cannot be the answer: `/settings#updates` differs from the
+          // loaded URL only in the hash, a browser does not reload for that, and `settings.html`
+          // reads the hash once at init with no `hashchange` listener — so the tab would not move
+          // either. Closing IS the exit here, and it releases the focus trap through the same
+          // `x-effect` that `skip()` closes through.
+          //
+          // But closing alone half-keeps the promise: the Updates section lives on the CORPUSfm
+          // (`general`) tab, so an administrator whose page is on `#health` would be left looking at
+          // the wrong tab. So ASK for the section first, by one specifically named event that
+          // `settingsPage()` consumes — emitted BEFORE the close, so the section is exposed as the
+          // overlay goes away rather than after. This is a request, not a router: one event, one
+          // consumer, no generic cross-component navigation.
+          try {
+            window.dispatchEvent(new CustomEvent('cfm-show-updates'));
+          } catch (_) {}
+          this.show = false;
+          return;
+        }
+        // From anywhere else, the shipped prefix-aware boundary — `cfmGo` already refuses to
+        // double-prefix an already-prefixed path and is a no-op on a root-path deployment.
+        window.cfmGo('/settings#updates');
       },
       async skip() {
         this.busy = true; this.error = '';

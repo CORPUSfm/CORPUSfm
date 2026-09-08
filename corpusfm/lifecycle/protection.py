@@ -359,10 +359,24 @@ class WindowsLayoutProtector:
       `effective_rights` is a state, and only the second one can contradict the first.
     """
 
-    def __init__(self, *, web_sid: str, scheduler_sid: str, api=None):
+    def __init__(self, *, web_sid: str, scheduler_sid: str | None = None, api=None):
         self._web = web_sid
-        self._sched = scheduler_sid
+        # OPTIONAL, AND NORMALLY ABSENT (packet 1361-01, round 3). The standalone
+        # `corpusfm-scheduler` service is retired — scheduling is a background component of the web
+        # process — so a current installation registers ONE service and has one virtual account.
+        # A virtual account whose service does not exist has no SID at all, and naming it here would
+        # make `LookupAccountName` refuse (error 1332) on every fresh box. It stays accepted because
+        # an installation that still carries the retired service is still protected correctly while
+        # the upgrade that removes it runs.
+        self._sched = scheduler_sid or ""
         self._api = api
+
+    def _subjects(self) -> tuple:
+        """The service trustees this protector actually grants to, ``(label, account)`` each."""
+        pairs = [("web", self._web)]
+        if self._sched:
+            pairs.append(("scheduler", self._sched))
+        return tuple(pairs)
 
     def _win(self):
         if self._api is not None:
@@ -373,8 +387,7 @@ class WindowsLayoutProtector:
         api = self._win()
         system = api.system_sid()
         admins = api.administrators_sid()
-        web = api.sid(self._web)
-        sched = api.sid(self._sched)
+        service_sids = tuple(api.sid(account) for _who, account in self._subjects())
 
         # ADMINISTRATORS KEEP FULL CONTROL, EXPLICITLY (developer ruling, 2026-08-09). SYSTEM owns
         # these, and an owner-only DACL locked the elevated installer out of the very directory it
@@ -397,17 +410,18 @@ class WindowsLayoutProtector:
             api.set_protected_shared_container_dacl(
                 parent, system,
                 ((system, FILE_ALL_ACCESS), (admins, FILE_ALL_ACCESS)),
-                ((web, DIRECTORY_TRAVERSE_READ), (sched, DIRECTORY_TRAVERSE_READ)),
+                tuple((sid, DIRECTORY_TRAVERSE_READ) for sid in service_sids),
             )
         api.set_protected_dacl(
             layout.secrets_dir, system,
-            (for_admins, (web, DIRECTORY_TRAVERSE_READ), (sched, DIRECTORY_TRAVERSE_READ)),
+            (for_admins,) + tuple((sid, DIRECTORY_TRAVERSE_READ) for sid in service_sids),
         )
         for name in READ_ONLY_SECRETS:
             path = layout.secrets_dir / name
             if path.exists():
                 api.set_protected_dacl(
-                    path, system, (for_admins, (web, FILE_READ), (sched, FILE_READ)))
+                    path, system,
+                    (for_admins,) + tuple((sid, FILE_READ) for sid in service_sids))
 
     def verify(self, layout: OsLayout) -> list[str]:
         api = self._win()
@@ -444,7 +458,7 @@ class WindowsLayoutProtector:
             # The shared layout root answers for what it passes DOWN as well; the service checks
             # below still answer for what it grants HERE.
             service_sids = []
-            for account in (self._web, self._sched):
+            for _who, account in self._subjects():
                 try:
                     service_sids.append(api.sid_text(account))
                 except Exception as exc:                    # noqa: BLE001
@@ -453,7 +467,7 @@ class WindowsLayoutProtector:
                                                       service_sids=tuple(service_sids)))
         for directory in containers:
             protected(directory)
-            for who, sid_text in (("web", self._web), ("scheduler", self._sched)):
+            for who, sid_text in self._subjects():
                 held = rights(directory, sid_text)
                 if held is None:
                     continue
@@ -491,7 +505,7 @@ class WindowsLayoutProtector:
             if not path.exists():
                 continue
             protected(path)
-            for who, sid_text in (("web", self._web), ("scheduler", self._sched)):
+            for who, sid_text in self._subjects():
                 held = rights(path, sid_text)
                 if held is None:
                     continue
@@ -955,8 +969,12 @@ def platform_protector(*, service_uid: int | None = None, service_gid: int | Non
                     "pre-service protection was requested together with a service account; the "
                     "service SIDs do not exist yet and this mode grants none")
             return WindowsPreServiceProtector()
-        if not web_sid or not scheduler_sid:
-            raise ProtectionFailed("the Windows protector needs both service SIDs")
+        if not web_sid:
+            # ONE service, one SID (packet 1361-01, round 3). It used to require both; the
+            # standalone scheduler service is retired, so demanding its SID would refuse every
+            # current installation. `scheduler_sid` stays accepted for a box that still carries the
+            # retired service while the upgrade that removes it runs.
+            raise ProtectionFailed("the Windows protector needs the web service SID")
         return WindowsLayoutProtector(web_sid=web_sid, scheduler_sid=scheduler_sid)
     if service_uid is None or service_gid is None:
         raise ProtectionFailed("the POSIX protector needs the service uid and gid")

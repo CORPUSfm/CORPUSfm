@@ -3264,6 +3264,12 @@ _CO_REQUEST_KEYS: dict[str, frozenset[str]] = {
     # block), no credential (it contacts no provider).
     "discard-provider": frozenset({"schema_version", "provider", "operation_id", "installation_id",
                                    "actor"}),
+    # A001's authority tail. THERE IS NO `role` KEY, and that absence is the security property: the
+    # retired role is fixed by the adapter, so no request can aim this at `web` or `updater`. It
+    # names the installation, the directory, the generation it inspected, the schema and the actor —
+    # the same binding every other privileged composition request carries — and nothing else.
+    "retire-scheduler-authority": frozenset({"schema_version", "installation_id",
+                                             "expected_generation", "install_dir", "actor"}),
 }
 
 
@@ -3327,6 +3333,16 @@ def _co_read_request(path: str, verb: str, *, authority_api=None) -> dict:
         if raw["provider"] not in PROVIDERS:
             raise _RequestRefused(f"provider must be one of {PROVIDERS}, got {raw['provider']!r}")
         for key in ("operation_id", "installation_id"):
+            value = raw[key]
+            if not isinstance(value, str) or not value.strip():
+                raise _RequestRefused(f"{key} must be a non-empty string, got {value!r}")
+    if verb == "retire-scheduler-authority":
+        generation = raw.get("expected_generation")
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            raise _RequestRefused(
+                "retire-scheduler-authority expected_generation must be a positive integer: it "
+                "runs long after the foundation published generation 1")
+        for key in ("installation_id", "install_dir", "actor"):
             value = raw[key]
             if not isinstance(value, str) or not value.strip():
                 raise _RequestRefused(f"{key} must be a non-empty string, got {value!r}")
@@ -3425,6 +3441,21 @@ def _composition(args, *, engine=None, lifecycle=None, os_layout=None, locator_a
                            "installation_id": out.installation_id, "resumed": out.resumed,
                            "findings": [],
                            "next_action": "The installation record is published."}
+            elif verb == "retire-scheduler-authority":
+                out = comp.retire_scheduler_authority(
+                    installation_id=str(raw["installation_id"]),
+                    expected_generation=int(raw["expected_generation"]),
+                    install_dir=Path(raw["install_dir"]),
+                    lock=lock, journal=journal, lifecycle_layout=layout)
+                payload = {
+                    "result": out.result, "operation_id": out.operation_id, "provider": None,
+                    "committed_generation": out.generation, "generation": out.generation,
+                    "locator_published": False, "removed": out.removed, "resumed": out.resumed,
+                    "findings": [],
+                    "next_action": ("The retired scheduler is no longer recorded."
+                                    if out.removed else
+                                    "The installation record already names no scheduler."),
+                }
             elif verb == "publish-installer":
                 out = comp.publish_installer_identity(
                     installation_id=str(raw["installation_id"]),
@@ -4060,6 +4091,8 @@ def main(argv: list[str] | None = None) -> int:
         ("publish-installer", "MUTATES: adopt or advance installer identity within one series"),
         ("commit-provider", "MUTATES: publish exactly one provider's manifest block"),
         ("discard-provider", "MUTATES: retire one provider's RESOLVED journal record"),
+        ("retire-scheduler-authority",
+         "MUTATES: remove A001's retired scheduler entry from the installation record"),
     ):
         co_verb = co_sub.add_parser(verb, help=helptext)
         co_verb.add_argument("--request", required=True)

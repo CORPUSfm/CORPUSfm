@@ -12,8 +12,8 @@ data like every other operational table — a scheduler process writes events, t
 
 Public API:
     AlertEvent
-    check_conditions(jobs_dir, history_dir, archive_dir, config) -> list[AlertEvent]
-    evaluate_alerts(jobs_dir, history_dir, archive_dir, config) -> list[AlertEvent]
+    check_conditions(archive_dir, config) -> list[AlertEvent]
+    evaluate_alerts(archive_dir, config) -> list[AlertEvent]
     append_alert(event)
     load_alert_history(limit) -> list[AlertEvent]
     suppress_alert(condition, job_name, hours)
@@ -44,12 +44,20 @@ class AlertEvent:
     job_uuid: Optional[str] = None
 
 
-def _repo():
-    """The AlertsRepo over the live backend's engine (packet 1019), or None if unavailable."""
-    from corpusfm.storage import get_backend
+def _repo(backend=None):
+    """The AlertsRepo over a backend's engine (packet 1019), or None if unavailable.
+
+    ``backend`` lets a caller that already holds one supply it (packet 1361-01). Resolving one here
+    means a global `get_backend()`, which on a published installation builds a fresh
+    FileMakerODataBackend and pays a TLS handshake — a real cost on a route polled every ten seconds
+    by every open tab.
+    """
     from corpusfm.storage.repos import alerts_repo
     try:
-        return alerts_repo(get_backend())
+        if backend is None:
+            from corpusfm.storage import get_backend
+            backend = get_backend()
+        return alerts_repo(backend)
     except Exception:
         return None
 
@@ -95,21 +103,43 @@ def append_alert(event: AlertEvent) -> None:
                           message=event.message, job_name=event.job_name)
 
 
-def load_alert_history(limit: int = 50) -> list[AlertEvent]:
-    """The most recent ``limit`` alert events, newest first."""
-    repo = _repo()
+def load_alert_history(limit: int = 50, *, strict: bool = False, backend=None) -> list[AlertEvent]:
+    """The most recent ``limit`` alert events, newest first.
+
+    ``strict=True`` raises `AlertReadUnavailable` instead of degrading an UNREADABLE history to an
+    empty list (packet 1361-01). A genuinely empty ALERT table still answers ``[]`` under strict —
+    "there are none" is an answer, "could not ask" is not, and only the caller knows whether it can
+    afford to conflate them. Default False, so every existing caller keeps today's behavior.
+
+    ``backend`` is passed straight to the repo, so a caller that already holds one is not made to
+    resolve another.
+    """
+    from corpusfm.storage.repos import AlertReadUnavailable
+
+    repo = _repo(backend)
     if repo is None:
+        if strict:
+            raise AlertReadUnavailable(
+                "the active storage backend exposes no engine, so ALERT cannot be read.")
+        return []
+    try:
+        rows = repo.list_history(limit)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("load_alert_history failed", exc_info=True)
+        if strict:
+            raise AlertReadUnavailable(
+                "The alert history could not be read from storage "
+                f"({type(exc).__name__}). See the CORPUSfm server log for detail.") from exc
         return []
     return [AlertEvent(ts=d["ts"], condition=d["condition"], severity=d["severity"],
                        message=d["message"], job_name=d["job_name"])
-            for d in repo.list_history(limit)]
+            for d in rows]
 
 
 # ── Condition evaluation ──────────────────────────────────────────────────────
 
 def check_conditions(
-    jobs_dir: Path,
-    history_dir: Path,
     archive_dir: Path,
     config: MonitorConfig,
 ) -> list[AlertEvent]:
@@ -124,7 +154,7 @@ def check_conditions(
         from corpusfm.storage import get_backend
         backend = get_backend()
 
-        for cfg, state in list_jobs_with_state(jobs_dir):
+        for cfg, state in list_jobs_with_state():
 
             # ── job_failed ────────────────────────────────────────────────
             if state.last_status == "error":
@@ -193,9 +223,8 @@ def check_conditions(
             )
             if has_git_export:
                 try:
-                    runs = list_runs_for(getattr(cfg, "id", "") or "", history_dir,
-                                        limit=config.zero_diff_threshold,
-                                         backend=backend, job_uuid=getattr(cfg, "id", "") or "")
+                    runs = list_runs_for(getattr(cfg, "id", "") or "",
+                                         limit=config.zero_diff_threshold, backend=backend)
                     if len(runs) >= config.zero_diff_threshold:
                         all_no_change = all(
                             r.status == "ok"
@@ -223,17 +252,20 @@ def check_conditions(
         pass
 
     # ── scheduler_stopped ─────────────────────────────────────────────────────
+    # The scheduler is a WEB-OWNED component now (packet 1361-01, round 2), so this is an exact
+    # in-process answer rather than a staleness judgement over a file another process wrote — and it
+    # reads neither the filesystem nor FileMaker, which is what lets it be asked while paused.
+    # `ever_started` is the in-memory successor to "a status file exists": a process that never
+    # started the clock (readiness never opened) has no scheduler to call stopped.
     try:
-        status_file = jobs_dir / "scheduler.json"
-        if status_file.exists():
-            from corpusfm.server.scheduler import scheduler_is_running
-            if not scheduler_is_running(jobs_dir):
-                events.append(AlertEvent(
-                    ts=now_iso,
-                    condition="scheduler_stopped",
-                    severity="error",
-                    message="Scheduler process is not running or has stopped responding",
-                ))
+        from corpusfm.server.scheduler import scheduler_ever_started, scheduler_is_running
+        if scheduler_ever_started() and not scheduler_is_running():
+            events.append(AlertEvent(
+                ts=now_iso,
+                condition="scheduler_stopped",
+                severity="error",
+                message="The scheduler clock has stopped inside the CORPUSfm web service",
+            ))
     except Exception:
         pass
 
@@ -259,13 +291,11 @@ def check_conditions(
 
 
 def evaluate_alerts(
-    jobs_dir: Path,
-    history_dir: Path,
     archive_dir: Path,
     config: MonitorConfig,
 ) -> list[AlertEvent]:
     """Return only unsuppressed firing alerts (for dispatch to notification channels)."""
     return [
-        e for e in check_conditions(jobs_dir, history_dir, archive_dir, config)
+        e for e in check_conditions(archive_dir, config)
         if not is_suppressed(e.condition, e.job_name, e.job_uuid)
     ]

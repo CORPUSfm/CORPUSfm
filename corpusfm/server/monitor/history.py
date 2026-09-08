@@ -2,7 +2,7 @@
 
 Public API:
     JobHealthRow
-    get_job_health(jobs_dir, config) -> list[JobHealthRow]
+    get_job_health(config) -> list[JobHealthRow]
 """
 
 from __future__ import annotations
@@ -28,17 +28,14 @@ class JobHealthRow:
     overdue: bool
 
 
-def get_job_health(
-    jobs_dir: Path,
-    config: MonitorConfig,
-) -> list[JobHealthRow]:
+def get_job_health(config: MonitorConfig) -> list[JobHealthRow]:
     """Return one health row per configured job, sorted by name."""
     from corpusfm.server.jobs.store import list_jobs_with_state
 
     rows: list[JobHealthRow] = []
     now = datetime.now(timezone.utc)
 
-    for cfg, state in list_jobs_with_state(jobs_dir):
+    for cfg, state in list_jobs_with_state():
 
         from corpusfm.server.jobs import schedule as _sched
         schedule_triggers = [

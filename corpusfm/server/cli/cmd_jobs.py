@@ -1,13 +1,22 @@
 """CLI: corpusfm jobs list|create|validate|run|delete|history
 
 Manage automation jobs from the command line.
+
+**The filesystem job model is gone (packet 1361-01).** `--jobs-dir`, `--archive-dir` and
+`--history-dir` are removed from every verb, along with the `local_file` source and its `--path`.
+They selected a job store, an archive and a run history off disk and executed against them — a model
+the product does not support. A CORPUSfm Job pulls XML from a HOSTED FileMaker file, stores the
+artifact internally, and may export to GitHub. Jobs live in the JOB table, runs live in HISTORY, and
+`run` ENQUEUES onto the one QUEUE the worker drains.
+
+Ingesting a file from disk is still fully supported — it is `corpusfm ingest`, which is ingestion
+rather than an automation unit.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 
 def add_parser(subparsers) -> None:
@@ -20,42 +29,35 @@ def add_parser(subparsers) -> None:
 
     # list
     p_list = sub.add_parser("list", help="List all configured jobs")
-    p_list.add_argument("--jobs-dir", default=None)
 
     # validate
     p_val = sub.add_parser("validate", help="Validate a job's configuration")
     p_val.add_argument("job_uuid", help="Job UUID (see `corpusfm jobs list`)")
-    p_val.add_argument("--jobs-dir", default=None)
 
     # run
     p_run = sub.add_parser("run", help="Run a job immediately")
     p_run.add_argument("job_uuid", help="Job UUID (see `corpusfm jobs list`)")
-    p_run.add_argument("--jobs-dir", default=None)
-    p_run.add_argument("--archive-dir", default=None)
-    p_run.add_argument("--history-dir", default=None)
     p_run.add_argument("--trigger", default="manual", help="Trigger label (default: manual)")
 
     # delete
     p_del = sub.add_parser("delete", help="Delete a job")
     p_del.add_argument("job_uuid", help="Job UUID (see `corpusfm jobs list`)")
-    p_del.add_argument("--jobs-dir", default=None)
     p_del.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
 
     # history
     p_hist = sub.add_parser("history", help="Show run history for a job")
     p_hist.add_argument("job_uuid", help="Job UUID (see `corpusfm jobs list`)")
     p_hist.add_argument("--limit", type=int, default=20)
-    p_hist.add_argument("--history-dir", default=None)
 
     # create (guided)
     p_create = sub.add_parser("create", help="Create a new job interactively (YAML output)")
     p_create.add_argument("name", help="Job name (a label; it need not be unique)")
-    p_create.add_argument("--source-type", default="local_file",
-                          choices=["local_file", "fms_local", "fms_save_to_documents", "fms_push"])
-    p_create.add_argument("--path", default=None, help="Source file path (local_file)")
+    p_create.add_argument("--source-type", default="fms_save_to_documents",
+                          choices=["fms_local", "fms_save_to_documents",
+                                   "fms_save_to_file_path", "fms_push"])
     p_create.add_argument("--server", default=None, help="FMS server URL (fms_* types)")
     p_create.add_argument("--database", default=None,
-                          help="FM database name(s), comma-separated (fms_* types)")
+                          help="The hosted FM file this job pulls — its OWNER FILE. Required.")
     p_create.add_argument("--script", default=None, help="FM script name to call (fms_* types)")
     p_create.add_argument("--trigger-manual", action="store_true", default=True)
     p_create.add_argument("--trigger-schedule", default=None, metavar="WHEN",
@@ -73,19 +75,8 @@ def add_parser(subparsers) -> None:
                           help="Read the FileMaker password from stdin. There is deliberately no "
                                "--password: a secret on the command line is visible in the process "
                                "list to every user on the box.")
-    p_create.add_argument("--jobs-dir", default=None)
 
     p.set_defaults(func=run)
-
-
-def _resolve_dirs(args: argparse.Namespace) -> tuple[Path, Path, Path]:
-    from corpusfm.server.jobs.store import default_jobs_dir, default_history_dir
-    from corpusfm.storage.local import default_archive_dir
-
-    jobs_dir = Path(args.jobs_dir) if getattr(args, "jobs_dir", None) else default_jobs_dir()
-    archive_dir = Path(args.archive_dir) if getattr(args, "archive_dir", None) else default_archive_dir()
-    history_dir = Path(args.history_dir) if getattr(args, "history_dir", None) else default_history_dir()
-    return jobs_dir, archive_dir, history_dir
 
 
 def run(args: argparse.Namespace) -> int:
@@ -95,11 +86,9 @@ def run(args: argparse.Namespace) -> int:
         JobConfig, JobSource, JobProcess, JobGitExport, JobTrigger, generate_token,
     )
 
-    jobs_dir, archive_dir, history_dir = _resolve_dirs(args)
-
     # ── list ──────────────────────────────────────────────────────────────────
     if args.jobs_cmd == "list":
-        all_jobs = list_jobs(jobs_dir)
+        all_jobs = list_jobs()
         if not all_jobs:
             print("No jobs configured.")
             return 0
@@ -111,7 +100,7 @@ def run(args: argparse.Namespace) -> int:
                 state_desc = ""
                 try:
                     from corpusfm.server.jobs.state import read_state
-                    s = read_state(getattr(cfg, "id", "") or "", jobs_dir)
+                    s = read_state(getattr(cfg, "id", "") or "")
                     if s.last_status:
                         ts = (s.last_run_ts or "")[:19].replace("T", " ")
                         state_desc = f"  last: {ts} {s.last_status}"
@@ -126,9 +115,9 @@ def run(args: argparse.Namespace) -> int:
     # ── validate ──────────────────────────────────────────────────────────────
     if args.jobs_cmd == "validate":
         try:
-            cfg = load_job(args.job_uuid, jobs_dir)
+            cfg = load_job(args.job_uuid)
         except (KeyError, FileNotFoundError):
-            print(f"Error: no job with id '{args.job_uuid}' in {jobs_dir}", file=sys.stderr)
+            print(f"Error: no job with id '{args.job_uuid}'", file=sys.stderr)
             return 1
         except Exception as exc:
             print(f"Error loading job: {exc}", file=sys.stderr)
@@ -144,28 +133,38 @@ def run(args: argparse.Namespace) -> int:
 
     # ── run ───────────────────────────────────────────────────────────────────
     if args.jobs_cmd == "run":
-        from corpusfm.server.jobs.runner import run_job
+        # ENQUEUE, never execute (packet 1361-01, ruling 10). Every other production trigger — the
+        # scheduler, the browser and MCP — already puts a Job Run on the QUEUE and lets the single
+        # pull worker execute it; this command called the synchronous runner directly, which is a
+        # SECOND production pull path, outside the worker's mutual exclusion, whose write dies with
+        # the terminal that started it. The queue acquire→ingest path is now the only one.
+        from corpusfm.server import queue_handlers as QH
+        from corpusfm.server import queue_workers as W
+        from corpusfm.storage import queue_record as Q
+        from corpusfm.server.jobs.store import load_job
+        from corpusfm.storage import get_backend
         try:
-            print(f"Running job {args.job_uuid}…")
-            run_record = run_job(
-                job_uuid=args.job_uuid,
-                jobs_dir=jobs_dir,
-                archive_dir=archive_dir,
-                history_dir=history_dir,
-                trigger=args.trigger,
-            )
+            job = load_job(args.job_uuid)
+        except KeyError:
+            print(f"Error: job '{args.job_uuid}' not found", file=sys.stderr)
+            return 1
+        try:
+            backend = get_backend()
+            qid, run_id = QH.enqueue_job_run(
+                backend, job_name=job.name, job_uuid=args.job_uuid,
+                file_name=getattr(job.source, "file_name", "") or "",
+                trigger=args.trigger)
+            try:
+                W.poke(Q.ACQUIRE)      # nudge the in-process worker when there is one
+            except Exception:
+                pass
         except Exception as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
-        if run_record.status == "ok":
-            dur = f"{run_record.duration_s:.1f}s" if run_record.duration_s else "?"
-            print(f"OK  —  {dur}  —  {run_record.archive_path}")
-            if run_record.git_commits:
-                for c in run_record.git_commits:
-                    print(f"  git: {c}")
-        else:
-            print(f"FAILED: {run_record.error}", file=sys.stderr)
-            return 1
+        print(f"Queued a run of '{job.name}' ({args.job_uuid}).")
+        print(f"  queue id: {qid}")
+        print(f"  run id:   {run_id}")
+        print("  follow:   the Runs page, or `corpusfm jobs history`")
         return 0
 
     # ── delete ────────────────────────────────────────────────────────────────
@@ -175,7 +174,7 @@ def run(args: argparse.Namespace) -> int:
             if confirm != "y":
                 print("Cancelled.")
                 return 0
-        deleted = delete_job(args.job_uuid, jobs_dir)
+        deleted = delete_job(args.job_uuid)
         if deleted:
             print(f"Deleted job {args.job_uuid}.")
         else:
@@ -187,11 +186,10 @@ def run(args: argparse.Namespace) -> int:
     if args.jobs_cmd == "history":
         from corpusfm.storage import get_backend
         try:
-            _label = load_job(args.job_uuid, jobs_dir).name
+            _label = load_job(args.job_uuid).name
         except Exception:
             _label = args.job_uuid
-        runs = list_runs_for(args.job_uuid, history_dir, limit=args.limit,
-                             backend=get_backend())
+        runs = list_runs_for(args.job_uuid, limit=args.limit, backend=get_backend())
         if not runs:
             print(f"No run history for job {args.job_uuid}.")
             return 0
@@ -231,40 +229,37 @@ def run(args: argparse.Namespace) -> int:
         import uuid as _uuidlib
         job_id = str(_uuidlib.uuid4())
 
-        # A job that pulls from FileMaker needs a credential, and the secret never travels in argv
-        # (it would be visible in the process list to every user on the box).
-        #
-        # `local_file` IS EXEMPT, and this is a deliberate narrowing of R3's unconditional wording.
-        # A local_file job reads a path off disk and has no FileMaker to authenticate to, so
-        # demanding a credential would mean inventing one to satisfy a rule about pulling. The
-        # browser has no such source type, so the two surfaces do not actually disagree about any
-        # job a user can create there.
-        needs_credential = args.source_type != "local_file"
+        # EVERY job pulls from FileMaker and therefore needs a credential — the `local_file` exemption
+        # went with the source type (packet 1361-01), so R3's wording is unconditional again and this
+        # surface now agrees with the browser about every job a user can create. The secret never
+        # travels in argv: it would be visible in the process list to every user on the box.
         account = (args.account or "").strip()
-        password = ""
-        if needs_credential:
-            if not account:
-                print("Error: --account is required for a FileMaker source — a job cannot pull "
-                      "without a credential.", file=sys.stderr)
-                return 1
-            if not args.password_stdin:
-                print("Error: pass --password-stdin and provide the password on stdin.",
-                      file=sys.stderr)
-                return 1
-            password = sys.stdin.readline().rstrip("\n")
-            if not password:
-                print("Error: no password was read from stdin.", file=sys.stderr)
-                return 1
+        if not account:
+            print("Error: --account is required — a job cannot pull without a credential.",
+                  file=sys.stderr)
+            return 1
+        if not args.password_stdin:
+            print("Error: pass --password-stdin and provide the password on stdin.",
+                  file=sys.stderr)
+            return 1
+        password = sys.stdin.readline().rstrip("\n")
+        if not password:
+            print("Error: no password was read from stdin.", file=sys.stderr)
+            return 1
 
+        # THE OWNER FILE, named explicitly (packet 086 file-centric / 1361-01). Every remaining
+        # source pulls from a hosted file, so `--database` IS the job's owner file and the CLI must
+        # say so on the config — a job with no `file` cannot pull, and the browser has always set it.
+        _dbs = [d.strip() for d in args.database.split(",") if d.strip()] if args.database else []
         cfg = JobConfig(
             name=args.name,
             id=job_id,
             description=args.description,
+            file=_dbs[0] if _dbs else None,
             source=JobSource(
                 type=args.source_type,
-                path=args.path,
                 server=args.server,
-                databases=[d.strip() for d in args.database.split(",") if d.strip()] if args.database else None,
+                databases=_dbs or None,
                 script=args.script,
             ),
             process=JobProcess(git_export=git_export),
@@ -280,30 +275,29 @@ def run(args: argparse.Namespace) -> int:
             return 1
 
         try:
-            save_job(cfg, jobs_dir)
+            save_job(cfg)
         except ValueError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
-        if needs_credential:
-            from corpusfm.server.jobs.store import delete_job, set_job_credential
+        from corpusfm.server.jobs.store import delete_job, set_job_credential
+        try:
+            set_job_credential(job_id, account, password)
+        except Exception as exc:
+            # All-or-nothing, for the same reason as the browser create: the record must exist
+            # before a credential can attach to it, and reporting "created but has no credential"
+            # as a normal error path is how the invariant gets violated in practice.
             try:
-                set_job_credential(job_id, account, password)
-            except Exception as exc:
-                # All-or-nothing, for the same reason as the browser create: the record must exist
-                # before a credential can attach to it, and reporting "created but has no
-                # credential" as a normal error path is how the invariant gets violated in practice.
-                try:
-                    delete_job(job_id, jobs_dir)
-                    print(f"Error: the credential was not stored ({exc}); the job was not created.",
-                          file=sys.stderr)
-                except Exception:
-                    print(f"Error: the credential was not stored ({exc}), and the partially created "
-                          f"job {job_id} could not be removed. Delete it and try again.",
-                          file=sys.stderr)
-                return 1
+                delete_job(job_id)
+                print(f"Error: the credential was not stored ({exc}); the job was not created.",
+                      file=sys.stderr)
+            except Exception:
+                print(f"Error: the credential was not stored ({exc}), and the partially created "
+                      f"job {job_id} could not be removed. Delete it and try again.",
+                      file=sys.stderr)
+            return 1
 
-        print(f"Job '{args.name}' created in {jobs_dir}")
+        print(f"Job '{args.name}' created.")
         print(f"  id: {job_id}")          # the address every other verb takes
         if token:
             from corpusfm.server.jobs.webhook import webhook_url, DEFAULT_PORT

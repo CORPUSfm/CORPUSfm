@@ -150,7 +150,7 @@ def _schedule_trigger_from_body(body: dict, job_uuid: str):
     """
     from corpusfm.server.jobs import schedule as sched
     from corpusfm.server.jobs.config import JobTrigger
-    from corpusfm.server.jobs.store import default_jobs_dir, load_job
+    from corpusfm.server.jobs.store import load_job
 
     days = [str(d).strip().lower() for d in (body.get("weekdays") or []) if str(d).strip()]
     incoming = sched.Schedule(
@@ -163,7 +163,7 @@ def _schedule_trigger_from_body(body: dict, job_uuid: str):
 
     previous = None
     try:
-        existing = load_job(job_uuid, default_jobs_dir())
+        existing = load_job(job_uuid)
         previous = existing.trigger.resolved_schedule() if existing.trigger is not None else None
     except Exception:
         previous = None
@@ -233,14 +233,13 @@ def _jobs_by_file(server_ref: str = "local") -> dict[str, list]:
 
     out: dict[str, list] = {}
     try:
-        from corpusfm.server.jobs.store import list_jobs_with_overlay, default_jobs_dir
+        from corpusfm.server.jobs.store import list_jobs_with_overlay
         from corpusfm.server.jobs.run_queue import active_runs
         from corpusfm.storage import get_backend
         # JOIN BY UUID (packet 1372-02): duplicate names are ordinary now, and a name join lit
         # every same-named job when one ran.
         running_uuids = {m.get("job_uuid", "") for m in active_runs(get_backend()) if m.get("job_uuid")}
-        jobs_dir = default_jobs_dir()
-        for cfg, st, cred in list_jobs_with_overlay(jobs_dir, strict=True):
+        for cfg, st, cred in list_jobs_with_overlay(strict=True):
             if not cfg.file:
                 continue
             if _job_server_ref(cfg) != server_ref:
@@ -495,7 +494,7 @@ async def set_job_tags_route(job_uuid: str, request: Request) -> JSONResponse:
     moved the tags onto the job and the URL was kept "for stability"). A path that says one thing and
     means another is exactly what this cutover removes, so it now names what it addresses.
     """
-    from corpusfm.server.jobs.store import load_job, save_job, default_jobs_dir
+    from corpusfm.server.jobs.store import load_job, save_job
     body = await request.json()
     tags = body.get("tags") or []
     if isinstance(tags, str):
@@ -505,11 +504,11 @@ async def set_job_tags_route(job_uuid: str, request: Request) -> JSONResponse:
     if guard is not None:
         return guard
     try:
-        cfg = load_job(job_uuid, default_jobs_dir())
+        cfg = load_job(job_uuid)
     except KeyError:
         return JSONResponse({"ok": False, "error": f"No job with id {job_uuid}."}, status_code=404)
     cfg.tags = tags or None
-    save_job(cfg, default_jobs_dir(), overwrite=True)
+    save_job(cfg, overwrite=True)
     return JSONResponse({"ok": True, "tags": tags})
 
 
@@ -581,8 +580,8 @@ async def job_locate(job_uuid: str = "") -> JSONResponse:
     if not ju:
         return JSONResponse({"ok": False, "error": "job_uuid is required"}, status_code=400)
     try:
-        from corpusfm.server.jobs.store import list_jobs, default_jobs_dir
-        for cfg, _err in list_jobs(default_jobs_dir()):
+        from corpusfm.server.jobs.store import list_jobs
+        for cfg, _err in list_jobs():
             if cfg is not None and (getattr(cfg, "id", "") or "") == ju:
                 return JSONResponse({"ok": True, "file": cfg.file or "", "name": cfg.name,
                                      "server_ref": _job_server_ref(cfg)})
@@ -607,7 +606,7 @@ async def file_jobs_list(name: str, request: Request) -> JSONResponse:
     gallery alone; this endpoint keeps the degraded-empty render it already had, because changing
     that would change this response."""
     try:
-        from corpusfm.server.jobs.store import list_jobs_with_overlay, default_jobs_dir
+        from corpusfm.server.jobs.store import list_jobs_with_overlay
         from corpusfm.server.jobs.config import content_for_modes, default_method
         from corpusfm.server.jobs.run_queue import active_runs
         from corpusfm.storage import get_backend
@@ -616,9 +615,8 @@ async def file_jobs_list(name: str, request: Request) -> JSONResponse:
         # JOIN BY UUID (packet 1372-02). It used to join on `job_name`, so two jobs sharing a name
         # both lit up when one ran — and duplicate names are now ordinary.
         running_uuids = {m.get("job_uuid", "") for m in active_runs(get_backend()) if m.get("job_uuid")}
-        jobs_dir = default_jobs_dir()
         rows = []
-        for cfg, st, cred in list_jobs_with_overlay(jobs_dir):
+        for cfg, st, cred in list_jobs_with_overlay():
             if cfg.file != name or _job_server_ref(cfg) != ref:
                 continue
             t = cfg.trigger
@@ -667,7 +665,7 @@ async def file_job_save(name: str, request: Request) -> JSONResponse:
     (co-located pull against this file); the credential is inherited from the file store."""
     try:
         body = await request.json()
-        from corpusfm.server.jobs.store import save_job, default_jobs_dir, generate_token, load_job
+        from corpusfm.server.jobs.store import save_job, generate_token, load_job
         from corpusfm.server.jobs.config import (
             JobConfig, JobProcess, JobGitExport, JobTrigger, JobSource,
             modes_for_content, default_method, source_type_for_method,
@@ -698,7 +696,7 @@ async def file_job_save(name: str, request: Request) -> JSONResponse:
         else:
             job_id = submitted_id
             try:
-                load_job(job_id, default_jobs_dir())
+                load_job(job_id)
             except KeyError:
                 return JSONResponse({"ok": False, "error": f"No job with id {job_id}."},
                                     status_code=404)
@@ -771,7 +769,7 @@ async def file_job_save(name: str, request: Request) -> JSONResponse:
         token = None
         if ttype == "webhook":
             try:
-                existing = None if is_new else load_job(job_id, default_jobs_dir())
+                existing = None if is_new else load_job(job_id)
             except KeyError:
                 existing = None
             token = (existing.webhook_token if existing and existing.webhook_token else generate_token())
@@ -831,7 +829,7 @@ async def file_job_save(name: str, request: Request) -> JSONResponse:
                 {"ok": False, "error": "supply both an account and a password, or neither to keep "
                                        "the existing credential"}, status_code=400)
 
-        save_job(cfg, default_jobs_dir(), overwrite=not is_new)
+        save_job(cfg, overwrite=not is_new)
         if account and password:
             from corpusfm.server.jobs.store import set_job_credential
             try:
@@ -859,11 +857,11 @@ async def job_delete(job_uuid: str) -> JSONResponse:
     if guard is not None:
         return guard
     try:
-        from corpusfm.server.jobs.store import delete_job, default_jobs_dir
+        from corpusfm.server.jobs.store import delete_job
         # `delete_job` answers whether the job EXISTED. Discarding that made "Delete all jobs"
         # report success for rows it had not deleted, which is the shape of report that hides a
         # partial failure behind a green banner.
-        if not delete_job(job_uuid, default_jobs_dir()):
+        if not delete_job(job_uuid):
             return JSONResponse({"ok": False, "error": f"No job with id {job_uuid}."},
                                 status_code=404)
         return JSONResponse({"ok": True})
@@ -888,9 +886,9 @@ async def job_run(job_uuid: str) -> JSONResponse:
 
     def _enqueue():
         from corpusfm.server import queue_handlers
-        from corpusfm.server.jobs.store import load_job, default_jobs_dir
+        from corpusfm.server.jobs.store import load_job
         from corpusfm.storage import get_backend
-        cfg = load_job(job_uuid, default_jobs_dir())          # KeyError -> 404 below, nothing written
+        cfg = load_job(job_uuid)          # KeyError -> 404 below, nothing written
         qid, run_id = queue_handlers.enqueue_job_run(
             get_backend(), job_name=cfg.name, job_uuid=cfg.id,
             file_name=getattr(cfg, "file", "") or "", trigger="manual")
@@ -944,8 +942,7 @@ async def file_job_run_status(task_id: str, run_id: str = "") -> JSONResponse:
         if not job_uuid:
             return {"status": "unknown", "error": "This run could not be resolved."}
         from corpusfm.server.jobs.state import read_state
-        from corpusfm.server.jobs.store import default_jobs_dir
-        st = read_state(job_uuid, default_jobs_dir())
+        st = read_state(job_uuid)
         return {"status": st.last_status or "ok", "error": st.last_error or ""}
 
     return JSONResponse(await run_in_threadpool(_status))

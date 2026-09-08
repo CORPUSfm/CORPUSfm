@@ -378,7 +378,13 @@ class OutcomeAuthorityUnproven(LifecycleError):
 #: The Windows service identities whose rights over the outcome directory must be checked. Empty is
 #: not a safe default — a check that queries no trustee proves nothing about any of them — so the
 #: caller cannot silently supply none.
-DEFAULT_SERVICE_ACCOUNTS: tuple = ("NT SERVICE\\corpusfm-web", "NT SERVICE\\corpusfm-scheduler")
+#:
+#: `NT SERVICE\corpusfm-scheduler` is GONE (packet 1361-01, round 3), and its removal is a FIX, not
+#: only tidying. That service is retired, so on a current installation the virtual account has no
+#: SID at all — `acl.sid()` refuses with error 1332, the helper below turns any exception into
+#: `OutcomeAuthorityUnproven`, and every privileged update on a fresh Windows box would have refused
+#: because a trustee that does not exist could not be shown not to have write.
+DEFAULT_SERVICE_ACCOUNTS: tuple = ("NT SERVICE\\corpusfm-web",)
 
 
 def assert_outcome_authority(state_dir: Path | str, *, service_uid: int | None = None,

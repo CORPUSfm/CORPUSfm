@@ -49,7 +49,7 @@ def _repo(backend):
 
 def enqueue_import(backend, raw: bytes, *, filename: str, name: str = "", locale: str = "",
                    summarize: bool = False, index: bool = False, owner: str = "",
-                   origin: str = "") -> str:
+                   origin: str = "", keep_source_xml: bool = False) -> str:
     """Stage one import as a QUEUE ``[upload, land, summarize?, index?]`` record: create the record
     (``Type=upload``), store the source bytes into its ``SourceXML`` container (the client-performed
     upload), then advance ``upload``→``land``. Enrichment steps are appended only when the opt-in AND
@@ -68,7 +68,7 @@ def enqueue_import(backend, raw: bytes, *, filename: str, name: str = "", locale
              Q.SUMMARIZE if summarize_ok else None,
              Q.INDEX if index_ok else None]        # build() drops the falsy entries
     payload = {"filename": filename or "import", "name": name or "", "locale": locale or "",
-               "origin": origin or ""}
+               "origin": origin or "", "keep_source_xml": bool(keep_source_xml)}
     qid = repo.enqueue(steps, payload=payload, owner=owner or "")
     backend.engine.blob_put("QUEUE", qid, "SourceXML",
                             encode_blob(compress(raw), encrypt_on=backend._encrypt_blobs()))
@@ -241,9 +241,8 @@ def _record_run_error(row, message: str) -> None:
     try:
         from datetime import datetime, timezone
         from corpusfm.storage import get_backend
-        from corpusfm.server.jobs.history import RunRecord, default_history_dir
+        from corpusfm.server.jobs.history import RunRecord
         from corpusfm.server.jobs.runner import _record_run
-        from corpusfm.server.jobs.store import default_jobs_dir
         now = datetime.now(timezone.utc)
         created = row.jor.get("created_at") or ""
         dur = 0.0
@@ -257,8 +256,7 @@ def _record_run_error(row, message: str) -> None:
             trigger=p.get("trigger") or "schedule", duration_s=max(0.0, dur), error=message,
             run_id=p.get("run_id") or None, job_uuid=row.jor.get("UUIDJob", "") or None,
             job_name=p.get("job_name") or "")
-        _record_run(row.jor.get("UUIDJob", "") or "", default_jobs_dir(), default_history_dir(),
-                    run, get_backend())
+        _record_run(row.jor.get("UUIDJob", "") or "", run, get_backend())
     except Exception:
         log.debug("acquire: error run-record write failed", exc_info=True)
 
@@ -321,8 +319,8 @@ def acquire_handler(repo, row) -> W.StepResult:
     blocking fetch (dev decision B — script call + read in one step):
       - fms_push  → fire PostToServer, block; FM POSTs the DDR to /api/upload DURING the block (the
         record carries the token hash); read the script verdict.
-      - otherwise → ``pull_source`` (fmsadmin / SaveToDocuments / SaveToFilePath / local_file) returns
-        the bytes, which we stage.
+      - otherwise → ``pull_source`` (fmsadmin / SaveToDocuments / SaveToFilePath) returns the bytes,
+        which we stage.
     Success stages the source on the record → advance to ``ingest``. Failure parks the step (Restart) AND
     writes an error RunRecord (parity with the old ``run_job``); CLEANUP discards any deposited bytes so a
     Restart produces one artifact, not two."""
@@ -361,16 +359,14 @@ def _acquire_pull(repo, backend, row, job, bound) -> W.StepResult:
     except ValueError as exc:
         _record_run_error(row, str(exc))
         return W.fail(str(exc))
-    # The pull target IS the owner file (packet 086); local_file reads its own path.
-    if (job.source.type or "").strip() == "local_file":
-        source = job.source
-    else:
-        target = job.file or (job.source.databases or [None])[0]
-        if not target:
-            msg = "This job has no owner file — it can't pull a hosted database."
-            _record_run_error(row, msg)
-            return W.fail(msg)
-        source = dataclasses.replace(job.source, databases=[target])
+    # The pull target IS the owner file (packet 086). Every source pulls from a hosted file — the
+    # `local_file` branch that read a path off disk went with the source type (packet 1361-01).
+    target = job.file or (job.source.databases or [None])[0]
+    if not target:
+        msg = "This job has no owner file — it can't pull a hosted database."
+        _record_run_error(row, msg)
+        return W.fail(msg)
+    source = dataclasses.replace(job.source, databases=[target])
     try:
         xml_bytes = pull_source(source, creds, timeout=bound)
     except Exception as exc:
@@ -597,7 +593,8 @@ def ingest_handler(repo, row) -> W.StepResult:
     outcome = ingest_import_bytes(
         raw, p.get("filename") or "import",
         name=p.get("name") or "", locale=p.get("locale") or "",
-        backend=backend, land_from=qid, origin=origin)
+        backend=backend, land_from=qid, origin=origin,
+        keep_source_xml=bool(p.get("keep_source_xml")))
     if not outcome.ok:
         return W.fail(outcome.error or "Import failed.")
     _demote_prior_latest(backend, row, getattr(outcome, "uuid", "") or "")
@@ -636,11 +633,12 @@ def _apply_run_side_effects(backend, row, outcome) -> None:
 
 
 def _demote_prior_latest(backend, row, new_uuid: str) -> None:
-    """Demote the prior IsLatest row in this job's lineage (packet 1145). The landed record is
-    already IsLatest=true, so this is the same Option-A demote the pull path performs after
-    ``store_artifact`` (``runner.py``) — the land path simply never had one. Job-less imports carry
-    no ``UUIDJob`` and are always-latest singletons: ``mark_latest_on_store`` returns immediately.
-    Never fails the step."""
+    """PROMOTE the just-landed record in this job's lineage (packet 1145 / 1361-01).
+
+    There is nothing to demote any more: promotion is one ``STORAGELINK`` row per job at a
+    deterministic key, so pointing it at the new artifact IS the whole operation. Job-less imports
+    carry no ``UUIDJob`` and are always-latest singletons — ``mark_latest_on_store`` returns
+    immediately. Never fails the step."""
     job_uuid = row.jor.get("UUIDJob", "") or ""
     if not job_uuid:
         return
@@ -649,7 +647,7 @@ def _demote_prior_latest(backend, row, new_uuid: str) -> None:
         if _latest.latest_available(backend):
             _latest.mark_latest_on_store(backend, job_uuid=job_uuid, new_uuid=new_uuid)
     except Exception:
-        log.debug("latest-flag update failed after land", exc_info=True)
+        log.debug("promotion update failed after land", exc_info=True)
 
 
 def _close_run_record(backend, row, uuid_storage: str) -> None:
@@ -663,9 +661,8 @@ def _close_run_record(backend, row, uuid_storage: str) -> None:
         return
     try:
         from datetime import datetime, timezone
-        from corpusfm.server.jobs.history import RunRecord, default_history_dir
+        from corpusfm.server.jobs.history import RunRecord
         from corpusfm.server.jobs.runner import _record_run
-        from corpusfm.server.jobs.store import default_jobs_dir
         now = datetime.now(timezone.utc)
         duration = 0.0
         created = row.jor.get("created_at") or ""
@@ -687,36 +684,83 @@ def _close_run_record(backend, row, uuid_storage: str) -> None:
             duration_s=max(0.0, duration), archive_path=us,
             run_id=run_id, job_uuid=row.jor.get("UUIDJob", "") or None,
             job_name=p.get("job_name") or "")
-        _record_run(row.jor.get("UUIDJob", "") or "", default_jobs_dir(), default_history_dir(),
-                    run, backend)
+        _record_run(row.jor.get("UUIDJob", "") or "", run, backend)
     except Exception:
         log.debug("run-record write failed at ingest", exc_info=True)
 
 
 def _land_deliverable(backend, raw: bytes, p: dict) -> W.StepResult:
     """Store one deliverable (patch/clip/script/calc) at its pre-supplied ``record_uuid`` (packet 086
-    — MCP deliverable saves route through the queue instead of an inline store). Records the HISTORY
-    patch event (for PatchXML) + busts the catalog snapshot — the post-save work that lived MCP-side."""
+    — deliverable saves route through the queue instead of an inline store). Records the HISTORY
+    patch event (for PatchXML) and, for an acceptance case, its ``AcceptanceCase`` metadata.
+
+    **The step is complete only when the record, its container AND its supplemental metadata have
+    all succeeded (packet 1361-01).** Anything less is a `fail`, so the row rests for a restart
+    rather than reporting a half-built case as done.
+
+    A restart OVERWRITES the same anchored STORAGE uuid — the record uuid is pre-supplied and stable,
+    so `store_deliverable` replaces its own prior attempt rather than minting a second artifact for
+    the same case. It is deliberately not a resume: the source bytes are durable in this queue row's
+    own `SourceXML` container, so redoing the store is cheap and correct, and detecting "which half
+    already landed" would be machinery for no outcome (ruling 11)."""
+    record_uuid = p.get("record_uuid") or ""
     try:
         backend.store_deliverable(
             raw, artifact_type=p.get("artifact_type") or "fmClip", origin=p.get("origin") or "MCP",
             name=p.get("name") or "", description=p.get("description") or "",
-            memory=p.get("memory") or "", record_uuid=p.get("record_uuid") or "")
+            memory=p.get("memory") or "", record_uuid=record_uuid)
     except Exception as exc:
         return W.fail(f"Deliverable save failed: {exc}")
+    case = p.get("acceptance_case")
+    if isinstance(case, dict) and case:
+        # Supplemental metadata is REQUIRED work for this item, not a best-effort tail: a stored
+        # acceptance clip with no case record is invisible to `evaluate_acceptance_return` and to
+        # its own batch, which is worse than an obvious failed queue row.
+        try:
+            from corpusfm.server import acceptance_ops
+            acceptance_ops.write_case(backend, record_uuid, case)
+        except Exception as exc:
+            return W.fail(f"Acceptance metadata write failed: {exc}")
     if p.get("artifact_type") == "PatchXML":
         try:
             from corpusfm.server.history import record_patch
-            record_patch(backend, p.get("record_uuid") or "", p.get("source_uuid") or "", "",
+            record_patch(backend, record_uuid, p.get("source_uuid") or "", "",
                          label=p.get("name") or "")
         except Exception:
-            log.debug("record_patch failed for deliverable %s", p.get("record_uuid"), exc_info=True)
-    try:
-        from corpusfm.server.tags_store import invalidate_record_views
-        invalidate_record_views()
-    except Exception:
-        pass
+            log.debug("record_patch failed for deliverable %s", record_uuid, exc_info=True)
     return W.ok()
+
+
+def enqueue_deliverable(backend, xml_bytes: bytes, *, artifact_type: str, origin: str = "MCP",
+                        owner: str = "", name: str = "", description: str = "", memory: str = "",
+                        source_uuid: str = "", record_uuid: str = "",
+                        acceptance_case: dict = None) -> dict:
+    """Stage one deliverable and enqueue it — WITHOUT waiting. Returns {queue_id, uuid}.
+
+    The fast deliverable lane (packet 086) with no poll loop: an acceptance BATCH is many cases, and
+    blocking each one behind the ingest worker turned a batch into a serialized wait whose only
+    outcome was a timeout message (packet 1361-01). One queue item per case, each linked by the
+    batch id inside its own acceptance metadata, each anchored on its pre-generated record uuid so a
+    retry resumes that artifact instead of duplicating it."""
+    import uuid as _uuidlib
+    from corpusfm.core.crypto import compress, encode_blob
+    repo = _repo(backend)
+    record_uuid = record_uuid or str(_uuidlib.uuid4())
+    payload = {"deliverable": True, "artifact_type": artifact_type, "origin": origin or "MCP",
+               "name": name or "", "description": description or "", "memory": memory or "",
+               "record_uuid": record_uuid, "source_uuid": source_uuid or ""}
+    if acceptance_case:
+        payload["acceptance_case"] = acceptance_case
+    # Two-state stage (mirror enqueue_import): start on UPLOAD — which no worker drains — stage the
+    # source, THEN advance upload→ingest, so the ingest worker only ever claims a record whose
+    # SourceXML is already present.
+    qid = repo.enqueue([Q.UPLOAD, Q.INGEST], payload=payload, owner=owner or origin or "MCP",
+                       uuid_storage=record_uuid)
+    backend.engine.blob_put("QUEUE", qid, "SourceXML",
+                            encode_blob(compress(xml_bytes), encrypt_on=backend._encrypt_blobs()))
+    repo.advance_or_delete(qid)      # upload → ingest (source now guaranteed present)
+    W.poke(Q.INGEST)
+    return {"queue_id": qid, "uuid": record_uuid}
 
 
 def enqueue_deliverable_and_wait(backend, xml_bytes: bytes, *, artifact_type: str, origin: str = "MCP",

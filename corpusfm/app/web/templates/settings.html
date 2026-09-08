@@ -26,7 +26,8 @@
 }
 </style>
 
-<div x-data="settingsPage()" class="settings-page">
+<div x-data="settingsPage()" class="settings-page"
+     @cfm-show-updates.window="showUpdates()">
 
   <div class="cfm-page-hdr"><h1>Settings</h1>
     <div class="cfm-hdr-actions">{{ doc_help('settings', 'About Settings') }}</div>
@@ -82,7 +83,10 @@
     </div>
     {% endif %}
 
-    <h2 class="cfm-section-h">Updates
+    {# A REAL anchor, so `#updates` addresses the section it names. It resolves to the `general` tab
+       through `_settingsInitialTab()`'s fallback (`updates` is not a tab), and this id is what makes
+       the fragment land on the section rather than the top of the page. #}
+    <h2 class="cfm-section-h" id="updates">Updates
       {{ doc_help('settings#updates', 'About updates') }}</h2>
     <div class="cfm-panel">
       <div class="cfm-island-top">
@@ -1632,6 +1636,24 @@ function settingsPage() {
     embedProviderLabel(v) { return ({ '': 'OpenAI-compatible / local', openai_compat: 'OpenAI-compatible / local', azure_openai: 'Azure OpenAI' })[v] || 'OpenAI-compatible / local'; },
 
     setTab(name) { name = _TAB_ALIAS[name] || name; this.tab = name; location.hash = name; if (name === 'health' && !this.health.loaded) this.loadHealth(false); if (name === 'integrations' && !this.indexInfo.loaded) this.loadIndexInfo(); },
+
+    // The shared update prompt's ONE request (packet 1378). It offers "Open Settings" from a page
+    // that may already be Settings, and the Updates section lives on the CORPUSfm (`general`) tab —
+    // so closing the modal without selecting that tab would leave the administrator looking at
+    // whichever tab they were on, which is the half-kept promise this closes.
+    //
+    // Deliberately NOT `setTab('general')`: that rewrites the hash to `#general` and would throw
+    // away the `#updates` this packet is required to preserve. Idempotent by construction —
+    // assigning the tab it already holds is not a change, and assigning the hash it already has
+    // does nothing.
+    showUpdates() {
+      this.tab = 'general';
+      if (location.hash !== '#updates') location.hash = 'updates';
+      this.$nextTick(() => {
+        const el = document.getElementById('updates');
+        if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start' });
+      });
+    },
 
     // ── Health (read-only install capability surface) ─────────────────────────
     tabLabel(t) { t = _TAB_ALIAS[t] || t; return _TAB_LABELS[t] || t; },

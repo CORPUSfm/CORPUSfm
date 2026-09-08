@@ -33,8 +33,29 @@ from .layout import POSIX, WINDOWS
 from .os_layout import DEFAULT_POSIX_INSTALL_DIR, DEFAULT_WINDOWS_INSTALL_DIR, OsLayout
 
 WEB_ROLE = "web"
+
+#: The standalone `corpusfm-scheduler` service is RETIRED (packet 1361-01, round 3). Scheduling is a
+#: background component of the web process now: it starts from the same database-readiness resume
+#: path that starts the catalog synchronizer and the queue workers, and it stops with the service. A
+#: second process could not honour the process-wide readiness gate — it kept reading and writing
+#: FileMaker while CORPUSfm was PAUSED — and `python -m corpusfm.server.scheduler` now refuses.
+#:
+#: The role SURVIVES here, and the distinction is load-bearing: it is no longer RENDERED (nothing
+#: composes, registers, grants to or starts it) but it is still MANAGED (an installation made by an
+#: earlier build recorded one, and an uninstall must be able to stop and remove it by name). Those
+#: are the two tuples below.
 SCHEDULER_ROLE = "scheduler"
-SERVICE_ROLES: tuple[str, ...] = (WEB_ROLE, SCHEDULER_ROLE)
+
+#: The services this build RENDERS and publishes. One.
+SERVICE_ROLES: tuple[str, ...] = (WEB_ROLE,)
+
+#: Roles a PREVIOUS build registered and this one only ever removes. Never rendered, never granted
+#: to, never started — but nameable, so an upgrade and an uninstall can act on what is really there.
+RETIRED_SERVICE_ROLES: tuple[str, ...] = (SCHEDULER_ROLE,)
+
+#: Every role that is (or was) a platform SERVICE, as opposed to the updater's scheduled task. This
+#: is the set a removal path iterates; `SERVICE_ROLES` is the set a renderer iterates.
+REMOVABLE_SERVICE_ROLES: tuple[str, ...] = SERVICE_ROLES + RETIRED_SERVICE_ROLES
 
 POSIX_SERVICE_USER = "corpusfm"
 
@@ -134,9 +155,12 @@ def assert_unprivileged(identity: ServiceIdentity) -> ServiceIdentity:
             "a CORPUSfm service definition must name the account it runs as; there is no default "
             "and an unnamed identity is how Windows silently ran these services as LocalSystem"
         )
-    if identity.role not in SERVICE_ROLES:
+    # REMOVABLE, not rendered. An uninstall names the identity of a service that really exists on
+    # the box, including the retired scheduler one (packet 1361-01, round 3); refusing it here would
+    # make an installation from an earlier build unremovable.
+    if identity.role not in REMOVABLE_SERVICE_ROLES:
         raise PrivilegedIdentityRefused(
-            f"unknown service role {identity.role!r}; expected one of {SERVICE_ROLES}"
+            f"unknown service role {identity.role!r}; expected one of {REMOVABLE_SERVICE_ROLES}"
         )
     account = _normalise(identity.account)
     if identity.flavour == WINDOWS:
@@ -190,14 +214,14 @@ POSIX_INTERPRETER = "venv/bin/python"
 WINDOWS_INTERPRETER = r"python\python.exe"
 
 #: role → the module the service runs. The only per-role variation there is.
+#:
+#: `corpusfm.server.scheduler` is GONE from this map (packet 1361-01, round 3). It is no longer a
+#: runnable module: scheduling is a background component of the web process, and the module's
+#: `__main__` exits 2 with the reason so an obsolete unit stops loudly instead of crash-looping in
+#: silence. A definition that named it would therefore render a service that cannot start, which is
+#: why the role is removed from `SERVICE_ROLES` and its module from here in the same change.
 SERVICE_MODULES: dict = {
     "web": "corpusfm.app.web",
-    # `corpusfm.server.jobs.scheduler` does not exist and never did — the scheduler is
-    # `corpusfm.server.scheduler`, which carries the `__main__` guard that runs it. The unit
-    # rendered correctly and systemd started it, and python answered `No module named
-    # corpusfm.server.jobs.scheduler` on every restart (fms-server, 2026-08-08). Corrected here so
-    # BOTH renderers receive it; no compatibility shim is created at the nonexistent path.
-    "scheduler": "corpusfm.server.scheduler",
 }
 
 #: Every non-path argument any CORPUSfm service definition may carry, by exact spelling. Widening
@@ -937,9 +961,10 @@ WINDOWS_SERVICE_SUBDIR = "services"
 
 # ── the MANAGED UNIT vocabulary (packet 1246-09 §Y) ───────────────────────────────────────────
 #
-# `SERVICE_ROLES` means *the CORPUSfm services the definition renderer produces* — web and
-# scheduler, both WinSW services on Windows. The privileged updater is neither: on POSIX it is a
-# one-shot systemd unit, and on Windows it is a **scheduled task**, not a service at all.
+# `SERVICE_ROLES` means *the CORPUSfm services the definition renderer produces* — the web service,
+# and since packet 1361-01 round 3 that is all of them. The privileged updater is not one: on POSIX
+# it is a one-shot systemd unit, and on Windows it is a **scheduled task**, not a service at all.
+# Neither is the retired scheduler service, which is removable and never rendered.
 #
 # It was previously nowhere. An uninstall that must remove it had no recorded name, no recorded
 # definition path and no expected identity, so both executors invented constants — the same
@@ -950,8 +975,11 @@ WINDOWS_SERVICE_SUBDIR = "services"
 UPDATER_ROLE = "updater"
 
 #: Every role the installation records and may later remove. The renderer still produces only
-#: `SERVICE_ROLES`; a role here that is not there is managed but not rendered.
-MANAGED_ROLES: tuple[str, ...] = SERVICE_ROLES + (UPDATER_ROLE,)
+#: `SERVICE_ROLES`; a role here that is not there is managed but not rendered — which is true of the
+#: updater (a scheduled task on Windows) and, since packet 1361-01 round 3, of the retired scheduler
+#: service. Both must stay valid in a stored record, or an installation made by an earlier build
+#: would fail to validate and could not be uninstalled.
+MANAGED_ROLES: tuple[str, ...] = REMOVABLE_SERVICE_ROLES + (UPDATER_ROLE,)
 
 #: How each managed role is registered with the platform, because removal differs by kind.
 UNIT_KIND_SERVICE = "service"
@@ -996,7 +1024,9 @@ def updater_records(flavour: str, install_dir) -> dict:
 
 
 def service_name(role: str, flavour: str) -> str:
-    if role not in SERVICE_ROLES:
+    # REMOVABLE, not rendered: an uninstall of a box that still carries the retired scheduler
+    # service must be able to name it (packet 1361-01, round 3).
+    if role not in REMOVABLE_SERVICE_ROLES:
         raise PrivilegedIdentityRefused(f"unknown service role {role!r}")
     try:
         return {POSIX: POSIX_SERVICE_NAMES, WINDOWS: WINDOWS_SERVICE_NAMES}[flavour][role]

@@ -1375,9 +1375,21 @@ def _account(manifest, resource, flavour):
     return AccountOperation(resource=resource, account=owned[0], flavour=flavour)
 
 
-def _managed_unit(role):
+def _managed_unit(role, *, retired: bool = False):
+    """Build the removal operation for one managed unit, from the manifest's own record of it.
+
+    `retired` names a role this build no longer creates but must still be able to remove (packet
+    1361-01, round 3: the standalone `corpusfm-scheduler` service). For such a role, ZERO manifest
+    entries is not incomplete authority — it is an installation that never registered the unit, so
+    there is nothing owed and nothing to manufacture. That is the same rule `remaining_from_plan`
+    states for an `UNAVAILABLE` decision with no authority, applied one level down. Two or more
+    entries still refuse, because a record that names the same unit twice is not a record anyone
+    should delete from.
+    """
     def build(manifest, resource, flavour):
         entries = [s for s in manifest.services if s.role == role]
+        if retired and not entries:
+            return ()
         if len(entries) != 1:
             raise AuthorityIncomplete(
                 f"the manifest records {len(entries)} services for role {role!r}; one is required")
@@ -1392,7 +1404,8 @@ def _managed_unit(role):
     return build
 
 
-for _resource, _role in (("web_service", "web"), ("scheduler_service", "scheduler"),
-                         ("updater_task", "updater")):
-    _RESOURCE_BUILDERS[_resource] = _managed_unit(_role)
-del _resource, _role
+for _resource, _role, _retired in (("web_service", "web", False),
+                                   ("scheduler_service", "scheduler", True),
+                                   ("updater_task", "updater", False)):
+    _RESOURCE_BUILDERS[_resource] = _managed_unit(_role, retired=_retired)
+del _resource, _role, _retired

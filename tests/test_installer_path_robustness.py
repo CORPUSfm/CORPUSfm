@@ -62,9 +62,17 @@ def _server_login(tmp_path, monkeypatch):
     monkeypatch.setattr("corpusfm.storage.get_backend", lambda: _be)
     monkeypatch.setenv("CORPUSFM_MODE", "server")
     import corpusfm.app.web.routes.pages  # make the split route module addressable to mock.patch
+    # DATABASE-READY, declared (application packet 1361-01). CORPUSfm begins PAUSED and a paused
+    # process serves one local waiting page for every dynamic navigation, `/login` included — that
+    # is deliberate: sign-in reads the USER table, so it WAITS for recovery rather than probing
+    # FileMaker. This test is about the no-users hint the login page renders on a SERVING box.
+    from corpusfm.server import availability
+    availability.open_on_complete_validation()
+    # The DB-schema half of the deployment gate is RETIRED (application packet 1361-01, round 12):
+    # a proven build mismatch pauses the process instead, so there is no `gate_active` to neutralise
+    # here. The proxy half still gates, and is declared inactive.
     ctx = [patch("corpusfm.config.is_server_mode", return_value=True),
            patch("corpusfm.app.web.routes.pages.is_server_mode", return_value=True),
-           patch("corpusfm.storage.storage_migration.gate_active", return_value=False),
            patch("corpusfm.app.web.deployment.needs_proxy_migration", return_value=False)]
     for c in ctx:
         c.start()

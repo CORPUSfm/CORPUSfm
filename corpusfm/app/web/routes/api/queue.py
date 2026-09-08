@@ -13,6 +13,8 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from corpusfm.app.web.auth import current_user, require_auth
+from corpusfm.app.web.deps import get_ctx
+from corpusfm.runtime import AppContext
 
 router = APIRouter(dependencies=[Depends(require_auth)])
 
@@ -24,7 +26,7 @@ def _actor(request: Request) -> tuple[str, bool]:
 
 
 @router.get("/queue")
-def get_queue(request: Request) -> JSONResponse:
+def get_queue(request: Request, ctx: AppContext = Depends(get_ctx)) -> JSONResponse:
     """The shared, record-centric queue view (packet 1018) + the caller's identity so the UI can show
     cancel/restart only where allowed. `records` is EVERY live QUEUE record as one row carrying its whole
     step pipeline + current step + status — the one QUEUE workspace (packet 086), not sliced by kind.
@@ -39,11 +41,16 @@ def get_queue(request: Request) -> JSONResponse:
     tasks, under a per-process generation token (restart-eviction vs unknown-expired) and per-source
     observation-validity flags (``activity_sources.{durable,ephemeral}.ok`` — a failed read is
     distinguishable from an empty one). ``records`` stays the durable-only Queue-page view UNCHANGED; no
-    consumer of ``activity`` exists yet (Stage 2)."""
+    consumer of ``activity`` exists yet (Stage 2).
+
+    ONE backend, from the composed context (packet 1361-01). This route resolved its own through the
+    global `get_backend()`, which on a published installation builds a fresh FileMakerODataBackend
+    and pays a TLS handshake — on the second-most-frequent recurring path in the product (every 1-5s
+    during activity, every 30s idle, from every open tab), and alongside the retained backend the
+    auth layer had already resolved for the very same request."""
     from corpusfm.server import activity_feed
-    from corpusfm.storage import get_backend
     actor, is_admin = _actor(request)
-    be = get_backend()
+    be = ctx.storage()
     feed = activity_feed.build_feed(be)
     sources = feed["sources"]
     # Derive the Queue view AND the failed badge from the SINGLE durable read `build_feed` already did
@@ -66,27 +73,24 @@ def get_queue(request: Request) -> JSONResponse:
 # freeze the whole app. FastAPI runs a sync route in the threadpool, keeping the loop free.
 
 @router.post("/queue/{job_id}/cancel")
-def cancel_job(job_id: str, request: Request) -> JSONResponse:
+def cancel_job(job_id: str, request: Request, ctx: AppContext = Depends(get_ctx)) -> JSONResponse:
     from corpusfm.server import queue_handlers
-    from corpusfm.storage import get_backend
     actor, is_admin = _actor(request)
-    ok, code, msg = queue_handlers.cancel_record(get_backend(), job_id, actor, is_admin)
+    ok, code, msg = queue_handlers.cancel_record(ctx.storage(), job_id, actor, is_admin)
     return JSONResponse({"ok": ok, "message": msg}, status_code=code)
 
 
 @router.post("/queue/{job_id}/restart")
-def restart_job(job_id: str, request: Request) -> JSONResponse:
+def restart_job(job_id: str, request: Request, ctx: AppContext = Depends(get_ctx)) -> JSONResponse:
     from corpusfm.server import queue_handlers
-    from corpusfm.storage import get_backend
     actor, is_admin = _actor(request)
-    ok, code, msg = queue_handlers.restart_record(get_backend(), job_id, actor, is_admin)
+    ok, code, msg = queue_handlers.restart_record(ctx.storage(), job_id, actor, is_admin)
     return JSONResponse({"ok": ok, "message": msg}, status_code=code)
 
 
 @router.post("/queue/clear-failed")
-def clear_failed(request: Request) -> JSONResponse:
+def clear_failed(request: Request, ctx: AppContext = Depends(get_ctx)) -> JSONResponse:
     from corpusfm.server import queue_handlers
-    from corpusfm.storage import get_backend
     actor, is_admin = _actor(request)
-    n = queue_handlers.clear_failed_records(get_backend(), actor, is_admin)
+    n = queue_handlers.clear_failed_records(ctx.storage(), actor, is_admin)
     return JSONResponse({"ok": True, "cleared": n})

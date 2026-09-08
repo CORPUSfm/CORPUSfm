@@ -25,17 +25,26 @@ Public API (the key is the record UUID):
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 _STORAGE = "STORAGE"
 _EMPTY = {"registration": "", "repo": ""}
 
 
-def _engine():
-    """The storage engine, or None when unavailable (mirrors artifact_store's access)."""
+def _backend():
+    """The storage backend, or None when unavailable."""
     try:
         from corpusfm.storage import get_backend
-        return getattr(get_backend(), "engine", None)
+        return get_backend()
     except Exception:
         return None
+
+
+def _engine():
+    """The storage engine, or None when unavailable (mirrors artifact_store's access)."""
+    return getattr(_backend(), "engine", None)
 
 
 def _coerce(value) -> dict:
@@ -73,7 +82,16 @@ def set_target(record_uuid: str, registration: str, repo: str = "") -> dict:
         jor["git_target"] = {"registration": registration, "repo": repo}
     else:
         jor.pop("git_target", None)
-    eng.update(_STORAGE, record_uuid, jor)
+    committed = eng.update(_STORAGE, record_uuid, jor)
+    # `git_target` rides in the canonical JSONOfRecord, which IS the persistent catalog's
+    # authoritative payload (packet 1361-01, ruling D5) — so this writer owes a publication even
+    # though the field itself is invisible to every catalog projection today.
+    try:
+        from corpusfm.server import catalog
+        catalog.publish_write(_backend(), catalog.TABLE_STORAGE, record_uuid, committed,
+                              operation="set_git_target")
+    except Exception:
+        logger.debug("catalog publication failed for git target %s", record_uuid, exc_info=True)
     return _coerce(jor.get("git_target"))
 
 

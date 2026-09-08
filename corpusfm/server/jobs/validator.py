@@ -10,7 +10,9 @@ import re
 
 from corpusfm.server.jobs.config import JobConfig
 
-_VALID_SOURCE_TYPES = frozenset({"local_file", "fms_local", "fms_save_to_documents",
+# Every job pulls from a hosted FileMaker file. `local_file` is gone (packet 1361-01) — a path on
+# disk is ingestion, not an automation unit with a schedule, a credential and a pull method.
+_VALID_SOURCE_TYPES = frozenset({"fms_local", "fms_save_to_documents",
                                  "fms_save_to_file_path", "fms_push"})
 _VALID_TRIGGER_TYPES = frozenset({"manual", "schedule", "webhook"})
 # Job names may contain spaces + general punctuation (they double as a filesystem filename via the
@@ -49,10 +51,7 @@ def validate_job(cfg: JobConfig) -> list[str]:
                 f"(valid: {', '.join(sorted(_VALID_SOURCE_TYPES))})"
             )
         else:
-            if stype == "local_file":
-                if not cfg.source.path:
-                    errors.append("source.path: required for source type 'local_file'")
-            elif stype.startswith("fms_"):
+            if stype.startswith("fms_"):
                 if not cfg.file:
                     errors.append("file: required for every FileMaker job")
                 # A REMOTE fms_push (packet 1015) resolves its server URL + OData credential from the

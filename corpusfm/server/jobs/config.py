@@ -41,8 +41,8 @@ def _trigger_from_dict(t: dict) -> "JobTrigger":
 
 @dataclass
 class JobSource:
-    type: str  # local_file | fms_local | fms_save_to_documents | fms_save_to_file_path | fms_push
-    path: Optional[str] = None            # local_file: filesystem path to XML
+    type: str  # fms_local | fms_save_to_documents | fms_save_to_file_path | fms_push
+    path: Optional[str] = None            # fms_local (method option): the filesystem path FM's fmsadmin export writes to, which CORPUSfm then reads. NOT a job source of its own — the `local_file` type that made a path INTO a job is retired (packet 1361-01)
     server: Optional[str] = None          # fms_*: FMS server base URL (host derived from the SERVER record for remote jobs)
     databases: Optional[list] = None      # runtime pull target, derived from the tracked file
     script: Optional[str] = None          # fms_*: the FM export script (method) to call — an addon script constant

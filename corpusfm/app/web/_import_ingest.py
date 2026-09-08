@@ -61,7 +61,8 @@ def _label_from_identity(artifact) -> str:
 
 def ingest_import_bytes(raw: bytes, filename: str, *, name: str = "", locale: str = "",
                         backend=None, cfg=None, land_from: str = "",
-                        origin: str = "Import") -> IngestOutcome:
+                        origin: str = "Import",
+                        keep_source_xml: bool = False) -> IngestOutcome:
     """Route `raw` bytes by `filename` extension → parse → store → tags. Returns an IngestOutcome.
 
     ``land_from`` (the ingest worker's path): the QUEUE "Artifact Ingestion" row id these bytes
@@ -76,23 +77,21 @@ def ingest_import_bytes(raw: bytes, filename: str, *, name: str = "", locale: st
     channel. A ``.artifact`` reabsorb always stamps ``"Reabsorb"`` internally and ignores this. On the
     land path a job run passes ``"Import"`` so ``land_artifact`` promotes it to ``"Job"`` via the
     queue row's ``UUIDJob`` — the promotion only fires while ``origin == "Import"``, so a non-Import
-    channel (WebUI/MCP) flows straight through unchanged."""
-    out = _ingest_import_bytes(raw, filename, name=name, locale=locale, backend=backend, cfg=cfg,
-                               land_from=land_from, origin=origin)
-    if out.ok:
-        # A new catalog row exists — bust the catalog tag/lineage snapshot (audit #2) so the
-        # just-imported artifact shows on the next list read, not after the TTL.
-        try:
-            from corpusfm.server.tags_store import invalidate_record_views
-            invalidate_record_views()
-        except Exception:
-            pass
-    return out
+    channel (WebUI/MCP) flows straight through unchanged.
+
+    ``keep_source_xml`` is the per-intake OPT-IN that unions with the configured default (the CLI's
+    ``--keep-source-xml`` reaches the worker through the queue payload; nothing else sets it)."""
+    # No catalog bust here (packet 1361-01): the store / land chokepoints publish the record they
+    # committed, so the just-imported artifact is in the catalog before this returns.
+    return _ingest_import_bytes(raw, filename, name=name, locale=locale, backend=backend, cfg=cfg,
+                                land_from=land_from, origin=origin,
+                                keep_source_xml=keep_source_xml)
 
 
 def _ingest_import_bytes(raw: bytes, filename: str, *, name: str = "", locale: str = "",
                          backend=None, cfg=None, land_from: str = "",
-                         origin: str = "Import") -> IngestOutcome:
+                         origin: str = "Import",
+                         keep_source_xml: bool = False) -> IngestOutcome:
     if backend is None:
         from corpusfm.storage import get_backend
         backend = get_backend()
@@ -152,7 +151,8 @@ def _ingest_import_bytes(raw: bytes, filename: str, *, name: str = "", locale: s
             except OSError:
                 pass
         return _pipeline(addon_package.xml_bytes, primary_name_from_filename(fn), name,
-                         addon_package, backend, cfg, land_from=land_from, origin=origin)
+                         addon_package, backend, cfg, keep_source_xml=keep_source_xml,
+                         land_from=land_from, origin=origin)
 
     from corpusfm.ingestion.reabsorb import is_artifact_envelope
     if is_artifact_envelope(fn, raw):
@@ -172,11 +172,15 @@ def _ingest_import_bytes(raw: bytes, filename: str, *, name: str = "", locale: s
 
 
 def _pipeline(xml_bytes: bytes, label: str, name: str, addon_package, backend, cfg,
+              keep_source_xml: bool = False,
               land_from: str = "", origin: str = "Import") -> IngestOutcome:
     """The common SaveAsXML / addon path: ingest → store → discovery-log.
     With ``land_from`` set, the artifact is LANDED into a fresh STORAGE record from that QUEUE
     row (moving the staged source in) instead of a plain store (store/land errors still propagate
     as transient — only the parse stage converts to a hard-fail outcome).
+
+    ``keep_source_xml`` is the per-intake OPT-IN, unioned with the configured default — the CLI's
+    ``--keep-source-xml`` reaches here through the queue payload.
 
     ``origin`` (packet 1169) is stamped on the landed record. On the land path a job run passes
     ``"Import"`` and ``land_artifact`` promotes it to ``"Job"`` from the queue row's ``UUIDJob``.
@@ -199,11 +203,12 @@ def _pipeline(xml_bytes: bytes, label: str, name: str, addon_package, backend, c
         from corpusfm.storage.artifact_store import land_artifact
         meta = land_artifact(backend, land_from, artifact, xml_bytes=xml_bytes, label=label,
                              origin=origin, addon_package=addon_package,
-                             keep_source_xml=cfg.keep_source_xml)
+                             keep_source_xml=(keep_source_xml or cfg.keep_source_xml))
     else:
         meta = backend.store_artifact(
             artifact, xml_bytes=xml_bytes, label=label, origin=origin,
-            addon_package=addon_package, keep_source_xml=cfg.keep_source_xml,
+            addon_package=addon_package,
+            keep_source_xml=(keep_source_xml or cfg.keep_source_xml),
         )
     if hasattr(backend, "archive_dir"):
         try:

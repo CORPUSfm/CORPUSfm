@@ -13,18 +13,27 @@ Reap-at-zero (hard): a tag with no remaining assignments is deleted — no linge
 
 Tags are **strictly per-record** (per artifact-record, addressed by ``rel_path`` =
 ``file_name/timestamp``). Records NEVER inherit tags: a version, a SaveAsXML/Addon companion,
-or a FileMaker clone sharing a ``root_uuid`` carries only its OWN assignments. ``record_views`` /
-``set_record_tags`` are the per-record surface the app addresses; there is no root_uuid union.
+or a FileMaker clone sharing a ``root_uuid`` carries only its OWN assignments.
+``set_record_tags`` is the per-record surface the app addresses; there is no root_uuid union.
 
-Every read/write goes through ``backend.engine`` (Phase 4 tags fold): keyed/indexed reads where a
-slot exists (UUIDStorage / UUIDTag / the STORAGE rel_path pair), ``list_all`` for the small TAG
-registry and the view-building folds. Both backends qualify — FM OData in production, the SQLite
-mirror on LocalBackend (dev/test) — gated only by the storage migration not being pending.
+**This module is the WRITE path (packet 1361-01).** Every catalog READ of tags — names, empty tags,
+membership — comes from ``corpusfm.server.catalog``'s ONE persistent model, which retains
+TAG and STORAGELINK as first-class raw records alongside visible STORAGE. What remains here are the
+mutations and the authoritative direct lookups a mutation needs: a tag registry read must never be
+up to 15 seconds stale, or a rename would fork a tag. Link INTEGRITY is neither read-time nor here —
+it is ``server.tag_integrity``, a startup pass that deletes only what it can prove absent.
+
+Writes go through ``backend.engine``: keyed/indexed reads where a slot exists (UUIDStorage /
+UUIDTag / the STORAGE rel_path pair) and ``list_all`` for the small TAG registry. Both backends
+qualify — FM OData in production, the SQLite mirror on LocalBackend (dev/test) — gated only by the
+storage migration not being pending.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import threading
 import uuid as _uuid
 
 logger = logging.getLogger(__name__)
@@ -58,21 +67,141 @@ def _clean(names) -> list[str]:
     return out
 
 
-def _artifact_records(backend) -> list[dict]:
-    """Every VISIBLE STORAGE record as the canonical lineage/identity dict (one engine
-    read). The tag layer's view of the catalog — visibility is Type-driven (packet 085):
-    a mid-landing/queue row is outside VISIBLE_TYPES and never taggable.
+# ── catalog publication (packet 1361-01) ─────────────────────────────────────
+# TAG and STORAGELINK rows are FIRST-CLASS records in the persistent catalog, so every tag write
+# publishes the record the substrate confirmed — not a recomputed tag map.
+#
+# A tag operation is almost never one row: setting a record's tags creates links, deletes links and
+# may reap tag rows. Those are collected and published as ONE atomic in-memory batch, and only
+# after the whole operation succeeded. If ANY of the operation's confirmed writes came back without
+# a publishable record, NONE of the batch is published (developer ruling) — a half-published
+# multi-record operation is a picture nobody committed. The durable writes stand, and the ordinary
+# reconciliation age brings memory back into line.
 
-    The visibility fence runs on the SERVER (``Type`` is an indexed slot). It used to read the whole
-    of STORAGE and discard the non-visible rows in Python, which meant every queue/mid-landing row in
-    the table crossed the wire to be thrown away (packet 1210). The Python check is KEPT as the
-    authority on what is visible: the slot comparison is against a CF-lowercased index, so it is the
-    transport narrowing, not the semantic definition, and the two must not be allowed to disagree
-    about a Type that differs only by case."""
-    from corpusfm.artifact.capabilities import VISIBLE_TYPES
-    from corpusfm.storage.artifact_record import record_from_jor
-    rows = backend.engine.list_where("STORAGE", isin={"Type": sorted(VISIBLE_TYPES)})
-    return [record_from_jor(r.key, r.jor) for r in rows if r.jor.get("Type") in VISIBLE_TYPES]
+_batches = threading.local()
+
+
+class _Batch:
+    """One operation's confirmed tag writes, awaiting atomic publication."""
+
+    __slots__ = ("backend", "upserts", "removals", "unpublishable")
+
+    def __init__(self, backend) -> None:
+        self.backend = backend
+        self.upserts: list = []
+        self.removals: list = []
+        self.unpublishable = False
+
+
+@contextlib.contextmanager
+def _publishing(backend):
+    """Collect this operation's confirmed writes; publish one atomic batch on success.
+
+    Re-entrant: ``commit_tag`` runs ``rename_tag`` then ``reconcile_tag_members``, and the developer
+    ruling makes that ONE application operation — so the inner calls join the outer batch instead of
+    publishing an intermediate state nobody asked for."""
+    outer = getattr(_batches, "current", None)
+    if outer is not None:
+        yield outer
+        return
+    batch = _Batch(backend)
+    _batches.current = batch
+    try:
+        yield batch
+    except BaseException:
+        # Partial failure. Some writes may have landed and must never be concealed, but this
+        # process does not know which — so publish nothing and let reconciliation recover.
+        _batches.current = None
+        raise
+    _batches.current = None
+    _publish(batch)
+
+
+@contextlib.contextmanager
+def publishing(backend):
+    """PUBLIC: make a caller's whole multi-record operation ONE catalog publication.
+
+    The bulk-tag endpoint adjusts N records in a loop, and each call is itself a multi-row operation.
+    Without an outer scope that is N separate applications of one logical change, and a reader could
+    observe half of it. Wrapping the loop makes it ONE short atomic application to the persistent
+    model, after the whole operation succeeded (packet 1361-01)."""
+    with _publishing(backend) as batch:
+        yield batch
+
+
+def mark_unpublishable() -> None:
+    """Tell the enclosing operation it may not publish: something in it did not fully succeed, and
+    memory must not hold half of a multi-record operation. Reconciliation recovers. No-op outside
+    an operation scope."""
+    batch = _current_batch()
+    if batch is not None:
+        batch.unpublishable = True
+
+
+def _current_batch():
+    return getattr(_batches, "current", None)
+
+
+def _publish(batch: "_Batch") -> None:
+    """Publish one operation's collected upserts and removals atomically. Never raises.
+
+    An operation carrying even ONE unpublishable response publishes nothing at all: memory may not
+    hold half of a multi-record operation, and the next validation pass is the recovery."""
+    if batch.unpublishable:
+        return
+    try:
+        from corpusfm.server import catalog
+        if batch.upserts or batch.removals:
+            catalog.publish_batch(batch.backend, batch.upserts, batch.removals)
+    except Exception:
+        logger.debug("catalog tag batch publication failed", exc_info=True)
+
+
+def _w_create(backend, table: str, key: str, jor: dict) -> str:
+    """``engine.create`` + collect what the substrate returned. Returns the record key."""
+    written = backend.engine.create(table, key, jor)
+    _collect(backend, table, key, written, "create")
+    return key
+
+
+def _w_update(backend, table: str, key: str, jor: dict) -> None:
+    written = backend.engine.update(table, key, jor)
+    _collect(backend, table, key, written, "update")
+
+
+def _w_delete(backend, table: str, key: str) -> None:
+    backend.engine.delete(table, key)
+    batch = _current_batch()
+    if batch is not None:
+        batch.removals.append((table, key))
+    else:
+        try:
+            from corpusfm.server import catalog
+            catalog.publish_deleted(backend, table, key)
+        except Exception:
+            logger.debug("catalog removal publication failed for %s/%s", table, key, exc_info=True)
+
+
+def _collect(backend, table: str, key: str, written, operation: str) -> None:
+    """Record one CONFIRMED write for the batch, or note that it produced nothing publishable."""
+    batch = _current_batch()
+    if written is None:
+        try:
+            from corpusfm.server import catalog
+            catalog.note_unpublishable_write(table, key, operation)
+        except Exception:
+            logger.debug("catalog write-failure bookkeeping failed", exc_info=True)
+        if batch is not None:
+            batch.unpublishable = True
+        return
+    if batch is not None:
+        batch.upserts.append((table, written.key, written.raw))
+        return
+    try:
+        from corpusfm.server import catalog
+        catalog.publish(backend, table, written.key, written.raw)
+    except Exception:
+        logger.debug("catalog publication failed for %s/%s", table, key, exc_info=True)
 
 
 def _tag_registry(backend):
@@ -95,139 +224,19 @@ def _tag_registry(backend):
     return name_to_uuid, uuid_to_name
 
 
-def _all_assigns(backend) -> list[dict]:
-    """Every TAG ASSIGNMENT as {UUID, Type, UUIDStorage, UUIDTag} (one engine read) — for the
-    view-building folds that genuinely need every assignment.
-
-    Narrowed to ``Type == "User Tag"`` on the server (packet 1210). STORAGELINK is deliberately the
-    GENERIC current-state relationship surface and tags are merely its only vocabulary *today*, so
-    an unfiltered read is a read that grows with every future link type for no benefit here.
-    Behavior is unchanged: ``_fold_assignments`` already dropped any row whose ``UUIDTag`` was absent
-    from the tag registry, so a non-tag link was never counted — it was only ever transferred."""
-    return [{"UUID": r.key, **r.jor}
-            for r in backend.engine.list_where("STORAGELINK", eq={"Type": "User Tag"})]
-
-
-def _partition(backend):
-    """The TAG registry (``_tag_registry``) + ALL STORAGELINK rows — for the view-building
-    reads. Single-artifact reconciles use ``_assigns_for_artifact`` instead (audit #5)."""
-    name_to_uuid, uuid_to_name = _tag_registry(backend)
-    return name_to_uuid, uuid_to_name, _all_assigns(backend)
-
-
 def _assigns_for_artifact(backend, artifact_uuid) -> list[dict]:
     """ONE artifact's STORAGELINK rows via the indexed UUIDStorage slot (one engine read)."""
     return [{"UUID": r.key, **r.jor}
             for r in backend.engine.get_many("STORAGELINK", "UUIDStorage", [artifact_uuid])]
 
 
-def _fold_assignments(assigns, uuid_to_name):
-    """Fold raw assignments into {artifact_uuid: sorted tag names} — strictly PER RECORD (no
-    root_uuid union; a record carries only its own assignments). Keyed by the record UUID (the
-    canonical address, packet 085 U3f — STORAGELINK.UUIDStorage IS the record UUID). All user tags."""
-    art_names: dict[str, set] = {}
-    for a in assigns:
-        nm = uuid_to_name.get(a.get("UUIDTag"), "")
-        if not nm:
-            continue
-        au = a.get("UUIDStorage")
-        if au:
-            art_names.setdefault(au, set()).add(nm)
-    return {au: sorted(names) for au, names in art_names.items() if names}
-
-
-def record_views(backend):
-    """The per-record USER-tag map keyed by the record UUID + the STORAGE lineage records, from a
-    SINGLE read of STORAGE + TAG + STORAGELINK.
-
-    The list route's one-stop tag fetch. **Strictly per-record** — each UUID maps to only
-    that record's own assignments (no root_uuid union → no version/companion/clone bleed).
-    Returns (user_view{uuid: [tags]}, artifact_records). System tags are NOT here — they are
-    computed at read time from the lineage records (packet 085 U3e).
-    """
-    recs = _artifact_records(backend)
-    _, uuid_to_name, assigns = _partition(backend)
-    user_view = _fold_assignments(assigns, uuid_to_name)
-    return user_view, recs
-
-
-def catalog_view(backend):
-    """``(artifact_records, user_view, tag_fold_failed)`` — `record_views`' two values plus one
-    honesty bit, reading only the tables that can still change the answer (packet 1370).
-
-    `record_views` reads all three tables unconditionally. That is right for the catalog page, which
-    always has records and always renders tags, and wrong for a caller that may have neither: an
-    EMPTY catalog paid a TAG read and a STORAGELINK read to be told there was nothing to tag, and a
-    store whose v2 tag tables are not live paid them to be told the same. Both were reads the
-    predecessor `iter_artifact_metas()` + `load_tags()` pair never performed.
-
-    So visible STORAGE is read once, always — every caller needs it, and the lineage/IsLatest view
-    is derived from those records alone. TAG and STORAGELINK are read only when there is at least
-    one record AND `tables_available()` permits them. ``user_view`` is `{}` in the skipped cases,
-    which is what the full fold would have produced anyway: with no records nothing can be looked
-    up, and without the v2 tables `load_tags()` already answered empty.
-
-    A STORAGE failure PROPAGATES — without records there is no answer to give, and the caller must
-    decide how to degrade. **A TAG/STORAGELINK failure does not**: the records are already in hand,
-    and throwing them away only makes the caller enumerate STORAGE a second time to rebuild what
-    this call just read. It returns them with an empty ``user_view`` and ``tag_fold_failed=True``.
-
-    That third value exists because the two "no tags" cases are NOT the same to a caller. Tables
-    unavailable is a definite, complete answer about a legacy store. A fold that RAISED is an
-    incomplete read, and the incumbent behavior a caller may need to preserve — for instance a
-    lineage filter that must degrade to a no-op rather than act on a partial view — keys on exactly
-    that difference. Skipped and failed look identical in ``user_view``; only this bit separates
-    them.
-    """
-    recs = _artifact_records(backend)
-    if not recs or not tables_available(backend):
-        return recs, {}, False
-    try:
-        _, uuid_to_name, assigns = _partition(backend)
-    except Exception:
-        import logging
-        logging.getLogger(__name__).warning(
-            "tag fold unavailable; serving %d catalog record(s) untagged", len(recs), exc_info=True)
-        return recs, {}, True
-    return recs, _fold_assignments(assigns, uuid_to_name), False
-
-
-# ── record_views snapshot (audit #2 SNAPSHOT) ─────────────────────────────────
-# The catalog list route (incl. every 300ms search keystroke) reused to do the FULL
-# STORAGE + TAG + STORAGELINK read per request. A short TTL snapshot serves those reads;
-# every tag/artifact mutation chokepoint busts it (set_artifact_tags / rename_tag /
-# delete_tag here; the delete-artifact + import chokepoints call invalidate_record_views).
-# Keyed by store identity so parallel test backends never share a snapshot.
-
-_RV_TTL_S = 60.0
-_rv_cache: dict = {"key": None, "at": 0.0, "val": None}
-
-
-def _rv_key(backend) -> tuple:
-    return (type(backend).__name__,
-            str(getattr(backend, "archive_dir", "") or ""),
-            str(getattr(backend, "host", "") or ""),
-            str(getattr(backend, "database", "") or ""))
-
-
-def invalidate_record_views() -> None:
-    """Bust the catalog tag/lineage snapshot — call after any mutation that changes what the
-    catalog shows (tag writes bust automatically; artifact add/delete chokepoints call this)."""
-    _rv_cache["val"] = None
-    _rv_cache["at"] = 0.0
-
-
-def record_views_cached(backend):
-    """``record_views`` behind the TTL snapshot. Only SUCCESSFUL reads are cached — a raising
-    backend propagates (the route's three-state 'storage unreachable' stays honest)."""
-    import time
-    now = time.monotonic()
-    if _rv_cache["val"] is not None and _rv_cache["key"] == _rv_key(backend) \
-            and (now - _rv_cache["at"]) < _RV_TTL_S:
-        return _rv_cache["val"]
-    val = record_views(backend)
-    _rv_cache.update(key=_rv_key(backend), at=now, val=val)
-    return val
+# The record_view SNAPSHOT and the `catalog_rows` fold are BOTH retired (packet 1361-01).
+# `record_views`, `record_views_cached`, `_rv_cache`, `_rv_key`, `invalidate_record_views`,
+# `load_record_view`, `catalog_view`, `catalog_rows` and `visible_storage_rows` are gone. There is
+# no per-request three-table fold any more: `corpusfm.server.catalog` holds every STORAGE, TAG and
+# STORAGELINK record in ONE persistent model and every consumer reads that. The functions below are
+# the WRITE path plus the authoritative direct lookups a write needs (a tag registry read must never
+# be a validation cycle behind, or a rename would fork a tag).
 
 
 # ── tag registry (TAG) ────────────────────────────────────────────────────────
@@ -250,7 +259,7 @@ def get_or_create_tag(backend, name, *, name_to_uuid=None) -> str:
     if tid:
         return tid
     tid = _gen()
-    backend.engine.create("TAG", tid, _tag_jor(name))
+    _w_create(backend, "TAG", tid, _tag_jor(name))
     name_to_uuid[name] = tid
     return tid
 
@@ -264,7 +273,7 @@ def _reap(backend, tag_uuids) -> None:
     live = {r.jor.get("UUIDTag") for r in backend.engine.get_many("STORAGELINK", "UUIDTag", ids)}
     for tid in ids:
         if tid not in live:
-            backend.engine.delete("TAG", tid)
+            _w_delete(backend, "TAG", tid)
 
 
 # ── per-artifact assignments (STORAGELINK) ─────────────────────────────────────
@@ -293,29 +302,21 @@ def set_artifact_tags(backend, artifact_uuid, names) -> None:
         nm = uuid_to_name.get(a.get("UUIDTag"), "")
         if nm:
             have[nm] = a
-    for nm in desired:
-        if nm not in have:
-            tid = get_or_create_tag(backend, nm, name_to_uuid=name_to_uuid)
-            backend.engine.create(
-                "STORAGELINK", _gen(),
-                {"Type": "User Tag", "UUIDStorage": artifact_uuid, "UUIDTag": tid})
-    orphaned: set[str] = set()
-    for nm, a in have.items():
-        if nm not in desired:
-            backend.engine.delete("STORAGELINK", a["UUID"])
-            orphaned.add(a.get("UUIDTag"))
-    _reap(backend, orphaned)
-    invalidate_record_views()
+    with _publishing(backend):
+        for nm in desired:
+            if nm not in have:
+                tid = get_or_create_tag(backend, nm, name_to_uuid=name_to_uuid)
+                _w_create(backend, "STORAGELINK", _gen(),
+                          {"Type": "User Tag", "UUIDStorage": artifact_uuid, "UUIDTag": tid})
+        orphaned: set[str] = set()
+        for nm, a in have.items():
+            if nm not in desired:
+                _w_delete(backend, "STORAGELINK", a["UUID"])
+                orphaned.add(a.get("UUIDTag"))
+        _reap(backend, orphaned)
 
 
 # ── per-record set (the app's tag-edit entry point) ──────────────────────────
-
-def load_record_view(backend) -> dict[str, list[str]]:
-    """{artifact_uuid: [name, …]} — USER tags PER RECORD (no root union), keyed by the record
-    UUID (the canonical address, packet 085 U3f)."""
-    user_view, _ = record_views(backend)
-    return user_view
-
 
 def set_record_tags(backend, artifact_uuid, names) -> None:
     """Set the USER tag set for the ONE artifact record identified by its UUID (packet 085 U3f).
@@ -372,45 +373,40 @@ def adjust_artifact_tags(backend, artifact_uuid, add, remove) -> dict:
         if nm:
             have.setdefault(nm, []).append(a)
     added = removed = 0
-    for nm in add:
-        if nm not in have:
-            tid = get_or_create_tag(backend, nm, name_to_uuid=name_to_uuid)
-            row_uuid = _gen()
-            backend.engine.create(
-                "STORAGELINK", row_uuid,
-                {"Type": "User Tag", "UUIDStorage": artifact_uuid, "UUIDTag": tid})
-            have[nm] = [{"UUID": row_uuid, "UUIDTag": tid}]
-            added += 1
-    for nm in remove:
-        for a in have.pop(nm, []):
-            backend.engine.delete("STORAGELINK", a["UUID"])
-            removed += 1
-    if added or removed:
-        invalidate_record_views()
+    with _publishing(backend):
+        for nm in add:
+            if nm not in have:
+                tid = get_or_create_tag(backend, nm, name_to_uuid=name_to_uuid)
+                row_uuid = _gen()
+                _w_create(backend, "STORAGELINK", row_uuid,
+                          {"Type": "User Tag", "UUIDStorage": artifact_uuid, "UUIDTag": tid})
+                have[nm] = [{"UUID": row_uuid, "UUIDTag": tid}]
+                added += 1
+        for nm in remove:
+            for a in have.pop(nm, []):
+                _w_delete(backend, "STORAGELINK", a["UUID"])
+                removed += 1
     return {"added": added, "removed": removed, "tags": sorted(have)}
 
 
-def list_user_tag_names(backend) -> list[str]:
-    """Every USER tag name, sorted — straight from the TAG registry (one small read), so
-    named-but-empty tags (persisted by commit_tag) are included."""
-    name_to_uuid, _ = _tag_registry(backend)
-    return sorted(name_to_uuid)
+def tag_page_view(backend):
+    """Everything the Tags management page shows, from the ONE persistent catalog.
 
+    Returns ``(view, groups, records)``. ``groups`` is ``[{name, members}]`` INCLUDING
+    named-but-empty tags (a TAG row with no live link — the state ``commit_tag`` deliberately
+    persists), and ``records`` are the visible STORAGE projections the page resolves member display
+    names from.
 
-def grouped_user_tags(backend):
-    """USER tags grouped by name with per-record members (record UUIDs, packet 085 U3f),
-    INCLUDING named-but-empty tags (a registry row with zero assignments — the state commit_tag
-    deliberately persists). Returns ([{name, members}], artifact_records) from ONE read of
-    STORAGE+TAG+STORAGELINK — the Tags-page fetch (the records let the route resolve member
-    display names from the UUID with no 2nd scan)."""
-    recs = _artifact_records(backend)
-    name_to_uuid, uuid_to_name, assigns = _partition(backend)
-    user_view = _fold_assignments(assigns, uuid_to_name)
-    groups: dict[str, list[str]] = {n: [] for n in name_to_uuid}
-    for au, names in user_view.items():
-        for n in names:
-            groups.setdefault(n, []).append(au)
-    return ([{"name": n, "members": sorted(ms)} for n, ms in sorted(groups.items())], recs)
+    Nothing here reads FileMaker, and nothing here reports or repairs a link: link integrity is the
+    tag subsystem's own startup pass (``server.tag_integrity``), never a read-time inference behind
+    a destructive button (packet 1361-01). When the catalog's database read has FAILED the caller
+    reports that instead of rendering an empty tag vocabulary."""
+    from corpusfm.server import catalog
+    view = catalog.view(backend)
+    if view.failed:
+        return view, [], []
+    groups = [{"name": n, "members": ms} for n, ms in sorted(view.tag_groups.items())]
+    return view, groups, view.records
 
 
 def rename_tag(backend, old, new) -> int:
@@ -429,23 +425,22 @@ def rename_tag(backend, old, new) -> int:
                for r in backend.engine.get_many("STORAGELINK", "UUIDTag", [old_uuid])]
     affected = len(assigns)
     new_uuid = name_to_uuid.get(new)
-    if new_uuid:
-        have_new = {r.jor.get("UUIDStorage")
-                    for r in backend.engine.get_many("STORAGELINK", "UUIDTag", [new_uuid])}
-        for a in assigns:
-            backend.engine.delete("STORAGELINK", a["UUID"])
-            art = a.get("UUIDStorage")
-            if art not in have_new:
-                backend.engine.create(
-                    "STORAGELINK", _gen(),
-                    {"Type": "User Tag", "UUIDStorage": art, "UUIDTag": new_uuid})
-                have_new.add(art)
-        backend.engine.delete("TAG", old_uuid)
-    else:
-        rows = backend.engine.get_by_keys("TAG", [old_uuid])
-        if rows:
-            backend.engine.update("TAG", old_uuid, {**rows[0].jor, "Name": new})
-    invalidate_record_views()
+    with _publishing(backend):
+        if new_uuid:
+            have_new = {r.jor.get("UUIDStorage")
+                        for r in backend.engine.get_many("STORAGELINK", "UUIDTag", [new_uuid])}
+            for a in assigns:
+                _w_delete(backend, "STORAGELINK", a["UUID"])
+                art = a.get("UUIDStorage")
+                if art not in have_new:
+                    _w_create(backend, "STORAGELINK", _gen(),
+                              {"Type": "User Tag", "UUIDStorage": art, "UUIDTag": new_uuid})
+                    have_new.add(art)
+            _w_delete(backend, "TAG", old_uuid)
+        else:
+            rows = backend.engine.get_by_keys("TAG", [old_uuid])
+            if rows:
+                _w_update(backend, "TAG", old_uuid, {**rows[0].jor, "Name": new})
     return affected
 
 
@@ -471,25 +466,24 @@ def reconcile_tag_members(backend, name, member_uuids) -> dict:
                    if r.jor.get("Type") in VISIBLE_TYPES}
 
     name_to_uuid, _ = _tag_registry(backend)
-    tid = name_to_uuid.get(name)
-    if not tid:
-        tid = get_or_create_tag(backend, name, name_to_uuid=name_to_uuid)
-    have: dict[str, dict] = {
-        r.jor.get("UUIDStorage"): {"UUID": r.key, **r.jor}
-        for r in backend.engine.get_many("STORAGELINK", "UUIDTag", [tid])}
-    have_aus = set(have)
-
     added = 0
-    for au in desired_aus - have_aus:
-        backend.engine.create(
-            "STORAGELINK", _gen(),
-            {"Type": "User Tag", "UUIDStorage": au, "UUIDTag": tid})
-        added += 1
     removed = 0
-    for au in have_aus - desired_aus:
-        backend.engine.delete("STORAGELINK", have[au]["UUID"])
-        removed += 1
-    invalidate_record_views()                 # never reaps the tag row itself
+    # ONE application operation, ONE batch: creating the tag row and reconciling its membership are
+    # not two publishable states (developer ruling, 2026-09-01). The reads between them are the
+    # authoritative direct lookups the write needs, not consumers of the catalog.
+    with _publishing(backend):                # never reaps the tag row itself
+        tid = name_to_uuid.get(name) or get_or_create_tag(backend, name, name_to_uuid=name_to_uuid)
+        have: dict[str, dict] = {
+            r.jor.get("UUIDStorage"): {"UUID": r.key, **r.jor}
+            for r in backend.engine.get_many("STORAGELINK", "UUIDTag", [tid])}
+        have_aus = set(have)
+        for au in desired_aus - have_aus:
+            _w_create(backend, "STORAGELINK", _gen(),
+                      {"Type": "User Tag", "UUIDStorage": au, "UUIDTag": tid})
+            added += 1
+        for au in have_aus - desired_aus:
+            _w_delete(backend, "STORAGELINK", have[au]["UUID"])
+            removed += 1
     return {"added": added, "removed": removed, "count": len(desired_aus)}
 
 
@@ -501,9 +495,12 @@ def commit_tag(backend, original_name, name, member_uuids) -> dict:
     Name is normalized lowercase; an empty membership persists the tag (no reap)."""
     original_name = (original_name or "").strip().lower()
     name = (name or "").strip().lower()
-    if original_name and original_name != name:
-        rename_tag(backend, original_name, name)
-    res = reconcile_tag_members(backend, name, member_uuids)
+    # ONE application operation, ONE atomic publication (developer ruling, 2026-09-01): a rename
+    # followed by a membership reconcile must not publish the intermediate state in between.
+    with _publishing(backend):
+        if original_name and original_name != name:
+            rename_tag(backend, original_name, name)
+        res = reconcile_tag_members(backend, name, member_uuids)
     return {"ok": True, "name": name, "count": res["count"]}
 
 
@@ -548,11 +545,11 @@ def delete_tag(backend, name) -> int:
     if not tid:
         return 0
     affected = 0
-    for r in backend.engine.get_many("STORAGELINK", "UUIDTag", [tid]):
-        backend.engine.delete("STORAGELINK", r.key)
-        affected += 1
-    backend.engine.delete("TAG", tid)
-    invalidate_record_views()
+    with _publishing(backend):
+        for r in backend.engine.get_many("STORAGELINK", "UUIDTag", [tid]):
+            _w_delete(backend, "STORAGELINK", r.key)
+            affected += 1
+        _w_delete(backend, "TAG", tid)
     return affected
 
 

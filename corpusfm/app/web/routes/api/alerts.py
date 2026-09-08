@@ -15,27 +15,27 @@ async def monitor_status() -> JSONResponse:
     try:
         from corpusfm.server.monitor.alerts import check_conditions
         from corpusfm.server.monitor.config import load_monitor_config
-        from corpusfm.server.jobs.store import default_jobs_dir
-        from corpusfm.server.jobs.history import default_history_dir
+
         from corpusfm.storage import get_backend
         from corpusfm.runtime import build_context
 
         backend = get_backend()
         config = load_monitor_config()
-        firing = check_conditions(default_jobs_dir(), default_history_dir(), backend.archive_dir, config)
+        firing = check_conditions(backend.archive_dir, config)
 
         scheduler_status = ""
         if build_context().is_server:   # via the runtime layer (S9)
             try:
                 from corpusfm.server.scheduler import scheduler_is_running, read_scheduler_status
-                jobs_dir = default_jobs_dir()
-                if scheduler_is_running(jobs_dir):
-                    info = read_scheduler_status(jobs_dir)
+                if scheduler_is_running():
+                    info = read_scheduler_status()
                     ts = (info.get("ts", "") or "")[:19].replace("T", " ")
-                    if (info.get("status") or "") == "waiting":
-                        # Alive, and firing nothing. Reporting it as "running" would hide the only
-                        # fact an operator needs here (packet 1372-01).
-                        scheduler_status = f"Scheduler waiting — jobs paused — {ts} UTC"
+                    state = (info.get("status") or "")
+                    if state == "paused":
+                        # Alive, and firing nothing: CORPUSfm cannot read the database, so the
+                        # clock evaluates nothing at all (packet 1361-01). Its own word, not
+                        # "running".
+                        scheduler_status = f"Scheduler paused — storage unreachable — {ts} UTC"
                     else:
                         scheduler_status = f"Scheduler running — {ts} UTC"
                 else:
@@ -92,8 +92,7 @@ async def job_health() -> JSONResponse:
     try:
         from corpusfm.server.monitor.history import get_job_health
         from corpusfm.server.monitor.config import load_monitor_config
-        from corpusfm.server.jobs.store import default_jobs_dir
-        rows = get_job_health(default_jobs_dir(), load_monitor_config())
+        rows = get_job_health(load_monitor_config())
         return JSONResponse({
             "rows": [
                 {
@@ -178,8 +177,12 @@ async def overview() -> JSONResponse:
                 done = False
 
         if not done:
-            all_metas = list(backend.iter_artifact_metas())
-            all_metas.sort(key=lambda m: m.timestamp, reverse=True)
+            # Ordinary artifact discovery: the persistent catalog, not a STORAGE enumeration on an
+            # overview poll (packet 1361-01, ruling 9). Its records already arrive newest-first, and
+            # a catalog that could not be read yields nothing rather than a false empty overview.
+            from corpusfm.server import catalog
+            _view = catalog.view(backend)
+            all_metas = [] if _view.failed else [r["meta"] for r in _view.records]
             out["total_artifacts"] = len(all_metas)
             out["imports"], out["merges"], out["patches"] = [], [], []
             for meta in all_metas:

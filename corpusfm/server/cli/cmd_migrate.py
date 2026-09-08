@@ -2,10 +2,12 @@
 
   migrate-storage : RETIRED no-op. Packet 085 is fresh-install-only — there is no
                     in-place storage-schema migration. A DB behind the shipped schema
-                    is handled by the in-app build-mismatch gate ("fresh install
-                    required"), not by carrying data across a schema change. Kept as a
+                    is proven by the startup build/schema probe, which PAUSES the box at
+                    "fresh install required" rather than carrying data across a schema
+                    change (packet 1361-01, round 12). Kept as a
                     green no-op so the installer's upgrade step stays stable.
-  backfill-latest : reconcile STORAGE.IsLatest across every lineage.
+  backfill-latest : convert + repair the "Latest Artifact" promotion link of every job
+                    lineage (packet 1361-01 — the per-record latest flag is retired).
   backfill-storage-projections : assert the FM-side index-projection contract.
   migrate job-identity : the JOB identity conversion (packet 1372-01) as a DIAGNOSIS
                     and RECOVERY surface. Moves every job to its own UUID so the JOB
@@ -16,7 +18,7 @@
                     transition the web service performs at startup; this command never
                     stamps it.
 
-See corpusfm/storage/storage_migration.py (the surviving build-mismatch gate) and
+See corpusfm/storage/storage_migration.py (the surviving build-mismatch DETECTION) and
 corpusfm/storage/job_identity_conversion.py (the conversion planner/executor).
 """
 
@@ -30,16 +32,21 @@ def add_parser(subparsers) -> None:
         "migrate-storage",
         help="Retired no-op (085 is fresh-install-only; no in-place storage migration)",
         description="Retired. Packet 085 is fresh-install-only — there is no in-place "
-                    "storage-schema migration; a DB behind the shipped schema is handled by "
-                    "the in-app build-mismatch gate. Kept as a green no-op for the installer.",
+                    "storage-schema migration; a DB behind the shipped schema pauses the box "
+                    "at startup. Kept as a green no-op for the installer.",
     )
     ps.set_defaults(func=run_storage)
 
     pl = subparsers.add_parser(
         "backfill-latest",
-        help="Reconcile the STORAGE.IsLatest flag across every lineage (job+file)",
-        description="Set IsLatest on the newest artifact per (job, file) lineage; manual "
-                    "uploads are singletons (always latest). Idempotent.",
+        help="Convert + repair every job lineage's 'Latest Artifact' promotion link",
+        description="Bring every job lineage to exactly one resolvable promotion link: convert a "
+                    "lineage that has none (preferring the unique row carrying the retired legacy "
+                    "latest flag, else the "
+                    "newest timestamp), remove duplicates, repoint an unresolvable target at the "
+                    "newest survivor, and remove a promotion with neither a live job nor any live "
+                    "artifact. Job-less uploads are singletons (always latest). Idempotent; the "
+                    "web service also runs it at startup.",
     )
     pl.set_defaults(func=run_backfill_latest)
 
@@ -73,9 +80,6 @@ def add_parser(subparsers) -> None:
                     "the web service does that at startup, once this conversion and the incumbent "
                     "projection refresh have both succeeded.",
     )
-    pj.add_argument("--jobs-dir", default=None,
-                    help="Convert a local development jobs directory instead of the storage "
-                         "backend (developer fixtures).")
     pj.add_argument("--check", action="store_true",
                     help="Report the stored projection version and exit; write nothing. Exit 0 "
                          "only when the corpus is at the version this build requires.")
@@ -115,37 +119,9 @@ def run_job_identity(args) -> int:
     from corpusfm.storage import fm_registry as reg
     from corpusfm.storage import projections
 
-    jobs_dir = getattr(args, "jobs_dir", None)
-
-    # -- developer fixture directory ------------------------------------------------
-    if jobs_dir:
-        if getattr(args, "check", False):
-            _emit({"result": conv.UNAVAILABLE, "scope": "jobs_dir",
-                   "detail": "a local jobs directory carries no projection version; there is "
-                             "nothing to check. --check applies to the storage backend."})
-            return _EXIT["unavailable"]
-        try:
-            if getattr(args, "plan", False):
-                # THE SAME PLANNER THE RUN USES. An earlier version reported `planned` and exit 0
-                # without opening the directory at all, and its replacement had a simplified
-                # classification of its own that still disagreed with the run — reporting `planned`
-                # for documents `convert_jobs_dir` then refused. One planner, one answer.
-                classified = conv.plan_jobs_dir(jobs_dir)
-                _emit({"result": "planned", "scope": "jobs_dir", "jobs_dir": str(jobs_dir),
-                       "exists": classified["exists"], "jobs": len(classified["paths"]),
-                       "actions": {conv.ADOPT: classified["adopt"],
-                                   conv.CURRENT: classified["current"]}})
-                return _EXIT["ok"]
-            out = conv.convert_jobs_dir(jobs_dir)
-        except conv.ConversionRefused as exc:
-            _emit({"result": conv.REFUSED, "scope": "jobs_dir", "detail": str(exc)})
-            return _EXIT["refused"]
-        except conv.ConversionIncomplete as exc:
-            _emit({"result": conv.INCOMPLETE, "scope": "jobs_dir", "detail": str(exc)})
-            return _EXIT["incomplete"]
-        out["scope"] = "jobs_dir"
-        _emit(out)
-        return _EXIT["ok"]
+    # The `--jobs-dir` developer-fixture branch is GONE (packet 1361-01). It converted a directory
+    # of `<job_uuid>.yaml` files, and that store no longer exists — the JOB table is the only one, on
+    # every install and in development alike. Converting files nothing can read is not a migration.
 
     # -- the storage backend --------------------------------------------------------
     from corpusfm.storage import get_backend
@@ -261,17 +237,22 @@ def run_backfill_latest(args) -> int:
     from corpusfm.server import latest as _latest
     backend = get_backend()
     if not _latest.latest_available(backend):
-        print("error: the IsLatest schema isn't live (FM backend + new schema required).")
+        print("error: storage isn't live (a storage engine + the shipped schema are required).")
         return 1
-    res = _latest.backfill_latest(backend)
-    print(f"reconciled IsLatest: {res['updated']} flag(s) flipped across {res['artifacts']} artifact(s)")
+    res = _latest.convert_and_repair(backend)
+    if not res.get("ok"):
+        print(f"error: promotion repair declined to act ({res.get('reason') or 'unknown'}); "
+              "nothing was changed.")
+        return 1
+    print(f"promotions over {res['lineages']} lineage(s): {res['converted']} converted, "
+          f"{res['repointed']} repointed, {res['deduped']} de-duplicated, {res['removed']} removed")
     return 0
 
 
 def run_storage(args) -> int:
-    # Retired (packet 085, fresh-install-only): no in-place migration exists. The in-app
-    # build-mismatch gate handles a DB behind the shipped schema. Green no-op so the
-    # installer's upgrade step stays stable without shelling to a removed engine.
+    # Retired (packet 085, fresh-install-only): no in-place migration exists. A DB behind the
+    # shipped schema is proven by the startup build/schema probe, which pauses the box. Green
+    # no-op so the installer's upgrade step stays stable without shelling to a removed engine.
     print("no-op: in-place storage migration is retired (085 is fresh-install-only); "
-          "a DB behind the shipped schema is handled by the in-app build-mismatch gate.")
+          "a DB behind the shipped schema pauses the box at startup.")
     return 0

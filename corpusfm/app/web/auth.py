@@ -156,20 +156,154 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 # ── Auth dependency ────────────────────────────────────────────────────────────
 
-def current_user(request: Request):
-    """Resolve the logged-in user from the session, or None (also None in standalone mode)."""
-    if not _enforces(request):
+class _UserResolution:
+    """What this request learned about its session user. Read once, shared by every consumer.
+
+    THREE outcomes, and the third is the one that must not collapse into the second:
+
+    * ``user`` is a User        — an active, authenticated user;
+    * ``user is None``          — no session, or the user is absent, deleted or inactive;
+    * ``unavailable is True``   — the USER authority could not be READ (a storage outage).
+
+    Absent and unavailable produce different HTTP outcomes — 401/redirect versus the degraded 503
+    the SPA pauses on (packet 1067) — so they are carried separately rather than both arriving as
+    "no user".
+
+    ``uid`` binds the result to the session it was read for. A request that changes its own
+    ``user_id`` mid-flight (login, logout, an impersonation switch) must not be served a decision
+    made about the previous one, so the binding is checked on every read, not just the first.
+    """
+
+    __slots__ = ("uid", "user", "unavailable")
+
+    def __init__(self, uid, user, unavailable):
+        self.uid = uid
+        self.user = user
+        self.unavailable = unavailable
+
+
+_NO_SESSION = _UserResolution(uid=None, user=None, unavailable=False)
+
+
+class _AuthBackendUnavailable(RuntimeError):
+    """No usable storage backend could be obtained for this request.
+
+    Distinct from "the USER table could not be read": nothing was attempted. It is carried as
+    UNAVAILABLE all the same, because the authority is equally unreadable either way and the caller's
+    choice — degrade, or report an expired session — is the same one.
+    """
+
+
+def _request_backend(request: Request):
+    """The backend this request already holds, via the composed context (packet 1361-01).
+
+    `users._engine(None)` falls back to a global `get_backend()`, which on a published installation
+    builds a NEW FileMakerODataBackend and therefore pays a fresh TLS handshake — measured at ~110ms
+    on Windows against ~6ms on a session that exists. Auth ran that per lookup and several lookups
+    per request, which is why a 13-byte `/api/tags` response cost the same as the whole artifacts
+    page. Authenticated paths resolve through the context instead.
+    """
+    ctx = getattr(getattr(request.app, "state", None), "ctx", None)
+    if ctx is not None and hasattr(ctx, "storage"):
+        backend = ctx.storage()
+    else:
+        # A bare test app composes no context. Compose ONE for this request rather than letting each
+        # lookup resolve its own global backend — the very thing this change removes.
+        try:
+            backend = getattr(request.state, "_cfm_auth_backend", None)
+        except Exception:
+            backend = None
+        if backend is None:
+            from corpusfm.runtime import build_context
+            backend = build_context().storage()
+            try:
+                request.state._cfm_auth_backend = backend
+            except Exception:
+                pass
+    if backend is None:
+        # NEVER hand None to `get_user_by_id`: `users._engine(None)` reads that as "resolve one
+        # yourself" and calls the global `get_backend()` — silently restoring the per-lookup
+        # resolution this packet removed, on the one path where the context has already said it has
+        # no store. No store is an unreadable authority, not an absent user.
+        raise _AuthBackendUnavailable("the composed context resolved no storage backend")
+    return backend
+
+
+def _held(request: Request):
+    """The resolution already made for this request, if any.
+
+    Tolerant of a request object without `.state` — a hand-built double in a unit test — because the
+    memo is an optimisation and must never be the reason a resolution cannot happen at all.
+    """
+    try:
+        return getattr(request.state, "_cfm_user_resolution", None)
+    except Exception:
         return None
+
+
+def _remember(request: Request, held: "_UserResolution") -> "_UserResolution":
+    try:
+        request.state._cfm_user_resolution = held
+    except Exception:
+        pass                                  # not memoisable; correctness is unaffected
+    return held
+
+
+def resolve_session_user(request: Request) -> _UserResolution:
+    """The request's ONE USER read, memoised on the request and bound to its session UID.
+
+    Every auth consumer goes through here — `current_user`, the gates, the actor, and the
+    storage-outage check — so a route carrying `require_auth` plus a gate reads USER once instead of
+    once per dependency. The scope is deliberately the REQUEST and nothing wider: there is no
+    process cache, no TTL and no invalidation protocol, so a gate or account change is visible on
+    the very next request.
+
+    A session that names no user reads nothing at all.
+    """
+    if not _enforces(request):
+        return _NO_SESSION
     # No SessionMiddleware in scope (a bare test app / non-session context) → touching
     # request.session would raise. Mirror require_gate's guard and treat it as no user.
     if "session" not in request.scope:
-        return None
+        return _NO_SESSION
     uid = request.session.get("user_id")
     if not uid:
-        return None
-    from corpusfm.app.web.users import get_user_by_id
-    u = get_user_by_id(uid)
-    return u if (u and u.active) else None
+        return _NO_SESSION
+
+    held = _held(request)
+    if held is not None and held.uid == uid:
+        return held
+
+    from corpusfm.app.web.users import UserStoreUnavailable, get_user_by_id
+
+    try:
+        backend = _request_backend(request)
+    except Exception:
+        # The storage AUTHORITY could not be composed — no store, or the resolution itself failed.
+        # That is an unreadable USER store, not an absent user: reporting it as absent is the 401
+        # redirect-churn packet 1067 exists to prevent, and it would arrive precisely when storage
+        # is already in trouble.
+        return _remember(request, _UserResolution(uid=uid, user=None, unavailable=True))
+
+    try:
+        # raise_on_error keeps ABSENT and UNREADABLE apart; without it both arrive as None and the
+        # outage is served as an expired session.
+        u = get_user_by_id(uid, backend=backend, raise_on_error=True)
+    except UserStoreUnavailable:
+        return _remember(request, _UserResolution(uid=uid, user=None, unavailable=True))
+
+    # NO catch-all here, deliberately. `UserStoreUnavailable` is the storage layer's considered
+    # statement that the authority is unreadable; anything else reaching this point is a programming
+    # or contract error, and laundering one into `user=None` publishes it as "your session expired"
+    # — a 401 for a bug, cached for the rest of the request, with the traceback swallowed. It
+    # propagates instead, and the server reports a fault as a fault.
+    return _remember(
+        request, _UserResolution(uid=uid, user=(u if (u and u.active) else None), unavailable=False))
+
+
+def current_user(request: Request):
+    """Resolve the logged-in user from the session, or None (also None in standalone mode)."""
+    return resolve_session_user(request).user
 
 
 def actor_from_request(request: Request) -> str:
@@ -190,20 +324,13 @@ def _storage_down_for_session(request: Request) -> bool:
     """True when the session NAMES a user but the USER store can't be read (storage outage) — as
     opposed to no session or a genuinely deleted user (packet 1067). Distinguishes a degraded backend
     from an expired session so an outage returns a 503 the SPA can pause on, instead of a 401 that
-    redirect-churns every poller to /login."""
-    if "session" not in request.scope:
-        return False
-    uid = request.session.get("user_id")
-    if not uid:
-        return False
-    from corpusfm.app.web.users import get_user_by_id, UserStoreUnavailable
-    try:
-        get_user_by_id(uid, raise_on_error=True)
-    except UserStoreUnavailable:
-        return True
-    except Exception:
-        return False
-    return False
+    redirect-churns every poller to /login.
+
+    Consumes the request's ONE resolution (packet 1361-01). It used to perform a SECOND USER read of
+    its own, on the path where the first had just failed — so the slowest request in the system, an
+    outage, was also the only one that read twice.
+    """
+    return resolve_session_user(request).unavailable
 
 
 def require_auth(request: Request) -> None:

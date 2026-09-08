@@ -2,8 +2,8 @@
 
 Flow:
     1. Load and validate job config
-    2. Load credentials (if FMS source — no-op for local_file)
-    3. For each database in source.databases (or once for local_file):
+    2. Load credentials (per-job CredentialData)
+    3. For each database in source.databases:
        a. Pull XML bytes from source
        b. Parse XML → ParseResult
        c. Store to archive
@@ -13,7 +13,7 @@ Flow:
     4. Record run in history and update state sidecar
 
 Public API:
-    run_job(job_uuid, jobs_dir, archive_dir, history_dir, trigger)
+    run_job(job_uuid, trigger)
         -> RunRecord
 """
 
@@ -28,10 +28,10 @@ from pathlib import Path
 log = logging.getLogger("corpusfm.server.jobs.runner")
 
 from corpusfm.server.jobs.config import JobConfig, JobSource, effective_export_timeout_s
-from corpusfm.server.jobs.history import RunRecord, default_history_dir, record_run
+from corpusfm.server.jobs.history import RunRecord, record_run
 from corpusfm.server.jobs.sources import pull_source
 from corpusfm.server.jobs.state import update_state
-from corpusfm.server.jobs.store import default_jobs_dir, load_job, save_job
+from corpusfm.server.jobs.store import load_job, save_job
 from corpusfm.server.jobs.validator import validate_job
 from corpusfm.storage import get_backend
 from corpusfm.app.app_config import load_app_config
@@ -42,8 +42,9 @@ def resolve_job_credentials(job: "JobConfig") -> dict:
     ``acquire`` handler and the direct ``run_job`` path resolve them identically). A FileMaker job
     uses its per-job CredentialData; transport supplies only TLS posture. Unsupported pre-file jobs
     do not fall through to a named registry or environment group. Raises ``ValueError`` with a
-    user-facing message when no usable credential is stored; returns ``{}`` for a source that needs
-    none (local_file)."""
+    user-facing message when no usable credential is stored, or when the job has no tracked file at
+    all — every remaining source pulls from a hosted FileMaker file, so there is no credential-free
+    branch left (packet 1361-01 removed `local_file`)."""
     if job.file:
         from corpusfm.server.jobs.store import get_job_credential
         c = get_job_credential(getattr(job, "id", "") or "")
@@ -53,19 +54,13 @@ def resolve_job_credentials(job: "JobConfig") -> dict:
         transport = for_server_ref(job.source.server_ref)
         return {"username": c["account"], "password": c["password"],
                 "verify_ssl": "true" if transport.verify_ssl else "false"}
-    if job.source.type != "local_file":
-        raise ValueError(
-            f"Job {job.name!r} has no tracked file and is not supported by the current job model")
-    return {}
+    raise ValueError(
+        f"Job {job.name!r} has no tracked file and is not supported by the current job model")
 
 
 def run_job(
     job_uuid: str,
-    jobs_dir: Path = None,
-    archive_dir: Path = None,
-    history_dir: Path = None,
     trigger: str = "manual",
-    on_stored=None,
     run_id: str = None,
 ) -> RunRecord:
     """Execute one job run synchronously, addressed BY UUID; returns a RunRecord (ok or error).
@@ -86,14 +81,13 @@ def run_job(
     blank UUIDJob and is invisible to every job-scoped read — permanently, since MCP history is the only
     durable account of a failure once the queue row is cleared.
 
-    ``on_stored(uuid)`` (packet 1002/B) is an optional hook the pull worker passes to ANCHOR the
-    produced artifact on its QUEUE record right after the store commits — so a crash-recovery re-claim
-    can detect 'this record already produced its artifact' and skip a duplicate snapshot."""
-    if jobs_dir is None:
-        jobs_dir = default_jobs_dir()
-    if history_dir is None:
-        history_dir = default_history_dir()
-    backend = get_backend(archive_dir)
+    **This is no longer a production pull path** (packet 1361-01, ruling 10). Every production
+    trigger — the scheduler, the browser, MCP, `corpusfm jobs run` and the standalone webhook —
+    ENQUEUES a Job Run and the single QUEUE worker executes it through acquire→ingest, which anchors
+    `UUIDStorage` on its own row before the STORAGE create. The `on_stored` anchor hook this function
+    used to thread into the store went with those callers: nothing supplied it, so it anchored
+    nothing while looking as though it did."""
+    backend = get_backend()
 
     start = datetime.now(timezone.utc)
     # THE EXECUTOR ITSELF TAKES THE GATE (packet 1372-02, R8). The QUEUE workers reach this through
@@ -107,37 +101,31 @@ def run_job(
     log.info("job %s starting — trigger=%s", job_uuid, trigger)
 
     run_id = run_id or str(uuid.uuid4())
-    return _run_job_body(
-        job_uuid, jobs_dir, history_dir, trigger, backend, start, run_id,
-        on_stored=on_stored,
-    )
+    return _run_job_body(job_uuid, trigger, backend, start, run_id)
 
 
 def _run_job_body(
     job_uuid: str,
-    jobs_dir: Path,
-    history_dir: Path,
     trigger: str,
     backend,
     start: datetime,
     run_id: str,
-    on_stored=None,
 ) -> RunRecord:
 
     # Load config BY UUID. The caller's uuid is the run's identity whether or not the config loads,
     # so a failure is still attributable (packet 1149 — a run row without it is reachable only by
     # exact run_id, and so invisible on the Runs page, /api/alerts and the zero-diff alert forever).
     try:
-        job = load_job(job_uuid, jobs_dir)
+        job = load_job(job_uuid)
     except KeyError as exc:
-        return _record_error(job_uuid, jobs_dir, history_dir, str(exc), start, trigger, backend,
+        return _record_error(job_uuid, str(exc), start, trigger, backend,
                              run_id=run_id)
 
     # Validate
     errors = validate_job(job)
     if errors:
         msg = "Config invalid: " + "; ".join(errors)
-        return _record_error(job_uuid, jobs_dir, history_dir, msg, start, trigger, backend,
+        return _record_error(job_uuid, msg, start, trigger, backend,
                              run_id=run_id, job_name=job.name)
 
     # THE LAZY ID BACKFILL IS GONE (packet 1372-02). It assigned an id and re-saved with
@@ -152,37 +140,29 @@ def _run_job_body(
     # remote PostToServer trigger over OData, and return. FM POSTs the DDR back to /api/upload, which
     # resolves the pending record by the token and lands it (the land step closes the exact run).
     if job.source.type == "fms_push":
-        return _run_fms_push_trigger(job, jobs_dir, history_dir, start, trigger, backend,
-                                     run_id=run_id)
+        return _run_fms_push_trigger(job, start, trigger, backend, run_id=run_id)
 
     # One file, one artifact per run (packet 086 / F5 file-centric). The pull target IS the job's
     # OWNER FILE (`job.file`) — there is no stored database list. `job.source.databases` is a derived
     # runtime carrier (= [job.file], set on load); a job can't run against a file it doesn't own.
-    # (local_file reads a filesystem path and has no hosted owner.)
-    if job.source.type == "local_file":
-        source_list = [job.source]
-    else:
-        target = job.file or (job.source.databases or [None])[0]
-        if not target:
-            return _record_error(
-                job_uuid, jobs_dir, history_dir,
-                "This job has no owner file — it can't pull a hosted database.",
-                start, trigger, backend, run_id=run_id, job_name=job.name,
-            )
-        source_list = [dataclasses.replace(job.source, databases=[target])]
+    target = job.file or (job.source.databases or [None])[0]
+    if not target:
+        return _record_error(
+            job_uuid, "This job has no owner file — it can't pull a hosted database.",
+            start, trigger, backend, run_id=run_id, job_name=job.name,
+        )
+    source_list = [dataclasses.replace(job.source, databases=[target])]
 
     # Per-job credential (packet 085 U3b / 1142): resolved by the shared helper the QUEUE acquire step
     # also uses. "The security price of making a job is knowing the credentials."
     try:
         credentials = resolve_job_credentials(job)
     except ValueError as exc:
-        return _record_error(
-            job_uuid, jobs_dir, history_dir, str(exc), start, trigger, backend,
+        return _record_error(job_uuid, str(exc), start, trigger, backend,
             run_id=run_id, job_name=job.name,
         )
     except Exception as exc:
-        return _record_error(
-            job_uuid, jobs_dir, history_dir, f"Credential load failed: {exc}", start, trigger, backend,
+        return _record_error(job_uuid, f"Credential load failed: {exc}", start, trigger, backend,
             run_id=run_id, job_name=job.name,
         )
 
@@ -220,14 +200,6 @@ def _run_job_body(
                 origin="Job", job_uuid=job.id, run_uuid=run_id, keep_source_xml=_keep_source_xml,
             )
             all_metas.append(meta)
-            # Anchor the produced artifact on the caller's QUEUE record BEFORE the downstream
-            # tags/latest/git work (packet 1002/B) — the earliest the uuid exists, so a crash after
-            # the commit still leaves the record able to skip a re-pull instead of duplicating.
-            if on_stored is not None and getattr(meta, "uuid", ""):
-                try:
-                    on_stored(meta.uuid)
-                except Exception:
-                    log.debug("on_stored anchor hook failed for '%s'", db_label, exc_info=True)
             log.debug("Artifact stored for %s/%s", meta.rel_path, db_label)
             if hasattr(backend, "archive_dir"):
                 try:
@@ -251,8 +223,8 @@ def _run_job_body(
                         log.debug("Tags applied to %s/%s: %s", db_label, meta.timestamp, applied)
             except Exception:
                 log.debug("tag tagging failed for '%s'", db_label, exc_info=True)
-            # Latest-version flag: demote the prior version in this job's lineage (job_uuid alone,
-            # packet 086 / Ruling A). The just-stored record is already IsLatest=true.
+            # Promote the just-stored record for this job's lineage (job_uuid alone, packet 086 /
+            # Ruling A). One STORAGELINK row at a deterministic key — nothing to demote.
             try:
                 from corpusfm.server import latest as _latest
                 if _latest.latest_available(backend):
@@ -260,7 +232,7 @@ def _run_job_body(
                         backend, job_uuid=job.id,
                         new_uuid=getattr(meta, "uuid", "") or "")
             except Exception:
-                log.debug("latest-flag update failed for '%s'", db_label, exc_info=True)
+                log.debug("promotion update failed for '%s'", db_label, exc_info=True)
         except Exception as exc:
             pull_errors.append(f"{db_label}: Ingest/store failed: {exc}")
             continue
@@ -325,7 +297,7 @@ def _run_job_body(
 
     if not all_metas:
         msg = "; ".join(pull_errors) or "All database pulls failed"
-        return _record_error(job_uuid, jobs_dir, history_dir, msg, start, trigger, backend,
+        return _record_error(job_uuid, msg, start, trigger, backend,
                              run_id=run_id, job_name=job.name)
 
     end = datetime.now(timezone.utc)
@@ -344,14 +316,12 @@ def _run_job_body(
     )
     log.info("job '%s' (%s) completed in %.1fs (%d database(s))", job.name, job_uuid, duration,
              len(all_metas))
-    _record_run(job_uuid, jobs_dir, history_dir, run, backend)
+    _record_run(job_uuid, run, backend)
     return run
 
 
 def _run_fms_push_trigger(
     job: JobConfig,
-    jobs_dir: "Path",
-    history_dir: "Path",
     start: "datetime",
     trigger: str,
     backend=None,
@@ -370,14 +340,14 @@ def _run_fms_push_trigger(
     _je = job.id or ""   # this job's uuid — carried onto every early-error RunRecord (packet 1058)
     file_name = job.file or (job.source.databases or [None])[0] or ""
     if not file_name:
-        return _record_error(_je, jobs_dir, history_dir,
+        return _record_error(_je,
                              "This fms_push job has no owner file to pull.", start, trigger, backend,
                              run_id=run_id, job_name=job_name)
     try:
         queue_handlers.enqueue_job_run(backend, job_name=job_name, job_uuid=_je,
                                        file_name=file_name, trigger=trigger, run_id=run_id or "")
     except Exception as exc:
-        return _record_error(_je, jobs_dir, history_dir,
+        return _record_error(_je,
                              f"fms_push: could not enqueue the run: {exc}",
                              start, trigger, backend, run_id=run_id, job_name=job_name)
 
@@ -397,8 +367,6 @@ def _run_fms_push_trigger(
 
 def _record_error(
     job_uuid: str,
-    jobs_dir: Path,
-    history_dir: Path,
     message: str,
     start: datetime,
     trigger: str,
@@ -428,14 +396,12 @@ def _record_error(
         job_uuid=job_uuid or None,
         job_name=job_name or "",
     )
-    _record_run(job_uuid or "", jobs_dir, history_dir, run, backend)
+    _record_run(job_uuid or "", run, backend)
     return run
 
 
 def _record_run(
     job_uuid: str,
-    jobs_dir: Path,
-    history_dir: Path,
     run: RunRecord,
     backend=None,
 ) -> None:
@@ -453,6 +419,6 @@ def _record_run(
     # name, so a run belonging to one of two same-named jobs updated whichever the lookup found —
     # and a deleted job's run silently updated a survivor that happened to share its label.
     try:
-        update_state(job_uuid, run, jobs_dir)
+        update_state(job_uuid, run)
     except Exception:
         pass

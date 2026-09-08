@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -116,70 +117,18 @@ def _make_lifespan(mcp_app):
                 try:
                     result = update_notice.run_update_flow()
                     if not result.get("ok"):
-                        import logging
                         logging.getLogger(__name__).warning(
                             "post-update notice was not published: %s", result.get("error"))
                 except Exception:
-                    import logging
                     logging.getLogger(__name__).warning("post-update notice failed", exc_info=True)
             threading.Thread(target=_run_update_flow, name="cfm-update-notice", daemon=True).start()
         except Exception:
-            import logging
             logging.getLogger(__name__).warning("post-update notice skipped", exc_info=True)
-        # Build-mismatch gate: detect once at startup whether the live DB schema is older
-        # than this build expects. If so, lock the UI to /build-mismatch. Fail-open.
-        try:
-            from corpusfm.storage import get_backend, storage_migration
-            storage_migration.refresh_gate(get_backend())
-        except Exception:
-            import logging
-            logging.getLogger(__name__).debug("startup build-mismatch check skipped", exc_info=True)
-        # Publish-integrity heal (077-E, release-gating invariant): reap aged staged-store
-        # crash residue + any catalog-visible row whose ArtifactData blob is missing (poison
-        # rows from pre-invariant code). Bounded reads; in a daemon thread; never fails startup.
-        try:
-            import threading
-
-            def _heal_publish():
-                try:
-                    from corpusfm.storage import get_backend
-                    from corpusfm.storage.artifact_store import heal_publish_integrity
-                    heal_publish_integrity(get_backend())
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).debug("startup publish-integrity heal skipped",
-                                                      exc_info=True)
-            threading.Thread(target=_heal_publish, daemon=True).start()
-        except Exception:
-            import logging
-            logging.getLogger(__name__).debug("startup publish-integrity heal skipped", exc_info=True)
-        # Promote any pre-1219 per-job callback onto its SERVER record. Idempotent, bounded, and
-        # LOGGED rather than silent: a conflict (the server already carries a different callback) is
-        # reported and left alone, because resolving it invisibly is the one outcome the migration
-        # exists to prevent. Never fails startup.
-        try:
-            import threading
-
-            def _migrate_callbacks():
-                try:
-                    from corpusfm.server.remote_servers import migrate_job_callbacks_to_servers
-                    promoted, conflicts = migrate_job_callbacks_to_servers()
-                    import logging
-                    log = logging.getLogger(__name__)
-                    if promoted:
-                        log.info("packet 1219: promoted %d job callback(s) onto their server records",
-                                 promoted)
-                    for job, value, why in conflicts:
-                        log.warning("packet 1219: job %r kept a callback %r that was NOT promoted (%s) "
-                                    "— set it on the server under Settings if it is still wanted",
-                                    job, value, why)
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).debug("startup callback migration skipped", exc_info=True)
-            threading.Thread(target=_migrate_callbacks, daemon=True).start()
-        except Exception:
-            import logging
-            logging.getLogger(__name__).debug("startup callback migration skipped", exc_info=True)
+        # The build/schema probe lives in the startup authority (packet 1361-01, rounds 3 and 11).
+        # It used to sit here and fail open on any exception — recording "the schema matches" for a
+        # box whose FileMaker could not be read at all, which is the one answer that is certainly
+        # unfounded. It is now `startup._stage_schema_probe`, where an unreadable probe stops the
+        # attempt and a PROVEN mismatch pauses the process outright.
         # Sweep orphaned Explorer/Diff preview temp dirs: the task→path map is in-memory, so every
         # /tmp/corpusfm_{explorer,diff}_* from before this process is now unreachable. Clears the
         # accumulated backlog on every boot. Never fails startup.
@@ -187,7 +136,6 @@ def _make_lifespan(mcp_app):
             from corpusfm.app.web._temp_cleanup import sweep_preview_temp
             sweep_preview_temp()
         except Exception:
-            import logging
             logging.getLogger(__name__).debug("startup preview-temp sweep skipped", exc_info=True)
         # Clear the reabsorb staging dir: tokens are request-scoped, so every staged .artifact from
         # before this process is orphaned once we restart. Never fails startup.
@@ -195,18 +143,7 @@ def _make_lifespan(mcp_app):
             from corpusfm.app.web import _reabsorb_staging
             _reabsorb_staging.sweep()
         except Exception:
-            import logging
             logging.getLogger(__name__).debug("startup reabsorb-staging sweep skipped", exc_info=True)
-        # Pre-warm the index-membership cache off the request path: the first list_indexed()
-        # scan is ~1.2s on a real index, so warm it in a daemon thread at boot rather than
-        # making the first Artifacts click pay for it. Never fails startup.
-        try:
-            import threading
-            from corpusfm.app.web.routes.api.library import _indexed_keys
-            threading.Thread(target=_indexed_keys, daemon=True).start()
-        except Exception:
-            import logging
-            logging.getLogger(__name__).debug("startup index-cache prewarm skipped", exc_info=True)
         # Refuse a multi-worker launch (packet 063) — DELIBERATELY outside every try/except so it
         # dies LOUDLY. Both background queues keep running-state in-process; a second worker would
         # fork the queue (two drainers, split state, double AI spend).
@@ -219,92 +156,107 @@ def _make_lifespan(mcp_app):
         # bare `python -m` process — that remains the documented follow-up in `_enforce_single_worker`
         # — but it does catch the misconfiguration this function exists for.)
         _enforce_single_worker()
-        # ── STORAGE DATA READINESS — SYNCHRONOUS, and before anything touches a JOB ──────
-        # Assert the FM-side index-projection contract BEFORE any record is written: read the SETTING
-        # JSONOfRecord and, if it's missing/empty, write the full default template; else ensure only
-        # the Calculations map matches the code (settings left alone), updating it if drifted.
-        # Whenever the map is written, run the file-wide refresh script (waited on). The app no longer
-        # writes slot fields — the CF derives them, so a missing map = empty slots.
+        # ── STARTUP READINESS — ONE RETRYABLE PREREQUISITE STATE MACHINE (packet 1361-01) ────
+        # The chain itself lives in `corpusfm.server.startup`, not inline here, because the initial
+        # attempt and every PRE-STARTUP recovery attempt must be the same operation: the coordinator
+        # cannot rerun a sequence that only exists inside a lifespan it is not in.
         #
-        # THIS USED TO RUN IN THE `_diagnose` DAEMON THREAD, and packet 1372-01 moved it out here.
-        # The reason is not tidiness: `ProjectionVersion` 1 → 2 now carries the JOB identity
-        # conversion, so this call is what makes the JOB table safe for UUID-addressed code to read.
-        # Left in a daemon thread it raced the Queue workers started a few lines below, which is a
-        # race whose losing side is job work running against a half-converted table. It is therefore
-        # awaited here, before `queue_workers.start_all()`.
-        #
-        # It still never fails startup. A failed conversion leaves the stored version behind, which
-        # gates JOB work below and holds the scheduler off — the box keeps serving everything that
-        # does not touch a job, which is most of the product, rather than refusing to boot.
-        # Server-mode only.
+        # THE PROCESS STARTS PAUSED, and only the whole chain plus one complete STORAGE/TAG/
+        # STORAGELINK validation opens it. A stage that cannot establish its own precondition stops
+        # the attempt — it does not log a warning and let the next stage decide the box's fate — so
+        # the gate can never open on the strength of a catalog scan that succeeded after an earlier
+        # prerequisite failed. While paused: database-dependent surfaces refuse, a new navigation
+        # gets the local waiting page, the queue claims nothing, the scheduler is not started, and
+        # the recovery coordinator — the ONLY component that contacts FileMaker while paused —
+        # retries on a bounded cadence.
         try:
-            from corpusfm.config import is_server_mode
-            if is_server_mode():
-                from corpusfm.storage import projections, get_backend
-                _be = get_backend()
-                projections.assert_projection(_be)
-                # Fence (packet 085 §8): a secret must never sit in the SETTING blob —
-                # strip any legacy AI key a hand-copied config may have carried.
-                projections.assert_no_setting_secrets(_be)
-        except Exception:
-            import logging
-            logging.getLogger(__name__).debug("startup projection-assert skipped", exc_info=True)
-        # Warm the readiness report in a daemon thread. Storage repair belongs to the installer;
-        # web startup observes the published state and never mutates it.
-        try:
-            import threading
+            from corpusfm.storage import get_backend
+            from corpusfm.server import availability, catalog, queue_workers, scheduler, startup
+            _be = get_backend()
 
-            def _diagnose():
-                # Seed the default example artifacts (CORPUSfm's own DB + addon schemas) so a fresh
-                # catalog always has something for MCP/testing/demo. Only fills an EMPTY catalog +
-                # self-healing. Server-mode only, so the LocalBackend test/dev path (and e2e catalogs)
-                # aren't seeded. Runs AFTER the projection assert so seeded rows project on create.
-                try:
-                    from corpusfm.config import is_server_mode
-                    if is_server_mode():
-                        from corpusfm.server.seed_artifact import seed_default_artifacts
-                        from corpusfm.storage import get_backend
-                        seed_default_artifacts(get_backend())
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).debug("startup seed-artifact skipped", exc_info=True)
-                try:
-                    from corpusfm.server import readiness
-                    readiness.invalidate()
-                    readiness.report(force=True)
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).debug("startup readiness warm skipped", exc_info=True)
+            _resumed_once = {"warm": False}
 
-            threading.Thread(target=_diagnose, daemon=True).start()
+            def _resume_database_work() -> None:
+                """Make the steady state true. Runs on the closed→open edge, exactly once.
+
+                Every callee is idempotent by its own guard (`start_synchronizer`,
+                `scheduler.ensure_started` and `queue_workers.start_all` each hold one lock across
+                their whole start), so a resume reached twice cannot fork the queue, leak a second
+                synchronizer or start a second clock. On a LATER recovery this simply re-ensures the
+                same three components are running.
+
+                The ProjectionVersion / JOB-identity conversion gate is NOT asked here any more
+                (packet 1361-01, round 3): it is a startup prerequisite, checked once, before the
+                gate could open at all — so reaching this callback already means the corpus is one
+                this build may address.
+                """
+                catalog.start_synchronizer(_be)
+                scheduler.ensure_started()
+                try:
+                    from corpusfm.server import queue_handlers
+                    queue_handlers.register_all()
+                    queue_workers.start_all()
+                except Exception:
+                    logging.getLogger(__name__).error(
+                        "queue workers could not be started after the database became available",
+                        exc_info=True)
+                # ── warmups, on the SUCCESSFUL STARTUP EDGE, once per process ──────────────
+                # Both used to be unconditional boot daemon threads. Neither is a prerequisite —
+                # one reads the vector index, the other the published installation state — but both
+                # run work that presupposes a serving box, and starting them on a PAUSED process
+                # meant a box that never opened still paid for them. They are here, once, behind a
+                # flag: a later recovery re-ensures the components above and does not re-warm.
+                if _resumed_once["warm"]:
+                    return
+                _resumed_once["warm"] = True
+                try:
+                    import threading as _t
+
+                    def _prewarm_index() -> None:
+                        # Loads ONE config of its own: this is a once-per-process warmup on the
+                        # startup edge, not a request, and no request-scoped config exists yet.
+                        from corpusfm.app.app_config import load_app_config
+                        from corpusfm.app.web.routes.api.library import _indexed_keys
+                        _indexed_keys(load_app_config())
+
+                    _t.Thread(target=_prewarm_index, name="cfm-index-prewarm",
+                              daemon=True).start()
+                except Exception:
+                    logging.getLogger(__name__).debug("index-cache prewarm skipped", exc_info=True)
+                try:
+                    import threading as _t
+
+                    def _diagnose():
+                        try:
+                            from corpusfm.server import readiness
+                            readiness.invalidate()
+                            readiness.report(force=True)
+                        except Exception:
+                            logging.getLogger(__name__).debug("readiness warm skipped",
+                                                              exc_info=True)
+                    _t.Thread(target=_diagnose, name="cfm-readiness", daemon=True).start()
+                except Exception:
+                    logging.getLogger(__name__).debug("readiness warm thread skipped",
+                                                      exc_info=True)
+
+            # REGISTER, THEN START THE ONE COORDINATOR (packet 1361-01, round 7). Registering
+            # first puts the resume callback in place before the coordinator's first attempt can
+            # open the gate. `startup.recover` is what keeps boot conversions once-per-process:
+            # before startup completes it runs the whole chain, after it completes it runs a
+            # complete catalog validation and nothing else.
+            #
+            # THE LIFESPAN RUNS NO ATTEMPT OF ITS OWN. Initialization is the coordinator's first
+            # action, on its own thread, beginning immediately — so there is exactly one thread that
+            # ever performs a startup or recovery attempt, and no arrangement in which two overlap.
+            # This listener starts serving while the process is still PAUSED, which is the point:
+            # the supervisory surface (static assets, the local probe, the waiting page) is up and
+            # explaining itself from the first request, and every functional surface refuses until
+            # initialization succeeds.
+            availability.supervise(_be, resume=_resume_database_work, recover=startup.recover)
+            availability.start_coordinator()
         except Exception:
-            import logging
-            logging.getLogger(__name__).debug("startup diagnose thread skipped", exc_info=True)
-        # Start the QUEUE workspace workers (packet 086): register the producer step handlers, then
-        # start the per-type FIFO workers + the upload watchdog. They scan the QUEUE for work orphaned
-        # by a crash/restart and drain it; a bare poke wakes the relevant worker on each new record.
-        # Never fails startup (a scan hiccup must not block boot).
-        try:
-            from corpusfm.server import queue_handlers, queue_workers
-            from corpusfm.storage import projections, get_backend
-            # GATED ON THE CONVERSION, not merely ordered after it (packet 1372-01). The Queue is
-            # where Job Runs execute, so starting its workers over a JOB table that is still keyed
-            # the old way is the one thing the version stamp exists to prevent. `conversion_complete`
-            # is a strict read: absent, behind, malformed and unreadable all answer False, and the
-            # dev/test LocalBackend path — which has no SETTING singleton and nothing to convert —
-            # answers True.
-            if not projections.conversion_complete(get_backend()):
-                import logging
-                logging.getLogger(__name__).error(
-                    "QUEUE workers NOT started: this corpus is not at the projection version this "
-                    "build requires, so the JOB identity conversion has not completed. Jobs and "
-                    "queued work stay paused; the server log above names what refused.")
-            else:
-                queue_handlers.register_all()
-                queue_workers.start_all()
-        except Exception:
-            import logging
-            logging.getLogger(__name__).debug("startup queue workers skipped", exc_info=True)
+            logging.getLogger(__name__).error("startup readiness could not be attempted",
+                                              exc_info=True)
         # Scheduled refusal-only update observation (packet 1281): ONE box-wide clock so the
         # passive browser polls (packet 1251, D2) have fresh refs to classify. Starts only on a
         # published installation — start_if_published gates on app_paths.is_published() itself,
@@ -314,7 +266,6 @@ def _make_lifespan(mcp_app):
             from corpusfm.server.update_observer import start_if_published
             _update_observer = start_if_published()
         except Exception:
-            import logging
             logging.getLogger(__name__).debug("scheduled update observation skipped", exc_info=True)
         # The mounted MCP app runs its OWN lifespan (the streamable-HTTP session manager); enter
         # it within ours, or its task group is never initialized ("Task group is not initialized").
@@ -329,11 +280,23 @@ def _make_lifespan(mcp_app):
             # the privileged one-shot (packet 1281 route step 6).
             if _update_observer is not None:
                 _update_observer.stop()
+            try:
+                from corpusfm.server import availability, catalog, scheduler
+                # The coordinator FIRST: it is the only thing that may still be contacting
+                # FileMaker, and it is stopped and JOINED wherever it is — mid-attempt, sleeping
+                # between retries, or dormant. Both of its events are set, so a dormant wait with no
+                # timeout returns immediately (round 7).
+                availability.stop_coordinator()
+                catalog.stop_synchronizer()
+                scheduler.stop_scheduler()   # signal + join the web-owned scheduler clock
+                availability.reset()         # clear the gate with the process
+            except Exception:
+                pass
     return _lifespan
 
 
 _GATE_ALLOW = (
-    "/build-mismatch", "/needs-upgrade", "/static", "/login", "/logout", "/favicon",
+    "/needs-upgrade", "/static", "/login", "/logout", "/favicon",
     "/auth/oidc",   # SSO login/callback establish the session — reachable like /login (packet 1065)
     # Reachable while a blob-encryption conversion holds the global lock:
     "/converting", "/api/settings/storage/blob-encryption/status",
@@ -504,11 +467,15 @@ def create_app() -> FastAPI:
 
     @application.middleware("http")
     async def _deployment_gate(request, call_next):
-        # Two locks, fail-open (never break a working box):
-        #  1) DB schema older than this build  → /build-mismatch
-        #  2) server install not behind the FMS reverse proxy yet → /needs-upgrade
-        # We support only the co-located proxy deployment, so an un-migrated server box is
-        # directed to run the installer rather than running a second (direct/root) version.
+        # ONE lock, fail-open (never break a working box): a server install that is not behind the
+        # FMS reverse proxy yet → /needs-upgrade. We support only the co-located proxy deployment,
+        # so an un-migrated server box is directed to run the installer rather than running a second
+        # (direct/root) version.
+        #
+        # The DB-schema lock that used to live here is RETIRED (packet 1361-01, round 12). It
+        # redirected a SERVING box to `/build-mismatch`, and a box with a proven mismatch is not
+        # serving: round 11 made it a deterministic startup refusal, so the process pauses before
+        # this middleware can be reached and the paused supervisory page owns the guidance.
         try:
             from corpusfm.app.web.deployment import route_path, prefixed, needs_proxy_migration
             path = route_path(request)   # root_path-stripped, so allowlist matches behind the proxy
@@ -522,14 +489,99 @@ def create_app() -> FastAPI:
                 # A bulk blob re-encode holds a global lock — everyone waits at /converting.
                 if blob_conversion.is_running():
                     return RedirectResponse(prefixed(request, "/converting"), status_code=302)
-                from corpusfm.storage import storage_migration
-                if storage_migration.gate_active():
-                    return RedirectResponse(prefixed(request, "/build-mismatch"), status_code=302)
                 if needs_proxy_migration():
                     return RedirectResponse(prefixed(request, "/needs-upgrade"), status_code=302)
         except Exception:
             pass
         return await call_next(request)
+
+    # ── THE PAUSE BOUNDARY (packet 1361-01, round 3) ─────────────────────────────────────────────
+    #
+    # DECLARED LAST ON PURPOSE, which in Starlette makes it the OUTERMOST http middleware. A paused
+    # CORPUSfm must reach no database at all, and everything inside this one does: the routes below
+    # resolve a session user, team settings, preferences and AI configuration before rendering a
+    # single page. Putting the boundary outside them is what makes "no database operation while
+    # paused" a property of the process rather than a claim about each endpoint.
+    #
+    # THREE OUTCOMES, and nothing else:
+    #
+    # 1. **Reachable while paused** — static assets and ONE local liveness fact. Nothing else. They
+    #    are what lets a browser paint something and learn when the box is back.
+    # 2. **`/api` refuses with the SAME body every banner already reads** — `catalog_failed` /
+    #    `unavailable` / `reason`, at 200 so an already-loaded page renders its existing freeze
+    #    instead of a generic network error. `/api/status/notifications` is NOT exempt any more: it
+    #    read JOB and ALERT on a 10-second poll from every open tab, which is a database operation
+    #    on a repeating clock, and its `except` swallowed the failure into a zeroed result that
+    #    looked like real news.
+    # 3. **A NEW navigation gets one local waiting page** — no authentication, no USER, SETTINGS,
+    #    AI, preference or any other lookup, and no application shell. Login and the OAuth
+    #    application flow are deliberately in this class: they wait for recovery rather than probing
+    #    FileMaker for an account or a registration.
+    #
+    # `/mcp` passes through to the mounted MCP application, which enforces the same pause in its own
+    # middleware with the tool vocabulary its clients read.
+    _PAUSE_PASS_PREFIXES = ("/static", "/favicon")
+    # The RFC 9728 / RFC 8414 discovery documents, by EXACT registered path — the same discipline the
+    # deployment gate uses, so a neighbour or descendant is never exempted. They are composed at
+    # startup from module state and read nothing at request time, and an MCP client fetches them
+    # before it can reach anything the pause would refuse; withholding them turns "the database is
+    # paused" into an opaque discovery failure.
+    _PAUSE_PASS_EXACT = frozenset(_well_known_exact)
+    _LIVENESS_PATH = "/api/health"
+    _MCP_PREFIX = "/mcp"
+
+    @application.middleware("http")
+    async def _database_readiness(request, call_next):
+        from corpusfm.server import availability
+        if availability.is_open():
+            return await call_next(request)
+        from starlette.responses import JSONResponse as _JSON
+        from corpusfm.app.web.deployment import route_path, prefixed
+        path = route_path(request)
+        if path == _LIVENESS_PATH:
+            # ANSWERED HERE, not passed through. While paused this is the one fact the waiting page
+            # below polls to know when to reload, and it must not depend on any inner middleware: the
+            # deployment gate sits inside this one and redirects an un-migrated box's every
+            # non-allowlisted path to `/needs-upgrade`, which would leave the page polling an HTML
+            # redirect forever. It is a process-state read and nothing else.
+            # `phase` is the DIAGNOSTIC reason within the single PAUSED state (round 7) — what the
+            # waiting page renders. It is not a readiness state: `database_ready` is the only fact
+            # anything branches on, and it is False for all three phases.
+            resp = _JSON({"ok": True, "database_ready": False,
+                          "state": "paused", "phase": availability.phase()})
+            resp.headers["Cache-Control"] = "no-store"
+            return resp
+        if (path in _PAUSE_PASS_EXACT
+                or path.startswith(_PAUSE_PASS_PREFIXES)
+                or path == _MCP_PREFIX or path.startswith(_MCP_PREFIX + "/")):
+            return await call_next(request)
+        payload = dict(availability.unavailable_payload())
+        payload["detail"] = availability.unavailable_message()
+        wants_html = (path[:4] != "/api"
+                      and "text/html" in (request.headers.get("accept") or ""))
+        if wants_html:
+            from starlette.responses import HTMLResponse
+            from corpusfm.app.web._paused_page import paused_page_html
+            # `detail` is the startup chain's own guidance sentence, already composed from facts
+            # a successful probe read; the page escapes it and only the build-mismatch copy uses it.
+            resp = HTMLResponse(paused_page_html(prefixed(request, "/api/health"),
+                                                 availability.phase(), availability.detail()))
+        else:
+            # 200, not 503: every existing consumer of this shape — the artifacts list, the picker,
+            # the tag page, the ISV strip — reads `catalog_failed`/`unavailable` off a parsed body
+            # and freezes on it. A status change would turn a rendered explanation into a generic
+            # network error, which is the opposite of the ruling. It also keeps a reverse proxy from
+            # substituting its own error page for the one we wrote.
+            resp = _JSON(payload)
+        resp.headers["Cache-Control"] = "no-store"
+        # The security headers are normally added by an INNER middleware this response never
+        # reaches, so they are set here rather than lost.
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault(
+            "Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+        return resp
 
     application.include_router(pages_router)
     application.include_router(oauth_router)   # packet 1179 — browser OAuth authorize + consent

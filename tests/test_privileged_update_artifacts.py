@@ -155,12 +155,28 @@ def test_privileged_changes_are_classified_through_the_shared_boundary(linux, wi
         assert "needs_installer" in body
 
 
-def test_a_failed_start_or_import_restores_the_previous_deployment(linux, windows):
-    assert "import_probe_failed" in _code(linux) and "service_did_not_start" in _code(linux)
-    assert "import_probe_failed" in _code(windows) and "service_did_not_start" in _code(windows)
+def test_a_failed_import_restores_the_previous_deployment(linux, windows):
+    """RE-EXPRESSED for application packet 1361-01, round 3.
+
+    This asserted TWO rollback triggers: a failed import probe and a service that did not come back.
+    The second is gone because the trigger is gone — these scripts start no service now. The
+    scheduler service is retired, and the web service is the caller waiting for this operation's
+    outcome, so restarting it here would kill the outcome reader. The surviving guarantee is the one
+    that always did the work: the new code is loaded in a fresh interpreter BEFORE anything else
+    trusts it, and a failure rolls the checkout back.
+    """
     for body in (_code(linux), _code(windows)):
+        assert "import_probe_failed" in body
         words = _git_words(body)
         assert "reset" in words and "--hard" in words
+
+
+def test_NEITHER_updater_restarts_a_service(linux, windows):
+    """The rule that replaces the retired half, stated so it cannot come back by accident."""
+    assert "systemctl restart" not in _code(linux)
+    assert "Restart-Service" not in _code(windows)
+    for body in (_code(linux), _code(windows)):
+        assert "service_did_not_start" not in body
 
 
 def test_the_outcome_record_is_written_by_root_and_readable_by_the_service(linux, windows):

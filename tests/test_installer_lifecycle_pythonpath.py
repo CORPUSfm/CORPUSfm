@@ -323,7 +323,7 @@ def test_THE_CANONICAL_UNITS_REMAIN_FREE_OF_PYTHONPATH(tmp_path):
     layout = os_layout.OsLayout(
         flavour="posix", config_dir=tmp_path / "etc", state_dir=tmp_path / "state",
         secrets_dir=tmp_path / "secrets", log_dir=tmp_path / "log", run_dir=tmp_path / "run")
-    for role in ("web", "scheduler"):
+    for role in si.SERVICE_ROLES:
         unit = si.render_systemd_unit(
             si.systemd_unit_spec(role, layout, install_dir=str(tmp_path / "opt"),
                                  description=f"CORPUSfm {role}"))
