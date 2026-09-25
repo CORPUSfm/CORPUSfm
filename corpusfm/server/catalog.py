@@ -20,8 +20,11 @@ record, keyed ``(table, uuid)``, for the life of the process. It is built ONCE, 
 startup — before requests, queue workers, the scheduler or any database-mutating background work may
 begin — and from then on it is *updated*, never rebuilt-and-replaced.
 
-**A background validation pass every 15 s** (:data:`SYNC_INTERVAL_S`) reconciles memory with the
-database. Each entry carries two private flags, ``old`` and ``deleted``, invisible to every reader:
+**A background validation pass** reconciles memory with the database — every 15 s
+(:data:`SYNC_INTERVAL_S`), backing off to 60 s (:data:`SYNC_MAX_INTERVAL_S`) only after three
+successful unchanged passes, and requesting an immediate confirmation pass whenever a scan leaves a
+deletion candidate (packet 1388-03, :class:`_Synchronizer`). Each entry carries two private flags,
+``old`` and ``deleted``, invisible to every reader:
 
 1. one opening memory traversal — if the PREVIOUS pass completed, drop entries still marked ``old``
    (a completed read did not return them, so they are gone); drop entries marked ``deleted``; mark
@@ -104,6 +107,18 @@ logger = logging.getLogger(__name__)
 # (the healthy target for one complete three-table scan is ~2 s or less) and so a test can drive the
 # synchronizer without sleeping. Nothing in the product reads it from configuration.
 SYNC_INTERVAL_S = 15.0
+# Packet 1388-03: the IDLE ceiling. After this many consecutive successful passes that changed
+# nothing, the cycle waits SYNC_MAX_INTERVAL_S instead; any change, failure, concurrent or
+# unpublishable write, deletion candidate or resume returns it to SYNC_INTERVAL_S. Same status as
+# the fast interval: internal, never configuration.
+SYNC_MAX_INTERVAL_S = 60.0
+SYNC_BACKOFF_AFTER = 3
+_SYNC_JOIN_TIMEOUT_S = 5.0
+# Test seams for one synchronizer generation: an injected monotonic clock, an injected
+# `wait(condition, timeout)`, and a callback run after each pass and before the cadence decision.
+_sync_clock = None
+_sync_wait = None
+_sync_on_pass_done = None
 
 # ── The required read boundary ────────────────────────────────────────────────────────────────────
 TABLE_STORAGE = "STORAGE"
@@ -262,6 +277,9 @@ class PassStats:
     added: int = 0
     replaced: int = 0
     reaped: int = 0
+    # Entries a COMPLETE scan did not return and that therefore stay marked `old`: the first half
+    # of the two-pass deletion confirmation, counted from memory after the scan (packet 1388-03).
+    missing_candidates: int = 0
     at_utc: str = ""
     error: str = ""
 
@@ -273,6 +291,7 @@ class PassStats:
                 "added": self.added,
                 "replaced": self.replaced,
                 "reaped": self.reaped,
+                "missing_candidates": self.missing_candidates,
                 "at_utc": self.at_utc,
                 "error": self.error}
 
@@ -832,8 +851,7 @@ class _Catalog:
         self._pass_lock = threading.Lock()  # one validation pass at a time
         self._build_lock = threading.Lock()
         self._stats = PassStats()
-        self._sync_thread: Optional[threading.Thread] = None
-        self._sync_stop: Optional[threading.Event] = None
+        self._sync: Optional["_Synchronizer"] = None
         self._last_write_warn_at = 0.0
 
     # ── reading ──────────────────────────────────────────────────────────────────────────────────
@@ -936,10 +954,15 @@ class _Catalog:
         resumes the process, and the gate's own edge guard makes it happen exactly once."""
         with self._pass_lock:
             res = self._one_pass(backend)
+            follow_up = False
             # "If any confirmed application write occurred during the pass, immediately begin one
             # additional complete pass" — and keep going until one completes with none.
             while res.get("ok") and res.get("write_during_pass"):
+                follow_up = True
                 res = self._one_pass(backend)
+        # The final pass always reports `write_during_pass` False on success, so the CALL-level fact
+        # the cadence needs is accumulated here rather than inferred from it (packet 1388-03).
+        res["follow_up_due_to_write"] = follow_up
         if res.get("ok"):
             with self.lock:
                 built = self.built
@@ -986,10 +1009,12 @@ class _Catalog:
             self._last_pass_ok = True
             self._failed = False
             wrote = self._write_during_pass
+            # Still `old` after a COMPLETE read = not returned by it. Memory only; no second read.
+            missing = sum(1 for e in self.entries.values() if e.old and not e.deleted)
             self._stats = PassStats(
                 ok=True, duration_s=_now() - started,
                 counts=MappingProxyType(dict(counts)), raw_bytes=MappingProxyType(dict(raw_bytes)),
-                added=added, replaced=replaced, reaped=reaped,
+                added=added, replaced=replaced, reaped=reaped, missing_candidates=missing,
                 at_utc=datetime.now(timezone.utc).isoformat())
             stats = self._stats
         logger.debug("catalog validation pass ok in %.3fs: %s (%s raw bytes), %d added, "
@@ -1088,7 +1113,7 @@ class _Catalog:
     # ── the background synchronizer ──────────────────────────────────────────────────────────────
 
     def start_synchronizer(self, backend) -> bool:
-        """Start the 15 s validation cycle. Only ever started AFTER the initial model is built.
+        """Start the adaptive validation cycle. Only ever started AFTER the initial model is built.
 
         The whole start happens under ONE lock acquisition (packet 1361-01, availability correction).
         It used to release the lock between the liveness check and the thread assignment, so two
@@ -1096,45 +1121,28 @@ class _Catalog:
         one unstoppable — a leaked thread validating against a backend nothing could stop it reading.
         Two callers now produce exactly one synchronizer, which is what lets the readiness gate's
         resume callback be reached from more than one edge and still be safe.
+
+        A call that finds the generation alive is the reopen edge (packet 1388-03): it returns the
+        live cycle to the fast interval and requests nothing else — it never itself causes a read.
         """
         with self.lock:
-            if self._sync_thread is not None and self._sync_thread.is_alive():
+            sync = self._sync
+            if sync is not None and sync.thread.is_alive():
+                sync.reset_cadence()
                 return False
-            stop = threading.Event()
-
-            def _loop():
-                from corpusfm.server import availability
-                while not stop.wait(SYNC_INTERVAL_S):
-                    # THE ORDINARY SYNCHRONIZER PERFORMS NO DATABASE OPERATION WHILE PAUSED (packet
-                    # 1361-01, round 3). It used to keep scanning through an outage, which made it a
-                    # SECOND component contacting FileMaker while the process was paused — the
-                    # recovery coordinator is the only one allowed to, and two of them racing on the
-                    # pass lock is how a bounded 5 s recovery cadence turns into continuous traffic
-                    # against a database the product has just declared unreadable.
-                    #
-                    # It is not stopped and restarted around the outage: one persistent thread, no
-                    # thread lifecycle on the failure path, and its ordinary cycle simply resumes
-                    # once the coordinator reopens the gate.
-                    if not availability.is_open():
-                        continue
-                    try:
-                        self.run_validation_pass(backend)
-                    except Exception:               # pragma: no cover - the pass never raises
-                        logger.debug("catalog synchronizer cycle failed", exc_info=True)
-
-            t = threading.Thread(target=_loop, name="cfm-catalog-sync", daemon=True)
-            self._sync_stop = stop
-            self._sync_thread = t
-            t.start()
+            sync = _Synchronizer(self, backend)
+            self._sync = sync
+            sync.thread.start()
         return True
 
-    def stop_synchronizer(self) -> None:
+    def stop_synchronizer(self, timeout: float = None) -> bool:
+        """Stop and JOIN the current generation. Returns whether it exited within ``timeout``."""
         with self.lock:
-            stop = self._sync_stop
-            self._sync_stop = None
-            self._sync_thread = None
-        if stop is not None:
-            stop.set()
+            sync = self._sync
+            self._sync = None
+        if sync is None:
+            return True
+        return sync.stop(_SYNC_JOIN_TIMEOUT_S if timeout is None else timeout)
 
     # ── confirmed application writes ─────────────────────────────────────────────────────────────
     #
@@ -1255,19 +1263,28 @@ class _Catalog:
 
         The write STANDS — this is never a rollback. Nothing is published (in particular never the
         REQUEST document), and the ordinary validation cycle brings memory back into line. Warned at
-        most once per interval because it can arrive on every write."""
+        most once per interval because it can arrive on every write.
+
+        It also asks the ONE synchronizer for a prompt pass without blocking the writer (packet
+        1388-03). While a pass is active the existing coalesced follow-up already covers the write,
+        so the wake is requested only when none is: both branches are decided under the model lock
+        that `_open_pass` and the pass's success block also take, so no write falls between them."""
         try:
             now = _now()
             with self.lock:
                 warn = (now - self._last_write_warn_at) >= _WRITE_WARN_INTERVAL_S
                 if warn:
                     self._last_write_warn_at = now
-                if self._pass_active:
+                active = self._pass_active
+                if active:
                     self._write_during_pass = True
+                sync = self._sync
             if warn:
                 logger.warning(
                     "catalog: %s on %s/%s returned no publishable record; the write stands and the "
                     "catalog reconciles on its next validation pass.", operation, table, uuid)
+            if sync is not None and not active:
+                sync.request_pass("unpublishable_write")
         except Exception:                          # pragma: no cover - bookkeeping must never raise
             pass
 
@@ -1277,6 +1294,7 @@ class _Catalog:
         """Cheap facts only: identity counts, sizes and timings. It builds no index and reads no
         JSON value, so asking for it costs nothing and leaks nothing."""
         with self.lock:
+            sync = self._sync
             out = {
                 "built": self.built,
                 "failed": self._failed,
@@ -1284,10 +1302,11 @@ class _Catalog:
                 "visible_storage": len(self.index.storage),
                 "pass_active": self._pass_active,
                 "sync_interval_s": SYNC_INTERVAL_S,
-                "synchronizer_running": bool(self._sync_thread is not None
-                                             and self._sync_thread.is_alive()),
+                "sync_max_interval_s": SYNC_MAX_INTERVAL_S,
+                "synchronizer_running": bool(sync is not None and sync.thread.is_alive()),
                 "last_pass": self._stats.as_dict(),
             }
+        out["synchronizer"] = sync.snapshot() if sync is not None else {"state": "stopped"}
         from corpusfm.server import availability
         out["readiness"] = availability.diagnostics()
         return out
@@ -1306,6 +1325,147 @@ class _Catalog:
             self._write_during_pass = False
             self._stats = PassStats()
             self._last_write_warn_at = 0.0
+
+
+class _Synchronizer:
+    """ONE generation of the background validation cycle (packet 1388-03).
+
+    Its thread, wake condition and pending state live and die together, so stopping a generation can
+    never consume a signal meant for its successor. Every signal is STATE under the condition's lock
+    — a pending reason, the unchanged streak, the deadline — and is consumed only by the decision made
+    under that same lock immediately before a pass. A signal raised during a pass, between a pass and
+    the wait, or during the wait is therefore seen by the next decision; there is no `wait(); clear()`
+    window to lose it in, and repeated signals coalesce into one pending reason.
+
+    Cadence: ``SYNC_INTERVAL_S`` after start, resume, failure, any change, a concurrent or
+    unpublishable write, or a deletion candidate; ``SYNC_MAX_INTERVAL_S`` only after
+    ``SYNC_BACKOFF_AFTER`` consecutive successful passes that changed nothing. A pass leaving deletion
+    candidates requests ONE immediate confirmation pass, whose opening traversal is the existing reap.
+    """
+
+    def __init__(self, catalog: "_Catalog", backend) -> None:
+        self._cat = catalog
+        self._backend = backend
+        self._clock = _sync_clock or _now
+        self._wait = _sync_wait or (lambda cond, timeout: cond.wait(timeout))
+        self._on_pass_done = _sync_on_pass_done
+        self._cond = threading.Condition(threading.Lock())
+        self._stopping = False
+        self._pending = ""
+        self._streak = 0
+        self._interval = SYNC_INTERVAL_S
+        self._deadline = self._clock() + SYNC_INTERVAL_S
+        self._state = "starting"
+        self._passes = 0
+        self._resets = 0
+        self._last: dict = {}
+        self.thread = threading.Thread(target=self._run, name="cfm-catalog-sync", daemon=True)
+
+    # -- signals (any thread; never blocks on a pass) ----------------------------------------------
+
+    def request_pass(self, reason: str) -> None:
+        with self._cond:
+            if self._stopping:
+                return
+            if not self._pending:
+                self._pending = reason
+            self._streak = 0
+            self._interval = SYNC_INTERVAL_S
+            self._cond.notify_all()
+
+    def reset_cadence(self) -> None:
+        """Fast cadence again, WITHOUT requesting a pass: the reopen edge follows a complete
+        validation, so the next read waits for the fast deadline."""
+        with self._cond:
+            if self._stopping:
+                return
+            self._streak = 0
+            self._interval = SYNC_INTERVAL_S
+            self._deadline = min(self._deadline, self._clock() + SYNC_INTERVAL_S)
+            self._resets += 1
+            self._cond.notify_all()
+
+    def stop(self, timeout: float) -> bool:
+        with self._cond:
+            self._stopping = True
+            self._cond.notify_all()
+        if self.thread is threading.current_thread() or self.thread.ident is None:
+            return not self.thread.is_alive()
+        self.thread.join(timeout)
+        return not self.thread.is_alive()
+
+    def snapshot(self) -> dict:
+        with self._cond:
+            return {"state": self._state,
+                    "fast_interval_s": SYNC_INTERVAL_S,
+                    "max_interval_s": SYNC_MAX_INTERVAL_S,
+                    "current_interval_s": self._interval,
+                    "unchanged_streak": self._streak,
+                    "missing_candidates": self._last.get("missing_candidates", 0),
+                    "pending_pass": bool(self._pending),
+                    "pending_reason": self._pending,
+                    "resets": self._resets,
+                    "passes": self._passes,
+                    "last_cycle": dict(self._last)}
+
+    # -- the loop ----------------------------------------------------------------------------------
+
+    def _run(self) -> None:
+        from corpusfm.server import availability
+        while True:
+            gate_open = availability.is_open()
+            with self._cond:
+                if self._stopping:
+                    self._state = "stopped"
+                    return
+                now = self._clock()
+                if not gate_open:
+                    # THE ORDINARY SYNCHRONIZER PERFORMS NO DATABASE OPERATION WHILE PAUSED (packet
+                    # 1361-01, round 3): the recovery coordinator is the only component allowed to
+                    # contact FileMaker then. One persistent thread re-checks the gate on the fast
+                    # cadence; a pending signal is KEPT, not consumed, until the gate reopens.
+                    self._state = "paused"
+                    if self._deadline <= now:
+                        self._deadline = now + SYNC_INTERVAL_S
+                    self._wait(self._cond, self._deadline - now)
+                    continue
+                if not self._pending and now < self._deadline:
+                    self._state = "waiting"
+                    self._wait(self._cond, self._deadline - now)
+                    continue
+                reason = self._pending or "interval"
+                self._pending = ""
+                self._state = "validating"
+            try:
+                res = self._cat.run_validation_pass(self._backend)
+            except Exception:                       # pragma: no cover - the pass never raises
+                logger.debug("catalog synchronizer cycle failed", exc_info=True)
+                res = {"ok": False}
+            if self._on_pass_done is not None:
+                self._on_pass_done(self, res)
+            with self._cond:
+                self._settle(res, reason)
+
+    def _settle(self, res: dict, reason: str) -> None:
+        """The cadence decision, from the completed pass result alone. Called under ``_cond``."""
+        ok = bool(res.get("ok"))
+        missing = int(res.get("missing_candidates") or 0) if ok else 0
+        changed = bool(res.get("added") or res.get("replaced") or res.get("reaped")
+                       or res.get("follow_up_due_to_write") or missing)
+        confirmation = reason == "missing_candidates"
+        self._passes += 1
+        if not ok or changed or self._pending:
+            self._streak = 0
+        else:
+            self._streak += 1
+        self._interval = (SYNC_MAX_INTERVAL_S if self._streak >= SYNC_BACKOFF_AFTER
+                          else SYNC_INTERVAL_S)
+        if missing and not confirmation and not self._pending:
+            self._pending = "missing_candidates"
+        self._deadline = self._clock() + self._interval
+        self._last = {"ok": ok, "reason": reason, "changed": changed,
+                      "missing_candidates": missing, "confirmation": confirmation,
+                      "follow_up_due_to_write": bool(res.get("follow_up_due_to_write"))}
 
 
 _catalog = _Catalog()

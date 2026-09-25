@@ -38,11 +38,13 @@ is acquired only when the operation about to run has proved it needs one.
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 import stat as _stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import install_attempt as ia
 from . import result as R
 from . import uninstall_inventory as inv
 from . import uninstall_pending as pending
@@ -241,6 +243,9 @@ class Report:
     skipped: tuple = ()
     finalized: bool = False
     observations: tuple = ()
+    #: Packet 1398: the discard finished its frozen plan and terminal retirement is owed OUTSIDE the
+    #: lifecycle lock. Deliberately absent from `to_dict`, so the ordinary report is unchanged.
+    attempt_terminal: bool = False
 
     def to_dict(self) -> dict:
         return {"result": self.result, "operation_id": self.operation_id,
@@ -589,6 +594,10 @@ def preview(layout, *, collaborators: Collaborators, installation_id: str,
     typed operations rather than prose-only promises, so launchers can show concrete paths and
     provider registrations without becoming a second planner.
     """
+    attempt_payload = _attempt_preview(layout, collaborators=collaborators,
+                                       installation_id=installation_id, force=force)
+    if attempt_payload is not None:
+        return attempt_payload
     existing = _read_pending(layout)
     if existing is not None:
         if existing.installation_id.lower() != str(installation_id).lower():
@@ -684,6 +693,10 @@ def start(layout, *, lock, collaborators: Collaborators, installation_id: str,
     """
     _authority(layout, lock, "starting an uninstall")
     progress = progress if progress is not None else Progress()
+    routed = _route_attempt(layout, lock=lock, collaborators=collaborators,
+                            installation_id=installation_id, force=force, progress=progress)
+    if routed is not None:
+        return routed
     # **The flavour is DERIVED, never accepted.** A caller-supplied one that disagreed with the
     # layout published a record `_assert_platform` refuses for ever: `start` would then say
     # `PENDING_ALREADY_EXISTS` and `resume` would refuse, permanently, with no way out.
@@ -775,6 +788,10 @@ def resume(layout, *, lock, collaborators: Collaborators, installation_id: str,
     """
     _authority(layout, lock, "resuming an uninstall")
     progress = progress if progress is not None else Progress()
+    routed = _route_attempt(layout, lock=lock, collaborators=collaborators,
+                            installation_id=installation_id, force=force, progress=progress)
+    if routed is not None:
+        return routed
     record = _read_pending(layout)
     if record is not None and record.installation_id.lower() != str(installation_id).lower():
         # **Before the journal is joined and before anything is touched.** A resume aimed at another
@@ -816,6 +833,369 @@ def resume(layout, *, lock, collaborators: Collaborators, installation_id: str,
                     collaborators=collaborators, force=force, progress=progress)
 
 
+# ── the install-attempt discard (packet 1398) ────────────────────────────────
+#
+# Reached ONLY when the protected attempt container exists. An installation that never had one takes
+# every path above exactly as before. The discard reuses the typed operations, canonical order,
+# checkpoints and executors; what it adds is where its authority lives (the protected container) and
+# that every dispatch re-proves the pending operations against the frozen plan held there.
+
+
+def attempt_protection() -> "ia.Protection":
+    """Production protection: root on POSIX, administrator/SYSTEM on Windows. A suite rooted in a
+    temporary directory replaces this function, as it redirects `privilege.is_elevated`."""
+    return ia.Protection()
+
+
+def _attempt_refused(exc) -> ResumeRefused:
+    return ResumeRefused(exc.reason, exc.detail)
+
+
+def _validate_attempt(authority, record) -> None:
+    try:
+        authority.validate(record)
+    except ia.AttemptRefused as exc:
+        raise _attempt_refused(exc) from exc
+
+
+def _classify_attempt(layout, protection):
+    try:
+        return ia.classify(layout, protection)
+    except ia.AttemptRefused as exc:
+        raise _attempt_refused(exc) from exc
+
+
+def attempt_finishes_outside_lock(layout) -> bool:
+    """Whether an invocation must finish an attempt WITHOUT taking the lifecycle lock.
+
+    Terminal retirement removes the directory that holds the lock, so the steps after it cannot take
+    the lock again without recreating what was just retired.
+    """
+    try:
+        return ia.classify(layout, attempt_protection()).kind in ia.OUTSIDE_LOCK
+    except ia.AttemptRefused:
+        return False
+
+
+def _route_attempt(layout, *, lock, collaborators, installation_id, force, progress):
+    protection = attempt_protection()
+    state = _classify_attempt(layout, protection)
+    paths = ia.attempt_paths(layout)
+    if state.kind == ia.STATE_NONE:
+        return None
+    if state.kind == ia.STATE_LEFTOVER_EMPTY:
+        ia.remove_empty_container(paths, protection)
+        return None
+    if state.kind == ia.STATE_STALE_COMPLETE:
+        if state.record.installation_id != str(installation_id).lower():
+            raise ResumeRefused(ia.REFUSE_BINDING_MISMATCH,
+                                "the stale completion record belongs to another installation")
+        ia.unlink_protected(paths, paths.record, protection)
+        ia.remove_empty_container(paths, protection)
+        return None
+    if state.kind in ia.OUTSIDE_LOCK:
+        raise ResumeRefused(ia.REFUSE_PHASE_INVALID,
+                            f"the install attempt is at {state.kind}; it finishes outside the "
+                            "lifecycle lock, so run the uninstall again")
+    if force:
+        raise ResumeRefused(ia.REFUSE_FORCE,
+                            "a discard executes its frozen plan in order and stops at the first "
+                            "refusal; --force would reorder it and is not accepted")
+    try:
+        ia.bind(state, layout, installation_id=installation_id)
+    except ia.AttemptRefused as exc:
+        raise _attempt_refused(exc) from exc
+    if state.kind == ia.STATE_DISCARDING:
+        return _continue_attempt(layout, lock=lock, record=state.record,
+                                 collaborators=collaborators, progress=progress,
+                                 protection=protection)
+    return _start_attempt(layout, lock=lock, state=state, collaborators=collaborators,
+                          progress=progress, protection=protection)
+
+
+def _selection_order(operations) -> tuple:
+    """The operations in the order `_execute` will actually take them.
+
+    **The frozen plan must be in THIS order, not merely a canonical one** (measured defect, caught by
+    a mutation control). `canonical_order` may place a terminal-footprint operation ahead of an
+    ordinary one when no clean is owed, while `_next_operation` always defers the footprint. A plan
+    frozen canonically then fails its own head-of-suffix check on a legitimate discard, and the box
+    stays stranded with nothing removed. Replaying the selector over the full set, with no refusals,
+    yields an order that satisfies every `RESOURCE_FOLLOWS` edge and whose every suffix the selector
+    takes head-first.
+    """
+    probe = dataclasses.make_dataclass("_Probe", [("remaining", tuple)])(tuple(operations))
+    ordered, executed = [], set()
+    while True:
+        candidate = _next_operation(probe, executed=executed, blocked=set())
+        if candidate is None:
+            break
+        ordered.append(candidate)
+        executed.add(candidate.resource)
+    if len(ordered) != len(operations):
+        raise ResumeRefused(ia.REFUSE_PLAN_MISMATCH,
+                            "the discard plan has no order in which every operation can run")
+    return tuple(ordered)
+
+
+def _plan_attempt(layout, *, state, collaborators):
+    """`(refusal, operations, manifest_generation, decisions)` — shared by the discard and preview."""
+    record = state.record
+    flavour = _flavour_of(layout)
+    if state.kind == ia.STATE_POST_FOUNDATION:
+        facts, manifest = observe(layout, collaborators=collaborators, force=False,
+                                  expected_installation_id=record.installation_id)
+        try:
+            up.validate_relations(facts)
+        except up.Refused as refusal:
+            return refusal, (), None, {}
+        decisions = ia.attempt_filter(record, up.classify(facts), manifest)
+        return (None, _selection_order(pending.remaining_from_plan(manifest, decisions,
+                                                                  flavour=flavour)),
+                manifest.generation, decisions)
+    view, decisions = ia.attempt_plan(record, layout)
+    return (None, _selection_order(pending.remaining_from_plan(view, decisions, flavour=flavour)),
+            None, decisions)
+
+
+def _abandon_foundation_journal(layout, *, lock, record, protection):
+    """Write-ahead: record the abandonment, resolve and discard the bound foundation journal, record
+    the result. No locator is ever written (ruling 3)."""
+    journal = Journal(layout)
+    current = journal.read()
+    target = str(journal.path)
+    entries = [e for e in record.ledger if e.kind == "journal" and e.intent == "abandon_foundation"]
+    try:
+        if current is not None:
+            if not entries or entries[-1].state != ia.STATE_INTENDED:
+                entry = ia.LedgerEntry(
+                    seq=len(record.ledger) + 1, target=target, kind="journal",
+                    intent="abandon_foundation",
+                    prior={"mode": current.mode, "subsystem": current.current_subsystem,
+                           "state": "open", "installation_id": current.installation_id},
+                    state=ia.STATE_INTENDED, post=None, intent_utc=utc_now_iso(), result_utc=None)
+                record = ia.write_record(
+                    layout, dataclasses.replace(record, ledger=record.ledger + (entry,)),
+                    protection)
+            if current.state != JOURNAL_RESOLVED:
+                journal.resolve(lock=lock, result=R.ROLLED_BACK)
+            journal.discard(lock=lock)
+        entries = [e for e in record.ledger
+                   if e.kind == "journal" and e.intent == "abandon_foundation"]
+        if entries and entries[-1].state == ia.STATE_INTENDED:
+            done = dataclasses.replace(entries[-1], state=ia.STATE_DONE,
+                                       post={"state": "discarded"}, result_utc=utc_now_iso())
+            ledger = tuple(done if e.seq == done.seq else e for e in record.ledger)
+            record = ia.write_record(layout, dataclasses.replace(record, ledger=ledger), protection)
+    except ia.AttemptRefused as exc:
+        raise _attempt_refused(exc) from exc
+    return record
+
+
+def _start_attempt(layout, *, lock, state, collaborators, progress, protection):
+    record = state.record
+    if state.kind == ia.STATE_FOUNDATION_WINDOW:
+        record = _abandon_foundation_journal(layout, lock=lock, record=record,
+                                             protection=protection)
+        state = ia.AttemptState(ia.STATE_FOUNDATION_WINDOW, record)
+    if state.kind == ia.STATE_POST_FOUNDATION:
+        journal = Journal(layout)
+        prior_recovery = _recover_matching_storage_operation(
+            layout, journal, lock, installation_id=record.installation_id)
+        if prior_recovery is not None and prior_recovery.result != R.ROLLED_BACK:
+            finding = prior_recovery.findings[0] if prior_recovery.findings else None
+            return Report(result=prior_recovery.result,
+                          operation_id=prior_recovery.operation_id,
+                          installation_id=record.installation_id,
+                          reason=getattr(finding, "code", "storage_recovery_refused"),
+                          detail=prior_recovery.next_action,
+                          observations=("the unfinished storage operation was retained",))
+        _require_journal_clear(journal, lock)
+    refusal, operations, generation, _decisions = _plan_attempt(
+        layout, state=state, collaborators=collaborators)
+    if refusal is not None:
+        return Report(result=R.FAILED_BEFORE_CHANGE, reason=refusal.reason,
+                      installation_id=record.installation_id,
+                      detail=f"the discard refused before its plan was frozen: {refusal.reason}")
+    try:
+        frozen = ia.freeze_plan(record, operation_id=str(uuid.uuid4()),
+                                manifest_generation=generation, operations=operations)
+        record = ia.write_record(layout, frozen, protection)
+    except ia.AttemptRefused as exc:
+        raise _attempt_refused(exc) from exc
+    progress.published = True
+    return _continue_attempt(layout, lock=lock, record=record, collaborators=collaborators,
+                             progress=progress, protection=protection)
+
+
+def _continue_attempt(layout, *, lock, record, collaborators, progress, protection):
+    authority = ia.PendingAuthority(layout, record.attempt_id, record.installation_id, protection)
+    journal = Journal(layout, path=authority.journal_path)
+    plan = record.discard
+    current = _read_pending(layout, authority)
+    if current is None:
+        # The crash between freezing the plan and publishing the pending record.
+        current = pending.PendingRecord(
+            operation_id=plan.operation_id, installation_id=record.installation_id,
+            manifest_generation=plan.manifest_generation,
+            remaining=tuple(pending.parse_operation(op) for op in plan.operations),
+            created_utc=utc_now_iso(), updated_utc=utc_now_iso(),
+            source=pending.SOURCE_INSTALL_ATTEMPT, attempt_id=record.attempt_id).validated()
+        _validate_attempt(authority, current)
+        try:
+            current = pending.publish(layout, current, lock=lock, attempt=authority)
+        except pending.PendingRecordRefused as exc:
+            raise ResumeRefused(PENDING_UNREADABLE, str(exc)) from exc
+        progress.published = True
+    _validate_attempt(authority, current)
+    state_word = _join_journal(journal, current, lock)
+    if state_word == JOURNAL_RESOLVED and current.remaining:
+        raise ResumeRefused(
+            JOURNAL_RESOLVED_WITH_WORK,
+            f"the container journal is resolved while the discard still owes "
+            f"{[op.resource for op in current.remaining]}")
+    if not current.remaining:
+        return _finalize_attempt(layout, lock=lock, journal=journal, authority=authority,
+                                 executed=(), observations=())
+    return _execute(layout, lock=lock, record=current, journal=journal,
+                    collaborators=collaborators, force=False, progress=progress,
+                    authority=authority)
+
+
+def _finalize_attempt(layout, *, lock, journal, authority, executed, observations) -> Report:
+    """§6.6 steps 1, 2 and 3a — under the lock. 3b onward runs in `finish_attempt`, outside it."""
+    protection = authority.protection
+    on_disk = _read_pending(layout, authority)
+    if on_disk is None or on_disk.remaining:
+        raise ResumeRefused(JOURNAL_RESOLVED_WITH_WORK,
+                            "terminal retirement requires an empty install-attempt pending record")
+    _validate_attempt(authority, on_disk)
+    current = journal.read()
+    if current is not None and current.state != JOURNAL_RESOLVED:
+        journal.resolve(lock=lock, result=R.COMPLETED)
+    adapter = locator_for(layout)
+    if adapter.exists():
+        adapter.remove(lock=lock)
+    try:
+        record = ia.read_record(layout, protection)
+        if record is None:
+            raise ia.AttemptRefused(ia.REFUSE_PHASE_INVALID,
+                                    "the attempt record vanished before terminal retirement")
+        if record.phase == ia.PHASE_DISCARDING:
+            candidate = dataclasses.replace(record, phase=ia.PHASE_TERMINAL_PENDING)
+            ia.check_phase(candidate, pending=on_disk, journal=journal.read(),
+                           locator_present=_locator_present(layout))
+            ia.write_record(layout, candidate, protection)
+    except ia.AttemptRefused as exc:
+        raise _attempt_refused(exc) from exc
+    return Report(result=R.COMPLETED, operation_id=on_disk.operation_id,
+                  installation_id=on_disk.installation_id, finalized=True,
+                  detail=("every operation of the frozen discard plan is complete; terminal "
+                          "retirement follows outside the lifecycle lock"),
+                  executed=tuple(executed), observations=tuple(observations),
+                  attempt_terminal=True)
+
+
+def _require_attempt_identity(record, installation_id) -> None:
+    if record.installation_id != str(installation_id).lower():
+        raise ResumeRefused(ia.REFUSE_BINDING_MISMATCH,
+                            f"the request names {installation_id} and the attempt is "
+                            f"{record.installation_id}")
+
+
+def finish_attempt(layout, *, installation_id: str, os_layout=None, windows_authority=None,
+                   posix_service_uid=None, retire=None) -> Report:
+    """§6.6 steps 3b, 3c, 4 and 5, OUTSIDE the lifecycle lock.
+
+    Retirement runs once per `terminal_pending` and advances to `terminal_done`; after that it is
+    never run again. The record is unlinked, and only then the empty pending record, the resolved
+    journal and the container go — bookkeeping that authorizes no deletion of anything else.
+    """
+    from .os_layout import os_layout_for_lifecycle
+    from .uninstall_terminal import retire_attempt
+
+    protection = attempt_protection()
+    paths = ia.attempt_paths(layout)
+    state = _classify_attempt(layout, protection)
+    observations = []
+    if state.kind == ia.STATE_TERMINAL_PENDING:
+        _require_attempt_identity(state.record, installation_id)
+        osl = os_layout if os_layout is not None else os_layout_for_lifecycle(layout)
+        plan = ia.terminal_plan(state.record, osl)
+        cleaner = retire if retire is not None else retire_attempt
+        retired = cleaner(layout, osl, plan=plan, windows_authority=windows_authority,
+                          posix_service_uid=posix_service_uid)
+        observations.extend(f"retired {root}" for root in retired)
+        try:
+            ia.write_record(layout, dataclasses.replace(state.record,
+                                                        phase=ia.PHASE_TERMINAL_DONE), protection)
+        except ia.AttemptRefused as exc:
+            raise _attempt_refused(exc) from exc
+        state = _classify_attempt(layout, protection)
+    if state.kind == ia.STATE_TERMINAL_DONE:
+        _require_attempt_identity(state.record, installation_id)
+        ia.unlink_protected(paths, paths.record, protection)
+        state = _classify_attempt(layout, protection)
+    if state.kind == ia.STATE_BOOKKEEPING:
+        journal_record = state.journal
+        if journal_record.installation_id != str(installation_id).lower():
+            raise ResumeRefused(ia.REFUSE_BINDING_MISMATCH,
+                                "the leftover discard journal belongs to another installation")
+        ia.unlink_protected(paths, paths.pending, protection)
+        ia.unlink_protected(paths, paths.journal, protection)
+        ia.remove_empty_container(paths, protection)
+        return Report(result=R.COMPLETED, operation_id=journal_record.operation_id,
+                      installation_id=journal_record.installation_id, finalized=True,
+                      detail=("the incomplete install attempt was discarded; logs were preserved; "
+                              "run the installer again to start a fresh installation"),
+                      observations=tuple(observations))
+    raise ResumeRefused(ia.REFUSE_PHASE_INVALID,
+                        f"no install attempt is finishing here (state {state.kind})")
+
+
+def _attempt_preview(layout, *, collaborators, installation_id, force):
+    protection = attempt_protection()
+    state = _classify_attempt(layout, protection)
+    if state.kind in (ia.STATE_NONE, ia.STATE_LEFTOVER_EMPTY, ia.STATE_STALE_COMPLETE):
+        return None
+    record = state.record
+    if record is not None:
+        _require_attempt_identity(record, installation_id)
+    if state.kind in (ia.STATE_DISCARDING, ia.STATE_TERMINAL_PENDING, ia.STATE_TERMINAL_DONE,
+                      ia.STATE_BOOKKEEPING):
+        if state.pending is not None:
+            operations = tuple(state.pending.remaining)
+        elif record is not None and record.discard is not None:
+            operations = tuple(pending.parse_operation(op) for op in record.discard.operations)
+        else:
+            operations = ()
+        payload = _preview_payload(mode="attempt_resume", installation_id=str(installation_id),
+                                   operations=operations, fms_state="recorded_at_start",
+                                   retained=(), force=force)
+    else:
+        try:
+            ia.bind(state, layout, installation_id=installation_id)
+        except ia.AttemptRefused as exc:
+            raise _attempt_refused(exc) from exc
+        refusal, operations, _generation, decisions = _plan_attempt(
+            layout, state=state, collaborators=collaborators)
+        if refusal is not None:
+            raise ResumeRefused(refusal.reason,
+                                f"the discard plan refused before anything was written: "
+                                f"{refusal.reason}")
+        retained = tuple({"resource": name, "decision": decision.decision,
+                          "because": decision.because}
+                         for name, decision in sorted(decisions.items())
+                         if decision.decision not in (up.REMOVE, up.DEREGISTER_ONLY))
+        payload = _preview_payload(mode="attempt_start", installation_id=record.installation_id,
+                                   operations=operations, fms_state="recorded_at_start",
+                                   retained=retained, force=force)
+    payload["attempt"] = {"state": state.kind,
+                          "attempt_id": None if record is None else record.attempt_id,
+                          "phase": None if record is None else record.phase}
+    return payload
+
+
 # ── authority helpers ─────────────────────────────────────────────────────────
 
 
@@ -835,9 +1215,10 @@ def _flavour_of(layout) -> str:
     return POSIX if layout.locator_file is not None else WINDOWS
 
 
-def _read_pending(layout):
+def _read_pending(layout, authority=None):
     try:
-        return pending.read(layout)
+        # The ordinary call is left exactly as it was; only an install attempt names its authority.
+        return pending.read(layout) if authority is None else pending.read(layout, attempt=authority)
     except pending.PendingRecordRefused as exc:
         raise ResumeRefused(PENDING_UNREADABLE, str(exc)) from exc
 
@@ -986,15 +1367,17 @@ def _plan_digest(record) -> str:
 # ── execution ─────────────────────────────────────────────────────────────────
 
 
-def _executor_for(layout, lock):
+def _executor_for(layout, lock, authority=None):
     """THE construction path, and the platform is decided by the layout rather than by a caller."""
     if _flavour_of(layout) == POSIX:
         from .uninstall_exec_posix import PosixExecutor
 
-        return PosixExecutor.for_installation(layout, lock=lock)
+        return (PosixExecutor.for_installation(layout, lock=lock) if authority is None
+                else PosixExecutor.for_installation(layout, lock=lock, attempt=authority))
     from .uninstall_exec_windows import WindowsExecutor
 
-    return WindowsExecutor.for_installation(layout, lock=lock)
+    return (WindowsExecutor.for_installation(layout, lock=lock) if authority is None
+            else WindowsExecutor.for_installation(layout, lock=lock, attempt=authority))
 
 
 def _dispatch(executor, operation, collaborators: Collaborators, *, flavour: str):
@@ -1215,7 +1598,7 @@ def is_reinstall_required(record) -> bool:
 
 
 def _execute(layout, *, lock, record, journal: Journal, collaborators: Collaborators,
-             force: bool, progress: Progress) -> Report:
+             force: bool, progress: Progress, authority=None) -> Report:
     """The recorded operations, in the recorded order, each one checkpointed only on proof.
 
     Every loop iteration is written so that a crash on either side of either checkpoint retries
@@ -1224,7 +1607,7 @@ def _execute(layout, *, lock, record, journal: Journal, collaborators: Collabora
     checkpoint after it is the only thing that retires authority — and only when the handler says
     the resource reached its terminal state *and was read back there*.
     """
-    executor = _executor_for(layout, lock)
+    executor = _executor_for(layout, lock, authority)
     executed, retained, skipped, observations, refusals = [], [], [], [], []
 
     quiesce = executor.stop_services(runner=collaborators.runner)
@@ -1248,19 +1631,32 @@ def _execute(layout, *, lock, record, journal: Journal, collaborators: Collabora
         candidate = _next_operation(current, executed=set(executed), blocked=blocked)
         if candidate is None:
             break
+        if authority is not None:
+            # Packet 1398 §6.1: before EACH dispatch, the protected frozen plan must still authorize
+            # this record, and the operation about to run must be the head of its suffix.
+            _validate_attempt(authority, current)
+            if candidate != current.remaining[0]:
+                raise ResumeRefused(
+                    ia.REFUSE_PLAN_MISMATCH,
+                    "the next operation is not the head of the frozen plan's remaining suffix")
         journal.checkpoint(lock=lock, subsystem=candidate.resource,
                            intended_change=f"{candidate.tag}:{candidate.resource}",
                            resume_hint="the pending record holds the remaining operations in order")
         outcome = _dispatch(executor, candidate, collaborators, flavour=_flavour_of(layout))
         observations.extend(outcome.observations)
         if outcome.checkpointable:
-            pending.checkpoint(layout, operation_id=current.operation_id,
-                               installation_id=current.installation_id,
-                               resource=candidate.resource, lock=lock)
+            if authority is None:
+                pending.checkpoint(layout, operation_id=current.operation_id,
+                                   installation_id=current.installation_id,
+                                   resource=candidate.resource, lock=lock)
+            else:
+                pending.checkpoint(layout, operation_id=current.operation_id,
+                                   installation_id=current.installation_id,
+                                   resource=candidate.resource, lock=lock, attempt=authority)
             progress.checkpoints += 1
             # THE REREAD. The record on disk is the authority for what is left, and a cached copy is
             # a second opinion nobody asked for.
-            current = _read_pending(layout)
+            current = _read_pending(layout, authority)
             if current is None:                                          # pragma: no cover
                 raise ResumeRefused(NO_PENDING_RECORD,
                                     "the pending record vanished mid-invocation")
@@ -1297,6 +1693,9 @@ def _execute(layout, *, lock, record, journal: Journal, collaborators: Collabora
                            detail=_owed_detail(retained, skipped),
                            executed=tuple(executed), retained=tuple(retained), skipped=skipped,
                            observations=tuple(observations) + tuple(refusals))
+    if authority is not None:
+        return _finalize_attempt(layout, lock=lock, journal=journal, authority=authority,
+                                 executed=tuple(executed), observations=tuple(observations))
     return _finalize(layout, lock=lock, record=current, journal=journal, executed=tuple(executed),
                      retained=(), skipped=(), observations=tuple(observations))
 
@@ -1450,4 +1849,4 @@ def _finalize(layout, *, lock, record, journal: Journal, executed, retained, ski
 
 
 __all__ = ["Collaborators", "Report", "ResumeRefused", "REFUSAL_REASONS", "UNINSTALL_MODE",
-           "observe", "resume", "start"]
+           "attempt_finishes_outside_lock", "finish_attempt", "observe", "resume", "start"]

@@ -8,7 +8,8 @@
 # Usage:
 #   sudo ./installer/linux/install.sh [OPTIONS]
 #
-# Options (parent 1246-04 §4H.1 — ten switches, nine semantic groups; the same set on Windows):
+# Options (parent 1246-04 §4H.1 — ten switches, nine semantic groups; the same set on Windows;
+# packet 1398 adds the one incomplete-attempt discard switch on both platforms):
 #   --install-dir DIR           Installation directory (default: /opt/CORPUSfm)
 #   --patch-hosting-dir DIR     CORPUSfm patch hosting folder (default: <install-dir>-Hosted)
 #   --fms-root DIR              FileMaker Server install root (default /opt/FileMaker/FileMaker Server);
@@ -18,6 +19,9 @@
 #   --repair-storage-access     Repair automation access to an existing storage database
 #   --replace-existing-install  Authorize moving an existing, non-empty install directory that
 #                               carries no CORPUSfm installation trace
+#   --discard-incomplete-attempt  When an earlier fresh install stopped part-way, discard what that
+#                               attempt recorded creating, without the Inspect/Discard/Quit menu
+#                               (required for --silent), then exit
 #   --yes                       Consent pre-granted; skip the confirmation wait (normal output)
 #   --silent                    Non-interactive: inputs from the environment, fail loud on a missing
 #                               required input
@@ -795,7 +799,7 @@ lc_retire_scheduler_authority() {
         "$INSTALLATION_ID" "$CFM_GENERATION" "$INSTALL_DIR")")"
     # lc_run DIES on a refusal, which is required: authority retirement that cannot be written or
     # verified fails the installer rather than reporting A001 complete over a stale record.
-    out="$(lc_run "scheduler authority retirement" composition retire-scheduler-authority --request "$req")"
+    out="$(la_lc_run retire_scheduler_authority '{}' "scheduler authority retirement" composition retire-scheduler-authority --request "$req")"
     committed="$(lc_json_field "$out" committed_generation)"
     [[ "$committed" =~ ^[0-9]+$ && "$committed" -ge "$CFM_GENERATION" ]] \
         || die "scheduler authority retirement returned generation '$committed'; expected at least $CFM_GENERATION."
@@ -925,7 +929,11 @@ LC_OP=""; LC_CANDIDATE=""; LC_AWAITING=""; LC_PROVIDER_OUT=""
 lc_provider_run() {     # lc_provider_run <what> <candidate-key|-> <verb...> --request <file>
     local what="$1" key="$2"; shift 2
     local out provider
+    la_provider_begin "$LA_PROVIDER_INTENT" "$LA_PROVIDER_PRIOR" "$LA_PROVIDER_INTENT"
     lc_run_raw "$@"
+    la_provider_end "$LA_PROVIDER_INTENT" "$LC_RAW_RC" "$LC_RAW_OUT"
+    LA_PROVIDER_INTENT=""
+    LA_PROVIDER_PRIOR=""
     out="$LC_RAW_OUT"
     LC_PROVIDER_OUT="$out"
     LC_AWAITING="$(lc_json_field "$out" awaiting_composition)"
@@ -963,6 +971,644 @@ for item in payload.get("per_type", []):
 ')
 }
 
+# ── The fresh-install attempt (packet 1398) ─────────────────────────────────────────
+# A fresh install that fails part-way leaves resources nothing else owns. From consent onward, a
+# no-authority fresh run records every durable mutation in a protected attempt record BEFORE it
+# happens: observe the exact target, publish the intent with that prior, mutate, then publish the
+# result — a failed command publishes its post-observation too. The record is the only ownership
+# evidence a later Discard may use (`corpusfm.lifecycle.install_attempt` reads and validates it).
+#
+# EVERY WRAPPER BELOW IS A PASS-THROUGH WHEN NO ATTEMPT IS ACTIVE. An update, and every run that is
+# not a no-authority fresh start, executes exactly the command it always did.
+#
+# The record writer is the fixed system interpreter `/usr/bin/python3 -I` with the standard library
+# only — the same reader the installed uninstaller already relies on. It holds no deletion authority.
+CFM_ATTEMPT=false
+CFM_ATTEMPT_DIR=/etc/corpusfm-attempt
+CFM_ATTEMPT_UID=0
+CFM_ATTEMPT_PY=/usr/bin/python3
+CFM_ATTEMPT_ID=""
+DISCARD_INCOMPLETE_ATTEMPT=false
+LA_LEFTOVER_EMPTY=false
+LA_ROUTE_DEFERRED=false
+LA_SEQS=""
+LA_PROVIDER_INTENT=""
+LA_PROVIDER_PRIOR=""
+LA_PROVIDER_SEQS=""
+LA_PROVIDER_TARGET_SEQS=""
+
+IFS= read -r -d '' LA_WRITER <<'PY' || true
+import datetime, hashlib, json, os, pwd, stat, sys, tempfile
+
+# The closed POSIX vocabulary this installer writes (rulings 5 and 6). `journal` is written by the
+# application's discard, never here; `set_acl`, `service`, `task` and `iis_setting` are Windows.
+KINDS = {
+    "dir": ("create", "set_owner_mode", "move_aside"),
+    "file": ("create", "overwrite", "append", "delete"),
+    "account": ("create",),
+    "unit": ("create", "delete", "enable", "disable"),
+    "package_set": ("install_packages",),
+    "git_config_entry": ("append", "unset"),
+    "firewall_rule": ("delete",),
+    "provider_op": ("foundation", "provision_keys", "admin_identity_reconcile", "patch_apply",
+                    "proxy_reconcile", "storage_bootstrap", "storage_adopt", "create_first_admin",
+                    "retire_scheduler_authority", "backfill_storage_projections"),
+}
+FS_KINDS = ("dir", "file", "unit")
+WORDS = ("completed", "no_change", "rolled_back", "incomplete_safe", "manual_action_required",
+         "failed_before_change")
+RC_WORDS = {0: "completed", 1: "failed_before_change", 2: "rolled_back",
+            3: "manual_action_required", 5: "incomplete_safe"}
+RECORD = "attempt.json"
+KNOWN = ("attempt.json", "pending.json", "journal.json")
+
+
+def fail(message, code=3):
+    sys.stderr.write(message + "\n")
+    raise SystemExit(code)
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def canon(path):
+    # Lexically normalized, so `created/../elsewhere` is never read as contained.
+    return os.path.normpath(path).rstrip("/") or "/"
+
+
+def inside(child, parent):
+    c, p = canon(child), canon(parent)
+    return c != p and c.startswith(p.rstrip("/") + "/")
+
+
+def refuse_first(paths):
+    root = os.path.dirname(os.path.dirname(canon(paths["config_dir"])))
+    system = lambda *parts: os.path.join(root, *parts)
+    return [canon(p) for p in (
+        paths["install_dir"], os.path.join(paths["config_dir"], "install.yaml"),
+        system("etc", "systemd", "system", "corpusfm.service"),
+        system("etc", "systemd", "system", "corpusfm-update.service"),
+        system("usr", "local", "bin", "corpusfm"),
+        system("etc", "sudoers.d", "corpusfm-db-helper"),
+        system("etc", "sudoers.d", "corpusfm-update"),
+        system("etc", "tmpfiles.d", "corpusfm.conf"))]
+
+
+def check_container(container, uid):
+    try:
+        st = os.lstat(container)
+    except FileNotFoundError:
+        fail("%s does not exist" % container)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        fail("%s is not a plain directory" % container)
+    if st.st_uid != uid or st.st_mode & 0o077:
+        fail("%s is not protected (owner %d, mode %o)" % (container, st.st_uid, st.st_mode & 0o777))
+    parent = os.lstat(os.path.dirname(canon(container)))
+    if (stat.S_ISLNK(parent.st_mode) or parent.st_uid not in (0, uid)
+            or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+        fail("%s is not a protected parent" % os.path.dirname(container))
+
+
+def read_record(container, uid):
+    check_container(container, uid)
+    path = os.path.join(container, RECORD)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        fail("%s holds no attempt record" % container)
+    with os.fdopen(fd, "rb") as handle:
+        st = os.fstat(handle.fileno())
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != uid
+                or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            fail("%s is not protected" % path)
+        record = json.loads(handle.read().decode("utf-8"))
+    if record.get("phase") != "installing":
+        fail("the attempt record is in phase %r, not installing" % record.get("phase"))
+    return record
+
+
+def write_record(container, uid, record):
+    check_container(container, uid)
+    payload = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    fd, staged = tempfile.mkstemp(dir=container, prefix=".attempt.json.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(staged, 0o600)
+        os.replace(staged, os.path.join(container, RECORD))
+    except BaseException:
+        if os.path.exists(staged):
+            os.unlink(staged)
+        raise
+    dfd = os.open(container, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+    with open(os.path.join(container, RECORD), "rb") as handle:
+        if hashlib.sha256(handle.read()).digest() != hashlib.sha256(payload).digest():
+            fail("the attempt record did not read back as written")
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1048576), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def owner_mode(st):
+    try:
+        owner = pwd.getpwuid(st.st_uid).pw_name
+    except KeyError:
+        owner = str(st.st_uid)
+    return owner, "0%03o" % (st.st_mode & 0o777)
+
+
+def observe(kind, intent, target, extra):
+    """The exact current facts for one target, in the ledger shape for its kind."""
+    if kind in ("dir", "file"):
+        try:
+            st = os.lstat(target)
+        except FileNotFoundError:
+            return {"exists": False}
+        wanted = stat.S_ISDIR if kind == "dir" else stat.S_ISREG
+        if stat.S_ISLNK(st.st_mode) or not wanted(st.st_mode):
+            fail("an unexpected object stands at %s; refusing before any change" % target)
+        owner, mode = owner_mode(st)
+        if kind == "dir":
+            return {"exists": True, "type": "dir", "owner": owner, "mode": mode}
+        return {"exists": True, "type": "file", "size": st.st_size, "sha256": digest(target),
+                "owner": owner, "mode": mode}
+    if kind == "unit":
+        try:
+            st = os.lstat(target)
+        except FileNotFoundError:
+            st = None
+        if st is not None and (stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode)):
+            fail("an unexpected object stands at %s; refusing before any change" % target)
+        if intent in ("enable", "disable"):
+            return {"exists": st is not None, "sha256": digest(target) if st else None,
+                    "enabled": bool(extra["enabled"])}
+        return {"exists": True, "sha256": digest(target)} if st else {"exists": False}
+    if kind == "account":
+        try:
+            entry = pwd.getpwnam(target)
+        except KeyError:
+            return {"exists": False}
+        return {"exists": True, "uid": entry.pw_uid, "gid": entry.pw_gid}
+    if kind == "git_config_entry":
+        exists = os.path.isfile(target)
+        return {"file": target, "exists": exists, "sha256": digest(target) if exists else None,
+                "values": list(extra["values"])}
+    return extra
+
+
+def entries_for(ledger, kind, target):
+    key = canon(target) if kind in FS_KINDS else target
+    found = [e for e in ledger if e["kind"] == kind
+             and (canon(e["target"]) if kind in FS_KINDS else e["target"]) == key]
+    moved = [i for i, e in enumerate(found) if e["intent"] == "move_aside" and e["state"] == "done"]
+    return found[moved[-1] + 1:] if moved else found
+
+
+def contained(ledger, target):
+    return any(e["kind"] == "dir" and e["intent"] == "create" and e["prior"] == {"exists": False}
+               and inside(target, e["target"]) for e in ledger)
+
+
+def created(ledger, kind, target):
+    found = entries_for(ledger, kind, target)
+    return bool(found) and found[0]["intent"] == "create" \
+        and found[0]["prior"].get("exists") is False and found[0]["state"] in ("done", "intended")
+
+
+def op_step(container, uid, kind, intent, extra, targets):
+    if kind not in KINDS:
+        fail("unknown ledger kind %r" % kind)
+    record = read_record(container, uid)
+    ledger = record["ledger"]
+    before = list(ledger)
+    extra = None if extra == "-" else json.loads(extra)
+    refuse = refuse_first(record["paths"])
+    planned = []
+    if kind in FS_KINDS and intent in ("ensure", "create"):
+        for target in targets:
+            chain, parent = [], os.path.dirname(canon(target))
+            while parent not in ("/", "") and not os.path.lexists(parent):
+                chain.append(parent)
+                parent = os.path.dirname(parent)
+            for ancestor in reversed(chain):
+                if ("dir", ancestor) not in planned:
+                    planned.append(("dir", ancestor))
+    planned.extend((kind, canon(t) if kind in FS_KINDS else t) for t in targets)
+    seqs = []
+    for entry_kind, target in planned:
+        if entry_kind in FS_KINDS and contained(before, target):
+            continue
+        word = intent if entry_kind == kind else "create"
+        present = entry_kind in FS_KINDS and os.path.lexists(target)
+        if word == "ensure":
+            if kind == "dir":
+                word = "set_owner_mode" if present else "create"
+            elif kind == "file":
+                word = "overwrite" if present else "create"
+            else:
+                word = "create"
+        if word not in KINDS[entry_kind]:
+            fail("intent %r is not allowed for %s" % (word, entry_kind))
+        if word == "delete" and entry_kind in FS_KINDS and not present:
+            continue
+        if (entry_kind in FS_KINDS and word in ("create", "set_owner_mode", "overwrite") and present
+                and canon(target) in refuse and not entries_for(before, entry_kind, target)):
+            fail("REFUSE-FIRST: %s already exists and no ledger entry of this attempt created it. "
+                 "A fresh install does not take over a CORPUSfm resource it cannot account for."
+                 % target)
+        entry = {"seq": len(ledger) + 1, "target": target, "kind": entry_kind, "intent": word,
+                 "prior": observe(entry_kind, word, target, extra), "state": "intended",
+                 "post": None, "intent_utc": now(), "result_utc": None}
+        ledger.append(entry)
+        seqs.append(str(entry["seq"]))
+    if seqs:
+        write_record(container, uid, record)
+    print(" ".join(seqs))
+
+
+def op_result(container, uid, state, extra, seqs):
+    if state not in ("done", "failed"):
+        fail("a result state is done or failed")
+    record = read_record(container, uid)
+    extra = None if extra == "-" else json.loads(extra)
+    for seq in seqs:
+        entry = record["ledger"][int(seq) - 1]
+        if entry["state"] != "intended":
+            fail("ledger entry %s is not awaiting a result" % seq)
+        kind, target = entry["kind"], entry["target"]
+        if kind == "dir" and entry["intent"] == "move_aside" and not os.path.lexists(target):
+            post = {"exists": False, "moved_to": extra["moved_to"]}
+        else:
+            post = observe(kind, entry["intent"], target, extra)
+        entry.update(state=state, post=post, result_utc=now())
+    write_record(container, uid, record)
+
+
+def op_begin(container, uid, attempt_id, installation_id, paths_json, package_json):
+    paths = json.loads(paths_json)
+    database_dir = canon(paths["fms_database_dir"])
+    paths["storage_target"] = os.path.join(database_dir, "CORPUSfm", "CORPUSfm_DB.fmp12")
+    paths["support_dir"] = os.path.join(database_dir, "CORPUSfm-Support")
+    record = {"schema_version": 1, "attempt_id": attempt_id, "installation_id": installation_id,
+              "platform": "posix", "created_utc": now(), "paths": paths,
+              "package": json.loads(package_json), "ledger": [], "discard": None,
+              "phase": "installing"}
+    if not os.path.lexists(container):
+        previous = os.umask(0o077)
+        try:
+            os.mkdir(container, 0o700)
+        finally:
+            os.umask(previous)
+    check_container(container, uid)
+    names = os.listdir(container)
+    foreign = [n for n in names if not (n.startswith(".") and n.endswith(".tmp")
+                                        and n.split(".")[1] in ("attempt", "pending", "journal"))]
+    if foreign:
+        fail("%s is not empty (%s); it is not adopted" % (container, ", ".join(sorted(foreign))))
+    for name in names:
+        os.unlink(os.path.join(container, name))
+    write_record(container, uid, record)
+
+
+def op_refuse_check(paths_json, install_dir_may_exist):
+    paths = json.loads(paths_json)
+    present = [p for p in refuse_first(paths) if os.path.lexists(p)
+               and not (p == canon(paths["install_dir"]) and install_dir_may_exist == "true")]
+    for path in present:
+        print(path)
+    if present:
+        raise SystemExit(3)
+
+
+def loads_lenient(text):
+    try:
+        value = json.loads(text)
+    except ValueError:
+        start = text.find("{")
+        try:
+            value = json.JSONDecoder().raw_decode(text[start:])[0] if start >= 0 else {}
+        except ValueError:
+            value = {}
+    return value if isinstance(value, dict) else {}
+
+
+def op_provider_post(intent, rc, types_json):
+    rc = int(rc)
+    out = loads_lenient(sys.stdin.read())
+    word = out.get("result") if out.get("result") in WORDS else RC_WORDS.get(rc, "manual_action_required")
+    if intent == "backfill_storage_projections":
+        word = "completed" if rc == 0 else "incomplete_safe"
+    post = {"result": word}
+    facts = out.get("attempt_facts") if isinstance(out.get("attempt_facts"), dict) else {}
+    if intent == "foundation":
+        gen = out.get("generation")
+        post["generation"] = gen if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 1 else None
+    elif intent == "provision_keys":
+        keys = [k for k in (out.get("keys") or []) if isinstance(k, dict) and k.get("name")]
+        post["generated"] = [str(k["name"]) for k in keys if k.get("action") == "generated"]
+        post["reused"] = [str(k["name"]) for k in keys if k.get("action") == "reused"]
+    elif intent == "admin_identity_reconcile":
+        post["committed"] = False
+    elif intent == "patch_apply":
+        shape = {"settled": bool, "slot_touched": bool, "directory_created_by_this_run": bool,
+                 "sandbox_existed": bool}
+        if all(isinstance(facts.get(k), t) for k, t in shape.items()) and "slot_before" in facts:
+            post.update({k: facts[k] for k in list(shape) + ["slot_before"]})
+        else:
+            # Unreadable facts never authorize removal: report the adoption as settled.
+            post.update(settled=True, slot_touched=False, slot_before=None,
+                        directory_created_by_this_run=False, sandbox_existed=True)
+    elif intent == "proxy_reconcile":
+        family = facts.get("prior_family")
+        if not isinstance(family, dict):
+            family = {t: {"pool_existed": True, "app_existed": True, "marker_state": "unknown",
+                          "include_present": True} for t in json.loads(types_json)}
+        post["prior_family"] = family
+    elif intent == "create_first_admin":
+        post["created"] = rc == 0 and word == "completed"
+    print(json.dumps(post, sort_keys=True))
+
+
+def main(argv):
+    op = argv[0]
+    if op == "begin":
+        op_begin(argv[1], int(argv[2]), argv[3], argv[4], argv[5], argv[6])
+    elif op == "step":
+        op_step(argv[1], int(argv[2]), argv[3], argv[4], argv[5], argv[6:])
+    elif op == "result":
+        op_result(argv[1], int(argv[2]), argv[3], argv[4], argv[5:])
+    elif op == "refuse-check":
+        op_refuse_check(argv[1], argv[2])
+    elif op in ("seq-of", "created", "field", "path"):
+        record = read_record(argv[1], int(argv[2]))
+        if op == "field":
+            print(record[argv[3]])
+        elif op == "path":
+            print(record["paths"][argv[3]])
+        elif op == "created":
+            print("true" if created(record["ledger"], argv[3], argv[4]) else "false")
+        else:
+            found = entries_for(record["ledger"], argv[3], argv[4])
+            print(found[-1]["seq"] if found else "")
+    elif op == "provider-post":
+        op_provider_post(argv[1], argv[2], argv[3])
+    elif op == "json":
+        # json <kind> <args...>: the small facts the shell observes, as JSON.
+        kind = argv[1]
+        if kind == "enabled":
+            print(json.dumps({"enabled": argv[2] == "true"}))
+        elif kind == "rule":
+            print(json.dumps({"rule": argv[2], "exists": argv[3] == "true"}))
+        elif kind == "packages":
+            print(json.dumps({"packages": {p.split("=")[0]: p.split("=")[1] == "true"
+                                           for p in argv[2:]}}, sort_keys=True))
+        elif kind == "values":
+            print(json.dumps({"values": [l for l in sys.stdin.read().splitlines() if l]}))
+        elif kind == "string":
+            print(json.dumps(argv[2]))
+        elif kind == "observe":
+            print(json.dumps({"observe": argv[2]}))
+        elif kind == "storage":
+            print(json.dumps({"observe": argv[2], "route": argv[3], "target_seq": int(argv[4])},
+                             sort_keys=True))
+        elif kind == "backfill":
+            print(json.dumps({"target_seq": int(argv[2]), "route": argv[3]}, sort_keys=True))
+        elif kind == "hosting":
+            print(json.dumps({"hosting_dir_seq": int(argv[2])}))
+        elif kind == "nested":
+            root, child = os.path.normpath(os.path.abspath(argv[2])), os.path.normpath(os.path.abspath(argv[3]))
+            print("true" if child == root or child.startswith(root.rstrip("/") + "/") else "false")
+        elif kind == "moved":
+            print(json.dumps({"moved_to": argv[2]}))
+        elif kind == "paths":
+            print(json.dumps(dict(zip(argv[2::2], argv[3::2])), sort_keys=True))
+        elif kind == "package":
+            series, version, commit = argv[2:5]
+            print(json.dumps(None if not series else {
+                "observed": {"installer_series": series, "installer_version": version,
+                             "application_commit": commit or None,
+                             "installer_source_commit": None, "payload_digest_sha256": None},
+                "provenance": ["self_consistent"]}, sort_keys=True))
+        elif kind == "keys":
+            secrets = argv[2]
+            print(json.dumps({name: os.path.lexists(os.path.join(secrets, filename))
+                              for name, filename in (("corpus_key", "corpus.key"),
+                                                     ("machine_key", "machine.key"),
+                                                     ("session_secret", "session_secret"))},
+                             sort_keys=True))
+        elif kind == "proxy-blocks":
+            status = loads_lenient(sys.stdin.read())
+            rows = status.get("per_type")
+            if not isinstance(rows, list) or not rows:
+                fail("the proxy status observation carries no per-front block state")
+            blocks = {}
+            for row in rows:
+                block = str(row.get("owned_block"))
+                if block not in ("absent", "current"):
+                    fail("REFUSE-FIRST: the %s front carries a %s CORPUSfm block that differs from "
+                         "this installation's rendering" % (row.get("proxy_type"), block))
+                blocks[str(row.get("proxy_type"))] = "BLOCK_" + block.upper()
+            print(json.dumps({"blocks": blocks}, sort_keys=True))
+        else:
+            fail("unknown json kind %r" % kind)
+    else:
+        fail("unknown attempt-ledger operation %r" % op)
+
+
+main(sys.argv[1:])
+PY
+
+la_py() { "$CFM_ATTEMPT_PY" -I -c "$LA_WRITER" "$@"; }
+
+# A ledger failure is fatal and is reported on the ORIGINAL stderr: several wrapped commands carry
+# their own `2>/dev/null` or `|| true`, and neither may hide that the attempt record refused.
+la_fatal() {
+    die "$*" 2>&9
+}
+
+la_step() {     # la_step <kind> <intent> <extra-json|-> <target>...   → LA_SEQS
+    local out
+    out="$(la_py step "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$@" 2>&1)" \
+        || la_fatal "The fresh-install attempt record refused a step before it happened: $out
+     Re-run the installer to inspect or discard the incomplete attempt."
+    LA_SEQS="$out"
+}
+
+la_result() {   # la_result <seqs> <rc> <extra-json|->
+    local seqs="$1" state=done out
+    [[ "$2" -eq 0 ]] || state=failed
+    [[ -n "$seqs" ]] || return 0
+    # shellcheck disable=SC2086
+    out="$(la_py result "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$state" "$3" $seqs 2>&1)" \
+        || la_fatal "The fresh-install attempt record could not publish a result: $out
+     Re-run the installer to inspect or discard the incomplete attempt."
+}
+
+la_do() {       # la_do <kind> <intent> <extra-json|-> <target>... -- <command...>
+    if ! $CFM_ATTEMPT; then
+        while [[ "$1" != -- ]]; do shift; done
+        shift
+        "$@"
+        return
+    fi
+    local args=() rc=0 seqs
+    while [[ "$1" != -- ]]; do args+=("$1"); shift; done
+    shift
+    la_step "${args[@]}"
+    seqs="$LA_SEQS"
+    "$@" || rc=$?
+    la_result "$seqs" "$rc" "${args[2]}"
+    return "$rc"
+}
+
+la_enabled_json() {
+    if systemctl is-enabled --quiet "$1" 2>/dev/null; then la_py json enabled true
+    else la_py json enabled false; fi
+}
+
+la_unit_toggle() {  # la_unit_toggle enable|disable <unit> -- <command...>
+    local intent="$1" unit="$2" rc=0 seqs
+    shift 3
+    if ! $CFM_ATTEMPT; then "$@"; return; fi
+    la_step unit "$intent" "$(la_enabled_json "$unit")" "/etc/systemd/system/$unit.service"
+    seqs="$LA_SEQS"
+    "$@" || rc=$?
+    la_result "$seqs" "$rc" "$(la_enabled_json "$unit")"
+    return "$rc"
+}
+
+la_ufw_present() {  # la_ufw_present added|numbered <rule>
+    if [[ "$1" == added ]]; then
+        ufw show added 2>/dev/null | grep -Fxq -- "ufw $2"
+    else
+        ufw status numbered 2>/dev/null | sed -E 's/^\[[[:space:]]*[0-9]+\][[:space:]]*//; s/[[:space:]]+$//' \
+            | grep -Fxq -- "$2"
+    fi
+}
+
+# RULING 6: only an existing, specifically observed CORPUSfm port rule is deleted, and the exact
+# matched rule is recorded before and after. It grants no cleanup and no manual command.
+la_ufw_delete() {   # la_ufw_delete added|numbered <rule> -- <command...>
+    local how="$1" rule="$2" rc=0 seqs now=false
+    shift 3
+    if ! $CFM_ATTEMPT; then "$@"; return; fi
+    la_ufw_present "$how" "$rule" || return 0
+    la_step firewall_rule delete "$(la_py json rule "$rule" true)" "$rule"
+    seqs="$LA_SEQS"
+    "$@" || rc=$?
+    la_ufw_present "$how" "$rule" && now=true
+    la_result "$seqs" "$rc" "$(la_py json rule "$rule" "$now")"
+    return "$rc"
+}
+
+la_packages_json() {
+    local p facts=()
+    for p in "$@"; do
+        if dpkg -s "$p" >/dev/null 2>&1; then facts+=("$p=true"); else facts+=("$p=false"); fi
+    done
+    la_py json packages "${facts[@]}"
+}
+
+la_packages() {     # la_packages <package>... -- <command...>
+    local names=() rc=0 seqs
+    while [[ "$1" != -- ]]; do names+=("$1"); shift; done
+    shift
+    if ! $CFM_ATTEMPT; then "$@"; return; fi
+    la_step package_set install_packages "$(la_packages_json "${names[@]}")" apt
+    seqs="$LA_SEQS"
+    "$@" || rc=$?
+    la_result "$seqs" "$rc" "$(la_packages_json "${names[@]}")"
+    return "$rc"
+}
+
+la_git_global_file() {
+    local xdg="${XDG_CONFIG_HOME:-$HOME/.config}/git/config"
+    if [[ ! -f "$HOME/.gitconfig" && -f "$xdg" ]]; then printf '%s' "$xdg"
+    else printf '%s' "$HOME/.gitconfig"; fi
+}
+
+la_git_global_append() {   # la_git_global_append <key> -- <command...>
+    local key="$1" rc=0 seqs file
+    shift 2
+    if ! $CFM_ATTEMPT; then "$@"; return; fi
+    file="$(la_git_global_file)"
+    la_step git_config_entry append \
+        "$(git config --global --get-all "$key" 2>/dev/null | la_py json values)" "$file"
+    seqs="$LA_SEQS"
+    "$@" || rc=$?
+    la_result "$seqs" "$rc" "$(git config --global --get-all "$key" 2>/dev/null | la_py json values)"
+    return "$rc"
+}
+
+la_provider_begin() {   # la_provider_begin <intent> <prior-json> <target>  → LA_PROVIDER_SEQS
+    LA_PROVIDER_SEQS=""
+    $CFM_ATTEMPT || return 0
+    [[ -n "$1" && -n "$2" ]] \
+        || la_fatal "A provider call reached the fresh-install attempt with no recorded observation."
+    la_step provider_op "$1" "$2" "$3"
+    LA_PROVIDER_SEQS="$LA_SEQS"
+}
+
+# The provider's result, and then the result of any filesystem target observed for it (the storage
+# target), are published BEFORE the exit code is dispatched — a refusal still records what stands.
+la_provider_end() {     # la_provider_end <intent> <rc> <provider-output>
+    $CFM_ATTEMPT || return 0
+    local post
+    post="$(printf '%s' "$3" | la_py provider-post "$1" "$2" \
+        "$(lc_json_array "${CFM_PROXY_TYPES[@]}")" 2>&1)" \
+        || la_fatal "The fresh-install attempt record could not describe the $1 result: $post"
+    la_result "$LA_PROVIDER_SEQS" "$2" "$post"
+    LA_PROVIDER_SEQS=""
+    if [[ -n "$LA_PROVIDER_TARGET_SEQS" ]]; then
+        la_result "$LA_PROVIDER_TARGET_SEQS" "$2" -
+        LA_PROVIDER_TARGET_SEQS=""
+    fi
+}
+
+# Bracket form, for a mutation written as a heredoc: `la_begin …; seqs=$LA_SEQS; cmd <<X && rc=0 ||
+# rc=$?; …; la_end "$rc" "$seqs"`. `la_end` returns the command's status, so `set -e` still stops.
+la_begin() {    # la_begin <kind> <intent> <extra-json|-> <target>...
+    LA_SEQS=""
+    $CFM_ATTEMPT || return 0
+    la_step "$@"
+}
+
+la_end() {      # la_end <rc> <seqs> [extra-json]
+    if $CFM_ATTEMPT; then la_result "$2" "$1" "${3:--}"; fi
+    return "$1"
+}
+
+# `lc_run`, write-ahead. The ordinary path IS `lc_run`; an attempt publishes the intent, runs the
+# verb without flattening its exit, publishes the result, and only then dispatches the exit code.
+la_lc_run() {   # la_lc_run <intent> <prior-json> <what> <verb...>
+    local intent="$1" prior="$2" what="$3"
+    shift 3
+    if ! $CFM_ATTEMPT; then lc_run "$what" "$@"; return; fi
+    la_provider_begin "$intent" "$prior" "$intent"
+    lc_run_raw "$@"
+    la_provider_end "$intent" "$LC_RAW_RC" "$LC_RAW_OUT"
+    lc_dispatch "$LC_RAW_RC" "$what"
+    printf '%s' "$LC_RAW_OUT"
+}
+
+la_field() { la_py field "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$1"; }
+# The storage target is DERIVED by the record (from paths.fms_database_dir), never spelled here.
+la_path() { la_py path "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$1"; }
+la_seq_of() { la_py seq-of "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$1" "$2"; }
+la_created() { [[ "$(la_py created "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$1" "$2")" == true ]]; }
+
 # ── Arg parsing ─────────────────────────────────────────────────────────────────
 # TEN SWITCHES IN NINE SEMANTIC GROUPS (parent §4H.1), identical in meaning on both platforms.
 #
@@ -991,6 +1637,7 @@ while [[ $# -gt 0 ]]; do
         --proxy-policy-ignore)  PROXY_POLICY_IGNORE+=("$2"); shift 2 ;;
         --repair-storage-access)    REPAIR_STORAGE_ACCESS=true; shift ;;
         --replace-existing-install) REPLACE_EXISTING_INSTALL=true; shift ;;
+        --discard-incomplete-attempt) DISCARD_INCOMPLETE_ATTEMPT=true; shift ;;
         --yes)        ASSUME_YES=true; shift ;;
         --silent)     SILENT=true; shift ;;
         --verbose|-v) VERBOSE=true; shift ;;
@@ -1665,7 +2312,9 @@ prepare_install_root() { # path published-here replacement-consent -> establish 
             [[ "$replace" == true ]] \
                 || die "$root exists, is not empty, and carries no CORPUSfm installation. Re-run with --replace-existing-install to move it aside, or choose another --install-dir. Nothing has been changed."
             aside="${root}.replaced-$(date +%Y%m%d-%H%M%S)"
-            mv -- "$root" "$aside" \
+            local extra=-
+            if $CFM_ATTEMPT; then extra="$(la_py json moved "$aside")"; fi
+            la_do dir move_aside "$extra" "$root" -- mv -- "$root" "$aside" \
                 || die "Could not move the unrelated install directory aside; nothing was replaced."
             warn "Moved the existing directory aside to $aside (--replace-existing-install)"
             ;;
@@ -1759,6 +2408,232 @@ fi
 #
 # The journal path is a FIXED platform location (`lifecycle/layout.py::posix_layout`), so its
 # presence can be established without running anything at all.
+# ── PACKET 1398: an incomplete fresh-install attempt is routed FIRST ────────────────────
+# A protected attempt container means an earlier fresh install stopped part-way. It is classified
+# before any other prior-operation routing and before phase-4+ work. The ONLY exception is an
+# ordinary provider journal left inside a published attempt: its existing recover-first route runs
+# first (below), and the attempt is routed immediately after it.
+la_json_get() {    # la_json_get <json> <key>...   (the runtime interpreter; no installed venv needed)
+    printf '%s' "$1" | "$LC_RUNTIME_PY" -c '
+import json, sys
+try:
+    value = json.loads(sys.stdin.read())
+except ValueError:
+    raise SystemExit(0)
+for key in sys.argv[1:]:
+    value = value.get(key) if isinstance(value, dict) else None
+print("" if value is None else (value if isinstance(value, str) else json.dumps(value)))' "${@:2}"
+}
+
+la_attempt_request() {   # la_attempt_request <dir> <json>  → prints a root-owned request path
+    local request="$1/request.json"
+    ( umask 077; printf '%s' "$2" > "$request" )
+    chown root:root "$request" 2>/dev/null || true
+    printf '%s' "$request"
+}
+
+la_attempt_inspect() {   # la_attempt_inspect <installation_id> [with-commands]
+    local inst="$1" reqdir out plan
+    reqdir="$(mktemp -d /run/corpusfm-installer-attempt.XXXXXX)"; chmod 700 "$reqdir"
+    out="$("${CFM_LIFECYCLE[@]}" attempt inspect --request "$(la_attempt_request "$reqdir" \
+        "$(printf '{"schema_version":1,"installation_id":"%s","actor":"installer"}' "$inst")")" \
+        2>>"$CFM_LOG")" || true
+    rm -f "$reqdir/request.json"
+    plan="$("${CFM_LIFECYCLE[@]}" uninstall plan --request "$(la_attempt_request "$reqdir" \
+        "$(printf '{"schema_version":2,"installation_id":"%s","actor":"installer","force":false,"credential_transport":"none"}' "$inst")")" \
+        2>>"$CFM_LOG")" || true
+    rm -rf "$reqdir"
+    printf '%s\n%s\n' "$out" "$plan" >>"$CFM_LOG" 2>/dev/null || true
+    printf '%s' "$out" | "$LC_RUNTIME_PY" -c '
+import json, sys
+series, version, commit, commands, plan = sys.argv[1:6]
+try:
+    report = json.loads(sys.stdin.read())
+except ValueError:
+    print("  The attempt could not be inspected; see the install log.")
+    raise SystemExit(0)
+try:
+    preview = json.loads(plan)
+except ValueError:
+    preview = {}
+print("  Attempt:       %s" % report.get("attempt_id"))
+print("  Installation:  %s" % report.get("installation_id"))
+print("  State:         %s (phase %s)" % (report.get("state"), report.get("phase")))
+observed = (report.get("package") or {}).get("observed") or {}
+print("  Recorded by:   %s / %s @ %s" % (observed.get("installer_series") or "development",
+      observed.get("installer_version") or "-", (observed.get("application_commit") or "-")[:12]))
+print("  Running now:   %s / %s @ %s" % (series or "development", version or "-", (commit or "-")[:12]))
+if report.get("reason"):
+    print("  Finding:       %s: %s" % (report["reason"], report.get("detail")))
+print("  Recorded changes (seq, kind, intent, state, class, target):")
+for row in report.get("ledger") or []:
+    print("    %3s %-16s %-28s %-8s %-10s %s" % (row.get("seq"), row.get("kind"), row.get("intent"),
+          row.get("state"), row.get("class") or "reported", row.get("target")))
+removes = [op.get("resource") for op in (preview.get("operations") or []) if isinstance(op, dict)]
+if removes:
+    print("  Discard would remove or restore: %s" % ", ".join(str(r) for r in removes))
+for kept in preview.get("retained") or []:
+    if isinstance(kept, dict):
+        print("  Discard would keep %s (%s)" % (kept.get("resource"), kept.get("because")))
+print("  Kept and reported: every row above whose class is not \"created\" (logs are always kept).")
+if commands == "with-commands" and report.get("manual_commands"):
+    print("  Verified cleanup cannot run here. These commands remove only what this attempt recorded")
+    print("  creating, newest first; read them before running any:")
+    for command in report["manual_commands"]:
+        print("    " + command)
+' "$CFM_INSTALLER_SERIES" "$CFM_INSTALLER_VERSION" "$CFM_PACKAGE_COMMIT" "${2:-}" "$plan"
+}
+
+la_attempt_discard() {   # la_attempt_discard <installation_id>   (always ends this invocation)
+    local inst="$1" transport=prompt reqdir request out rc=0 result reason detail
+    if [[ "$LC_RUNTIME_KIND" != package ]]; then
+        la_attempt_inspect "$inst" with-commands
+        # The protected attempt record and its frozen plan are the deletion authority; no package
+        # identity grants any. A complete package runtime is an EXECUTION requirement: cleanup may
+        # remove the installed runtime that would otherwise be running it.
+        die "Executable Discard needs a complete private CORPUSfm Series 2 package, whose own runtime
+     keeps running while cleanup removes the installed one. Deletion authority is the protected attempt
+     record and its frozen plan, not the package. The commands above are the bounded filesystem
+     fallback; to discard through verified cleanup, rerun a complete private package. Nothing has been
+     changed."
+    fi
+    if $SILENT; then
+        if [[ -n "$FM_ADMIN_USER" && -n "$FM_ADMIN_PASS" ]]; then transport=stdin; else transport=none; fi
+    fi
+    la_attempt_inspect "$inst"
+    reqdir="$(mktemp -d /run/corpusfm-installer-attempt.XXXXXX)"; chmod 700 "$reqdir"
+    request="$(la_attempt_request "$reqdir" \
+        "$(printf '{"schema_version":2,"installation_id":"%s","actor":"%s","force":false,"credential_transport":"%s"}' \
+            "$inst" "${SUDO_USER:-root}" "$transport")")"
+    info "Discarding the incomplete fresh-install attempt with the verified package runtime"
+    if [[ "$transport" == stdin ]]; then
+        out="$(lc_fms_frame | "${CFM_LIFECYCLE[@]}" uninstall start --request "$request")" || rc=$?
+    else
+        out="$("${CFM_LIFECYCLE[@]}" uninstall start --request "$request")" || rc=$?
+    fi
+    rm -rf "$reqdir"
+    printf '%s\n' "$out" >>"$CFM_LOG" 2>/dev/null || true
+    result="$(la_json_get "$out" result)"; reason="$(la_json_get "$out" reason)"
+    detail="$(la_json_get "$out" detail)"
+    case "$rc" in
+        0)  ok "The incomplete fresh-install attempt was discarded ($result)."
+            echo "  Everything listed above as kept or reported remains in place; logs were preserved."
+            echo "  Run the installer again to start a fresh installation."
+            exit 0 ;;
+        3|5)
+            die "The discard stopped safely part-way ($result; $reason).
+     $detail
+     Re-run this same verified package and choose Discard again." ;;
+        *)
+            [[ "$reason" == lock_unavailable ]] && la_attempt_inspect "$inst" with-commands
+            die "The discard refused ($result; $reason).
+     $detail
+     The attempt record is unchanged." ;;
+    esac
+}
+
+la_attempt_menu() {      # la_attempt_menu <state> <installation_id>
+    local reply
+    warn "An earlier CORPUSfm fresh installation stopped part-way ($1). It must be discarded before"
+    warn "a new installation can start; nothing it recorded is continued or published."
+    $DISCARD_INCOMPLETE_ATTEMPT && la_attempt_discard "$2"
+    if $SILENT; then
+        la_attempt_inspect "$2"
+        die "failed_before_change: an incomplete fresh-install attempt owns this machine. Review the
+     summary above, then re-run with --discard-incomplete-attempt to discard it. Nothing has been
+     changed."
+    fi
+    while true; do
+        read -rp "  [I] Inspect  [D] Discard  [Q] Quit: " reply \
+            || die "No answer was read; nothing has been changed."
+        case "$reply" in
+            [Ii]) la_attempt_inspect "$2" ;;
+            [Dd]) la_attempt_discard "$2" ;;
+            [Qq]) echo "  Quit - nothing changed."; exit 0 ;;
+            *)    echo "  Choose I, D or Q." ;;
+        esac
+    done
+}
+
+# An EMPTY container (staging residue aside) needs no interpreter to recognise, so recognising it
+# never prepares a recovery runtime a fresh run would then keep using.
+la_container_is_empty() {
+    local entry
+    [[ -d "$CFM_ATTEMPT_DIR" && ! -L "$CFM_ATTEMPT_DIR" ]] || return 1
+    for entry in "$CFM_ATTEMPT_DIR"/* "$CFM_ATTEMPT_DIR"/.[!.]*; do
+        [[ -e "$entry" || -L "$entry" ]] || continue
+        case "${entry##*/}" in
+            .attempt.json.*.tmp|.pending.json.*.tmp|.journal.json.*.tmp) ;;
+            *) return 1 ;;
+        esac
+    done
+    return 0
+}
+
+la_route_existing_attempt() {   # la_route_existing_attempt first|final
+    local state st inst attempt reqdir out rc=0
+    local saved_kind="$LC_RUNTIME_KIND" saved_py="$LC_RUNTIME_PY" saved_src="$LC_RUNTIME_SOURCE"
+    local saved_cli1="${CFM_LIFECYCLE[1]}" saved_cli2="${CFM_LIFECYCLE[2]}"
+    exec 9>&2
+    if la_container_is_empty; then
+        LA_LEFTOVER_EMPTY=true
+        return 0
+    fi
+    if [[ -n "$CFM_INSTALLER_SERIES" && -f "$CFM_RUNTIME_ROOT/corpusfm-recovery-source.zip" ]]; then
+        [[ "$LC_RUNTIME_KIND" == package ]] || prepare_package_recovery_runtime
+    elif ! [[ -x "$INSTALL_DIR/venv/bin/python" ]]; then
+        die "This machine holds an incomplete CORPUSfm fresh-install attempt at $CFM_ATTEMPT_DIR, and
+     this installer carries no verified lifecycle runtime to read it. Re-run from a complete verified
+     Series 2 package. Nothing has been changed."
+    fi
+    state="$("${CFM_LIFECYCLE[@]}" status --json 2>>"$CFM_LOG")" || true
+    [[ -n "${state//[[:space:]]/}" ]] \
+        || die "\`corpusfm-lifecycle status --json\` produced no output beside the attempt container
+     $CFM_ATTEMPT_DIR. Nothing has been changed."
+    st="$(la_json_get "$state" fresh_attempt state)"
+    inst="$(la_json_get "$state" fresh_attempt installation_id)"
+    attempt="$(la_json_get "$state" fresh_attempt attempt_id)"
+    case "$st" in
+        ""|none) return 0 ;;
+        leftover_empty_container) LA_LEFTOVER_EMPTY=true; return 0 ;;
+        complete_stale_record)
+            reqdir="$(mktemp -d /run/corpusfm-installer-attempt.XXXXXX)"; chmod 700 "$reqdir"
+            out="$("${CFM_LIFECYCLE[@]}" attempt complete --request "$(la_attempt_request "$reqdir" \
+                "$(printf '{"schema_version":1,"installation_id":"%s","attempt_id":"%s","actor":"installer"}' \
+                    "$inst" "$attempt")")" 2>>"$CFM_LOG")" || rc=$?
+            rm -rf "$reqdir"
+            printf '%s\n' "$out" >>"$CFM_LOG" 2>/dev/null || true
+            [[ "$rc" -eq 0 ]] || die "A completed installation still carries its attempt record, and it could
+     not be retired ($(la_json_get "$out" reason): $(la_json_get "$out" detail)). Nothing else changed."
+            ok "Retired the completed installation's leftover attempt record"
+            # This invocation continues as the ordinary run it would have been: the recovery runtime
+            # prepared to read the record does not become its lifecycle runtime.
+            LC_RUNTIME_KIND="$saved_kind"; LC_RUNTIME_PY="$saved_py"; LC_RUNTIME_SOURCE="$saved_src"
+            CFM_LIFECYCLE[1]="$saved_cli1"; CFM_LIFECYCLE[2]="$saved_cli2"
+            return 0 ;;
+        undecidable)
+            die "The fresh-install attempt at $CFM_ATTEMPT_DIR cannot be trusted:
+     $(la_json_get "$state" fresh_attempt reason): $(la_json_get "$state" fresh_attempt detail)
+     Nothing has been changed, and no cleanup command is offered for a record that cannot be verified." ;;
+        post_foundation)
+            if [[ "$1" == first ]]; then
+                case "$(la_json_get "$state" journal)" in
+                    none|"") ;;
+                    *) LA_ROUTE_DEFERRED=true; return 0 ;;
+                esac
+            fi
+            la_attempt_menu "$st" "$inst" ;;
+        pre_foundation|foundation_window|discarding|terminal_pending|terminal_done|bookkeeping_only)
+            la_attempt_menu "$st" "$inst" ;;
+        *)  die "The fresh-install attempt reports state '$st', which this installer cannot route.
+     Nothing has been changed." ;;
+    esac
+}
+
+if [[ -e "$CFM_ATTEMPT_DIR" || -L "$CFM_ATTEMPT_DIR" ]]; then
+    la_route_existing_attempt first
+fi
+
 CFM_JOURNAL_FILE=/var/lib/corpusfm/state/lifecycle-journal.json
 _lc_locator=missing
 _lc_manifest=missing
@@ -1897,6 +2772,10 @@ PY
 fi
 fi          # end: an installed or verified-package runtime read status strictly
 
+if $LA_ROUTE_DEFERRED; then
+    la_route_existing_attempt final
+fi
+
 PUBLISHED_HERE=false
 if [[ "$_lc_locator" == present ]]; then
     [[ -n "$_lc_install_dir" ]] \
@@ -1907,6 +2786,18 @@ if [[ "$_lc_locator" == present ]]; then
         || die "The published installation belongs to $_lc_install_dir, not the selected root $INSTALL_DIR. Nothing has been changed."
     PUBLISHED_HERE=true
     IS_UPGRADE=true
+fi
+
+# An EMPTY protected attempt container is adopted by a fresh run and removed by any other (§2.1).
+if $LA_LEFTOVER_EMPTY && { $IS_UPGRADE || $PUBLISHED_HERE; }; then
+    if [[ -L "$CFM_ATTEMPT_DIR" || "$(stat -c '%u %a' "$CFM_ATTEMPT_DIR" 2>/dev/null)" != "0 700" ]]; then
+        warn "The empty attempt container $CFM_ATTEMPT_DIR is not in its protected shape; it is left in place."
+    elif rmdir -- "$CFM_ATTEMPT_DIR" 2>/dev/null; then
+        ok "Removed an empty leftover fresh-install attempt container ($CFM_ATTEMPT_DIR)"
+    else
+        warn "Could not remove the empty leftover attempt container $CFM_ATTEMPT_DIR"
+    fi
+    LA_LEFTOVER_EMPTY=false
 fi
 
 # `--replace-existing-install` is deliberately narrow: it may move aside only a non-empty selected
@@ -2061,6 +2952,54 @@ if true; then
     cfm_confirm "Proceed?"
 fi
 
+# ── PACKET 1398: a no-authority fresh start becomes a recorded attempt, after consent ─────
+# The protected container and its record are the first durable change. From here until the
+# completion stamp, every durable mutation below is observed, intended, performed and resulted in
+# that record. An update, and any run with published authority, never creates one.
+la_begin_attempt() {
+    local paths allow=false findings
+    exec 9>&2
+    [[ -x "$CFM_ATTEMPT_PY" ]] && "$CFM_ATTEMPT_PY" -I -c 'import json, pwd, hashlib, tempfile' \
+        </dev/null 2>/dev/null \
+        || die "The fixed attempt-record writer $CFM_ATTEMPT_PY is unavailable. A fresh install records
+     every change before it makes it and cannot begin without it. Nothing has been changed."
+    # A patch hosting folder AT or INSIDE the install root is contained by the root's own ledger entry,
+    # so the patch compartment could never be recorded against an entry of its own. The normalized
+    # relationship is known now, so refuse here - before the container or any attempt mutation.
+    [[ "$(la_py json nested "$INSTALL_DIR" "$HOSTING_DIR")" == false ]] \
+        || die "--patch-hosting-dir $HOSTING_DIR is the install directory or lies inside it ($INSTALL_DIR).
+     A fresh install records its patch hosting folder as its own resource, which a folder inside the
+     install root cannot be. Choose a patch hosting folder outside $INSTALL_DIR. Nothing has been changed."
+    paths="$(la_py json paths install_dir "$INSTALL_DIR" patch_hosting_dir "$HOSTING_DIR" \
+        fms_root "$FMS_ROOT" fms_database_dir "$FM_DB_DIR" config_dir /etc/corpusfm \
+        state_dir /var/lib/corpusfm/state secrets_dir /var/lib/corpusfm/secrets \
+        log_dir /var/log/corpusfm run_dir /run/corpusfm)"
+    [[ "$(install_root_state "$INSTALL_DIR" false)" == foreign && "$REPLACE_EXISTING_INSTALL" == true ]] \
+        && allow=true
+    findings="$(la_py refuse-check "$paths" "$allow" 2>&1)" \
+        || die "REFUSE-FIRST: this fresh install found CORPUSfm resources that no installation record
+     accounts for:
+$findings
+     They may belong to an earlier installation. Resolve them deliberately, then re-run. Nothing has
+     been changed."
+    CFM_ATTEMPT_ID="$(cat /proc/sys/kernel/random/uuid)"
+    INSTALLATION_ID="$(cat /proc/sys/kernel/random/uuid)"
+    findings="$(la_py begin "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$CFM_ATTEMPT_ID" \
+        "$INSTALLATION_ID" "$paths" \
+        "$(la_py json package "$CFM_INSTALLER_SERIES" "$CFM_INSTALLER_VERSION" "$CFM_PACKAGE_COMMIT")" \
+        2>&1)" \
+        || die "The fresh-install attempt record could not be created at $CFM_ATTEMPT_DIR: $findings
+     Nothing else has been changed."
+    CFM_ATTEMPT=true
+    LA_LEFTOVER_EMPTY=false
+    # No package cache outside the recorded roots: pip otherwise writes root's profile cache.
+    export PIP_NO_CACHE_DIR=1
+    ok "Fresh-install attempt $CFM_ATTEMPT_ID recorded at $CFM_ATTEMPT_DIR"
+}
+if ! $IS_UPGRADE && ! $PUBLISHED_HERE; then
+    la_begin_attempt
+fi
+
 
 # ═══ PHASE 7 — Preparation complete; no required question remains ═════════════════════
 
@@ -2078,8 +3017,8 @@ done
 
 if [[ ${#PKGS_NEEDED[@]} -gt 0 ]]; then
     info "Installing: ${PKGS_NEEDED[*]}"
-    apt-get update -qq
-    apt-get install -y -qq "${PKGS_NEEDED[@]}"
+    la_packages rsync curl ca-certificates -- apt-get update -qq
+    la_packages rsync curl ca-certificates -- apt-get install -y -qq "${PKGS_NEEDED[@]}"
 fi
 ok "System dependencies satisfied"
 
@@ -2101,7 +3040,7 @@ info "Service User"
 CREATED_SERVICE_ACCOUNT=false
 if ! id -u "$SERVICE_USER" &>/dev/null; then
     info "Creating system user: $SERVICE_USER"
-    useradd \
+    la_do account create - "$SERVICE_USER" -- useradd \
         --system \
         --home-dir "$INSTALL_DIR" \
         --no-create-home \
@@ -2121,11 +3060,11 @@ fi
 # code it executes. These directories are created root-owned; only state, logs and run are writable
 # by the service, and `secrets` deliberately is NOT (parent D4).
 info "Fixed OS state locations"
-install -d -m 0755 -o root -g root /etc/corpusfm
-install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" /var/lib/corpusfm/state
-install -d -m 0755 -o root -g root /var/lib/corpusfm/secrets
-install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" /var/log/corpusfm
-install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" /run/corpusfm
+la_do dir ensure - /etc/corpusfm -- install -d -m 0755 -o root -g root /etc/corpusfm
+la_do dir ensure - /var/lib/corpusfm/state -- install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" /var/lib/corpusfm/state
+la_do dir ensure - /var/lib/corpusfm/secrets -- install -d -m 0755 -o root -g root /var/lib/corpusfm/secrets
+la_do dir ensure - /var/log/corpusfm -- install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" /var/log/corpusfm
+la_do dir ensure - /run/corpusfm -- install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" /run/corpusfm
 ok "State locations ready (/etc/corpusfm, /var/lib/corpusfm, /var/log/corpusfm, /run/corpusfm)"
 
 # Installed secrets are provider-owned and read-only to both runtime services. No individual secret
@@ -2137,10 +3076,10 @@ ok "State locations ready (/etc/corpusfm, /var/lib/corpusfm, /var/log/corpusfm, 
 # would let it forge one naming its own trigger id -- correlation is not authentication. So the
 # outcome directory is root-owned and merely readable by the service, and `update_service` REFUSES
 # to trigger until it has verified that.
-install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$INSTALL_DIR/.corpusfm/update-inbox"
-install -d -m 0755 -o root -g root "$INSTALL_DIR/.corpusfm/update-outcome"
-install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" /var/lib/corpusfm/state/update-inbox
-install -d -m 0755 -o root -g root /var/lib/corpusfm/state/update-outcome
+la_do dir ensure - "$INSTALL_DIR/.corpusfm/update-inbox" -- install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$INSTALL_DIR/.corpusfm/update-inbox"
+la_do dir ensure - "$INSTALL_DIR/.corpusfm/update-outcome" -- install -d -m 0755 -o root -g root "$INSTALL_DIR/.corpusfm/update-outcome"
+la_do dir ensure - /var/lib/corpusfm/state/update-inbox -- install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" /var/lib/corpusfm/state/update-inbox
+la_do dir ensure - /var/lib/corpusfm/state/update-outcome -- install -d -m 0755 -o root -g root /var/lib/corpusfm/state/update-outcome
 ok "Update inbox (service-writable) and outcome (root-owned) separated"
 
 # ── Directory structure ──────────────────────────────────────────────────────────
@@ -2148,9 +3087,9 @@ info "Directories"
 info "Creating directory structure..."
 
 # Root install dir
-mkdir -p "$INSTALL_DIR"
-chown root:root "$INSTALL_DIR"
-chmod 755 "$INSTALL_DIR"
+la_do dir ensure - "$INSTALL_DIR" -- mkdir -p "$INSTALL_DIR"
+la_do dir ensure - "$INSTALL_DIR" -- chown root:root "$INSTALL_DIR"
+la_do dir ensure - "$INSTALL_DIR" -- chmod 755 "$INSTALL_DIR"
 
 # Source tree - root-owned, service-READABLE. Packet 1246-03: it used to be 0770 root:corpusfm so
 # the in-app updater could `git pull` into it as the service user. A service that can rewrite the
@@ -2249,8 +3188,8 @@ info "Source"
 # dubious-ownership guard would make rev-parse + clone fail and SILENTLY drop us to the
 # dist path (no checkout and no Updates button). Mark it safe up front so
 # a real clone always takes the git path; the phase-21 post-install verification catches any residue.
-git config --global --add safe.directory "$REPO_DIR" 2>/dev/null || true
-git config --global --add safe.directory "$REPO_DIR/.git" 2>/dev/null || true
+la_git_global_append safe.directory -- git config --global --add safe.directory "$REPO_DIR" 2>/dev/null || true
+la_git_global_append safe.directory -- git config --global --add safe.directory "$REPO_DIR/.git" 2>/dev/null || true
 # git-deploy is the only install path now; dist-rsync is retired.
 # REPO_DIR must be a git checkout, or we FAIL LOUDLY rather than silently degrade.
 if [[ "$REPO_DIR" == "$INSTALL_DIR/src" ]]; then
@@ -2416,18 +3355,27 @@ else
 fi
 CFM_INSTALLER_BUNDLE_PROTOCOL=1
 
-# ── Series 2 runtime assets (packet 1257) ─────────────────────────────────────────
-# The storage database, the paired add-on distribution and the four seed envelopes no longer travel
-# inside the application Git bundle — they are a separate, digest-covered payload built from two
-# pinned asset repositories at package construction.
+# ── Series 2 runtime assets ───────────────────────────────────────────────────────
+# TWO COPIES EXIST, DELIBERATELY, AND THEY ARE NOT THE SAME THING.
 #
-# THEY GO IN A SIBLING OF THE CHECKOUT, NEVER INSIDE IT. Placing them under `src/` made them
-# untracked content in a Git working tree, and `tree_inspection` refuses ANY untracked path so that
-# a privileged update never builds on something git cannot account for. Measured on fms-dev at
-# 0.2438: every provider composed, then phase 20 refused with 33 "untracked content that is not an
-# installer artifact" problems and the services were never started. Widening that allowlist was
-# considered and rejected — the checkout is on the service's import path, so the fix is to keep
-# non-source bytes out of it, not to teach the gate to ignore them.
+#   1. `src/assets/` — TRACKED application source. The assets are application content now, so they
+#      are committed on application `main`, they travel inside the application Git bundle like the
+#      rest of the source, and they land in the deployed checkout as ordinary tracked files.
+#   2. `$INSTALL_DIR/$CFM_ASSETS_DIRNAME` — the OPERATIONAL copy placed below, unpacked from the
+#      package's separate digest-covered `corpusfm-assets.zip`. This is what the service reads.
+#
+# THE OLD FAILURE WAS ABOUT UNTRACKED BYTES, NOT ABOUT LOCATION. Placing the operational copy under
+# `src/` put UNTRACKED content into a Git working tree, and `tree_inspection` refuses ANY untracked
+# path so that a privileged update never builds on something git cannot account for. Measured on
+# fms-dev at 0.2438: every provider composed, then phase 20 refused with 33 "untracked content that
+# is not an installer artifact" problems and the services were never started. Widening that
+# allowlist was considered and rejected — the checkout is on the service's import path, so the fix
+# is to keep UNACCOUNTED bytes out of it, not to teach the gate to ignore them.
+#
+# Tracked `src/assets/` does not reopen that: git accounts for it exactly as it accounts for
+# `src/corpusfm/`, so the gate has nothing to object to. The operational copy stays a sibling of the
+# checkout because it is placed by the installer rather than committed, which is the property that
+# mattered all along.
 if [[ -n "$CFM_INSTALLER_SERIES" ]]; then
     _cfm_assets="$SCRIPT_DIR/corpusfm-assets.zip"
     [[ -f "$_cfm_assets" ]] || die "the verified installer package carries no Series 2 asset payload."
@@ -2543,14 +3491,16 @@ QUIESCE_RESTORE_READY=true
 # ── CLI wrapper ───────────────────────────────────────────────────────────────────
 info "CLI"
 info "Installing /usr/local/bin/corpusfm..."
-cat > /usr/local/bin/corpusfm << WRAPPER
+la_begin file ensure - /usr/local/bin/corpusfm
+_la_seqs="$LA_SEQS"
+cat > /usr/local/bin/corpusfm << WRAPPER && chmod +x /usr/local/bin/corpusfm && _la_rc=0 || _la_rc=$?
 #!/usr/bin/env bash
 # CORPUSfm CLI wrapper — generated by installer
 export HOME=$INSTALL_DIR
 export PYTHONPATH=$INSTALL_DIR/src
 exec $INSTALL_DIR/venv/bin/python -m corpusfm.server.cli "\$@"
 WRAPPER
-chmod +x /usr/local/bin/corpusfm
+la_end "$_la_rc" "$_la_seqs"
 ok "CLI available: corpusfm --help"
 
 # ── Installed uninstaller ────────────────────────────────────────────────────────
@@ -2606,7 +3556,7 @@ if command -v fmsadmin &>/dev/null; then
         SUDOERS_TMP="$(mktemp)"
         printf '%s ALL=(root) NOPASSWD: %s\n' "$SERVICE_USER" "$HELPER_DST" > "$SUDOERS_TMP"
         if visudo -cf "$SUDOERS_TMP" >/dev/null 2>&1; then
-            install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_DST"
+            la_do file ensure - "$SUDOERS_DST" -- install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_DST"
             ok "Scoped DB helper installed ($HELPER_DST; sudoers validated)"
         else
             warn "sudoers validation failed — DB helper NOT enabled (in-app sandbox/apply disabled)"
@@ -2619,7 +3569,7 @@ if command -v fmsadmin &>/dev/null; then
     # Root-owned handoff dir for the TOCTOU-closed place() path (cfm-db-helper mkhandoff/rmhandoff).
     # root:root 0711 — the service can traverse INTO a handoff subdir to write its payload file but
     # can never create/rename entries here, so it cannot symlink-swap a place source. Idempotent.
-    install -d -m 0711 -o root -g root /var/lib/corpusfm/handoff \
+    la_do dir ensure - /var/lib/corpusfm/handoff -- install -d -m 0711 -o root -g root /var/lib/corpusfm/handoff \
         && ok "Handoff dir provisioned (/var/lib/corpusfm/handoff; root:root 0711)" \
         || warn "could not provision /var/lib/corpusfm/handoff — place() falls back to the /tmp path"
 
@@ -2631,7 +3581,8 @@ if command -v fmsadmin &>/dev/null; then
     # non-empty (generated DBs are user work product). Idempotent. The lifecycle patch provider
     # registers and reads back the additional-folder slot at phase 16.
     info "CORPUSfm hosting folder"
-    if install -d -o "$SERVICE_USER" -g fmsadmin "$HOSTING_DIR" 2>/dev/null && chmod 2775 "$HOSTING_DIR" 2>/dev/null; then
+    if la_do dir ensure - "$HOSTING_DIR" -- install -d -o "$SERVICE_USER" -g fmsadmin "$HOSTING_DIR" 2>/dev/null \
+       && la_do dir ensure - "$HOSTING_DIR" -- chmod 2775 "$HOSTING_DIR" 2>/dev/null; then
         # NOT recorded in install.yaml, and the call that tried to is GONE. `corpusfm set-hosting-dir`
         # was retired with the `hosting_dir` marker key by packet 1246-05-02 — "an install.yaml key is
         # a configured claim, and the compartment has to be a PROVEN one" (corpusfm/install.py). The
@@ -2655,7 +3606,8 @@ if command -v fmsadmin &>/dev/null; then
     # write a subfolder and is deferred; the gate does not depend on it.)
     info "CORPUSfm support folder"
     SUPPORT_DIR="$FM_DB_DIR/CORPUSfm-Support"
-    if install -d -o "$SERVICE_USER" -g fmsadmin "$SUPPORT_DIR" 2>/dev/null && chmod 2775 "$SUPPORT_DIR" 2>/dev/null; then
+    if la_do dir ensure - "$SUPPORT_DIR" -- install -d -o "$SERVICE_USER" -g fmsadmin "$SUPPORT_DIR" 2>/dev/null \
+       && la_do dir ensure - "$SUPPORT_DIR" -- chmod 2775 "$SUPPORT_DIR" 2>/dev/null; then
         # Same retirement as the hosting folder above: `corpusfm set-support-dir` and the `support_dir`
         # marker key went with packet 1246-05-02. The compartment is PROVEN by the patch provider at
         # phase 16, never claimed by a marker file, so the directory is all this step owes.
@@ -2670,13 +3622,13 @@ fi
 # Its only app caller — the migrate-into-new-file storage engine — is deleted (085 is
 # fresh-install-only; FileMaker moves the database and a Recovery File carries the Corpus Key). A NOPASSWD root grant with no consumer is
 # pure attack surface, so remove the installed copy + grant a prior install left. Idempotent.
-rm -f "$INSTALL_DIR/bin/cfm-storage-swap" /etc/sudoers.d/corpusfm-storage-swap 2>/dev/null || true
+la_do file delete - "$INSTALL_DIR/bin/cfm-storage-swap" /etc/sudoers.d/corpusfm-storage-swap -- rm -f "$INSTALL_DIR/bin/cfm-storage-swap" /etc/sudoers.d/corpusfm-storage-swap 2>/dev/null || true
 
 # ── Retire the scoped MCP control helper (obsolete with the folded-in MCP) ────────
 # cfm-mcp-ctl brokered restart/port-reconcile for the standalone :8765 service. Folded in,
 # there's no separate unit to restart and no port to reconcile.
 # Remove the helper + its sudoers grant if a prior install left them. Idempotent.
-rm -f "$INSTALL_DIR/bin/cfm-mcp-ctl" /etc/sudoers.d/corpusfm-mcp-ctl 2>/dev/null || true
+la_do file delete - "$INSTALL_DIR/bin/cfm-mcp-ctl" /etc/sudoers.d/corpusfm-mcp-ctl -- rm -f "$INSTALL_DIR/bin/cfm-mcp-ctl" /etc/sudoers.d/corpusfm-mcp-ctl 2>/dev/null || true
 
 # ── Deploy-decision helpers (packet 1238) ─────────────────────────────────────────
 # `fm_db_hosted <name>` — 0 hosted / 1 not hosted / 2 COULD NOT ASK — lives in `_cfm_lib.sh`.
@@ -2705,7 +3657,9 @@ fm_deploy_template() {
 # (systemd's default /tmp age is 30d — far too long for GB-sized previews accumulating daily.)
 info "Preview temp cleanup"
 info "Installing /etc/tmpfiles.d/corpusfm.conf..."
-cat > /etc/tmpfiles.d/corpusfm.conf << 'TMPFILES'
+la_begin file ensure - /etc/tmpfiles.d/corpusfm.conf
+_la_seqs="$LA_SEQS"
+cat > /etc/tmpfiles.d/corpusfm.conf << 'TMPFILES' && _la_rc=0 || _la_rc=$?
 # CORPUSfm — age out Explorer/Diff/patch preview temp artifacts (space reclaimed daily via
 # systemd-tmpfiles-clean.timer). The app also sweeps these on startup + on each generation.
 d /run/corpusfm 0750 corpusfm corpusfm -
@@ -2713,6 +3667,7 @@ e /tmp/corpusfm_explorer_* - - - 6h
 e /tmp/corpusfm_diff_* - - - 6h
 e /tmp/corpusfm_patch_* - - - 6h
 TMPFILES
+la_end "$_la_rc" "$_la_seqs"
 systemd-tmpfiles --create /etc/tmpfiles.d/corpusfm.conf 2>/dev/null || true
 ok "Preview temp-cleanup rule installed (6h, via systemd-tmpfiles-clean.timer)"
 
@@ -2740,19 +3695,34 @@ _lc_manifest="$(lc_json_field "$_lc_state" manifest)"
 if [[ "$_lc_locator" != "present" ]]; then
     [[ "$_lc_locator" == "missing" || -z "$_lc_locator" ]] \
         || die "the installation locator reads '$_lc_locator'; refusing to publish a foundation over it."
-    INSTALLATION_ID="$(cat /proc/sys/kernel/random/uuid)"
+    # A recorded attempt minted its installation identity with the record and reuses it. Ownership of
+    # the service account and the privilege helpers comes from ledger-created entries ONLY.
+    _lc_helpers_json='["/etc/sudoers.d/corpusfm-db-helper","/etc/sudoers.d/corpusfm-update","/etc/tmpfiles.d/corpusfm.conf"]'
+    if $CFM_ATTEMPT; then
+        [[ ! -e "$INSTALL_DIR/manifest/installation.json" ]] \
+            || die "an unpublished manifest already stands in $INSTALL_DIR; this attempt cannot record a foundation over it."
+        CREATED_SERVICE_ACCOUNT=false
+        la_created account "$SERVICE_USER" && CREATED_SERVICE_ACCOUNT=true
+        _lc_helpers=()
+        for _lc_h in /etc/sudoers.d/corpusfm-db-helper /etc/sudoers.d/corpusfm-update /etc/tmpfiles.d/corpusfm.conf; do
+            la_created file "$_lc_h" && _lc_helpers+=("$_lc_h")
+        done
+        _lc_helpers_json="$(lc_json_array "${_lc_helpers[@]}")"
+    else
+        INSTALLATION_ID="$(cat /proc/sys/kernel/random/uuid)"
+    fi
     [[ "$CFM_BUILD_VERSION" =~ ^0\.[0-9]+$ ]] \
         || die "the deployed checkout has no exact build version; refusing to publish an unidentified installation."
     [[ "$CFM_BUILD_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
         || die "the deployed checkout has no exact commit; refusing to publish an unidentified installation."
-    _lc_req="$(lc_request foundation "$(printf '{"schema_version":1,"installation_id":"%s","install_dir":"%s","patch_hosting_dir":"%s","fms_root":"%s","version":"%s","commit":"%s","installer_series":"%s","installer_version":"%s","installer_bundle_protocol":%s,"installer_source":"%s","installer_entry_point":"%s","created_service_account":%s,"privilege_helpers":["/etc/sudoers.d/corpusfm-db-helper","/etc/sudoers.d/corpusfm-update","/etc/tmpfiles.d/corpusfm.conf"],"cli_shim":"/usr/local/bin/corpusfm","support_dir":"%s","uninstaller_path":"%s","actor":"installer"}' \
+    _lc_req="$(lc_request foundation "$(printf '{"schema_version":1,"installation_id":"%s","install_dir":"%s","patch_hosting_dir":"%s","fms_root":"%s","version":"%s","commit":"%s","installer_series":"%s","installer_version":"%s","installer_bundle_protocol":%s,"installer_source":"%s","installer_entry_point":"%s","created_service_account":%s,"privilege_helpers":%s,"cli_shim":"/usr/local/bin/corpusfm","support_dir":"%s","uninstaller_path":"%s","actor":"installer"}' \
         "$INSTALLATION_ID" "$INSTALL_DIR" "$HOSTING_DIR" "$FMS_ROOT" \
         "$CFM_BUILD_VERSION" "$CFM_BUILD_COMMIT" "$CFM_INSTALLER_SERIES" \
         "$CFM_INSTALLER_VERSION" "$CFM_INSTALLER_BUNDLE_PROTOCOL" "$CFM_INSTALLER_SOURCE" \
         "$INSTALLER_ENTRY_POINT" \
-        "$CREATED_SERVICE_ACCOUNT" "$SUPPORT_DIR" \
+        "$CREATED_SERVICE_ACCOUNT" "$_lc_helpers_json" "$SUPPORT_DIR" \
         "$UNINSTALLER_PATH")")"
-    _lc_out="$(lc_run "foundation publication" composition foundation --request "$_lc_req")"
+    _lc_out="$(la_lc_run foundation '{"locator":false,"manifest":false}' "foundation publication" composition foundation --request "$_lc_req")"
     CFM_GENERATION="$(lc_json_field "$_lc_out" generation)"
     [[ "$CFM_GENERATION" == "1" ]] || die "foundation published generation '$CFM_GENERATION', expected 1."
     [[ "$(lc_json_field "$_lc_out" uninstaller_path)" == "$UNINSTALLER_PATH" ]] \
@@ -2818,7 +3788,9 @@ fi
 # `corpusfm.lifecycle.key_provisioning`, not in this script.
 _lc_req="$(lc_request provision-keys "$(printf '{"schema_version":1,"actor":"installer","flavour":"posix","service_account":"%s","database_name":"%s","database_search_dirs":%s}' \
     "$SERVICE_USER" "$FM_DATABASE" "$(lc_json_array "$FM_DB_DIR" "$HOSTING_DIR")")")"
-lc_run "key provisioning" provision-keys --request "$_lc_req" >/dev/null
+_la_prior=""
+if $CFM_ATTEMPT; then _la_prior="$(la_py json keys "$CFM_SECRETS_DIR")"; fi
+la_lc_run provision_keys "$_la_prior" "key provisioning" provision-keys --request "$_lc_req" >/dev/null
 ok "Corpus and Machine keys established at $CFM_SECRETS_DIR and proven through the published resolvers"
 
 # ── Install marker ────────────────────────────────────────────────────────────────
@@ -2830,8 +3802,8 @@ if [[ ! -f "$INSTALL_YAML" ]]; then
     info "Writing install.yaml through the application marker authority..."
     # `/etc/corpusfm` remains administrator-owned. Pre-create the one application-owned file at
     # 0600 so secure_fs can write it in place as the service without granting directory mutation.
-    install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_USER" /dev/null "$INSTALL_YAML"
-    cfm_run "write install marker" sudo -u "$SERVICE_USER" -H \
+    la_do file ensure - "$INSTALL_YAML" -- install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_USER" /dev/null "$INSTALL_YAML"
+    la_do file overwrite - "$INSTALL_YAML" -- cfm_run "write install marker" sudo -u "$SERVICE_USER" -H \
         env PYTHONPATH="$INSTALL_DIR/src" "$INSTALL_DIR/venv/bin/python" -c \
         "from corpusfm.install import write_install_marker; write_install_marker('server', '1.0')" \
         || die "Could not write the current installation marker at $INSTALL_YAML."
@@ -2967,7 +3939,9 @@ RENDER
     fi
     install -m 0755 -o root -g root "$UPDATER_DST.tmp" "$UPDATER_DST"
     rm -f "$UPDATER_DST.tmp"
-    cat > /etc/systemd/system/corpusfm-update.service << UNIT
+    la_begin unit ensure - /etc/systemd/system/corpusfm-update.service
+    _la_seqs="$LA_SEQS"
+    cat > /etc/systemd/system/corpusfm-update.service << UNIT && _la_rc=0 || _la_rc=$?
 [Unit]
 Description=CORPUSfm one-shot code update
 
@@ -2976,11 +3950,12 @@ Type=oneshot
 User=root
 ExecStart=$UPDATER_DST
 UNIT
+    la_end "$_la_rc" "$_la_seqs"
     UPD_SUDOERS_TMP="$(mktemp)"
     printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl start corpusfm-update.service\n' \
         "$SERVICE_USER" > "$UPD_SUDOERS_TMP"
     if visudo -cf "$UPD_SUDOERS_TMP" >/dev/null 2>&1; then
-        install -m 0440 -o root -g root "$UPD_SUDOERS_TMP" /etc/sudoers.d/corpusfm-update
+        la_do file ensure - /etc/sudoers.d/corpusfm-update -- install -m 0440 -o root -g root "$UPD_SUDOERS_TMP" /etc/sudoers.d/corpusfm-update
         systemctl daemon-reload 2>/dev/null || true
         ok "One-shot updater installed ($UPDATER_DST; sudoers validated)"
     else
@@ -3128,6 +4103,22 @@ ok "Provider prerequisites observed"
 # discard — and calling `commit-provider` anyway is exactly the `ProviderMismatch` that killed every
 # update of a box whose identity was already working.
 _lc_req="$(lc_request admin_identity-reconcile "$(lc_admin_identity_request "$(lc_fms_transport)")")"
+if $CFM_ATTEMPT; then
+    # Observed IMMEDIATELY before the mutation, and refuse-first on a foreign same-name identity.
+    _la_obs="$(lc_request admin_identity-observe-attempt "$(lc_admin_identity_request absent)")"
+    _la_state="$(lc_json_field "$("${CFM_LIFECYCLE[@]}" admin-identity observe --request "$_la_obs" 2>>"$CFM_LOG" || true)" state)"
+    case "$_la_state" in
+        not_installed|local_only|working) ;;
+        remote_only|mismatched)
+            die "REFUSE-FIRST: FileMaker Server already trusts a same-name Admin API identity this
+     installation does not hold ($_la_state). A fresh install does not overwrite it. Nothing was changed
+     by this step; remove that registration deliberately, then re-run." ;;
+        *)  die "The Admin API identity reads '$_la_state' and cannot be recorded for a fresh attempt.
+     Resolve the reported condition, then re-run." ;;
+    esac
+    LA_PROVIDER_INTENT=admin_identity_reconcile
+    LA_PROVIDER_PRIOR="$(la_py json observe "${_la_state^^}")"
+fi
 LC_FEED_CREDENTIAL=true
 lc_provider_run "admin_identity reconcile" candidate admin-identity reconcile --request "$_lc_req"
 LC_FEED_CREDENTIAL=false
@@ -3153,6 +4144,14 @@ fi
 # which is exactly what `commit-provider` parses, so the candidate is passed through rather than
 # rebuilt from a field the result does not carry.
 _lc_req="$(lc_request patch-apply "$(lc_patch_request)")"
+if $CFM_ATTEMPT; then
+    _la_seq="$(la_seq_of dir "$HOSTING_DIR")"
+    [[ -n "$_la_seq" ]] \
+        || die "the patch hosting folder $HOSTING_DIR has no entry in this attempt's record, so the patch
+     compartment cannot be recorded against it. Nothing was changed by this step."
+    LA_PROVIDER_INTENT=patch_apply
+    LA_PROVIDER_PRIOR="$(la_py json hosting "$_la_seq")"
+fi
 lc_provider_run "patch compartment apply" candidate patch-compartment apply \
     --request "$_lc_req" --mode "$CFM_MODE"
 if [[ "$LC_COMPOSE" == True || "$LC_COMPOSE" == true ]]; then
@@ -3176,6 +4175,17 @@ fi
 # The generation it names is the one the COMMIT produced, which is why it is read back rather than
 # echoed from the value the reconcile inspected.
 _lc_req="$(lc_request proxy-reconcile "$(lc_proxy_request reconcile)")"
+if $CFM_ATTEMPT; then
+    # Each front's owned-block state, observed now. A block that differs from this installation's
+    # rendering is REFUSE-FIRST; only an absent or current block proceeds.
+    _la_obs="$(lc_request proxy-status-attempt "$(lc_proxy_request status)")"
+    LA_PROVIDER_PRIOR="$("${CFM_LIFECYCLE[@]}" proxy status --request "$_la_obs" 2>>"$CFM_LOG" \
+        | la_py json proxy-blocks 2>&1)" \
+        || die "$LA_PROVIDER_PRIOR
+     A fresh install does not publish over a conflicting proxy configuration. Nothing was changed by
+     this step."
+    LA_PROVIDER_INTENT=proxy_reconcile
+fi
 LC_FEED_CREDENTIAL=true
 lc_provider_run "proxy reconcile" candidates proxy reconcile --request "$_lc_req"
 LC_FEED_CREDENTIAL=false
@@ -3236,7 +4246,7 @@ done
 # back would re-create the disagreement this removes: measured on fms-server 2026-08-08, the app
 # bound its development default `:8501` while the proxy forwarded to `:8533`.
 # app is loopback-only — retire any old public web-port firewall rule
-command -v ufw >/dev/null 2>&1 && ufw delete allow 8501/tcp >/dev/null 2>&1 || true
+command -v ufw >/dev/null 2>&1 && la_ufw_delete added "allow 8501/tcp" -- ufw delete allow 8501/tcp >/dev/null 2>&1 || true
 # (no restart here: phase 17 activated the front and phase 21 owns every service start)
 ok "CORPUSfm fronted at ${WEB_PREFIX}/ via the FMS web server (app on loopback :$WEB_PORT)"
 
@@ -3271,6 +4281,23 @@ if [[ "$_lc_st_route" == "skip" ]]; then
 else
 _lc_st_verb="$_lc_st_route"
 _lc_req="$(lc_request "storage-$_lc_st_verb" "$(lc_storage_request "$CFM_STORAGE_MODE")")"
+if $CFM_ATTEMPT; then
+    # The storage target is observed and intended IMMEDIATELY before the provider call (§6.5): a
+    # bootstrap must find it absent, an adoption must find it present, and a contradiction refuses.
+    _la_st_target="$(la_path storage_target)"
+    case "$_lc_st_route" in
+        bootstrap) [[ ! -e "$_la_st_target" ]] \
+            || die "storage routed to bootstrap, but $_la_st_target already exists. Nothing was changed by this step." ;;
+        adopt)     [[ -f "$_la_st_target" ]] \
+            || die "storage routed to adoption, but $_la_st_target is not present. Nothing was changed by this step." ;;
+        *)         die "storage routed to '$_lc_st_route', which a fresh attempt cannot record. Nothing was changed by this step." ;;
+    esac
+    la_step file ensure - "$_la_st_target"
+    LA_PROVIDER_TARGET_SEQS="$LA_SEQS"
+    LA_PROVIDER_INTENT="storage_$_lc_st_route"
+    LA_PROVIDER_PRIOR="$(la_py json storage "$(lc_json_field "$CFM_STORAGE_OBSERVATION" state)" \
+        "$_lc_st_route" "$(la_seq_of file "$_la_st_target")")"
+fi
 lc_provider_run "storage $_lc_st_verb" candidate storage "$_lc_st_verb" --request "$_lc_req"
 if [[ "$LC_FIRST_ADMIN_OWED" == True || "$LC_FIRST_ADMIN_OWED" == true ]]; then
     CFM_FIRST_ADMIN_OWED=true
@@ -3343,7 +4370,9 @@ unset FM_ADMIN_PASS
 # protection implementation: the ordering is this script's, the policy is the protector's.
 _lc_req="$(lc_request provision-keys-final "$(printf '{"schema_version":1,"actor":"installer","flavour":"posix","service_account":"%s","database_name":"%s","database_search_dirs":%s}' \
     "$SERVICE_USER" "$FM_DATABASE" "$(lc_json_array "$FM_DB_DIR" "$HOSTING_DIR")")")"
-lc_run "final layout protection" provision-keys --request "$_lc_req" >/dev/null
+_la_prior=""
+if $CFM_ATTEMPT; then _la_prior="$(la_py json keys "$CFM_SECRETS_DIR")"; fi
+la_lc_run provision_keys "$_la_prior" "final layout protection" provision-keys --request "$_lc_req" >/dev/null
 ok "Layout protection re-applied and verified after every provider wrote"
 
 # The Admin API identity is published by phase 15 for the running service, not merely for the
@@ -3404,11 +4433,20 @@ fi
 # projection version matches; until it completes, the picker uses its scan fallback. (packet 014 B)
 if [[ -x "$INSTALL_DIR/venv/bin/python" ]]; then
     info "Projection backfill"
+    if $CFM_ATTEMPT; then
+        # RULING 6: bound to this attempt's storage-target entry and storage route. It only reports
+        # that projection writes may have occurred; an adopted database is always preserved.
+        la_provider_begin backfill_storage_projections \
+            "$(la_py json backfill "$(la_seq_of file "$(la_path storage_target)")" "$_lc_st_route")" \
+            storage
+    fi
     # Fold the per-record / up-to-date chatter into the transcript; show only the section outcome.
     if cfm_run "projection backfill" sudo -u "$SERVICE_USER" -H env PYTHONPATH="$INSTALL_DIR/src" \
             "$INSTALL_DIR/venv/bin/python" -m corpusfm.server.cli backfill-storage-projections; then
+        la_provider_end backfill_storage_projections 0 ""
         ok "Projections current"
     else
+        la_provider_end backfill_storage_projections 1 ""
         warn "Projection backfill did not complete — the picker uses the scan fallback until it does"
     fi
 fi
@@ -3461,9 +4499,11 @@ create)
     _lc_req="$(lc_request storage-create-first-admin "$(printf '{"schema_version":1,"actor":"installer","installation_id":"%s","install_dir":"%s","fms_root":"%s","fms_database_dir":"%s","secrets_dir":"%s","host":"%s","mode":"%s","expected_generation":%s,"admin_username":"%s","admin_credential_input":"stdin"}' \
         "$INSTALLATION_ID" "$INSTALL_DIR" "$FMS_ROOT" "$FM_DB_DIR" "$CFM_SECRETS_DIR" \
         "$CFM_FMS_HOST" "$CFM_MODE" "$CFM_GENERATION" "$CFM_ADMIN_USER")")"
+    la_provider_begin create_first_admin '{"users_exist":false}' first_admin
     _lc_out="$(printf '%s' "$CFM_ADMIN_PASS" | "${CFM_LIFECYCLE[@]}" storage create-first-admin \
         --request "$_lc_req" 2>&1)" && _lc_rc=0 || _lc_rc=$?
     printf '%s\n' "$_lc_out" >> "$CFM_LOG" 2>/dev/null || true
+    la_provider_end create_first_admin "$_lc_rc" "$_lc_out"
     unset CFM_ADMIN_PASS
     _lc_result="$(lc_json_field "$_lc_out" result)"
     if [[ "$_lc_rc" -eq 0 && "$_lc_result" == "completed" ]]; then
@@ -3497,8 +4537,10 @@ info "Rendering final service definitions from lifecycle/service_identity..."
 # background component of the web process, so there is no second unit to render, verify or start.
 for _role in web; do
     _unit="$WEB_SERVICE"
+    la_begin unit ensure - "/etc/systemd/system/$_unit.service"
+    _la_seqs="$LA_SEQS"
     PYTHONPATH="$INSTALL_DIR/src" "$INSTALL_DIR/venv/bin/python" - "$_role" "/etc/systemd/system/$_unit.service" "$INSTALL_DIR" <<'RENDER' \
-        || die "Could not render the $_role service definition."
+        && _la_rc=0 || _la_rc=$?
 import sys
 from corpusfm.lifecycle import os_layout, service_identity as si
 role, target, install_dir = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -3506,6 +4548,7 @@ spec = si.systemd_unit_spec(role, os_layout.posix_os_layout(), install_dir=insta
                             description=f"CORPUSfm {role}")
 open(target, "w").write(si.render_systemd_unit(spec))
 RENDER
+    la_end "$_la_rc" "$_la_seqs" || die "Could not render the $_role service definition."
     # READ BACK: what is on disk must be what the canonical renderer produced, and it must name an
     # unprivileged identity. A definition that failed to write, or wrote partially, must not reach
     # phase 21 — which starts exactly this set.
@@ -3532,7 +4575,7 @@ done
 _retired_mcp_env=false
 for _mcp_env in "$CFM_SECRETS_DIR/.mcp_env" "$INSTALL_DIR/.mcp_env"; do
     if [[ -e "$_mcp_env" || -L "$_mcp_env" ]]; then
-        rm -f -- "$_mcp_env"
+        la_do file delete - "$_mcp_env" -- rm -f -- "$_mcp_env"
         _retired_mcp_env=true
     fi
 done
@@ -3561,14 +4604,14 @@ if [[ -f "$_sched_unit_file" || ( -n "$_sched_load_state" && "$_sched_load_state
     # Stop and disable only while the unit is still something systemd can act on. Both tolerate a
     # unit that is already gone, which is what makes a re-entry after a partial run harmless.
     systemctl stop "$SCHED_SERVICE_RETIRED" 2>/dev/null || true
-    systemctl disable "$SCHED_SERVICE_RETIRED" 2>/dev/null || true
+    la_unit_toggle disable "$SCHED_SERVICE_RETIRED" -- systemctl disable "$SCHED_SERVICE_RETIRED" 2>/dev/null || true
     # An explicit `if` rather than `[[ -f … ]] && rm -f …`. NOT because the `&&` form aborts here —
     # measured, it does not: `set -e` exempts a failing command that is the LEFT operand of `&&`, so
     # a missing file is harmless in that position. It is written this way because that exemption is
     # positional: the same line as the last statement of a function returns 1 to its caller, and the
     # residue path this block exists to heal is exactly the path where the test is false.
     if [[ -f "$_sched_unit_file" ]]; then
-        rm -f "$_sched_unit_file"
+        la_do unit delete - "$_sched_unit_file" -- rm -f "$_sched_unit_file"
     fi
     # RECONCILIATION IS REACHED WHETHER OR NOT THE FILE WAS THERE THIS TIME. This is the half the
     # old arrangement could skip.
@@ -3600,17 +4643,22 @@ lc_retire_scheduler_authority
 if [[ -f "/etc/systemd/system/${MCP_SERVICE}.service" ]]; then
     info "Retiring the standalone $MCP_SERVICE service (folded into the web app)..."
     systemctl stop "$MCP_SERVICE" 2>/dev/null || true
-    systemctl disable "$MCP_SERVICE" 2>/dev/null || true
-    rm -f "/etc/systemd/system/${MCP_SERVICE}.service"
+    la_unit_toggle disable "$MCP_SERVICE" -- systemctl disable "$MCP_SERVICE" 2>/dev/null || true
+    la_do unit delete - "/etc/systemd/system/${MCP_SERVICE}.service" -- rm -f "/etc/systemd/system/${MCP_SERVICE}.service"
     systemctl daemon-reload 2>/dev/null || true
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-        ufw delete allow "${MCP_PORT}/tcp" >/dev/null 2>&1 || true
+        la_ufw_delete added "allow ${MCP_PORT}/tcp" -- ufw delete allow "${MCP_PORT}/tcp" >/dev/null 2>&1 || true
         # Scoped form (allow from <subnet> to any port <PORT>): delete by rule number,
         # bounded so a failing delete can't loop. Numbers shift after each delete → re-query.
+        _cfm_ufw_delete_numbered() { yes | ufw delete "$1"; }
         for _ in 1 2 3 4 5; do
-            n="$(ufw status numbered 2>/dev/null | grep -E "(^|[^0-9])${MCP_PORT}([^0-9]|$)" | grep -i ALLOW | head -1 | sed -E 's/^\[[[:space:]]*([0-9]+).*/\1/')"
+            _la_line="$(ufw status numbered 2>/dev/null | grep -E "(^|[^0-9])${MCP_PORT}([^0-9]|$)" | grep -i ALLOW | head -1)"
+            n="$(printf '%s\n' "$_la_line" | sed -E 's/^\[[[:space:]]*([0-9]+).*/\1/')"
             [[ -z "$n" ]] && break
-            yes | ufw delete "$n" >/dev/null 2>&1 || break
+            _la_rule="${_la_line#*]}"
+            _la_rule="${_la_rule#"${_la_rule%%[![:space:]]*}"}"
+            _la_rule="${_la_rule%"${_la_rule##*[![:space:]]}"}"
+            la_ufw_delete numbered "$_la_rule" -- _cfm_ufw_delete_numbered "$n" >/dev/null 2>&1 || break
         done
     fi
     ok "Standalone MCP service retired."
@@ -3626,7 +4674,7 @@ if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: activ
     if ufw status 2>/dev/null | grep -qE "(^|[^0-9])${WEB_PORT}/tcp[[:space:]]+ALLOW"; then
         info "Firewall"
         info "Removing the unnecessary public UFW rule for loopback-only port $WEB_PORT..."
-        ufw delete allow "$WEB_PORT/tcp" >/dev/null 2>&1 || true
+        la_ufw_delete added "allow $WEB_PORT/tcp" -- ufw delete allow "$WEB_PORT/tcp" >/dev/null 2>&1 || true
         ok "Stale $WEB_PORT/tcp allow removed (access is via the FMS proxy only)"
     fi
 fi
@@ -3662,7 +4710,7 @@ chmod 0700 "$INSTALLER_ENTRY_POINT"
 PHASE21_OWNS_START=true
 systemctl daemon-reload
 for _unit in "${VERIFIED_UNITS[@]}"; do
-    systemctl enable "$_unit" 2>/dev/null || true      # boot behaviour; starts nothing
+    la_unit_toggle enable "$_unit" -- systemctl enable "$_unit" 2>/dev/null || true      # boot behaviour; starts nothing
     systemctl reset-failed "$_unit" 2>/dev/null || true
     systemctl start "$_unit" || die "$_unit failed to start after its definition was verified."
     ok "$_unit started (definition verified at phase 20)"
@@ -3900,6 +4948,26 @@ esac
     || die "Post-install verification FAILED — the installation is degraded (see above). Fix the
      reported condition and re-run the installer; refusing to report success."
 ok "Post-install verification passed"
+
+# ── PACKET 1398: the completion boundary — the last lifecycle mutation of a fresh install ──
+# Stamps `last_result.operation_id = attempt_id` through the application, then retires the attempt
+# record and its container. Until this succeeds the attempt is incomplete, and a rerun offers
+# Inspect / Discard / Quit rather than reporting an installation.
+if $CFM_ATTEMPT; then
+    _la_req="$(lc_request attempt-complete "$(printf '{"schema_version":1,"installation_id":"%s","attempt_id":"%s","actor":"installer"}' \
+        "$INSTALLATION_ID" "$CFM_ATTEMPT_ID")")"
+    _la_rc=0
+    _la_out="$("${CFM_LIFECYCLE[@]}" attempt complete --request "$_la_req" 2>>"$CFM_LOG")" || _la_rc=$?
+    printf '%s\n' "$_la_out" >> "$CFM_LOG" 2>/dev/null || true
+    case "$_la_rc:$(lc_json_field "$_la_out" result)" in
+        0:completed|0:no_change)
+            CFM_ATTEMPT=false
+            ok "Fresh installation complete: attempt $CFM_ATTEMPT_ID stamped and its record retired" ;;
+        *)  die "The installation verified, but its completion could not be stamped
+     ($(lc_json_field "$_la_out" reason): $(lc_json_field "$_la_out" detail)). The attempt record is
+     kept; re-run the installer to inspect or discard it." ;;
+    esac
+fi
 
 # ── S9 Next steps ─────────────────────────────────────────────────────────────
 cfm_section "Next steps"

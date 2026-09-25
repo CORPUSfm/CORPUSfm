@@ -1285,7 +1285,10 @@ def real_executor(*, fms_root: Path | str, prefix: str, port: int, script: Path 
 
     def _dispatch(verb: str, proxy_type: str, rendered: dict) -> dict:
         if is_windows:
-            argv = [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+            # No -ExecutionPolicy Bypass (packet 1380-02 D20). Same reasoning as the probe seam in
+            # proxy_inventory: an installed local executor with no Mark of the Web runs under
+            # RemoteSigned, and under AllSigned the deployed publisher leaf is the authority.
+            argv = [powershell, "-NoProfile", "-File", str(script),
                     "-Verb", verb, "-Type", proxy_type, "-FmsRoot", str(fms_root),
                     "-Prefix", prefix]
             if iis_app_dir:

@@ -1,3 +1,4 @@
+import { releaseTrust, type ReleaseTrust } from "./release-trust";
 import ThemeToggle from "./theme-toggle";
 
 const releasesUrl = "https://github.com/CORPUSfm/CORPUSfm/releases";
@@ -33,6 +34,26 @@ const requirements = [
   ["FileMaker Server 2025", "Explore, Diff, Jobs, MCP", "Apply patches", "—"],
   ["FileMaker Server 2026", "Explore, Diff, Jobs, MCP", "Apply patches", "Create files"],
 ];
+
+export function ReleaseTrustBlock({ trust }: { trust: ReleaseTrust }) {
+  return (
+    <div>
+      <h3>This release — {trust.version}</h3>
+      <dl>
+        <dt>Installer asset</dt><dd><code>{trust.installerAsset}</code></dd>
+        <dt>Signing certificate thumbprint</dt><dd><code>{trust.signerThumbprint}</code></dd>
+        <dt>Required store</dt><dd><code>LocalMachine\TrustedPublisher</code></dd>
+      </dl>
+      <p>Download from the release page: <a href={trust.releaseUrl}>{trust.releaseUrl}</a></p>
+      <p>Signing certificate — <a href={trust.certificateUrl}><code>{trust.certificateAsset}</code></a></p>
+      <p>Trust record — <a href={trust.trustRecordUrl}><code>{trust.trustRecordAsset}</code></a></p>
+      <p>
+        This thumbprint describes this release’s bytes only. Verify it with the <code>Get-ChildItem</code> command
+        below before you install, and recheck it for each installer-bearing release; the leaf may rotate.
+      </p>
+    </div>
+  );
+}
 
 export default function Home() {
   return (
@@ -154,6 +175,125 @@ export default function Home() {
         </div>
         <ol className="recipe-list">
           {setupSteps.map(([title, body], index) => <li key={title}><span>{String(index + 1).padStart(2, "0")}</span><div><h3>{title}</h3><p>{body}</p></div></li>)}
+        </ol>
+      </section>
+
+      <section className="section shell setup-section" id="windows-trust">
+        <div className="setup-intro">
+          <p className="eyebrow"><span /> Signed Windows installer</p><h2>Windows Server: establish trust before you install.</h2>
+          <p>
+            For a signed Windows release, check the publisher identity before you run the installer.
+            An interactive launch may ask you to confirm the publisher. An unattended launch under <code>AllSigned</code> cannot
+            answer that prompt and may refuse to start when the exact signing leaf is not trusted.
+            Your administrator deploys the release’s certificate with your organization’s own tooling.
+            CORPUSfm does not import it or change execution policy.
+          </p>
+          {releaseTrust ? <ReleaseTrustBlock trust={releaseTrust} /> : null}
+        </div>
+        <ol className="recipe-list">
+          <li>
+            <span>01</span>
+            <div>
+              <h3>The publisher you will see</h3>
+              <p>
+                The installer is signed by an individual publisher, not by a company name. At a security prompt,
+                or in a certificate store, it appears as:
+              </p>
+              <pre><code>CN=William Wheeler, O=William Wheeler, L=Florence, S=or, C=US</code></pre>
+              <p>
+                CORPUSfm is published and supported by PINAX SOFTWARE LLC. Recognise the signing identity above
+                when reviewing the certificate.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span>02</span>
+            <div>
+              <h3>Run the installer</h3>
+              <p>
+                Run the installer <strong>on</strong> the FileMaker Server box, from an <strong>elevated Windows PowerShell 5.1</strong> session
+                (Run as Administrator), with every extracted file kept together:
+              </p>
+              <pre><code>powershell -File install.ps1</code></pre>
+              <p>
+                <strong>Do not uninstall a previous CORPUSfm first.</strong> Re-running this script is the supported
+                upgrade path; an existing installation is detected automatically.
+              </p>
+              <p>
+                <strong>Do not use <code>-ExecutionPolicy Bypass</code></strong>, and do not change your server’s execution
+                policy to install CORPUSfm. The signature and your certificate store are the authority that admits this
+                script; overriding the policy is not the remedy, and CORPUSfm will not ask you for one.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span>03</span>
+            <div>
+              <h3>When your server uses AllSigned</h3>
+              <p>
+                In the measured unattended <code>-NonInteractive</code> launch under <code>AllSigned</code>, an untrusted
+                signing leaf caused <code>AuthorizationManager check failed.</code> before the script started, with no
+                answerable prompt. Deploy the required certificate before unattended installation or updater execution.
+              </p>
+              <p>
+                Deploy the release’s signing certificate to <strong><code>LocalMachine\TrustedPublisher</code></strong>.
+              </p>
+              <p>
+                <code>LocalMachine</code> is required. The CORPUSfm updater task runs as <code>NT AUTHORITY\SYSTEM</code>,
+                and SYSTEM never reads a per-user certificate store, so a <code>CurrentUser</code> import is not an alternative.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span>04</span>
+            <div>
+              <h3>Deployment routes</h3>
+              <p>
+                <strong>Managed estate — Group Policy.</strong> Deploy the <code>.cer</code> under <em>Computer Configuration → Windows
+                Settings → Security Settings → Public Key Policies → Trusted Publishers</em>.
+              </p>
+              <p>
+                <strong>Single server — elevated PowerShell.</strong> Replace <code>{"<thumbprint>"}</code> in these examples with
+                the value for the release you are installing, and use that release’s downloaded certificate.
+              </p>
+              <pre><code>{"Import-Certificate -FilePath '.\\corpusfm-signing-leaf-<thumbprint>.cer' -CertStoreLocation Cert:\\LocalMachine\\TrustedPublisher"}</code></pre>
+              <p><strong>Verify before you install.</strong></p>
+              <pre><code>{"Get-ChildItem Cert:\\LocalMachine\\TrustedPublisher | Where-Object Thumbprint -eq '<thumbprint>'"}</code></pre>
+            </div>
+          </li>
+          <li>
+            <span>05</span>
+            <div>
+              <h3>What you will also see, and what it means</h3>
+              <p>
+                After deployment the certificate also appears when you enumerate the current user’s Trusted Publishers.
+                That is Windows system-store inheritance — one certificate seen through two views, not two copies.
+                Removing the <code>LocalMachine</code> copy removes both.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span>06</span>
+            <div>
+              <h3>Retention and rotation</h3>
+              <p>
+                <strong>Keep the deployed certificate in place.</strong> A timestamped installer entry point can continue to
+                execute under <code>AllSigned</code> after its signing leaf expires, provided that exact leaf remains trusted.
+                Removing it can prevent execution under that policy. This does not guarantee execution if the certificate is
+                revoked, its chain is untrusted, or organization policy refuses the script.
+              </p>
+              <p>
+                <strong>The certificate is per release.</strong> CORPUSfm’s signing certificate rotates, so each release you
+                install may carry a different one, with a different thumbprint. There is no “approve once”: an
+                installer-bearing update needs the leaf that signed that release. An application-only update that changes no
+                installer script does not itself require a new installer certificate.
+              </p>
+              <p>
+                Organization policy can still decline to run a signed script even when everything above is in place. That
+                decision belongs to your organization, and CORPUSfm does not work around it.
+              </p>
+            </div>
+          </li>
         </ol>
       </section>
 

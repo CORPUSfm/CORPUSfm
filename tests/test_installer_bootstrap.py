@@ -5,6 +5,8 @@ easy to widen accidentally: bootstraps acquire/verify/delegate, handoffs carry n
 ordinary installers retain direct execution while consuming a verified handoff when one exists.
 """
 import json
+import re
+import shutil
 import os
 import subprocess
 from pathlib import Path
@@ -58,20 +60,30 @@ def test_installers_accept_only_the_environment_handoff_and_consume_it_once():
 def test_packages_carry_handoff_verifiers_and_private_bootstrap_sources():
     assert "linux/cfm-verify-bootstrap-handoff.sh" in PACKAGER
     assert "windows/cfm-verify-bootstrap-handoff.ps1" in PACKAGER
-    assert '"$DISTRIBUTION_ROOT/bootstrap/bootstrap.sh"' in PACKAGER
-    assert '"$DISTRIBUTION_ROOT/bootstrap/bootstrap.ps1"' in PACKAGER
+    # Public decision D14: no standalone bootstrap distribution surface. Nothing is written beside
+    # the release, so nothing standalone can be published or signed by accident.
+    assert "/bootstrap/bootstrap.sh" not in PACKAGER
+    assert "/bootstrap/bootstrap.ps1" not in PACKAGER
+    assert '"$CANDIDATE/standalone' not in PACKAGER
     # The public ZIP still has one entry point. Bootstrap source rides inside the digest-covered
     # private runtime so installation can render a durable, protected local launcher.
-    runtime = PACKAGER[PACKAGER.index('LINUX_RUNTIME='):PACKAGER.index('if [[ "$PACKAGE_KIND" == exercise ]]')]
-    assert "installer/bootstrap/linux/bootstrap.sh" in runtime
-    runtime = PACKAGER[PACKAGER.index('WINDOWS_RUNTIME='):PACKAGER.index('if [[ "$PACKAGE_KIND" == exercise ]]', PACKAGER.index('WINDOWS_RUNTIME='))]
-    assert "installer/bootstrap/windows/bootstrap.ps1" in runtime
-    linux_call = next(line for line in PACKAGER.splitlines()
-                      if line.strip().startswith("build_zip linux"))
-    windows_call = next(line for line in PACKAGER.splitlines()
-                        if line.strip().startswith("build_zip windows"))
-    assert "bootstrap/linux/bootstrap.sh" not in linux_call
-    assert "bootstrap/windows/bootstrap.ps1" not in windows_call
+    #
+    # RE-EXPRESSED for packet 1380-04 (was: slices of `LINUX_RUNTIME=` / `WINDOWS_RUNTIME=` and lines
+    # beginning `build_zip <platform>`). The packager gained a signing seam, so the runtime member
+    # lists are now named arrays and the outer members are chosen by `stage_platform`. The RULE is
+    # unchanged and is what is asserted: bootstrap source is a PRIVATE RUNTIME member and is never an
+    # outer ZIP member.
+    for array, member in (("LINUX_RUNTIME_MEMBERS", "installer/bootstrap/linux/bootstrap.sh"),
+                          ("WINDOWS_RUNTIME_MEMBERS", "installer/bootstrap/windows/bootstrap.ps1")):
+        block = re.search(rf"(?ms)^{array}=\(\n(.*?)^\)$", PACKAGER)
+        assert block, f"{array} is no longer an array literal"
+        assert member in block.group(1)
+    outer_calls = [line for line in PACKAGER.splitlines()
+                   if line.strip().startswith("stage_platform ")]
+    assert len(outer_calls) >= 2
+    for line in outer_calls:
+        assert "bootstrap/linux/bootstrap.sh" not in line
+        assert "bootstrap/windows/bootstrap.ps1" not in line
 
 
 def test_installers_publish_one_durable_protected_bootstrap_and_print_its_command():
@@ -84,7 +96,18 @@ def test_installers_publish_one_durable_protected_bootstrap_and_print_its_comman
     assert "$InstallerEntryPoint = Join-Path $BinDir 'corpusfm-installer.ps1'" in WINDOWS_INSTALL
     assert "Assert-InstallerBootstrapAcl" in WINDOWS_INSTALL
     assert "installer_entry_point      = $InstallerEntryPoint" in WINDOWS_INSTALL
-    assert "powershell -ExecutionPolicy Bypass -File '" in WINDOWS_INSTALL
+    # RE-EXPRESSED for packet 1380-02 D20 (was: the literal
+    # `powershell -ExecutionPolicy Bypass -File '`). The property this defends is the one its Linux
+    # sibling asserts four lines up - the installer PRINTS a runnable command naming the single
+    # recorded entry point. Pinning the launcher's exact spelling made a deliberate policy change
+    # read as a stale test instead of as the guard it is.
+    printed = next(line for line in WINDOWS_INSTALL.splitlines()
+                   if "- Installer: powershell" in line)
+    assert "$InstallerEntryPoint" in printed, "the printed command must name the recorded entry point"
+    assert "-File" in printed, "it must be a script-file invocation the administrator can run"
+    assert "-ExecutionPolicy" not in printed and "Bypass" not in printed, (
+        "CORPUSfm must not instruct an execution-policy override (D20)"
+    )
 
 
 def test_original_package_cleanup_is_explicit_but_never_automatic():
@@ -275,5 +298,39 @@ def test_packager_freezes_a_series_when_it_publishes_its_bridge():
     assert '[[ ! -e "$SERIES_DIR/bridge.json" ]]' in PACKAGER
     assert 'cp "$BRIDGE_JSON" "$SERIES_DIR/bridge.json"' in PACKAGER
     assert "bridge destination release is absent" in PACKAGER
-    assert "bridge.json" in PACKAGER[PACKAGER.index("build_zip()"):
-                                      PACKAGER.index("# ── Linux bundle")]
+    # RE-EXPRESSED for packet 1380-04 (was: a slice from `build_zip()` to the Linux bundle comment).
+    # The rule is that a bridge package carries its own bridge.json as an outer member; the function
+    # that assembles outer members is now `stage_platform`.
+    assert "bridge.json" in PACKAGER[PACKAGER.index("stage_platform() {"):
+                                     PACKAGER.index("stage_platform linux")]
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None and shutil.which("powershell") is None,
+                    reason="no PowerShell available to execute the verifier's protocol rule")
+def test_windows_handoff_protocol_continuity_for_published_and_current_launchers(tmp_path):
+    """Already-published launchers send bootstrap_protocol 1 and their bytes cannot change, so an
+    installed box keeps updating through its launcher only while the verifier accepts 1. The current
+    bootstrap must emit a value that verifier accepts too. The whole verifier needs Windows ACL and
+    identity APIs, so its protocol rule is executed on its own under PowerShell (supporting evidence)."""
+    verifier = (ROOT / "installer/windows/cfm-verify-bootstrap-handoff.ps1").read_text(encoding="utf-8")
+    start = verifier.index("if ($handoff.schema_version")
+    rule = verifier[start:verifier.index("}", start) + 1]
+    emitted = re.search(r"bootstrap_protocol=(\d+);", WINDOWS_BOOT)
+    assert emitted, "the Windows bootstrap no longer emits a numeric bootstrap_protocol"
+    pwsh = shutil.which("pwsh") or shutil.which("powershell")
+
+    def accepted(protocol: int) -> bool:
+        script = tmp_path / f"rule{protocol}.ps1"
+        script.write_text(
+            "$ErrorActionPreference = 'Stop'\n"
+            "function Refuse([string]$m) { throw $m }\n"
+            f"$handoff = '{{\"schema_version\":1,\"bootstrap_protocol\":{protocol},\"bundle_protocol\":1}}' | ConvertFrom-Json\n"
+            f"try {{\n{rule}\n'ACCEPTED' }} catch {{ 'REFUSED' }}\n", encoding="ascii")
+        out = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
+                             capture_output=True, text=True, timeout=120).stdout.strip()
+        assert out in ("ACCEPTED", "REFUSED"), out
+        return out == "ACCEPTED"
+
+    assert accepted(1), "published launchers send protocol 1; refusing it forces a manual download"
+    assert accepted(int(emitted.group(1))), "the verifier refuses what the current bootstrap emits"
+    assert not accepted(7), "control: the protocol rule accepts anything"

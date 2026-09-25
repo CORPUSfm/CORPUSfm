@@ -44,7 +44,10 @@ simply waits its turn (it's queued, not refused).
   **remote server**. A remote-server job pulls over the network via *push*: CORPUSfm asks the remote
   server to run the addon's `PostToServer` script, and the server posts its schema back to CORPUSfm.
   Register remote servers under [Settings → FileMaker](/docs/settings#remote-servers); a remote job
-  takes its credential from that server record, not from the fields below. Remote jobs are
+  takes its credential from that server record, not from the fields below. If you hold the **Settings**
+  gate you can also add a server with **＋** beside the Server selector, or **Edit** the one currently
+  selected, without leaving this page; Settings remains where the whole collection is managed and where
+  a server is removed. Remote jobs are
   **analysis only** (Explorer / Diff / cross-reference / git export) — never patching. Because the
   remote server posts *back* to this CORPUSfm, a remote job needs a **callback address** that server can
   reach (an internal/LAN `https://` address is fine; a loopback one won't work from another host). It

@@ -41,25 +41,36 @@ def test_both_installers_render_every_placeholder_and_refuse_a_leftover():
 
     sh = (INSTALLER / "linux" / "install.sh").read_text(encoding="utf-8")
     ps1 = (INSTALLER / "windows" / "install.ps1").read_text(encoding="utf-8")
-    assert "render_linux_updater" in sh and "render_windows_updater" in ps1, (
-        "an installer hand-renders the elevated updater instead of calling the shipped renderer"
+
+    # LINUX STILL RENDERS, and the rule above is unchanged for it.
+    assert "render_linux_updater" in sh, (
+        "the Linux installer hand-renders the elevated updater instead of calling the shipped renderer"
     )
     for body in (sh, ps1):
         assert not re.search(r"(sed -e \"s\|@@|Replace\('@@)", body), (
             "a hand-rendered placeholder substitution is back"
         )
-    # The app renderer receives verified template bytes from this repository; it owns substitutions,
-    # not custody of the template.
-    for relpath, placeholders in (("linux/corpusfm-update.sh", ub.LINUX_PLACEHOLDERS),
-                                  ("windows/corpusfm-update.ps1", ub.WINDOWS_PLACEHOLDERS)):
-        template = (INSTALLER / relpath).read_text(encoding="utf-8")
-        shipped = {f"@@{n}@@" for n in re.findall(r"@@(\w+)@@", template)}
-        assert shipped, f"{relpath} carries no placeholders; this guard would pass vacuously"
-        assert shipped <= set(placeholders), (
-            f"{relpath}: the renderer knows nothing about {sorted(shipped - set(placeholders))}"
-        )
-    assert "unrendered placeholders" in sh and "unrendered placeholders" in ps1, (
+    template = (INSTALLER / "linux/corpusfm-update.sh").read_text(encoding="utf-8")
+    shipped = {f"@@{n}@@" for n in re.findall(r"@@(\w+)@@", template)}
+    assert shipped, "the Linux updater carries no placeholders; this guard would pass vacuously"
+    assert shipped <= set(ub.LINUX_PLACEHOLDERS), (
+        f"the renderer knows nothing about {sorted(shipped - set(ub.LINUX_PLACEHOLDERS))}"
+    )
+    assert "unrendered placeholders" in sh, (
         "an unrendered placeholder must refuse installation, not ship a broken elevated script"
+    )
+
+    # WINDOWS NO LONGER RENDERS AT ALL (packet 1380-02 D-A). The static updater is signed, so its
+    # installed bytes must be the bytes that were signed; it derives the installation-specific values
+    # from the fixed machine locator instead. The rule INVERTS rather than lapsing: there must be
+    # no seam to leave unfilled, and the installer must refuse one if it ever reappears.
+    windows_template = (INSTALLER / "windows/corpusfm-update.ps1").read_text(encoding="utf-8")
+    assert re.findall(r"@@\w+@@", windows_template) == [], (
+        "the static Windows updater carries a rendered placeholder"
+    )
+    assert not hasattr(ub, "render_windows_updater"), "a Windows renderer is back"
+    assert "rendered placeholder" in ps1, (
+        "the Windows installer no longer refuses a reintroduced placeholder"
     )
 
 

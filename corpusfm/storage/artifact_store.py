@@ -111,6 +111,8 @@ def _compensate(backend, record_uuid: str, what: str) -> bool:
         logger.error("%s failed AND its compensating delete failed — STORAGE record %s is "
                      "PRESERVED with no usable content and needs administrator attention",
                      what, record_uuid, exc_info=True)
+        from corpusfm.server import catalog
+        catalog.note_unpublishable_write(_STORAGE, record_uuid, f"{what} (compensation failed)")
         return False
     publish_removed(backend, record_uuid)
     return True

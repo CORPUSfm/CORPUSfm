@@ -37,10 +37,17 @@ def _clean_map(raw) -> dict:
 
 @router.get("/settings/external-auth", dependencies=_ADMIN)
 async def get_external_auth(request: Request) -> JSONResponse:
-    from corpusfm.app.app_config import load_app_config
+    from corpusfm.app.web.settings_authority import load_settings_authority
     from corpusfm.server.oidc_secrets import has_client_secret, has_ldap_bind_password
     from corpusfm.app.web.ldap_auth import ldap3_available
-    ea = dict(load_app_config().external_auth or {})
+    # Packet 1396: read strictly. A permissive read during an FM outage returned blank oidc/ldap, the
+    # browser rendered them as an editable form, and a later save of an UNRELATED slice (the group→gate
+    # map) then posted those blanks back — wiping the configured providers. The POST gate cannot catch
+    # that, because the destructive payload was built from the outage-time load. So refuse the READ too.
+    cfg, _unavail = load_settings_authority()
+    if _unavail is not None:
+        return _unavail
+    ea = dict(cfg.external_auth or {})
     oidc = dict(ea.get("oidc") or {})
     ldap = dict(ea.get("ldap") or {})
     return JSONResponse({
@@ -60,10 +67,16 @@ async def get_external_auth(request: Request) -> JSONResponse:
 async def save_external_auth(request: Request) -> JSONResponse:
     try:
         body = await request.json()
-        from corpusfm.app.app_config import load_app_config, save_app_config
+        from corpusfm.app.app_config import save_app_config
+        from corpusfm.app.web.settings_authority import load_settings_authority
         from corpusfm.server import oidc_secrets, audit
 
-        cfg = load_app_config()
+        # Packet 1396: require a good authoritative read before writing external-auth config OR its
+        # secrets — a transient FM outage must not replace a configured identity provider (or its
+        # group→gate map and browser-lifetime neighbours) with blanks, then pair stale secrets to it.
+        cfg, _unavail = load_settings_authority()
+        if _unavail is not None:
+            return _unavail
         ea = dict(cfg.external_auth or {})
 
         oidc_in = dict(body.get("oidc") or {})

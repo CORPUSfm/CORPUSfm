@@ -139,4 +139,56 @@ def retire(layout, os_layout: OsLayout, *, windows_authority=None, posix_service
     return tuple(removed)
 
 
-__all__ = ["TerminalCleanupRefused", "retire"]
+def retire_attempt(layout, os_layout: OsLayout, *, plan, windows_authority=None,
+                   posix_service_uid=None, locator_adapter=None) -> tuple[str, ...]:
+    """Terminal retirement for a discarded install attempt (packet 1398 §6.6 step 3b).
+
+    `plan` comes only from `install_attempt.terminal_plan` over the protected record: per fixed
+    root, whether the root itself goes and what inside it is kept. Logs are never in it as a
+    target. The ordinary control-plane evidence must be absent exactly as for `retire`; the attempt's
+    own pending record and journal live in the protected container, outside every root here.
+    """
+    if os_layout.flavour != layout.kind:
+        raise TerminalCleanupRefused("the OS and lifecycle layouts name different platforms")
+    adapter = locator_adapter if locator_adapter is not None else locator_for(layout)
+    if adapter.exists():
+        raise TerminalCleanupRefused("the installation locator still exists")
+    if read_pending(layout) is not None:
+        raise TerminalCleanupRefused("the ordinary uninstall pending record exists")
+    if Path(layout.journal_file).exists():
+        raise TerminalCleanupRefused("the ordinary lifecycle journal still exists")
+    known = {str(root) for root in _roots(os_layout)}
+    retired = []
+    for root_text, remove_root, keep in plan:
+        if root_text not in known:
+            raise TerminalCleanupRefused(f"{root_text} is not a fixed product root")
+        root = Path(root_text)
+        st = _lstat_or_none(root)
+        if st is None:
+            continue
+        if _is_link(st):
+            raise TerminalCleanupRefused(f"{root} is a link or reparse point")
+        if not stat.S_ISDIR(st.st_mode):
+            raise TerminalCleanupRefused(f"{root} is not a directory")
+        if (os_layout.flavour == POSIX and root == os_layout.run_dir and st.st_uid != 0
+                and remove_root):
+            st = _claim_posix_run_root(root, st, service_uid=posix_service_uid)
+        refusal = (_windows_root_refusal(root, authority_api=windows_authority)
+                   if os_layout.flavour == WINDOWS else _posix_root_refusal(root, st))
+        if refusal:
+            raise TerminalCleanupRefused(refusal)
+        existed = [k for k in keep if _lstat_or_none(Path(k)) is not None]
+        try:
+            _Purge(root, keep=tuple(keep), flavour=os_layout.flavour).run(remove_root=remove_root)
+        except (OSError, PathRemovalRefused) as exc:
+            raise TerminalCleanupRefused(f"{root} could not be retired: {exc}") from exc
+        if remove_root and _lstat_or_none(root) is not None:
+            raise TerminalCleanupRefused(f"{root} is still present after terminal cleanup")
+        lost = [k for k in existed if _lstat_or_none(Path(k)) is None]
+        if lost:
+            raise TerminalCleanupRefused(f"terminal cleanup removed preserved paths {lost}")
+        retired.append(str(root))
+    return tuple(retired)
+
+
+__all__ = ["TerminalCleanupRefused", "retire", "retire_attempt"]

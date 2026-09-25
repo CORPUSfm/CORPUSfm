@@ -234,10 +234,20 @@ def test_neither_updater_reads_authority_from_the_environment(linux, windows):
             assert forbidden not in body, f"{forbidden} is production environment authority"
 
 
-def test_both_updaters_ship_with_placeholders_the_installer_must_render(linux, windows):
-    for body in (linux, windows):
-        for placeholder in ("@@INSTALL_DIR@@", "@@STATE_DIR@@", "@@SRC_DIR@@", "@@VENV_PY@@"):
-            assert placeholder in body
+def test_the_LINUX_updater_ships_with_placeholders_the_installer_must_render(linux):
+    for placeholder in ("@@INSTALL_DIR@@", "@@STATE_DIR@@", "@@SRC_DIR@@", "@@VENV_PY@@"):
+        assert placeholder in linux
+
+
+def test_the_WINDOWS_updater_ships_STATIC_with_no_placeholder_at_all(windows):
+    """Packet 1380-02 D-A inverted this for Windows. A rendered artifact differs per installation,
+    so the bytes on the box are not the bytes that were signed - which is the whole obstacle to
+    shipping a signed updater. The updater now derives its values from the fixed machine locator, and the
+    absence of a seam is the property worth asserting: a placeholder reintroduced into an artifact
+    nothing renders would ship a literal `@@STATE_DIR@@` as a path to a script running as SYSTEM."""
+    import re as _re
+
+    assert _re.findall(r"@@\w+@@", windows) == [], "the static Windows updater carries a seam"
 
 
 def test_the_origin_check_is_canonical_not_a_substring(linux, windows):

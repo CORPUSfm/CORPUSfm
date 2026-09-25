@@ -83,8 +83,18 @@ def test_bootstraps_acquire_release_assets_anonymously():
 def test_durable_bootstrap_is_installed_byte_for_byte():
     assert 'install -m 0755 -o root -g root "$INSTALLER_BOOTSTRAP_STAGE" "$INSTALLER_ENTRY_POINT"' in INSTALL_SH
     block = INSTALL_PS[INSTALL_PS.index("$InstallerEntryPoint ="):]
-    assert "[IO.File]::ReadAllText($InstallerBootstrapSource)" in block
-    assert "[IO.File]::ReadAllText($InstallerEntryPoint)" in block
+    # The Windows half is an explicit COPY whose result is PROVED equal to the verified package
+    # source, not a text round trip (packet 1380-02 Deliverable 3). This assertion has now been
+    # re-expressed twice against the same property: it once pinned `[IO.File]::ReadAllText(...)`,
+    # then the `$installedBytes[$i] -ne $sourceBytes[$i]` byte loop. Installer commit `a5cfbb2`
+    # replaced that loop with one SHA-256 comparison of the two files, so the spelling moved again
+    # while the property did not. Assert the property: copied, both sides digested, the two digests
+    # actually compared, and no text round trip under a signature block.
+    assert "Copy-Item -LiteralPath $InstallerBootstrapSource" in block
+    assert "Get-FileHash -LiteralPath $InstallerBootstrapSource" in block
+    assert "Get-FileHash -LiteralPath $InstallerEntryPoint" in block
+    assert "$sourceHash -ne $installedHash" in block, "the two digests must actually be compared"
+    assert "WriteAllText($InstallerBootstrapStage" not in block
 
 
 def test_package_upgrade_aligns_remote_tracking_ref_with_verified_payload():

@@ -177,8 +177,11 @@ def test_a_ref_shaped_consent_refuses(install):
 
 
 def test_a_missing_request_refuses(install):
+    # Packet 1380-02 / F-UPD-REPLAY: with neither a PENDING nor an ACTIVE request the updater does
+    # NOTHING and writes NO outcome, so a stray or manual task activation cannot overwrite the last
+    # real outcome or replay a stale request. (It used to write a `no_request` outcome every run.)
     outcome = _run(install)
-    assert outcome["reason_code"] == "no_request", outcome
+    assert outcome is None, f"a missing request must leave no outcome, got {outcome}"
 
 
 def test_the_outcome_record_is_world_readable_and_holds_no_secret(install):
@@ -513,14 +516,30 @@ def test_neither_updater_LOADS_THE_HELPER_FROM_THE_TREE_IT_JUDGES(artifact):
     """Asserted on BOTH platforms: a provenance property proven on one says nothing about the other.
 
     The Windows half is an ARTIFACT-LEVEL check — PowerShell is not executed here, and actual
-    Windows execution is deferred to 1246-10 rather than implied.
+    Windows execution is deferred rather than implied.
+
+    THE SHARED RULE is unchanged: the tree inspector is never loaded as a module from the checkout
+    it is judging, and its location comes from installation authority rather than being improvised.
+    WHERE that authority lives now differs by platform (packet 1380-02) — Linux still renders it in,
+    Windows derives it from the fixed locator after that locator, its manifest and its own location agree —
+    so the assertion follows the authority instead of pinning one platform's spelling onto both.
     """
     text = _Path(artifact).read_text()
     body = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
     assert "-m corpusfm.lifecycle.tree_inspection" not in body, (
         "the helper is still loaded as a module from the checkout"
     )
-    assert "@@HELPER@@" in text, "the helper location is not rendered from installation authority"
+    if artifact.endswith(".ps1"):
+        assert "$Helper = $UpdaterLayout.Helper" in body, (
+            "the helper location no longer comes from the locator-derived layout"
+        )
+        assert "@@HELPER@@" not in text, (
+            "a rendered seam is back in an artifact that must be installed byte-for-byte"
+        )
+    else:
+        assert "@@HELPER@@" in text, (
+            "the helper location is not rendered from installation authority"
+        )
 
 
 @_pytest.mark.parametrize("removed", ["@@HELPER@@", "@@PUBLISHER@@"])
@@ -600,7 +619,8 @@ def test_NO_PUBLIC_CALLABLE_IN_THE_BOUNDARY_CAN_BE_HANDED_AUTHORITY():
                  "install_dir", "src_dir", "venv_python", "git_executable", "manifest",
                  "helper", "publisher", "placeholders", "quoting"}
     allowed_path_helpers = {"helper_path", "publisher_path", "library_path"}
-    template_renderers = {"render_linux_updater", "render_windows_updater"}
+    # ONE renderer now (packet 1380-02 D-A): Linux still renders, Windows is static and signed.
+    template_renderers = {"render_linux_updater"}
     # `classify(paths)` and `assert_code_only(paths)` take the CHANGED FILE NAMES out of a git diff.
     # They decide a verdict about an update; they never name a location the updater uses, so the
     # same word means something else here. Named individually rather than by dropping "paths" from
@@ -623,7 +643,7 @@ def test_NO_PUBLIC_CALLABLE_IN_THE_BOUNDARY_CAN_BE_HANDED_AUTHORITY():
     assert not hasattr(_ub, "render_updater"), (
         "the public renderer is back; it accepts a substitution table nothing derived"
     )
-    for entry in (_ub.render_linux_updater, _ub.render_windows_updater):
+    for entry in (_ub.render_linux_updater,):
         assert set(_inspect.signature(entry).parameters) == {"template"}, (
             f"{entry.__name__} accepts more than the installer-owned template bytes"
         )
@@ -752,7 +772,6 @@ def test_a_MANIFEST_INSTALL_DIR_THAT_ESCAPES_ITSELF_is_refused(tmp_path, monkeyp
 
 @_pytest.mark.parametrize("artifact,placeholders", [
     ("installer/linux/corpusfm-update.sh", _ub.LINUX_PLACEHOLDERS),
-    ("installer/windows/corpusfm-update.ps1", _ub.WINDOWS_PLACEHOLDERS),
 ])
 def test_a_SURVIVING_PLACEHOLDER_is_refused_rather_than_shipped(artifact, placeholders):
     """`@@STATE_DIR@@/update-inbox` is a real directory name — an unsubstituted placeholder is a
@@ -771,6 +790,29 @@ def test_a_SURVIVING_PLACEHOLDER_is_refused_rather_than_shipped(artifact, placeh
 
     _ub._substitute(_ub._UpdaterPlan(template=template, values={p: "/x" for p in placeholders},
                                      placeholders=tuple(placeholders), quoting="none"))
+
+
+def test_the_WINDOWS_UPDATER_CARRIES_NO_PLACEHOLDER_TO_SURVIVE():
+    """The Windows half of the rule above, INVERTED by packet 1380-02 D-A rather than dropped.
+
+    Linux still renders, so "a surviving placeholder is refused" is still its rule. The Windows
+    updater is static and signed: its installed bytes must be the bytes that were signed, so it
+    carries no seam at all and there is nothing left to survive. Asserting the absence is what stops
+    a placeholder being reintroduced into an artifact nothing renders any more - which would ship a
+    literal `@@STATE_DIR@@` as a path to a script running as SYSTEM.
+
+    The pattern is the SEAM SHAPE, not a bare `@@`: prose may legitimately discuss the mechanism,
+    and a guard a comment can trip is a guard that gets weakened rather than obeyed.
+    """
+    template = _Path("installer/windows/corpusfm-update.ps1").read_text()
+    survivors = _re.findall(r"@@\w+@@", template)
+    assert survivors == [], f"the static Windows updater carries rendered placeholders: {survivors}"
+    assert not hasattr(_ub, "render_windows_updater"), (
+        "a Windows renderer is back; a per-installation artifact cannot be signed"
+    )
+    assert not hasattr(_ub, "WINDOWS_PLACEHOLDERS"), (
+        "an empty placeholder tuple would keep a renderer that silently returns an unchanged template"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════
@@ -1147,9 +1189,11 @@ def test_the_pre_consent_gate_list_matches_what_the_ARTIFACT_names(consent_box):
     text = _Path("installer/linux/corpusfm-update.sh").read_text()
     before = text[:text.index("# CONSENT, EVALUATED LAST")]
     named = set(_re.findall(r"die (?:refused|failed) ([a-z_]+)", before))
-    # The three request-shape refusals are not pairable with a wrong expected_head: they reject the
-    # request itself, and `bad_expected_head` IS the malformed-consent case, covered separately.
-    request_shape = {"no_request", "bad_trigger_id", "bad_expected_head"}
+    # The request-shape refusals are not pairable with a wrong expected_head: they reject the request
+    # itself, and `bad_expected_head` IS the malformed-consent case, covered separately. `bad_request`
+    # is the claim's malformed/unreadable-record refusal (packet 1380-02); `no_request` is now a plain
+    # log+exit that writes no outcome, so it no longer appears in the `die` scan at all.
+    request_shape = {"no_request", "bad_request", "bad_trigger_id", "bad_expected_head"}
     covered = {g for g, _ in _PRE_CONSENT_GATES} | request_shape
     assert named <= covered, f"the artifact refuses for gates nothing pairs with: {named - covered}"
 
@@ -1157,6 +1201,21 @@ def test_the_pre_consent_gate_list_matches_what_the_ARTIFACT_names(consent_box):
 # ── F1: the Windows child environment, EXECUTED ───────────────────────────────────────
 
 _PWSH = shutil.which("pwsh")
+
+#: WHY THESE ARE SKIPPED, AND WHAT REPLACES THEM (packet 1380-02 D-A).
+#:
+#: The Windows updater is static and signed, and it refuses before any child runs unless the fixed
+#: HKLM locator, its agreeing manifest and its own location name one installation. Producing that on
+#: this host would mean handing the updater an injectable authority root - precisely the seam D-A
+#: exists to remove, reintroduced in order to test it.
+#:
+#: These runs were never acceptance evidence in the first place: pwsh 7 against a POSIX-shaped
+#: fixture is supporting evidence, and Windows PowerShell 5.1, SYSTEM and AllSigned acceptance was
+#: always owed to the authorized private Windows gate. What replaces the executed coverage offline is
+#: `Get-CfmUpdaterRootVerdict`, a pure decision exercised with injected facts and mutation-tested.
+_WINDOWS_GATE = _pytest.mark.skip(
+    reason="needs a published Windows installation (HKLM locator, fixed "
+           "ProgramData layout); Windows PowerShell 5.1 gate work, not a Mac result")
 
 POISON = {
     # F1 round 2 — the two that decide where system32 is. They used to be READ and handed to both
@@ -1174,7 +1233,7 @@ POISON = {
 }
 
 
-@_pytest.mark.skipif(not _PWSH, reason="needs pwsh to execute the Windows artifact")
+@_WINDOWS_GATE
 def test_NO_POISONED_AMBIENT_VARIABLE_REACHES_EITHER_WINDOWS_CHILD(tmp_path, monkeypatch):
     """F1, executed. PowerShell runs on a POSIX host here, so this proves the artifact's process
     boundary and nothing about Windows service behaviour — that remains 1246-10's, on a real box.
@@ -1250,7 +1309,7 @@ def test_NO_POISONED_AMBIENT_VARIABLE_REACHES_EITHER_WINDOWS_CHILD(tmp_path, mon
     assert "PYTHONPATH" not in helper_seen, "the helper child inherited PYTHONPATH"
 
 
-@_pytest.mark.skipif(not _PWSH, reason="needs pwsh to execute the Windows artifact")
+@_WINDOWS_GATE
 def test_the_WINDOWS_ARTIFACT_publishes_its_outcome_through_the_same_fence(tmp_path, monkeypatch):
     """CLEAN CONTROL for the run above, and N2 on the Windows side: the refusal it reaches is
     written by the installed Python publisher, not composed in PowerShell."""
@@ -1290,7 +1349,7 @@ def test_a_RELATIVE_GIT_from_the_resolver_is_still_refused(tmp_path, monkeypatch
         _ub.updater_substitutions()
 
 
-@_pytest.mark.skipif(not _PWSH, reason="needs pwsh to execute the Windows artifact")
+@_WINDOWS_GATE
 def test_A_PLANTED_SECRET_REACHES_NO_WINDOWS_OUTPUT_LOG_OR_ARTIFACT(tmp_path, monkeypatch):
     """N2 round 2, executed on the Windows artifact with a unique planted value.
 
@@ -1337,7 +1396,7 @@ def test_A_PLANTED_SECRET_REACHES_NO_WINDOWS_OUTPUT_LOG_OR_ARTIFACT(tmp_path, mo
     assert "unclean_tree" in log, log
 
 
-@_pytest.mark.skipif(not _PWSH, reason="needs pwsh to execute the Windows artifact")
+@_WINDOWS_GATE
 def test_the_windows_updater_REFUSES_when_the_system_directory_is_unusable(tmp_path, monkeypatch):
     """F1's refusal half: no fallback when the OS cannot name its own system directory.
 
@@ -1455,7 +1514,7 @@ def test_NO_RAW_CHILD_OUTPUT_FROM_ANY_LINUX_PHASE_SURVIVES(tmp_path, monkeypatch
     assert result.stdout == "", f"the updater wrote to its own stdout: {result.stdout[:400]!r}"
 
 
-@_pytest.mark.skipif(not _PWSH, reason="needs pwsh to execute the Windows artifact")
+@_WINDOWS_GATE
 def test_NO_RAW_CHILD_OUTPUT_FROM_ANY_WINDOWS_PHASE_SURVIVES(tmp_path, monkeypatch):
     """The same sweep on the Windows artifact, stopped one phase earlier — and said so.
 
@@ -1496,7 +1555,10 @@ def test_NO_RAW_CHILD_OUTPUT_FROM_ANY_WINDOWS_PHASE_SURVIVES(tmp_path, monkeypat
     assert not leaked, f"raw child output survived in: {leaked}"
 
 
-@_pytest.mark.parametrize("artifact", ["linux", "windows"])
+@_pytest.mark.parametrize("artifact", [
+    "linux",
+    _pytest.param("windows", marks=_WINDOWS_GATE),
+])
 def test_a_SHOUTING_HELPER_still_yields_its_REAL_problem_list(tmp_path, monkeypatch, artifact):
     """The other half of "discard the helper's stderr": the document must still parse.
 
@@ -1571,7 +1633,7 @@ def test_A_REFUSED_PUBLICATION_LOGS_ITS_EXIT_STATUS_AND_NOT_ITS_CHILD_OUTPUT(tmp
     assert "4d2f9a7c15be03" not in log, "the refused value itself was logged"
 
 
-@_pytest.mark.skipif(not _PWSH, reason="needs pwsh to execute the Windows artifact")
+@_WINDOWS_GATE
 def test_A_MALFORMED_REQUEST_REFUSES_WITHOUT_QUOTING_ITSELF_TO_THE_CONSOLE(tmp_path, monkeypatch):
     """The request inbox is SERVICE-writable, so parsing it is handling untrusted input.
 
@@ -1674,7 +1736,7 @@ def test_A_COMMAND_NO_TEST_NAMES_STILL_CANNOT_SPEAK(tmp_path, monkeypatch):
     assert result.stdout == "" and result.stderr == ""
 
 
-@_pytest.mark.skipif(not _PWSH, reason="needs pwsh to execute the Windows artifact")
+@_WINDOWS_GATE
 def test_THE_WINDOWS_BOUNDARY_SILENCES_WHAT_NO_TEST_NAMES(tmp_path, monkeypatch):
     """The Windows counterpart, and an HONEST statement of what it does and does not prove.
 

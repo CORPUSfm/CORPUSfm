@@ -18,10 +18,11 @@
     * no -KeepData. It left an installation the installer then refused to reinstall over.
     * no direct FMS, proxy, service, account or file removal, and no fmsadmin call.
     * no persisted credential. A known required FMS credential is validated before confirmation,
-      framed to one lifecycle process, wiped after that call, and never written to the request/log.
+      held by this launcher for this one run, framed afresh to each lifecycle call that needs it,
+      wiped when the run ends, and never written to the request/log.
 
   Run from an ELEVATED PowerShell:
-      powershell -ExecutionPolicy Bypass -File uninstall.ps1 [options]
+      powershell -File uninstall.ps1 [options]
 
   Options (the complete set; every other option is refused as unknown):
       -Yes        Consent pre-granted: no confirmation prompt, normal output.
@@ -31,6 +32,16 @@
                   prompts for anything, including a credential.
       -Verbose    Stream detail to the console (it always reaches the transcript).
 
+  FMS administrator credential, when a recorded operation needs one:
+      -CredentialStdin (with -Silent) reads ONE credential frame from this launcher's standard
+      input: a 4-byte big-endian length and UTF-8 account, then the same for the password. It is
+      the only non-interactive route. The values never enter an environment variable, an argument
+      list, the request, the transcript or the output. A malformed, truncated, empty or
+      over-long frame, or trailing bytes, is refused before anything is removed.
+      Without the option: a console run prompts as before, and a -Silent run stops
+      incomplete_safe with the credential-dependent work recorded and resumable - it is never
+      skipped.
+
   NOTE: keep this file ASCII-only (Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI).
 #>
 [CmdletBinding()]
@@ -38,6 +49,12 @@ param(
   [switch]$Force,
   [switch]$Yes,
   [switch]$Silent,
+  # Reads ONE lifecycle credential frame from this launcher's own stdin - the same wire shape the
+  # lifecycle component already consumes. Packet 1236 removed the environment route on purpose: an
+  # exported credential is inherited by pip, git and apt-get, which is not "transient" in the sense
+  # SPEC 4 promises. A frame on stdin is inherited by nothing, appears in no argv, and is consumed
+  # once. -Silent only: a console run prompts, which is the behaviour that route exists for.
+  [switch]$CredentialStdin,
   # **THE RETIRED OPTIONS, DECLARED SO THEY CAN BE REFUSED.** PowerShell would otherwise answer an
   # unknown parameter with its own error, and a positional value would bind silently to the first
   # free parameter. Naming them here means an operator who passes -KeepData is TOLD it is gone
@@ -71,6 +88,12 @@ foreach ($pair in @(@('-InstallRoot', $InstallRoot), @('-ConfigHome', $ConfigHom
   if ($pair[1]) { $retired += $pair[0] }
 }
 if ($KeepData) { $retired += '-KeepData' }
+# -CredentialStdin is a NON-INTERACTIVE route; pairing it with a run that can prompt would leave two
+# credential sources live at once and no rule for which wins. Refused here, before the plan is read.
+if ($CredentialStdin -and -not $Silent) {
+  Die ("-CredentialStdin requires -Silent.`n" +
+       "       A run that can prompt already has a credential route. Nothing has changed.")
+}
 if ($retired.Count -gt 0) {
   Die ("Unknown option(s): " + ($retired -join ', ') + "`n" +
        "       They are gone. Uninstall removes exactly what this installation recorded as its own,`n" +
@@ -100,16 +123,16 @@ if ($LASTEXITCODE -ne 0 -or $groups -notmatch 'S-1-16-12288') {
 Cfm-LogInit (Join-Path $env:ProgramData ("CORPUSfm-uninstall-" + (Get-Date).ToString('yyyyMMdd-HHmmss') + ".log"))
 if ($script:CfmLog) { Ok ("Uninstall transcript: " + $script:CfmLog) }
 
-# THE PROGRAM TO RUN. Prefer the copy beside an installed launcher; the packaged launcher falls
-# back to the one supported Windows installation path so its documented command works.
-$CfmRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..') -ErrorAction SilentlyContinue)
-$Py = if ($CfmRoot) { Join-Path $CfmRoot.Path 'python\python.exe' } else { '' }
-if (-not $Py -or -not (Test-Path $Py)) {
-  $Py = 'C:\Program Files\CORPUSfm\python\python.exe'
-}
-if (-not $Py -or -not (Test-Path $Py)) {
-  Die ("This launcher runs the CORPUSfm that ships beside it, and none is here.`n" +
-       "       Install CORPUSfm first, then run this packaged uninstaller again.")
+# THE PROGRAM TO RUN: the interpreter of the installation this launcher was installed into. The
+# installer provisions the launcher directly in the installation directory, so its own directory IS
+# that root, for a default or a non-default -InstallDir alike (packet 1397 D1). There is no fallback
+# to a default path: a guessed root would aim this uninstall at another installation, or at none.
+$CfmRoot = $PSScriptRoot
+$Py = Join-Path $CfmRoot 'python\python.exe'
+if (-not (Test-Path -LiteralPath $Py -PathType Leaf)) {
+  Die ("This launcher runs the CORPUSfm installation it was installed into, and none is beside it:`n" +
+       "       " + $Py + " does not exist.`n" +
+       "       Run the uninstall.ps1 inside the CORPUSfm installation directory.")
 }
 
 Section "Settings"
@@ -353,6 +376,84 @@ function Lc-ReadFmsCredential($plan) {
   Ok ("FileMaker Server administrator '" + $script:LcCredentialUser + "' authenticated.")
 }
 
+# ONE FRAME, READ ONCE, FROM THIS LAUNCHER'S OWN STDIN.
+#
+#   [4-byte big-endian length][UTF-8 account][4-byte big-endian length][UTF-8 password]
+#
+# Every refusal below happens BEFORE the plan is acted on, and each one clears whatever it had read.
+# The frame is read only when the read-only plan says a credential is required, so an invocation
+# that does not need one never consumes the caller's stdin at all.
+function Lc-ReadFramedCredential($plan) {
+  $MaxField = 4096                      # far above any real account or password; bounds a hostile length
+  $stdin = [Console]::OpenStandardInput()
+  $account = $null; $password = $null
+  try {
+    $fields = @()
+    foreach ($which in @('account', 'password')) {
+      $lenBuf = New-Object byte[] 4
+      $got = 0
+      while ($got -lt 4) {
+        $n = $stdin.Read($lenBuf, $got, 4 - $got)
+        if ($n -le 0) { Die ("The credential frame ended before its $which length. Nothing has changed.") }
+        $got += $n
+      }
+      $be = $lenBuf.Clone()
+      if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($be) }
+      $len = [BitConverter]::ToInt32($be, 0)
+      if ($len -le 0) { Die ("The credential frame declares an empty $which. Nothing has changed.") }
+      if ($len -gt $MaxField) {
+        Die ("The credential frame declares an implausible $which length ($len). Nothing has changed.")
+      }
+      $buf = New-Object byte[] $len
+      $got = 0
+      while ($got -lt $len) {
+        $n = $stdin.Read($buf, $got, $len - $got)
+        if ($n -le 0) { Die ("The credential frame is truncated in its $which. Nothing has changed.") }
+        $got += $n
+      }
+      # STRICT UTF-8. A replacement character would silently turn a wrong byte string into a
+      # plausible-looking credential, and the operator would see an authentication failure instead
+      # of the framing error that actually happened.
+      $strict = New-Object Text.UTF8Encoding($false, $true)
+      try { $fields += $strict.GetString($buf) }
+      catch { [Array]::Clear($buf, 0, $buf.Length)
+              Die ("The credential frame's $which is not valid UTF-8. Nothing has changed.") }
+      [Array]::Clear($buf, 0, $buf.Length)
+    }
+    # EXACTLY TWO FIELDS. Trailing bytes mean the caller framed something this launcher does not
+    # understand; consuming two and ignoring the rest would accept a frame nobody agreed on.
+    $extra = New-Object byte[] 1
+    if ($stdin.Read($extra, 0, 1) -gt 0) {
+      Die ("The credential frame carries trailing bytes after the password. Nothing has changed.")
+    }
+    $account = $fields[0]; $password = $fields[1]
+    if (-not $account -or -not $password) {
+      Die ("The credential frame carries an empty field. Nothing has changed.")
+    }
+  } finally { $stdin.Dispose() }
+
+  $script:LcCredentialUser = $account
+  $script:LcCredentialPass = $password
+  $account = $null; $password = $null
+  Info "Read one FMS administrator credential frame from standard input."
+  Info "It is used for this run only and is never written down."
+  $fmsadmin = "" + $plan.locations.fmsadmin
+  if (-not $fmsadmin -or -not (Test-Path $fmsadmin)) {
+    $script:LcCredentialPass = ''; $script:LcCredentialUser = ''
+    Die ("The recorded fmsadmin executable is unavailable at " + $fmsadmin + ". Nothing has changed.")
+  }
+  Info "Verifying FM Server credentials..."
+  # PRE-EXISTING, OWNED FINDING: this validation places the password in the FMSADMIN child's argv.
+  # The interactive path has always done so; it is unchanged here on purpose, and recorded rather
+  # than newly accepted. Closing it is a separate correction that touches both credential routes.
+  & $fmsadmin -u $script:LcCredentialUser -p $script:LcCredentialPass list files *> $null
+  if ($LASTEXITCODE -ne 0) {
+    $script:LcCredentialPass = ''; $script:LcCredentialUser = ''
+    Die "FM Server admin login failed. Nothing has changed."
+  }
+  Ok ("FileMaker Server administrator '" + $script:LcCredentialUser + "' authenticated.")
+}
+
 # THE SIX RESULT WORDS AND THEIR CODES - the shipped contract, restated nowhere else. 4 means the
 # REQUEST was refused, which is this launcher's defect and never the box's.
 function Lc-Report {
@@ -415,12 +516,24 @@ if (@($plan.fms_admin_login_reasons).Count) {
   foreach ($reason in @($plan.fms_admin_login_reasons)) { Info ("  - " + $reason) }
 }
 
+# ONE VALIDATED CREDENTIAL SUPPLIES ONE APPROVED RUN (packet 1380-04 ruling, narrowing 1236). Once
+# validated it is held in THIS process only and reused for every start or resume that answers
+# credential_required; each lifecycle child still receives its own freshly framed copy on stdin. The
+# lifecycle asks per operation - a live Linux run asked for start and again for the PKI read-back -
+# so a credential spent on the first call would strand the second. Wiped in the outer finally.
 $startTransport = 'none'; $script:LcCredentialUser = ''; $script:LcCredentialPass = ''
+$script:CredentialFrameRead = $false
 if ($plan.mode -eq 'start' -and $plan.fms_admin_login_required) {
   # UserInteractive is false in a real interactive OpenSSH console on Windows Server. The stream is
   # the relevant fact: Read-Host works there when console input is not redirected.
-  if ($script:CfmSilent -or [Console]::IsInputRedirected) {
+  if ($CredentialStdin) {
+    Lc-ReadFramedCredential $plan
+    $script:CredentialFrameRead = $true
+    $startTransport = 'stdin'
+  } elseif ($script:CfmSilent -or [Console]::IsInputRedirected) {
     Warn "The plan needs an FMS administrator credential, but this invocation cannot prompt."
+    Warn "Pass -CredentialStdin with -Silent and write one credential frame to this launcher's"
+    Warn "standard input to supply one without a console."
     Warn "Independent safe removal may proceed; FMS-dependent work will remain resumable."
   } else {
     Lc-ReadFmsCredential $plan
@@ -438,10 +551,7 @@ if ($plan.mode -eq 'start') {
 
 Section "Progress"
 Info "Starting the uninstall..."
-if ($startTransport -eq 'stdin') {
-  Lc-InvokeFramed 'start' $script:LcCredentialUser $script:LcCredentialPass
-  $script:LcCredentialPass = ''; $script:LcCredentialUser = ''
-}
+if ($startTransport -eq 'stdin') { Lc-InvokeFramed 'start' $script:LcCredentialUser $script:LcCredentialPass }
 else { Lc-Invoke 'start' 'none' }
 
 # **A pending record means this is a resume, not a fresh start** - and the component says so by name
@@ -451,19 +561,34 @@ if ($script:LcReason -eq 'pending_record_exists__resume_it_rather_than_starting_
   Lc-Invoke 'resume' 'none'
 }
 
-# Ask whenever the next recorded operation requires a fresh one-use credential.
+# Continue while the next recorded operation requires a credential. A held credential is reused; the
+# frame is read at most once per run; a silent run with nothing held stops resumable, as before.
+$continuations = 0
 while ($script:LcReason -eq 'credential_required') {
-  if ($script:CfmSilent) {
-    Warn "An FMS administrator credential is required to finish, and -Silent never prompts."
-    Warn "Re-run without -Silent to supply one. Nothing is lost: the uninstall is recorded and"
-    Warn "resumes where it stopped."
-    break
-  } else {
-    Info "A later operation now requires an FMS administrator credential."
-    Lc-ReadFmsCredential $plan
-    Lc-InvokeFramed 'resume' $script:LcCredentialUser $script:LcCredentialPass
-    $script:LcCredentialPass = ''; $script:LcCredentialUser = ''
+  if (-not ($script:LcCredentialUser -and $script:LcCredentialPass)) {
+    if ($CredentialStdin -and -not $script:CredentialFrameRead) {
+      Info "A later operation now requires an FMS administrator credential."
+      Lc-ReadFramedCredential $plan
+      $script:CredentialFrameRead = $true
+    } elseif ($script:CfmSilent) {
+      Warn "An FMS administrator credential is required to finish, and -Silent never prompts."
+      Warn "Pass -CredentialStdin with -Silent and write one credential frame to standard input,"
+      Warn "or re-run without -Silent. Nothing is lost: the uninstall is recorded and resumes"
+      Warn "where it stopped."
+      break
+    } else {
+      Info "A later operation now requires an FMS administrator credential."
+      Lc-ReadFmsCredential $plan
+    }
   }
+  # A lifecycle that keeps asking with a validated credential in hand is not making progress; stop
+  # resumable rather than resubmit it without end.
+  if (++$continuations -gt 8) {
+    Warn "The uninstall still requires a credential after 8 continuations; stopping. It is recorded"
+    Warn "and resumes where it stopped."
+    break
+  }
+  Lc-InvokeFramed 'resume' $script:LcCredentialUser $script:LcCredentialPass
 }
 $script:LcCredentialPass = ''; $script:LcCredentialUser = ''
 

@@ -497,10 +497,16 @@ _GENERIC_INSTALLER_HANDOFF = (
 
 
 def _command_for_installer_entry(entry_point: str, *, windows: bool) -> str:
-    """Format the one recorded launcher path without giving the application execution authority."""
+    """Format the one recorded launcher path without giving the application execution authority.
+
+    No `-ExecutionPolicy Bypass` (packet 1380-02 D20). The entry point is an installed LOCAL file
+    with no Mark of the Web, which RemoteSigned already permits, so the flag bought nothing here;
+    under AllSigned it is the organization's deployed publisher leaf that admits the script, and a
+    policy override would neither help nor be something CORPUSfm may recommend.
+    """
     if windows:
         quoted = "'" + entry_point.replace("'", "''") + "'"
-        return f"powershell -ExecutionPolicy Bypass -File {quoted}"
+        return f"powershell -File {quoted}"
     import shlex
     return f"sudo {shlex.quote(entry_point)}"
 
@@ -730,13 +736,16 @@ def _trigger_privileged_update(*, expected_head: str, actor: str,
                            message=f"Update refused — {exc}. Run the installer on the server: "
                                    f"{operator_command()}")
     try:
-        path = update_boundary.request_path(app_paths.state_dir())
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"trigger_id": request_id,
-                                    "expected_head": expected_head.strip().lower(),
-                                    "actor": actor}), encoding="utf-8")
-        os.chmod(path, 0o600)
-    except OSError as exc:
+        update_boundary.publish_request(app_paths.state_dir(), trigger_id=request_id,
+                                        expected_head=expected_head.strip().lower(), actor=actor)
+    except update_boundary.RequestExists as exc:
+        # Packet 1380-02 / F-UPD-REPLAY: a PENDING or ACTIVE request already exists. NEVER overwrite
+        # it — refuse. Two submissions cannot replace one another, and a crashed run's ACTIVE is
+        # resumed by re-running the task rather than clobbered by a fresh request.
+        return ApplyResult(False, "update_in_progress", 409, request_id=request_id,
+                           message=f"An update is already in progress or incomplete ({exc}). Wait "
+                                   "for it to finish, or re-run the update task to resume it.")
+    except (OSError, update_boundary.RequestMalformed) as exc:
         return ApplyResult(False, "request_not_written", 500, request_id=request_id,
                            message=f"Could not record the update request: {exc}")
 
@@ -756,6 +765,9 @@ def _trigger_privileged_update(*, expected_head: str, actor: str,
                                    f"{_TRIGGER_TIMEOUT_SECONDS}s and has not recorded an outcome. "
                                    "It may still be running; call update_status shortly.")
     except Exception as exc:
+        # The task never started, so no updater claimed the request — remove the PENDING we wrote so
+        # it does not block the next attempt (guarded: it touches nothing once a run has claimed it).
+        update_boundary.discard_pending_if_ours(app_paths.state_dir(), request_id)
         return ApplyResult(False, "trigger_failed", 500, request_id=request_id,
                            message=f"Could not start the privileged update operation: {exc}")
     # A NONZERO EXIT IS NOT NECESSARILY A FAILED TRIGGER. The one-shot exits 1 when it REFUSES —
@@ -768,6 +780,9 @@ def _trigger_privileged_update(*, expected_head: str, actor: str,
             return _outcome_result(refusal, request_id, actor=actor,
                                    audit_outcome=audit_outcome)
         tail = (started.stderr or started.stdout or "").strip().splitlines()
+        # No refusal outcome was recorded, so the updater did not claim this request — clear the
+        # PENDING we wrote (guarded so it cannot remove a request a run has already claimed).
+        update_boundary.discard_pending_if_ours(app_paths.state_dir(), request_id)
         return ApplyResult(False, "trigger_failed", 500, request_id=request_id,
                            message="The privileged update operation could not be started"
                                    + (f" — {tail[-1]}" if tail else "")

@@ -790,26 +790,44 @@ class UninstallExecutor:
         self._lock = lock
         self._operation_id = operation_id
         self._installation_id = installation_id
+        self._attempt = None
 
     # -- construction ---------------------------------------------------------
 
     @classmethod
-    def for_installation(cls, layout, *, lock) -> "UninstallExecutor":
-        """THE construction path: the fixed record, under a held lock for THIS machine's state."""
+    def for_installation(cls, layout, *, lock, attempt=None) -> "UninstallExecutor":
+        """THE construction path: the fixed record, under a held lock for THIS machine's state.
+
+        `attempt` (packet 1398) selects the protected install-attempt authority: the v5 record is
+        read from the protected container and, on every read, re-proved against the frozen plan in
+        the protected attempt record — so no service-writable file ever aims a deletion.
+        """
         held = require_lock(lock, "executing the pending uninstall")
         if held.layout != layout:
             raise LockNotHeld(
                 f"executing the pending uninstall requires the lifecycle lock for "
                 f"{layout.lock_file}, not {held.layout.lock_file}")
-        record = pending.read(layout)
+        record = pending.read(layout) if attempt is None else pending.read(layout, attempt=attempt)
         if record is None:
             raise ExecutorRefused(
                 f"there is no pending record at {pending.pending_path(layout)}; an executor has no "
                 "authority of its own and never invents one")
         executor = cls(layout, lock=lock, operation_id=record.operation_id,
                        installation_id=record.installation_id, _token=_CONSTRUCTION)
+        executor._attempt = attempt
         executor._assert_platform(record)
+        executor._validate_attempt(record)
         return executor
+
+    def _validate_attempt(self, record) -> None:
+        if self._attempt is None:
+            return
+        try:
+            self._attempt.validate(record)
+        except LifecycleError as exc:
+            raise ExecutorRefused(
+                f"install_attempt_plan_mismatch: {exc}; nothing is executed from a pending record "
+                "the protected frozen plan does not authorize") from exc
 
     def _assert_platform(self, record) -> None:
         flavours = {getattr(op, "flavour", None) for op in record.remaining} - {None}
@@ -831,7 +849,8 @@ class UninstallExecutor:
         require_lock(self._lock, "executing the pending uninstall")
         if self._lock.layout != self._layout:
             raise LockNotHeld("the held lock is for another installation's lifecycle state")
-        record = pending.read(self._layout)
+        record = (pending.read(self._layout) if self._attempt is None
+                  else pending.read(self._layout, attempt=self._attempt))
         if record is None:
             raise ExecutorRefused(
                 "the pending record is gone; every operation reads it again, and an executor whose "
@@ -845,6 +864,8 @@ class UninstallExecutor:
                 f"the pending record now belongs to operation {record.operation_id}, not "
                 f"{self._operation_id}")
         self._assert_platform(record)
+        # Packet 1398: re-proved on EVERY read, and every operation and substep reads here first.
+        self._validate_attempt(record)
         return record
 
     def _operation(self, resource: str, tag: str):
@@ -911,6 +932,9 @@ class UninstallExecutor:
         }
         if self._layout.locator_file is not None:
             protected.add(Path(self._layout.locator_file))
+        if self._attempt is not None:
+            protected.update({Path(self._attempt.paths.container),
+                              Path(self._attempt.pending_path), Path(self._attempt.journal_path)})
         return frozenset(protected)
 
     # -- this invocation's own runtime -----------------------------------------

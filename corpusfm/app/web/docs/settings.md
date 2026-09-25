@@ -344,13 +344,20 @@ server.
 > **Deployment note.** The remote FileMaker Server POSTs its schema back to CORPUSfm's **External
 > CORPUSfm address** (below), so that address must be reachable from the remote box and must be
 > **`https://`** (a remote push carries a live one-time token, which never crosses the network in
-> cleartext — an `http://` callback is rejected unless it is `localhost`). Override it per job (the
-> PostToServer method field) when a specific job needs unusual routing. Whether CORPUSfm verifies the
+> cleartext — an `http://` callback is rejected unless it is `localhost`). Give a server its own
+> **Callback URL** above when that peer must reach CORPUSfm at a different address — it is a property
+> of the server, not of a job, so every job targeting that server inherits it. Whether CORPUSfm verifies the
 > remote server's own TLS certificate is the per-server **Verify TLS** toggle above (off by default).
 
 The credentials for a remote server live encrypted in CORPUSfm's own database and never travel to
 the browser. Manage remote servers under **Settings → FileMaker**; pick one per job on the
 [Jobs](/docs/jobs) page's **Server** field.
+
+**Settings is the full collection**: it is where you see every registered server and the only place a
+server can be **removed**. An administrator can also add a server, or edit the one currently selected,
+straight from the [Jobs](/docs/jobs) page header — the same form, the same verify-before-save, and the
+same stored record. Both surfaces require the **Settings** gate; an automation user can choose a server
+on Jobs but is not offered either control, and the server would refuse the request regardless.
 
 ## MCP address
 
@@ -414,7 +421,7 @@ sudo /opt/CORPUSfm/bin/corpusfm-installer --repair-storage-access
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File `
+powershell -File `
   'C:\Program Files\CORPUSfm\bin\corpusfm-installer.ps1' `
   -RepairStorageAccess
 ```

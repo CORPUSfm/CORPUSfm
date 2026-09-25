@@ -3,7 +3,8 @@
 
 {# Jobs — re-platform (bespoke kit; no Shoelace). The page models itself on FILES:
    every hosted file is a health-coded identity card (icon color = aggregate health),
-   click → a tabbed parent file pop-over (File · Jobs), and Add/Edit a job opens a
+   click → a parent file pop-over that opens directly on that file's jobs (packet 1385
+   retired its File tab), and Add/Edit a job opens a
    STACKED child job-editor pop-over (leaving the child returns to the parent — the
    allowed parent/child pattern). Packet 085 U3b: credentials, verification and artifact
    tags are per-JOB (set in the job editor) — the file card shows only a summary across
@@ -30,6 +31,18 @@
           </template>
         </div>
       </div>
+      {# Server management from Jobs (packet 1384). Rendered only for an actor with Settings
+         authority — an Automation-only user gets no markup at all rather than a control the backend
+         would refuse. This is PRESENTATION: every detail read and the mutation behind it are
+         Settings-gated server-side, which remains the authority. Edit needs a remote server
+         selected; Local has no record to edit. #}
+      {% if all_access or (current_user and 'settings' in current_user.gates) %}
+      <button type="button" class="cfm-btn cfm-btn--sm" @click="startAddServer()"
+              title="Add a remote FileMaker Server" aria-label="Add remote server">＋</button>
+      <button type="button" class="cfm-btn cfm-btn--sm" x-show="isRemote" x-cloak
+              @click="startEditServer()" title="Edit the selected remote server"
+              aria-label="Edit remote server">Edit</button>
+      {% endif %}
       {{ doc_help('jobs', 'About Jobs & automation') }}
       <button type="button" class="cfm-btn cfm-btn--sm" @click="refresh()" :disabled="!!loading">Refresh</button>
     </div>
@@ -99,12 +112,17 @@
     </div>
   </template>
 
-  {# ── Parent file pop-over (overlay primitive; tabbed) ─────────────────────── #}
+  {# ── Parent file pop-over (overlay primitive) ─────────────────────────────── #}
   <div class="cfm-overlay" x-show="detail" x-cloak
-       @click.self="if (!jobForm) closeDetail()"
        @keydown.escape.window="if (!jobForm) closeDetail()"
        x-effect="detail ? $nextTick(() => { _trap = window.cfmFocusTrap($refs.fileDlg) }) : (_trap && _trap())">
-    <div class="cfm-dialog cfm-dialog--wide cfm-dialog--tabbed" x-ref="fileDlg" role="dialog" aria-modal="true">
+    {# `cfm-dialog--tabbed` is gone with the tabs (packet 1385). It contributed one thing the base
+       dialog does not — a FIXED height, so switching tabs never resized the window (kit.css). With a
+       single view there is nothing to switch, and the fixed height gave a one-job file a 720px panel
+       that was mostly empty. The base `.cfm-dialog` already caps at calc(100vh - 48px) and scrolls
+       its body, and the ≤640px full-height sheet rule names plain `.cfm-dialog` too, so the phone
+       layout is unchanged. The shared CSS stays — the Artifacts dialog is still genuinely tabbed. #}
+    <div class="cfm-dialog cfm-dialog--wide" x-ref="fileDlg" role="dialog" aria-modal="true">
       <template x-if="detail">
         <div class="cfm-dialog-contents">
           <div class="cfm-dialog-hdr">
@@ -114,15 +132,27 @@
           </div>
 
           <div class="cfm-dialog-body">
-            <div class="cfm-tabs">
-              <button type="button" class="cfm-tab" :class="detailTab === 'jobs' ? 'cfm-tab--on' : ''" @click="detailTab = 'jobs'">
-                Jobs<span class="cfm-tab-badge" x-show="jobs.length" x-text="jobs.length"></span>
-              </button>
-              <button type="button" class="cfm-tab" :class="detailTab === 'file' ? 'cfm-tab--on' : ''" @click="detailTab = 'file'">File</button>
+            {# The file's EXCEPTIONAL states — the only facts the retired File tab carried that the
+               job list does not already own (packet 1385). Rendered only when one applies: an
+               ordinary reachable, non-storage file has nothing exceptional to say, and an empty
+               Summary area was half of what made that tab worth opening only by accident.
+               Missing and closed stay DISTINCT here even though the gallery merges them into one
+               word — the pop-over is where the difference is stated (packet 1330-01), and only
+               `missing` may ever enable the orphan cleanup in the footer. #}
+            <div class="cfm-filterbar cfm-filterbar--tight"
+                 x-show="detail.missing || detail.closed || detail.is_self">
+              <template x-if="detail.missing">
+                <span class="cfm-badge cfm-badge--idle">Not hosted</span>
+              </template>
+              <template x-if="detail.closed && !detail.missing">
+                <span class="cfm-badge cfm-badge--idle">Closed on FileMaker Server</span>
+              </template>
+              <template x-if="detail.is_self">
+                <span class="cfm-badge cfm-badge--muted">storage DB — pulls allowed, patch tools won't touch it</span>
+              </template>
             </div>
 
-            {# ── Jobs tab ──────────────────────────────────────────────────── #}
-            <div x-show="detailTab === 'jobs'">
+            <div>
               <template x-if="jobs.length === 0">
                 <p class="cfm-list-empty">No jobs yet. Add one to pull this file's schema on a schedule, a webhook, or on demand.</p>
               </template>
@@ -172,32 +202,6 @@
                         @click="startAddJob()" title="Add a job">＋ Add job</button>
               </div>
             </div>
-
-            {# ── File tab ──────────────────────────────────────────────────── #}
-            <div x-show="detailTab === 'file'">
-              <p class="cfm-muted cfm-mb-12">
-                Credentials and verification are now set <strong>per job</strong> — open a job in the
-                <button type="button" class="cfm-btn cfm-btn--text" @click="detailTab = 'jobs'">Jobs tab</button>
-                to give it a FileMaker account and Verify it. Artifact tags are set on the job too.
-              </p>
-              <div class="cfm-field">
-                <span class="cfm-field-label">Summary</span>
-                <div class="cfm-filterbar cfm-filterbar--tight">
-                  <span class="cfm-badge cfm-badge--muted" x-text="(detail.job_count || 0) + ' job' + ((detail.job_count === 1) ? '' : 's')"></span>
-                  <template x-if="detail.needs_credential"><span class="cfm-badge cfm-badge--warn">needs credentials</span></template>
-                  <template x-if="detail.all_verified"><span class="cfm-badge cfm-badge--ok">all verified</span></template>
-                  <template x-if="detail.missing">
-                    <span class="cfm-badge cfm-badge--idle">Not hosted</span>
-                  </template>
-                  <template x-if="detail.closed && !detail.missing">
-                    <span class="cfm-badge cfm-badge--idle">Closed on FileMaker Server</span>
-                  </template>
-                  <template x-if="detail.is_self">
-                    <span class="cfm-badge cfm-badge--muted">storage DB — pulls allowed, patch tools won't touch it</span>
-                  </template>
-                </div>
-              </div>
-            </div>
           </div>
 
           <div class="cfm-dialog-ftr">
@@ -225,9 +229,76 @@
     </div>
   </div>
 
+  {# ── Remote-server add/edit pop-over (packet 1384) ───────────────────────────
+     Created WITHOUT backdrop dismissal, per packet 1381's contract: a stray click outside must not
+     discard a half-typed server credential. Escape, Cancel and ✕ close it; a save in flight holds it
+     open. The fields and their semantics mirror Settings, which remains the full collection-management
+     surface — Jobs manages a new server and the one it has selected. #}
+  <div class="cfm-overlay" x-show="serverForm" x-cloak
+       @keydown.escape.window="if (serverForm && !savingServer) closeServerForm()"
+       x-effect="serverForm ? $nextTick(() => { _trapSrv = window.cfmFocusTrap($refs.srvDlg) }) : (_trapSrv && _trapSrv())">
+    <div class="cfm-dialog" x-ref="srvDlg" role="dialog" aria-modal="true">
+      <template x-if="serverForm">
+        <div class="cfm-dialog-contents">
+          <div class="cfm-dialog-hdr">
+            <span class="cfm-dialog-title" x-text="serverForm.is_new ? 'Add remote server' : ('Edit · ' + serverForm.name)"></span>
+            <button type="button" class="cfm-iconbtn" @click="closeServerForm()" :disabled="!!savingServer"
+                    aria-label="Cancel" title="Cancel">✕</button>
+          </div>
+          <div class="cfm-dialog-body">
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="jsrv-name">Name</label>
+              <input id="jsrv-name" type="text" class="cfm-input" x-model="serverForm.name"
+                     :disabled="!serverForm.is_new" placeholder="e.g. prod-fms">
+            </div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="jsrv-host">Host</label>
+              <input id="jsrv-host" type="text" class="cfm-input" x-model="serverForm.host" placeholder="fms2.example.com">
+            </div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="jsrv-acct">Account</label>
+              <input id="jsrv-acct" type="text" class="cfm-input" x-model="serverForm.account" placeholder="fmsadmin account (Admin API)">
+            </div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="jsrv-pw">Password</label>
+              {# Write-only: the stored secret never reaches the browser, so a blank field on edit
+                 means "keep it" — said in the placeholder rather than by pre-filling anything. #}
+              <input id="jsrv-pw" type="password" class="cfm-input" x-model="serverForm.password"
+                     :placeholder="serverForm.password_set ? '•••••• (stored — enter to replace)' : 'fmsadmin password'">
+            </div>
+            <div class="cfm-field">
+              <div class="cfm-switch" :class="serverForm.verify_ssl?'cfm-switch--on':''"
+                   @click="serverForm.verify_ssl=!serverForm.verify_ssl"><span class="cfm-switch-track"></span><span>Verify TLS certificate</span></div>
+              <p class="cfm-muted cfm-mt-6">Leave off for a self-signed FMS certificate (the default).</p>
+            </div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="jsrv-callback">Callback URL</label>
+              <input id="jsrv-callback" type="text" class="cfm-input" x-model="serverForm.callback_url"
+                     placeholder="https://this-host/corpusfm">
+              {# The fallback is STATED, never copied into the field — a suggestion written into the
+                 record would become a stored value nobody chose (packet 1386's lesson, one surface over). #}
+              <p class="cfm-field-hint">Where THIS server posts its schema back to CORPUSfm — the address
+                as that server can reach it, which need not be the one you use. Blank uses this
+                install's own address (<span x-text="externalBase || 'not configured'"></span>).</p>
+            </div>
+            <p class="cfm-muted cfm-mt-6">Used only to list this server's hosted files. File access (OData) is set on each job.</p>
+            <p class="cfm-inline-error cfm-mt-6" x-show="serverMsg" x-text="serverMsg"></p>
+          </div>
+          <div class="cfm-dialog-ftr">
+            <span class="cfm-spacer"></span>
+            <button type="button" class="cfm-btn cfm-btn--sm" @click="closeServerForm()"
+                    :disabled="!!savingServer">Cancel</button>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" @click="saveServer()"
+                    :disabled="!!savingServer" x-text="savingServer ? 'Verifying…' : 'Save'">Save</button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
   {# ── Child job-editor pop-over (stacks above the file pop-over) ───────────── #}
   <div class="cfm-overlay cfm-overlay--stack" x-show="jobForm" x-cloak
-       @click.self="closeJobForm()" @keydown.escape.window="if (jobForm) closeJobForm()"
+       @keydown.escape.window="if (jobForm) closeJobForm()"
        x-effect="jobForm ? $nextTick(() => { _jobTrap = window.cfmFocusTrap($refs.jobDlg) }) : (_jobTrap && _jobTrap())">
     <div class="cfm-dialog" x-ref="jobDlg" role="dialog" aria-modal="true">
       <template x-if="jobForm">
@@ -264,7 +335,7 @@
               <p class="cfm-field-hint" x-show="serverRef !== 'local'">
                 <strong>From</strong> <span x-text="serverLabel"></span>
                 <span aria-hidden="true">→</span>
-                <strong>To</strong> <span x-text="serverCallback || callbackPlaceholder"></span>
+                <strong>To</strong> <span x-text="effectiveCallback"></span>
               </p>
             </div>
 
@@ -586,7 +657,7 @@ function jobsPage() {
     loading: false,
     verifyingJob: false,
     msgErr: false,
-    detail: null, detailTab: 'jobs', _trap: null,
+    detail: null, _trap: null,
     jobs: [], jobForm: null, jobMsg: '', savingJob: false, runningJob: {},
     confirmDelJob: false, _jobTrap: null,
     // The schedule form's server-computed preview + clock envelope (packet 1185).
@@ -603,13 +674,99 @@ function jobsPage() {
     SAVE_TO_DOCS, SAVE_TO_FILE_PATH, POST_TO_SERVER,
     gitRegs: [],
     servers: [],
-    callbackDefault: '',
+
+    // ── Remote-server add/edit from this page (packet 1384) ────────────────────
+    // Settings remains the full collection-management surface (including delete); Jobs manages a NEW
+    // server and the one currently SELECTED. The dialog is presentation only — the detail read and
+    // the mutation are Settings-gated server-side, so a user who reaches them another way is refused
+    // there rather than here.
+    serverForm: null, serverMsg: '', savingServer: false, _trapSrv: null,
+    startAddServer() {
+      this.serverMsg = '';
+      this.serverForm = { is_new: true, id: '', name: '', host: '', account: '', password: '',
+                          password_set: false, verify_ssl: false, callback_url: '' };
+    },
+    // Loads the SELECTED server by its stable id. Never by name or row position: the header selection
+    // is an id, and resolving the edit target any other way is how the edited record and the selected
+    // record come apart after a rename.
+    async startEditServer() {
+      if (!this.isRemote) return;            // Local has no remote-server record to edit
+      this.serverMsg = '';
+      const id = this.serverRef;
+      try {
+        const r = await fetch('/api/settings/servers/' + encodeURIComponent(id) + '/detail');
+        const d = await r.json();
+        if (!d.ok) { window.cfmNotify.error(d.error || 'That server could not be read.'); return; }
+        const s = d.server || {};
+        if (!s.id || s.id !== id) {
+          window.cfmNotify.error('That server could not be read. Use Refresh and try again.');
+          return;                            // a readback that is not the record we asked for
+        }
+        this.serverForm = { is_new: false, id: s.id, name: s.name || '', host: s.host || '',
+                            account: s.account || '', password: '', password_set: !!s.password_set,
+                            verify_ssl: !!s.verify_ssl, callback_url: s.callback_url || '' };
+      } catch (e) { window.cfmNotify.error(String(e)); }
+    },
+    // Closing discards the draft INCLUDING the typed password — it is never retained anywhere.
+    closeServerForm() {
+      // Verification can finish with a committed server. Closing while it is in flight would clear
+      // the form that the success path still reads, then strand the saved record before list
+      // readback/selection. Escape already held this boundary; explicit close controls must too.
+      if (this.savingServer) return;
+      this.serverForm = null; this.serverMsg = '';
+    },
+    async saveServer() {
+      if (this.savingServer) return;         // single-flight, BEFORE any await (packet 1186)
+      if (!this.serverForm.name.trim() || !this.serverForm.host.trim()) {
+        this.serverMsg = 'Name and Host are required.'; return;
+      }
+      this.savingServer = true; this.serverMsg = '';
+      try {
+        const r = await fetch('/api/settings/servers/add', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.serverForm) });
+        const d = await r.json();
+        // A failure keeps the draft open with its correction, and touches neither the current
+        // selection nor the file gallery.
+        if (!d.ok) { this.serverMsg = d.error || 'Save failed.'; return; }
+        const savedId = (d.server && d.server.id) || '';
+        const name = this.serverForm.name;
+        this.serverForm = null;
+        const before = this.servers;
+        await this.loadServers();
+        // A refresh that failed must not leave an empty selector after a SUCCESSFUL save — that reads
+        // as the save having gone wrong.
+        if (!this.servers.length && before.length) this.servers = before;
+        if (!savedId || !this.servers.some(s => s.id === savedId)) {
+          window.cfmNotify.error(`'${name}' was saved, but the server list could not be confirmed — use Refresh.`);
+          return;                            // never select a different server on an unconfirmed readback
+        }
+        window.cfmNotify.success(`Server '${name}' saved.`);
+        if (savedId !== this.serverRef) await this.pickServer(savedId);
+        else await this.refresh();
+      } catch (e) { this.serverMsg = String(e); }
+      finally { this.savingServer = false; }
+    },
+    // The CONFIGURED External CORPUSfm address, and only that (packet 1386). Deliberately not the
+    // route's `callback_default`, which falls back to the current browser request: a fine suggestion
+    // while editing configuration, but not what the runtime would use, and showing it after "To"
+    // states a destination no job would post to.
+    externalBase: '',
     // The callback belongs to the SERVER, not the job (packet 1219) — the form SHOWS it as the To
     // half of the transfer, and Settings is where it is edited.
+    // Resolved from `serverRef`, the page's authoritative selection and the same value save sends
+    // (packet 1386). It used to read `jobForm.server_ref` — a field neither startAddJob() nor
+    // editJob() has ever set — so the lookup always missed and every remote job displayed the
+    // install fallback in place of the selected server's own callback.
     get serverCallback() {
-      const s = (this.servers || []).find(x => x.id === this.jobForm?.server_ref);
+      const s = (this.servers || []).find(x => x.id === this.serverRef);
       return (s && s.callback_url) || '';
     },
+    // What the runtime would actually use, in the runtime's own order (queue_handlers + the job-save
+    // route): the server's stored callback, else the configured install address, else neither exists
+    // and the job cannot post at all — which is a state to state plainly, not to paper over with an
+    // example URL.
+    get effectiveCallback() { return this.serverCallback || this.externalBase || 'Not configured'; },
 
     // ── Server context (packet 1015): the HEADER selection drives the whole page ──
     serverRef: 'local',
@@ -626,14 +783,6 @@ function jobsPage() {
     // The export methods valid for the current server context (first = default).
     get methodOpts() { return this.isRemote ? REMOTE_METHOD_OPTS : LOCAL_METHOD_OPTS; },
     get defaultMethod() { return this.isRemote ? POST_TO_SERVER : SAVE_TO_DOCS; },
-
-    // Callback-URL placeholder. NEVER suggest the loopback default (127.0.0.1/localhost) — a remote
-    // server can't reach our loopback, so it's a useless hint. Show a public example instead.
-    get callbackPlaceholder() {
-      const d = this.callbackDefault || '';
-      const loopback = /^https?:\/\/(127\.0\.0\.1|localhost|\[?::1\]?)(:|\/|$)/i.test(d);
-      return (d && !loopback) ? d : 'https://this-corpusfm-host/corpusfm';
-    },
 
     async pickServer(v) {
       if (v === this.serverRef) return;
@@ -704,7 +853,7 @@ function jobsPage() {
 
     async loadServers() {
       try { const r = await fetch('/api/remote-servers'); const d = await r.json();
-        this.servers = d.servers || []; this.callbackDefault = d.callback_default || ''; }
+        this.servers = d.servers || []; this.externalBase = d.external_base || ''; }
       catch(e) { this.servers = []; }
     },
     // ?server_ref= suffix so every /api/files* read is scoped to the selected server.
@@ -731,7 +880,7 @@ function jobsPage() {
     },
 
     // ?job_uuid= — the Runs page's "Job" button (packet 1143/1144). The page is organised by
-    // FILE, so resolve the job's file by UUID and open that card's Jobs tab. A uuid that no
+    // FILE, so resolve the job's file by UUID and open that card. A uuid that no
     // longer resolves says so plainly rather than opening an arbitrary file.
     async _openDeepLinkedJob() {
       const ju = new URLSearchParams(window.location.search).get('job_uuid');
@@ -825,7 +974,6 @@ function jobsPage() {
 
     openDetail(f) {
       this.detail = Object.assign({}, f);
-      this.detailTab = f.job_count ? 'jobs' : 'file';
       this.jobs = []; this.jobForm = null; this.jobMsg = ''; this.confirmDelJob = false;
       this.confirmOrphanWipe = false;
       this.loadJobs(f.name);
@@ -919,6 +1067,9 @@ function jobsPage() {
         enable_artifact_limit: j.enable_artifact_limit, max_artifacts: j.max_artifacts || 10,
         git_reg: j.git_reg || '', git_repo: j.git_repo || '', git_content: j.git_content || 'both',
         account: j.account || '', password: '', tags_text: (j.tags || []).join(', '),
+        // The account as stored, kept so saveJob() can tell a RETAIN (shown account unchanged,
+        // blank password) from a changed account that needs its password (packet 1395).
+        orig_account: j.account || '',
         has_credential: !!j.has_credential, verified: !!j.verified, verify_reason: j.verify_reason || '',
       };
       this.resetPreview(); this.refreshPreview();
@@ -968,6 +1119,15 @@ function jobsPage() {
       }
       if (this.jobForm.is_new && !this.jobForm.password) {
         this.jobMsg = 'A FileMaker password is required — a job cannot pull without one.'; return;
+      }
+      // An EDIT that CHANGES the account of a credentialed job needs the new password (packet 1395).
+      // The stored account shown unchanged with a blank password is a RETAIN and saves; a changed
+      // account with a blank password is refused here so the user hears it before the round trip.
+      // The server is the authority and refuses this independently.
+      if (!this.jobForm.is_new && this.jobForm.has_credential && !this.jobForm.password
+          && (this.jobForm.account || '').trim()
+          && (this.jobForm.account || '').trim() !== (this.jobForm.orig_account || '').trim()) {
+        this.jobMsg = 'Changing the account requires its password.'; return;
       }
       this.savingJob = true; this.jobMsg = '';
       try {

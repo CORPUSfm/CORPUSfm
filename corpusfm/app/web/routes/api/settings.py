@@ -19,6 +19,25 @@ router = APIRouter()
 _ADMIN = [Depends(require_auth), Depends(require_gate("settings"))]
 
 
+def _server_projection(s) -> dict:
+    """The ONE sanitized shape a remote server is exposed in to a Settings administrator.
+
+    Carries the stable ``id`` (packet 1384) so an editor can address this exact record, and the
+    password only as ``password_set`` — the secret is write-only and never reaches the browser, on any
+    surface. Every admin-facing server read and the mutation's readback share this function so a new
+    field cannot appear on one and be forgotten on the other.
+    """
+    return {
+        "id": s.id,
+        "name": s.name,
+        "host": s.host,
+        "account": s.account,       # the fmsadmin Admin-API account
+        "password_set": bool(s.password),
+        "verify_ssl": bool(s.verify_ssl),
+        "callback_url": s.callback_url or "",
+    }
+
+
 def _installed_filemaker_projection() -> dict:
     """Bounded, secret-free view of the installation-owned FileMaker backend."""
     from corpusfm.lifecycle import runtime_storage
@@ -62,13 +81,36 @@ def _persisted_public_base() -> str:
         return ""
 
 
+def _resolve_embedding_target(body: dict, cfg) -> dict:
+    """The embedding endpoint resolution the REAL indexer uses (``get_vector_index``), shared by the
+    live test, its persistence, and model listing (packet 1396). For each field: the explicit form
+    value, then the SAVED embedding value; the saved SUMMARY base URL is a legacy fallback ONLY when
+    no embedding provider is set anywhere. A typed embedding key wins, else the saved embedding key.
+
+    Returns the exact values to pass to the endpoint AND to persist on a successful test, so that
+    stored == tested == what the indexer will resolve."""
+    from corpusfm.server import ai_env
+    provider = str(body.get("ai_embedding_provider", "")).strip() or cfg.ai_embedding_provider or ""
+    base_url = (str(body.get("ai_embedding_base_url", "")).strip()
+                or cfg.ai_embedding_base_url
+                or (cfg.ai_summary_base_url if not provider else "")
+                or "")
+    model = str(body.get("ai_embedding_model", "")).strip() or cfg.ai_embedding_model
+    api_version = (str(body.get("ai_embedding_api_version", "")).strip()
+                   or cfg.ai_embedding_api_version)
+    typed_key = str(body.get("ai_embedding_api_key", "")).strip()
+    key = typed_key or ai_env.read_ai_key("embed")
+    return {"provider": provider, "base_url": base_url, "model": model,
+            "api_version": api_version, "key": key}
+
+
 @router.get("/settings/data", dependencies=_ADMIN)
 async def settings_data(request: Request) -> JSONResponse:
     try:
         from corpusfm.storage import get_backend
         from corpusfm.storage.local import load_settings
         from corpusfm.server.monitor.config import load_monitor_config
-        from corpusfm.app.app_config import load_app_config
+        from corpusfm.app.app_config import load_app_config, SettingsUnavailable
         from corpusfm.core.git_formatter import list_registrations, resolve_local_path
         from corpusfm.config import is_server_mode
         from corpusfm.core.crypto import key_source
@@ -87,7 +129,17 @@ async def settings_data(request: Request) -> JSONResponse:
         except Exception:
             archive_dir = ""
         cfg = load_monitor_config()
-        app_cfg = load_app_config()
+        # Packet 1396: in FileMaker mode a transient or malformed settings authority must NOT present
+        # editable defaults (saving that blank form would overwrite the still-valid record). Read
+        # strictly; on an outage mark the prefs island unavailable so the browser keeps whatever it
+        # holds and disables the affected edit/Save/List/Test actions. The rest of the page (storage
+        # diagnosis, servers) is independent and still renders.
+        try:
+            app_cfg = load_app_config(require_authority=True)
+            prefs_unavailable = False
+        except SettingsUnavailable:
+            app_cfg = None
+            prefs_unavailable = True
         regs = list_registrations()
         try:
             servers = _rs.list_servers()
@@ -126,7 +178,10 @@ async def settings_data(request: Request) -> JSONResponse:
                 "smtp_from": email.get("from_addr", ""),
                 "smtp_to": ", ".join(email.get("to_addrs", [])),
             },
-            "prefs": {
+            # Packet 1396: `null` under an authority outage — the browser must NOT treat that as
+            # editable defaults; it keeps its held values and disables the affected actions.
+            "prefs_unavailable": prefs_unavailable,
+            "prefs": None if prefs_unavailable else {
                 "keep_source_xml": app_cfg.keep_source_xml,
                 "encrypt_blobs": app_cfg.encrypt_blobs,
                 "enable_fms_admin_mcp_tools": app_cfg.enable_fms_admin_mcp_tools,
@@ -171,18 +226,10 @@ async def settings_data(request: Request) -> JSONResponse:
                 }
                 for r in regs
             ],
-            "remote_servers": [
-                {
-                    "name": s.name,
-                    "host": s.host,
-                    "account": s.account,   # the fmsadmin Admin-API account
-                    # Write-only secret: expose only whether set (blank field on edit keeps it).
-                    "password_set": bool(s.password),
-                    "verify_ssl": bool(s.verify_ssl),
-                    "callback_url": s.callback_url or "",
-                }
-                for s in servers
-            ],
+            # ONE sanitized shape for every admin-facing server read, the mutation's readback
+            # included (packet 1384) — so a field added to one cannot be forgotten on the other, and
+            # the password stays write-only on both.
+            "remote_servers": [_server_projection(s) for s in servers],
             "is_server_mode": is_server_mode(),
         })
     except Exception as exc:
@@ -881,7 +928,14 @@ async def server_add(request: Request) -> JSONResponse:
     Save VERIFIES before it persists — the effective credential must reach the Admin API and enumerate
     hosted files, or nothing is stored (a remote server that can't list files is useless to the Jobs
     page). Verification runs against the *merged* credential, so a blank password on edit re-uses the
-    stored one for the check, exactly as add_server would persist it."""
+    stored one for the check, exactly as add_server would persist it.
+
+    IDENTITY (packet 1384): an optional stable ``id`` decides the operation. Absent means CREATE, and a
+    duplicate name is refused rather than silently replacing the existing record. Present means edit
+    THAT record — located by key, so a rename cannot redirect the write, and the preserved blank
+    password is read back from the same key. Both Settings and Jobs use this one contract; the
+    sanitized saved record, including its id, is returned so a caller never has to infer which record
+    it just wrote."""
     try:
         from corpusfm.server import remote_servers as rs
         body = await request.json()
@@ -892,11 +946,40 @@ async def server_add(request: Request) -> JSONResponse:
             password=(body.get("password") or "").strip(),
             verify_ssl=bool(body.get("verify_ssl", False)),
             callback_url=(body.get("callback_url") or "").strip(),
+            id=(body.get("id") or "").strip(),
         )
         if not rs.is_valid_server_name(cfg.name):
             return JSONResponse(
                 {"ok": False, "error": "Server name may only contain letters, digits, dot, dash, and "
                  "underscore (no slashes or spaces)."}, status_code=400)
+
+        # Resolve the requested identity before making the verification network call. A stale edit
+        # id or a duplicate CREATE is already invalid; verifying it first can send a credential to a
+        # host that will never be stored and makes a rejected request externally observable.
+        prior = None
+        if cfg.id:
+            prior = rs.get_server_by_id(cfg.id)
+            if prior is None:
+                return JSONResponse(
+                    {"ok": False, "error": "That remote server no longer exists — reload the "
+                                           "server list."}, status_code=404)
+            try:
+                name_owner = rs.get_server(cfg.name)
+            except KeyError:
+                name_owner = None
+            if name_owner is not None and name_owner.id != cfg.id:
+                return JSONResponse(
+                    {"ok": False, "error": f"Remote server '{cfg.name}' already exists."},
+                    status_code=400)
+        else:
+            try:
+                rs.get_server(cfg.name)
+            except KeyError:
+                pass
+            else:
+                return JSONResponse(
+                    {"ok": False, "error": f"Remote server '{cfg.name}' already exists."},
+                    status_code=400)
         if cfg.callback_url:
             # A remote peer POSTs a live one-time token over this, so it must be reachable FROM THAT
             # PEER — a loopback address is rejected here rather than at the next run (packet 1055/1219).
@@ -908,17 +991,39 @@ async def server_add(request: Request) -> JSONResponse:
         eff = rs.RemoteServer(name=cfg.name, host=cfg.host, account=cfg.account, password=cfg.password,
                               verify_ssl=cfg.verify_ssl, callback_url=cfg.callback_url)
         if not eff.password:
-            try:
-                eff.password = rs.get_server(cfg.name).password
-            except KeyError:
-                pass
+            # Only edits can reach this point with a prior record. Read the secret by the SAME stable
+            # identity the write will use; resolving it by name could merge one server's password
+            # into another after a rename.
+            if prior is not None:
+                eff.password = prior.password
         ok, msg, _dbs = await run_in_threadpool(rs.verify_server, eff)
         if not ok:
             return JSONResponse({"ok": False, "error": msg}, status_code=400)
-        rs.add_server(cfg, overwrite=True)
-        return JSONResponse({"ok": True})
+        # overwrite only on the EDIT path. The route already refused a colliding create before
+        # verification; the store repeats that invariant at the persistence boundary.
+        saved = rs.add_server(cfg, overwrite=bool(cfg.id))
+        return JSONResponse({"ok": True, "server": _server_projection(saved)})
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@router.get("/settings/servers/{server_id}/detail", dependencies=_ADMIN)
+async def server_detail(server_id: str) -> JSONResponse:
+    """One remote server, by stable id, for an add/edit form (packet 1384).
+
+    Deliberately narrow: it exists so the Jobs page can edit the server it has SELECTED without
+    fetching `/settings/data`, the broad Settings document, which carries unrelated configuration this
+    form has no business reading. Settings-gated like every other server route — the Jobs page being
+    Automation-gated confers nothing here. Resolves by key only; a name never selects a record."""
+    try:
+        from corpusfm.server import remote_servers as rs
+        srv = rs.get_server_by_id((server_id or "").strip())
+        if srv is None:
+            return JSONResponse({"ok": False, "error": "That remote server no longer exists — "
+                                                       "reload the server list."}, status_code=404)
+        return JSONResponse({"ok": True, "server": _server_projection(srv)})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
@@ -976,8 +1081,13 @@ async def save_preferences(request: Request) -> JSONResponse:
     # second side, and this route writes app-config only.
     try:
         body = await request.json()
-        from corpusfm.app.app_config import load_app_config, save_app_config, FM_ADDON_LOCALES
-        cfg = load_app_config()
+        from corpusfm.app.app_config import save_app_config, FM_ADDON_LOCALES
+        from corpusfm.app.web.settings_authority import load_settings_authority
+        # Packet 1396: require a good authoritative read before any write — a transient FM outage
+        # must not let this route persist a full AppConfig that blanks unrelated settings.
+        cfg, _unavail = load_settings_authority()
+        if _unavail is not None:
+            return _unavail
         # Personal prefs (landing_page / docs_drawer_side / preferred_addon_locale) moved to the
         # per-user store (Your account). This route now carries only the app-wide content settings.
         cfg.keep_source_xml = bool(body.get("keep_source_xml", cfg.keep_source_xml))
@@ -1071,10 +1181,15 @@ async def set_blob_encryption(request: Request) -> JSONResponse:
                 {"ok": False, "started": False, "error": "conversion already running"},
                 status_code=409,
             )
-        from corpusfm.app.app_config import (load_app_config, save_app_config,
+        from corpusfm.app.app_config import (save_app_config,
                                              ConfigWriteIndeterminate, ConfigWriteNotCommitted)
+        from corpusfm.app.web.settings_authority import load_settings_authority
         from corpusfm.storage import get_backend
-        cfg = load_app_config()
+        # Packet 1396: a transient FM outage must not launch the global blob re-encode against a
+        # guessed setting; refuse before any write or conversion.
+        cfg, _unavail = load_settings_authority()
+        if _unavail is not None:
+            return _unavail
         cfg.encrypt_blobs = enabled
         try:
             save_app_config(cfg)
@@ -1127,9 +1242,13 @@ async def blob_encryption_status() -> JSONResponse:
 async def save_ai_summary_config(request: Request) -> JSONResponse:
     try:
         body = await request.json()
-        from corpusfm.app.app_config import load_app_config, save_app_config
+        from corpusfm.app.app_config import save_app_config
+        from corpusfm.app.web.settings_authority import load_settings_authority
         from corpusfm.server import ai_env
-        cfg = load_app_config()
+        # Packet 1396: require a good authoritative read before writing the AI config or touching keys.
+        cfg, _unavail = load_settings_authority()
+        if _unavail is not None:
+            return _unavail
         # Capture the summary fingerprint BEFORE overwriting, to invalidate the chat verified flag
         # if any of provider/model/base-url/key changes (packet 033, #13). The key lives in the
         # SETTING.AiKeys DB container now (packet 1007) — read it into the fingerprint so a key change
@@ -1215,32 +1334,39 @@ async def test_embedding(request: Request) -> JSONResponse:
     the index features unlock only after a real working endpoint is proven."""
     try:
         body = await request.json()
-        from corpusfm.app.app_config import load_app_config, save_app_config
+        from corpusfm.app.app_config import save_app_config
+        from corpusfm.app.web.settings_authority import load_settings_authority
         from corpusfm.server.ai.vector_index import test_embedding_endpoint
-        from corpusfm.server import ai_env
-        cfg = load_app_config()
-        # Test the values currently in the form (may be unsaved), falling back to the saved values,
-        # exactly as get_vector_index resolves them. Chat-base fallback only when NOT azure (decoupled).
-        embed_provider = str(body.get("ai_embedding_provider", "")).strip() or cfg.ai_embedding_provider
-        base_url = (str(body.get("ai_embedding_base_url", "")).strip()
-                    or (cfg.ai_summary_base_url if embed_provider != "azure_openai" else "") or "")
-        model = str(body.get("ai_embedding_model", "")).strip() or cfg.ai_embedding_model
-        api_version = str(body.get("ai_embedding_api_version", "")).strip() or cfg.ai_embedding_api_version
-        # UI-settable EMBED key first (SETTING.AiKeys container; env fallback inside the helper; a
-        # just-typed unsaved key wins) — mirrors get_vector_index so the test uses the real key.
-        typed_key = str(body.get("ai_embedding_api_key", "")).strip()
-        ui_key = typed_key or ai_env.read_ai_key("embed")
+        # Packet 1396: require a good authoritative read before the verified-flag write; refuse under
+        # an outage (the browser disables the Test action then too).
+        cfg, _unavail = load_settings_authority()
+        if _unavail is not None:
+            return _unavail
+        # Resolve the embedding endpoint EXACTLY as the real indexer does (get_vector_index): explicit
+        # form value, then the SAVED embedding value, then the saved summary URL only when no embedding
+        # provider is set. This route used to skip the saved embedding base URL and fall straight to the
+        # summary URL, so its tested and stored configs could both differ from what the indexer resolves.
+        tgt = _resolve_embedding_target(body, cfg)
         # Live network round-trip — offload off the event loop (packet 078).
         result = await run_in_threadpool(
-            test_embedding_endpoint, base_url, model, ui_key, 20, embed_provider, api_version)
+            test_embedding_endpoint, tgt["base_url"], tgt["model"], tgt["key"], 20,
+            tgt["provider"], tgt["api_version"])
         if result.get("ok"):
-            # Persist the proven provider/endpoint/model/api-version + the verified flag (test = verify).
-            cfg.ai_embedding_provider = embed_provider
-            cfg.ai_embedding_base_url = str(body.get("ai_embedding_base_url", "")).strip()
-            cfg.ai_embedding_model = str(body.get("ai_embedding_model", "")).strip()
-            cfg.ai_embedding_api_version = api_version
+            # Persist the values ACTUALLY tested (test = verify), so stored == tested == indexer-resolved.
+            # Never overwrite a proven value with a blank raw request field (packet 1396).
+            cfg.ai_embedding_provider = tgt["provider"]
+            cfg.ai_embedding_base_url = tgt["base_url"]
+            cfg.ai_embedding_model = tgt["model"]
+            cfg.ai_embedding_api_version = tgt["api_version"]
             cfg.ai_embedding_verified = True
             save_app_config(cfg)
+            # Hand the RESOLVED values back so the form reflects what was stored. Without this, a form
+            # that tested with blank embedding fields (resolved from the saved/summary values) still
+            # holds those blanks, and the next AI Save would post them, overwrite the just-persisted
+            # endpoint, and clear the verification just earned (packet 1396).
+            result = {**result, "resolved": {
+                "provider": tgt["provider"], "base_url": tgt["base_url"],
+                "model": tgt["model"], "api_version": tgt["api_version"]}}
         return JSONResponse(result, status_code=200 if result.get("ok") else 400)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -1252,10 +1378,14 @@ async def test_summary(request: Request) -> JSONResponse:
     counterpart to test-embedding for the summaries side."""
     try:
         body = await request.json()
-        from corpusfm.app.app_config import load_app_config, save_app_config
+        from corpusfm.app.app_config import save_app_config
+        from corpusfm.app.web.settings_authority import load_settings_authority
         from corpusfm.server.ai import test_summary_endpoint
         from corpusfm.server import ai_env
-        cfg = load_app_config()
+        # Packet 1396: require a good authoritative read before the verified-flag write.
+        cfg, _unavail = load_settings_authority()
+        if _unavail is not None:
+            return _unavail
         # Test the values currently in the form (may be unsaved), falling back to saved.
         provider = str(body.get("ai_summary_provider", "")).strip() or cfg.ai_summary_provider
         model = str(body.get("ai_summary_model", "")).strip() or cfg.ai_summary_model
@@ -1291,22 +1421,33 @@ async def list_embedding_models(request: Request) -> JSONResponse:
     this discovery must run server-side — same path as test-embedding."""
     try:
         body = await request.json()
-        from corpusfm.app.app_config import load_app_config
+        from corpusfm.app.web.settings_authority import load_settings_authority
         from corpusfm.server.ai.vector_index import list_endpoint_models
         from corpusfm.server import ai_env
-        cfg = load_app_config()
-        # Generic discovery: an explicit base_url (the chat-provider field) wins;
-        # else the embedding field; else the saved summary URL. Both AI sections
-        # (chat model + embeddings) call this — the endpoint is provider-neutral.
-        base_url = (str(body.get("base_url", "")).strip()
-                    or str(body.get("ai_embedding_base_url", "")).strip()
-                    or cfg.ai_summary_base_url or "")
-        # Azure lists deployments in the portal, not via /models — the helper returns a not-supported
-        # result so the UI hides the button; pass whichever section's provider the caller sent.
-        provider = (str(body.get("provider", "")).strip()
-                    or str(body.get("ai_embedding_provider", "")).strip()
-                    or str(body.get("ai_summary_provider", "")).strip() or "openai_compat")
-        ui_key = ai_env.read_ai_key("embed") if body.get("ai_embedding_provider") else ai_env.read_ai_key("chat")
+        # Packet 1396: refuse under an authoritative outage (the browser disables List too) and resolve
+        # saved values from the authority, never stale YAML.
+        cfg, _unavail = load_settings_authority()
+        if _unavail is not None:
+            return _unavail
+        # Which form asked? The embedding form sends ai_embedding_* fields (and context "embedding");
+        # the chat/summary form sends base_url/provider. Key on the explicit context, else on the
+        # PRESENCE (not truthiness) of the embedding fields — a BLANK embedding provider must still
+        # resolve as the embedding context and use the embedding key/URL, not the chat key (packet 1396).
+        context = str(body.get("context", "")).strip().lower()
+        is_embed = context == "embedding" or (
+            context != "chat" and ("ai_embedding_base_url" in body or "ai_embedding_provider" in body))
+        if is_embed:
+            tgt = _resolve_embedding_target(body, cfg)
+            base_url = tgt["base_url"]
+            # Azure lists deployments in the portal, not via /models — the helper returns a
+            # not-supported result so the UI hides the button; default a blank provider for listing.
+            provider = tgt["provider"] or "openai_compat"
+            ui_key = tgt["key"]
+        else:
+            base_url = str(body.get("base_url", "")).strip() or cfg.ai_summary_base_url or ""
+            provider = (str(body.get("provider", "")).strip()
+                        or cfg.ai_summary_provider or "openai_compat")
+            ui_key = ai_env.read_ai_key("chat")
         result = list_endpoint_models(base_url, api_key=ui_key, provider=provider)
         return JSONResponse(result, status_code=200 if result.get("ok") else 400)
     except Exception as exc:

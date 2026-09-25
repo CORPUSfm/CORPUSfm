@@ -2,8 +2,10 @@
 {% block title %}Settings — CORPUSfm{% endblock %}
 
 {# Settings — re-platform (bespoke kit; no Shoelace). Panels show SAVED state; multi-field
-   edits happen in pop-overs where Save is the only commit (Cancel/Close/Escape/click-away
-   discard). Single cheap booleans are switches that auto-commit; the consequential blob-
+   edits happen in pop-overs where Save is the only commit (Cancel/Close/Escape discard).
+   A click on the shaded backdrop does NOTHING (packet 1381): these panels hold half-typed
+   configuration, and a stray click outside must not throw it away. Single cheap booleans are
+   switches that auto-commit; the consequential blob-
    encryption switch routes through a confirm. Bespoke dropdowns replace every native select.
    Transient feedback → toast. See plan surfaces 2–6, 18–20 + the commit taxonomy. #}
 
@@ -249,7 +251,7 @@
     {# Gate editor — a deliberate Save/Cancel pop-over (gate changes are an access mutation, not a
        one-click inline toggle). Save commits via PATCH /users/{id}/gates; Cancel/Escape discards. #}
     <div class="cfm-overlay" x-show="gateEdit" x-cloak
-         @click.self="cancelGateEdit()" @keydown.escape.window="if (gateEdit) cancelGateEdit()">
+         @keydown.escape.window="if (gateEdit) cancelGateEdit()">
       <div class="cfm-dialog" role="dialog" aria-modal="true">
         <div class="cfm-dialog-hdr"><span class="cfm-dialog-title" x-text="gateEdit ? 'Gates — ' + gateEdit.username : 'Gates'"></span>
           <button type="button" class="cfm-iconbtn" @click="cancelGateEdit()" aria-label="Cancel" title="Cancel">✕</button></div>
@@ -275,7 +277,7 @@
     {# Reset password — masked + entered twice (an admin sets another user's password); parity with the
        self-service Change-password form on the account page. Never a native prompt() (shows plaintext). #}
     <div class="cfm-overlay" x-show="pwEdit" x-cloak
-         @click.self="cancelPwReset()" @keydown.escape.window="if (pwEdit) cancelPwReset()">
+         @keydown.escape.window="if (pwEdit) cancelPwReset()">
       <div class="cfm-dialog" role="dialog" aria-modal="true">
         <div class="cfm-dialog-hdr"><span class="cfm-dialog-title" x-text="pwEdit ? 'Reset password — ' + pwEdit.username : 'Reset password'"></span>
           <button type="button" class="cfm-iconbtn" @click="cancelPwReset()" aria-label="Cancel" title="Cancel">✕</button></div>
@@ -369,9 +371,10 @@
 
       {# ── One dialog, three slices. Each opens on a DEEP draft and merges only its own slice back
            into the last-loaded configuration, so the combined API never carries a stale sibling.
-           Cancel/Escape/close/backdrop discard the draft without touching `ea`. ────────────── #}
+           Cancel/Escape/close discard the draft without touching `ea`; a backdrop click does
+           nothing at all (packet 1381). ──────────────────────────────────────────────────── #}
       <div class="cfm-overlay" x-show="dlg" x-cloak x-ref="eaDlgWrap"
-           @click.self="if (!dlgBusy) closeDlg()" @keydown.escape.window="if (dlg && !dlgBusy) closeDlg()"
+           @keydown.escape.window="if (dlg && !dlgBusy) closeDlg()"
            x-effect="dlg ? $nextTick(() => { _eaTrap = window.cfmFocusTrap($refs.eaDlg) }) : (_eaTrap && _eaTrap())">
         <div class="cfm-dialog" role="dialog" aria-modal="true" aria-labelledby="ea-dlg-title" x-ref="eaDlg">
           <div class="cfm-dialog-hdr">
@@ -939,6 +942,12 @@
     </div>
 
   {# ═══ AI ════════════════════════════════════════════════════════════════════ #}
+    <div class="cfm-panel cfm-mt-14" x-show="prefsUnavailable" x-cloak>
+      <p class="cfm-err">Settings are temporarily unavailable — the configuration store could not be
+        read. The values shown are what this page last held; Save, List models and Test are disabled
+        until it can be read again. Reload Settings to retry.</p>
+    </div>
+
     <h2 class="cfm-section-h">Semantic search — embeddings
       {{ doc_help('semantic-search#turning-it-on', 'About semantic search') }}</h2>
     <div class="cfm-panel">
@@ -980,7 +989,7 @@
 
   {# Remote-server add/edit (packet 1015) — pop-over; mobile-ready via the settings-page cfm-dialog CSS #}
   <div class="cfm-overlay" x-show="serverForm" x-cloak
-       @click.self="serverForm = null" @keydown.escape.window="if (serverForm) serverForm = null"
+       @keydown.escape.window="if (serverForm) serverForm = null"
        x-effect="serverForm ? $nextTick(() => { _trapSrv = window.cfmFocusTrap($refs.srvDlg) }) : (_trapSrv && _trapSrv())">
     <div class="cfm-dialog" x-ref="srvDlg" role="dialog" aria-modal="true">
       <div class="cfm-dialog-hdr">
@@ -1034,7 +1043,7 @@
 
   {# Archive directory edit (local backend) #}
   <div class="cfm-overlay" x-show="edit === 'archive'" x-cloak
-       @click.self="closeEdit(false)" @keydown.escape.window="if (edit==='archive') closeEdit(false)"
+       @keydown.escape.window="if (edit==='archive') closeEdit(false)"
        x-effect="edit === 'archive' ? $nextTick(() => { _trapB = window.cfmFocusTrap($refs.archDlg) }) : (_trapB && _trapB())">
     <div class="cfm-dialog" x-ref="archDlg" role="dialog" aria-modal="true">
       <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Archive directory</span>
@@ -1057,7 +1066,7 @@
 
   {# Blob-encryption confirm (consequential switch) #}
   <div class="cfm-overlay" x-show="blobConfirm" x-cloak
-       @click.self="cancelBlobEncryption()" @keydown.escape.window="if (blobConfirm) cancelBlobEncryption()">
+       @keydown.escape.window="if (blobConfirm) cancelBlobEncryption()">
     <div class="cfm-dialog" role="dialog" aria-modal="true">
       <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Re-encode all stored blobs?</span>
         {{ doc_help('settings#blob-encryption', 'About blob encryption') }}</div>
@@ -1074,7 +1083,7 @@
 
   {# Apply update confirm #}
   <div class="cfm-overlay" x-show="confirmUpdate" x-cloak
-       @click.self="confirmUpdate=false" @keydown.escape.window="if (confirmUpdate) confirmUpdate=false">
+       @keydown.escape.window="if (confirmUpdate) confirmUpdate=false">
     <div class="cfm-dialog" role="dialog" aria-modal="true">
       <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Apply update &amp; restart</span>
         {{ doc_help('settings#updates', 'About updates') }}</div>
@@ -1091,7 +1100,7 @@
 
   {# Add git registration #}
   <div class="cfm-overlay" x-show="edit === 'reg-add'" x-cloak
-       @click.self="closeEdit(false)" @keydown.escape.window="if (edit==='reg-add') closeEdit(false)"
+       @keydown.escape.window="if (edit==='reg-add') closeEdit(false)"
        x-effect="edit === 'reg-add' ? $nextTick(() => { _trapD = window.cfmFocusTrap($refs.regDlg) }) : (_trapD && _trapD())">
     <div class="cfm-dialog" x-ref="regDlg" role="dialog" aria-modal="true">
       <div class="cfm-dialog-hdr"><span class="cfm-dialog-title" x-text="regEditing ? 'Edit credential' : 'Add credential'"></span>
@@ -1166,7 +1175,7 @@
 
   {# Notifications edit #}
   <div class="cfm-overlay" x-show="edit === 'notifications'" x-cloak
-       @click.self="closeEdit(false)" @keydown.escape.window="if (edit==='notifications') closeEdit(false)"
+       @keydown.escape.window="if (edit==='notifications') closeEdit(false)"
        x-effect="edit === 'notifications' ? $nextTick(() => { _trapE = window.cfmFocusTrap($refs.notifDlg) }) : (_trapE && _trapE())">
     <div class="cfm-dialog" x-ref="notifDlg" role="dialog" aria-modal="true">
       <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Notification settings</span>
@@ -1206,7 +1215,7 @@
 
   {# AI — Summaries edit #}
   <div class="cfm-overlay" x-show="edit === 'ai-chat'" x-cloak
-       @click.self="closeEdit(false)" @keydown.escape.window="if (edit==='ai-chat') closeEdit(false)"
+       @keydown.escape.window="if (edit==='ai-chat') closeEdit(false)"
        x-effect="edit === 'ai-chat' ? $nextTick(() => { _trapF = window.cfmFocusTrap($refs.aiChatDlg) }) : (_trapF && _trapF())">
     <div class="cfm-dialog" x-ref="aiChatDlg" role="dialog" aria-modal="true">
       <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Summaries — chat model</span>
@@ -1303,7 +1312,7 @@
 
   {# AI — Semantic search edit #}
   <div class="cfm-overlay" x-show="edit === 'ai-embed'" x-cloak
-       @click.self="closeEdit(false)" @keydown.escape.window="if (edit==='ai-embed') closeEdit(false)"
+       @keydown.escape.window="if (edit==='ai-embed') closeEdit(false)"
        x-effect="edit === 'ai-embed' ? $nextTick(() => { _trapG = window.cfmFocusTrap($refs.aiEmbedDlg) }) : (_trapG && _trapG())">
     <div class="cfm-dialog" x-ref="aiEmbedDlg" role="dialog" aria-modal="true">
       <div class="cfm-dialog-hdr"><span class="cfm-dialog-title">Semantic search — embeddings</span>
@@ -1498,11 +1507,20 @@ function usersTab() {
 function externalAuthTab() {
   return {
     ea:null, gates:[], mapRows:[],
+    // Packet 1396: true when the authority read failed. The panel must NOT render a blank editable
+    // form (a later save of an unrelated slice would post those blanks and wipe the configured
+    // providers), so it keeps ea null and refuses opening/saving a dialog until a good read lands.
+    eaUnavailable:false,
     hasSecret:false, hasBind:false, ldap3:false, newSecret:'', newBind:'',
     gateLabel(g){ return _GATE_LABELS[g] || g; },
     async load(){
       try {
         const r = await fetch('/api/settings/external-auth'); const d = await r.json();
+        if (!r.ok || d.unavailable) {
+          // Leave the last-known state untouched (do not blank it) and mark unavailable.
+          this.eaUnavailable = true; return;
+        }
+        this.eaUnavailable = false;
         this.gates = d.gates || [];
         this.ea = { oidc: d.oidc || {}, ldap: d.ldap || {} };
         this.hasSecret = !!d.has_client_secret; this.hasBind = !!d.has_ldap_bind_password;
@@ -1537,6 +1555,12 @@ function externalAuthTab() {
     dlgTitle(){ return { oidc:'OIDC single sign-on', ldap:'AD / LDAP sign-in',
                          map:'External group access' }[this.dlg] || ''; },
     openDlg(which){
+      // Packet 1396: never open an editor over an unloaded/unavailable authority — the dialog would
+      // seed blanks and Save would post them. (this.ea is null in that state, so oidc/ldap would throw.)
+      if (this.eaUnavailable || (which !== 'map' && !this.ea)) {
+        window.cfmNotify.error('External sign-in settings are temporarily unavailable — reload and try again.');
+        return;
+      }
       this.dlgMsg = ''; this.newSecret = ''; this.newBind = '';
       // A DEEP copy: a shallow one would hand the dialog the live object, and Cancel would keep
       // every keystroke it was supposed to throw away.
@@ -1547,6 +1571,9 @@ function externalAuthTab() {
     closeDlg(){ if (this.dlgBusy) return; this.dlg = ''; this.draft = null; this.dlgMsg = ''; this.newSecret = ''; this.newBind = ''; },
     async saveDlg(){
       if (this.dlgBusy) return;                     // one request per deliberate click
+      // Packet 1396: refuse if the authority never loaded — the merged payload below would carry
+      // blanks for the untouched slices and overwrite the configured providers.
+      if (this.eaUnavailable || !this.ea) { this.dlgMsg = 'Settings are temporarily unavailable — reload and try again.'; return; }
       this.dlgBusy = true; this.dlgMsg = '';
       // The API is combined by design (packet 1065): it always carries all three slices. So the
       // draft is merged over the LAST LOADED state and the untouched siblings ride along unchanged
@@ -1616,6 +1643,10 @@ function settingsPage() {
     blobOn: false, blobConfirm: false, pendingEncrypt: false, storedEncryptBlobs: false,
 
     aiSummary: { provider: '', model: '', base_url: '', api_version: '', embedding_provider: '', embedding_model: '', embedding_base_url: '', embedding_api_version: '', embedding_batch_size: 0, api_key: '', api_key_set: false, clear_key: false, embedding_api_key: '', embedding_api_key_set: false, embedding_clear_key: false, max_content_chars: 12000, include_xref: false },
+    // Packet 1396: true when /settings/data reported the FM settings authority unavailable. The page
+    // keeps whatever values it already holds (loadData skips applying a null prefs) and refuses the
+    // affected Save/List/Test actions rather than saving a blank form over the still-valid record.
+    prefsUnavailable: false,
     embedTesting: false, embedVerified: false, embedMsg: '', embedErr: false,
     embedModels: [], embedListing: false,
     chatModels: [], chatListing: false,
@@ -1796,6 +1827,9 @@ function settingsPage() {
       try {
         const r = await fetch('/api/settings/data');
         const d = await r.json();
+        // Packet 1396: any non-ok settings-data response (a 500 from a malformed/unreadable authority
+        // included) is unavailable too — keep held values, refuse the affected actions.
+        if (!r.ok) { this.prefsUnavailable = true; return; }
         this.archiveDir = d.archive_dir || '';
         this.storageBackend = d.storage_backend || 'local';
         this.registrations = d.registrations || [];
@@ -1804,6 +1838,9 @@ function settingsPage() {
           { value: '', source: 'none', error: '', warning: '', env_managed: false, persisted: '', fallback: '', detected: '' },
           d.external_address || {});
         if (d.monitor) Object.assign(this.mon, d.monitor);
+        // Packet 1396: an unavailable authority sends prefs:null — do NOT apply defaults; keep the
+        // values already held and record the state so the affected actions refuse.
+        this.prefsUnavailable = !!d.prefs_unavailable;
         if (d.prefs) {
           Object.assign(this.prefs, d.prefs);
           this.storedEncryptBlobs = !!this.prefs.encrypt_blobs;
@@ -1967,6 +2004,7 @@ function settingsPage() {
     // Same POST, but returns the full response body (so a caller can read e.g. the browser-OAuth
     // restart signal). Notifies exactly like _savePrefs.
     async _savePrefsResp(extra) {
+      if (this._settingsUnavailable()) return { ok: false, unavailable: true };
       try {
         const r = await fetch('/api/settings/preferences', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({}, this.prefs, extra || {})) });
         const d = await r.json();
@@ -2041,6 +2079,7 @@ function settingsPage() {
     cancelBlobEncryption() { this.blobOn = this.storedEncryptBlobs; this.blobConfirm = false; },
     async confirmBlobEncryption() {
       this.blobConfirm = false;
+      if (this._settingsUnavailable()) { this.blobOn = this.storedEncryptBlobs; return; }
       try {
         const r = await fetch('/api/settings/storage/blob-encryption', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: this.pendingEncrypt }) });
         const d = await r.json();
@@ -2049,7 +2088,18 @@ function settingsPage() {
       } catch(e) { window.cfmNotify.error(String(e)); this.blobOn = this.storedEncryptBlobs; }
     },
 
+    _settingsUnavailable() {
+      // Packet 1396: refuse an AI/preferences write or probe while the authority is unavailable — the
+      // browser must not send a blank form the server would write over the still-valid record.
+      if (this.prefsUnavailable) {
+        window.cfmNotify.error('Settings are temporarily unavailable — reload Settings and try again.');
+        return true;
+      }
+      return false;
+    },
+
     async commitAi() {
+      if (this._settingsUnavailable()) return;
       try {
         const r = await fetch('/api/settings/ai-summary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
           ai_summary_provider: this.aiSummary.provider, ai_summary_model: this.aiSummary.model, ai_summary_base_url: this.aiSummary.base_url,
@@ -2074,24 +2124,35 @@ function settingsPage() {
     },
 
     async testEmbedding() {
+      if (this._settingsUnavailable()) return;
       this.embedTesting = true;
       try {
         const r = await fetch('/api/settings/test-embedding', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_embedding_provider: this.aiSummary.embedding_provider || '', ai_embedding_model: this.aiSummary.embedding_model, ai_embedding_base_url: this.aiSummary.embedding_base_url, ai_embedding_api_version: this.aiSummary.embedding_api_version || '', ai_embedding_api_key: this.aiSummary.embedding_api_key || '' }) });
         const d = await r.json();
         this.embedVerified = !!d.ok;
+        // Packet 1396: reflect the RESOLVED endpoint the server tested and stored, so the form matches
+        // what is persisted and a later AI Save does not post a blank field and undo the verification.
+        if (d.ok && d.resolved) {
+          this.aiSummary.embedding_provider = d.resolved.provider || '';
+          this.aiSummary.embedding_base_url = d.resolved.base_url || '';
+          this.aiSummary.embedding_model = d.resolved.model || '';
+          this.aiSummary.embedding_api_version = d.resolved.api_version || '';
+        }
         window.cfmNotify[(d.ok) ? 'success' : 'error'](d.ok ? `Working — ${d.dims}-dim vectors from ${d.model}.` : (d.error || 'Test failed.'));
       } catch(e) { this.embedVerified = false; window.cfmNotify.error(String(e)); } finally { this.embedTesting = false; }
     },
     async listEmbeddingModels() {
+      if (this._settingsUnavailable()) return;
       this.embedListing = true;
       try {
-        const r = await fetch('/api/settings/list-embedding-models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_embedding_base_url: this.aiSummary.embedding_base_url, ai_embedding_provider: this.aiSummary.embedding_provider || '' }) });
+        const r = await fetch('/api/settings/list-embedding-models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: 'embedding', ai_embedding_base_url: this.aiSummary.embedding_base_url, ai_embedding_provider: this.aiSummary.embedding_provider || '' }) });
         const d = await r.json();
         if (d.ok) { this.embedModels = d.models || []; window.cfmNotify[(this.embedModels.length) ? 'success' : 'error'](this.embedModels.length ? `${this.embedModels.length} model(s) — pick one above.` : 'Endpoint reachable but reports no models.'); }
         else { this.embedModels = []; window.cfmNotify.error(d.error || 'Could not list models.'); }
       } catch(e) { this.embedModels = []; window.cfmNotify.error(String(e)); } finally { this.embedListing = false; }
     },
     async testSummary() {
+      if (this._settingsUnavailable()) return;
       this.summaryTesting = true;
       try {
         const r = await fetch('/api/settings/test-summary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_summary_provider: this.aiSummary.provider, ai_summary_model: this.aiSummary.model, ai_summary_base_url: this.aiSummary.base_url, ai_summary_api_version: this.aiSummary.api_version || '', ai_summary_api_key: this.aiSummary.api_key || '' }) });
@@ -2101,9 +2162,10 @@ function settingsPage() {
       } catch(e) { this.summaryVerified = false; window.cfmNotify.error(String(e)); } finally { this.summaryTesting = false; }
     },
     async listChatModels() {
+      if (this._settingsUnavailable()) return;
       this.chatListing = true;
       try {
-        const r = await fetch('/api/settings/list-embedding-models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_url: this.aiSummary.base_url, provider: this.aiSummary.provider }) });
+        const r = await fetch('/api/settings/list-embedding-models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: 'chat', base_url: this.aiSummary.base_url, provider: this.aiSummary.provider }) });
         const d = await r.json();
         if (d.ok) { this.chatModels = d.models || []; window.cfmNotify[(this.chatModels.length) ? 'success' : 'error'](this.chatModels.length ? `${this.chatModels.length} model(s) — pick one above.` : 'Endpoint reachable but reports no models.'); }
         else { this.chatModels = []; window.cfmNotify.error(d.error || 'Could not list models.'); }
@@ -2118,11 +2180,15 @@ function settingsPage() {
     // ── Remote servers (packet 1015) ───────────────────────────────────────────
     startAddServer() {
       this.serverMsg = '';
-      this.serverForm = { is_new: true, name: '', host: '', account: '', password: '', password_set: false, verify_ssl: false, callback_url: '' };
+      // No id = CREATE (packet 1384). The mutation refuses a duplicate name on this path rather than
+      // replacing a server the administrator did not mean to touch.
+      this.serverForm = { is_new: true, id: '', name: '', host: '', account: '', password: '', password_set: false, verify_ssl: false, callback_url: '' };
     },
     editServer(s) {
       this.serverMsg = '';
-      this.serverForm = { is_new: false, name: s.name, host: s.host, account: s.account || '',
+      // Carry the stable id so the save addresses THIS record, not whatever answers to its name
+      // (packet 1384) — Settings and Jobs now submit the same identity contract.
+      this.serverForm = { is_new: false, id: s.id || '', name: s.name, host: s.host, account: s.account || '',
                           password: '', password_set: !!s.password_set, verify_ssl: !!s.verify_ssl,
                           callback_url: s.callback_url || '' };
     },

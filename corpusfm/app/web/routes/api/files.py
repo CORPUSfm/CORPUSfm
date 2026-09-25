@@ -29,23 +29,32 @@ from corpusfm.app.web.deployment import validate_callback_url as _validate_callb
 @router.get("/remote-servers", dependencies=[Depends(require_auth)])
 def remote_servers_list(request: Request) -> JSONResponse:
     """The registered remote servers, for the Jobs-page HEADER server dropdown (packet 1015). Each is
-    {id, name}; full CRUD lives on the Settings page. ``callback_default`` is the URL a remote FM POSTs a
-    push back to — pre-fills the PostToServer method field (editable). Prefer the persisted External
-    CORPUSfm address; when none is configured, fall back to the request-detected URL so the UI never
-    suggests an unreachable loopback (packet 1055/1180)."""
+    {id, name}; full CRUD lives on the Settings page.
+
+    TWO callback values, and they are not interchangeable (packet 1386):
+
+    * ``external_base`` is the CONFIGURED External CORPUSfm address and nothing else. It is exactly what
+      the runtime falls back to when a server record carries no callback of its own — both
+      ``queue_handlers`` at run time and the job-save route resolve *server callback → external_base() →
+      refuse*. Empty means the runtime has no fallback, and a remote job cannot post at all.
+    * ``callback_default`` is a SUGGESTION for a configuration form: the configured address, or failing
+      that the request-detected URL, so the UI never proposes an unreachable loopback (packet 1055/1180).
+      The request-derived half is useful while editing configuration and is **not** runtime authority —
+      displaying it as a job's effective destination states an address no job would ever post to.
+    """
     try:
         from corpusfm.server import remote_servers
         from corpusfm.app.web.deployment import external_base_url, public_callback_url_from_request
-        # The one shared External CORPUSfm address (never loopback); when none is configured, suggest
-        # the request-detected URL so the UI never proposes an unreachable loopback (packet 1055/1180).
-        default = external_base_url() or (public_callback_url_from_request(request) or "")
+        configured = external_base_url() or ""
+        default = configured or (public_callback_url_from_request(request) or "")
         return JSONResponse({
             "servers": [{"id": s.id, "name": s.name, "callback_url": s.callback_url or ""}
                         for s in remote_servers.list_servers()],
             "callback_default": default,
+            "external_base": configured,
         })
     except Exception:
-        return JSONResponse({"servers": [], "callback_default": ""})
+        return JSONResponse({"servers": [], "callback_default": "", "external_base": ""})
 
 
 def _fmt_ts(iso: str) -> str:
@@ -824,14 +833,47 @@ async def file_job_save(name: str, request: Request) -> JSONResponse:
         # underneath stores what it is given and describes what it holds.
         account = (body.get("account") or "").strip()
         password = body.get("password") or ""
-        if bool(account) != bool(password):
-            return JSONResponse(
-                {"ok": False, "error": "supply both an account and a password, or neither to keep "
-                                       "the existing credential"}, status_code=400)
+
+        # RETAIN-VS-REPLACE credential contract (packet 1395). The edit form shows the stored
+        # account and leaves the password blank ("stored — enter to replace"), so an edit that
+        # changes only an unrelated field arrives as account=<stored>, password="". That is a
+        # RETAIN, not half a credential. The AUTHORITY is the server: the retain path is taken only
+        # when the submitted account matches the account the JOB record actually stores
+        # (`job_account_name`) and a credential really exists (`has_job_credential`) — never on the
+        # client's `has_credential` say-so, so a forged client cannot retain after changing the
+        # account. A supplied password requires an account and replaces both; a changed account
+        # without a password is refused before anything is written.
+        from corpusfm.server.jobs.store import (
+            set_job_credential, has_job_credential, job_account_name,
+        )
+        replace_credential = False
+        if password:
+            if not account:
+                return JSONResponse(
+                    {"ok": False, "error": "supply an account with the new password"},
+                    status_code=400)
+            replace_credential = True
+        elif account:
+            # Account present, password blank. Retain only when it is the STORED account unchanged;
+            # otherwise this is a changed account (needs the password) or half a credential on a job
+            # that has none. The account is trimmed on both sides, so a cosmetic whitespace
+            # difference never demands a password.
+            if (not is_new) and has_job_credential(job_id):
+                if account != (job_account_name(job_id) or "").strip():
+                    return JSONResponse(
+                        {"ok": False, "error": "changing the account requires its password"},
+                        status_code=400)
+                # unchanged account + blank password → retain the stored credential untouched
+            else:
+                return JSONResponse(
+                    {"ok": False, "error": "supply both an account and a password, or neither to "
+                                           "keep the existing credential"}, status_code=400)
+        # else: account blank AND password blank → retain the existing credential (an edit) or leave
+        # a credentialless draft (a new job); either way the credential store is not written. Clearing
+        # the visible account is NOT a credential-removal operation — the product has none.
 
         save_job(cfg, overwrite=not is_new)
-        if account and password:
-            from corpusfm.server.jobs.store import set_job_credential
+        if replace_credential:
             try:
                 set_job_credential(job_id, account, password)
             except Exception as exc:

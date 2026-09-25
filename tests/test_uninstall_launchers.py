@@ -91,6 +91,13 @@ if argv and argv[0] == "-c":
 # destination the launcher protected and reports that copy. Everything after this is then executed
 # by a runtime OUTSIDE the installation, which is the whole point — a double that only printed a
 # path would leave the join unexercised, and the join is what is being tested.
+if "runtime" in argv or "status" in argv:
+    # WHICH INTERPRETER answered the read-only verbs: the proof that the launcher resolved the
+    # installation it was installed into (packet 1397 D1), not a walked-up or default root.
+    with open(CALLS, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps({{"verb": "runtime" if "runtime" in argv else "status",
+                                 "invoked_as": os.path.abspath(sys.argv[0])}}) + "\\n")
+
 if "runtime" in argv:
     destination = argv[argv.index("--destination") + 1]
     staged_dir = os.path.join(destination, "python")
@@ -144,7 +151,7 @@ with open(CALLS, "a", encoding="utf-8") as handle:
                              "cwd": os.getcwd()}}) + "\\n")
 
 mutating = [json.loads(line) for line in open(CALLS, encoding="utf-8").read().splitlines()
-            if json.loads(line).get("verb") != "plan"]
+            if json.loads(line).get("verb") not in ("plan", "status", "runtime")]
 index = min(len(mutating) - 1, len(ANSWERS) - 1)
 answer = ANSWERS[index]
 if answer.get("remove_executable"):
@@ -164,24 +171,39 @@ def _answer(result, *, code, reason="", detail="ok"):
 # ── the Linux launcher ───────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def linux_box(tmp_path):
-    """An installation tree shaped the way a real one is: the launcher lives at
-    `<root>/src/installer/linux/uninstall.sh` and the interpreter beside it at `<root>/venv/bin`."""
-    root = tmp_path / "opt" / "CORPUSfm"
-    here = root / "src" / "installer" / "linux"
-    here.mkdir(parents=True)
-    (root / "venv" / "bin").mkdir(parents=True)
+def _provision_linux(root: Path, launcher_dir: Path | None = None) -> Path:
+    """Place the launcher the way `install.sh` provisions it: `<install-dir>/uninstall.sh` beside
+    its support library, with the interpreter at `<install-dir>/venv/bin`."""
+    here = launcher_dir or root
+    here.mkdir(parents=True, exist_ok=True)
+    (root / "venv" / "bin").mkdir(parents=True, exist_ok=True)
     for name in ("uninstall.sh", "_cfm_lib.sh"):
         shutil.copy(ROOT / "installer" / "linux" / name, here / name)
     (here / "uninstall.sh").chmod(0o755)
+    return here / "uninstall.sh"
+
+
+@pytest.fixture
+def linux_box(tmp_path):
+    """An installation tree shaped the way a real one is (install.sh: `$INSTALL_DIR/uninstall.sh`)."""
+    root = tmp_path / "opt" / "CORPUSfm"
+    _provision_linux(root)
     return root
 
 
+_READ_ONLY_VERBS = ("plan", "status", "runtime")
+
+
+def _recorded(calls: Path, *, everything: bool = False) -> list:
+    rows = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines() if line]
+    return rows if everything else [row for row in rows if row.get("verb") not in _READ_ONLY_VERBS]
+
+
 def run_linux(box, tmp_path, *, answers, args=(), elevated=True, stdin="", tmpdir=None,
-              installation=INSTALLATION, sudo_rc=0):
+              installation=INSTALLATION, sudo_rc=0, launcher=None):
     calls = tmp_path / "calls.jsonl"
     calls.write_text("", encoding="utf-8")
+    (box / "venv" / "bin").mkdir(parents=True, exist_ok=True)
     (box / "venv" / "bin" / "python").write_text(
         _double(calls, answers, installation=installation), encoding="utf-8")
     (box / "venv" / "bin" / "python").chmod(0o755)
@@ -199,11 +221,9 @@ def run_linux(box, tmp_path, *, answers, args=(), elevated=True, stdin="", tmpdi
     if tmpdir is not None:
         env["TMPDIR"] = str(tmpdir)
     proc = subprocess.run(
-        ["bash", str(box / "src" / "installer" / "linux" / "uninstall.sh"), *args],
+        ["bash", str(launcher or box / "uninstall.sh"), *args],
         capture_output=True, text=True, env=env, input=stdin, timeout=60)
-    recorded = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()
-                if line and json.loads(line).get("verb") != "plan"]
-    return proc, recorded
+    return proc, _recorded(calls)
 
 
 def test_LINUX_a_clean_uninstall_is_ONE_start_with_NO_CREDENTIAL(linux_box, tmp_path):
@@ -417,22 +437,31 @@ def test_LINUX_NO_INSTALLATION_RECORD_stops_without_guessing(linux_box, tmp_path
 # ── the Windows launcher ─────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def windows_box(tmp_path):
-    root = tmp_path / "CORPUSfm"
-    here = root / "src" / "installer" / "windows"
-    here.mkdir(parents=True)
-    (root / "python").mkdir(parents=True)
+def _provision_windows(root: Path, launcher_dir: Path | None = None) -> Path:
+    """Place the launcher the way `install.ps1` provisions it: `<InstallDir>\\uninstall.ps1` beside
+    its support library, with the interpreter at `<InstallDir>\\python\\python.exe`."""
+    here = launcher_dir or root
+    here.mkdir(parents=True, exist_ok=True)
+    (root / "python").mkdir(parents=True, exist_ok=True)
     for name in ("uninstall.ps1", "_cfm_lib.ps1"):
         shutil.copy(ROOT / "installer" / "windows" / name, here / name)
+    return here / "uninstall.ps1"
+
+
+@pytest.fixture
+def windows_box(tmp_path):
+    """An installation tree shaped the way a real one is (install.ps1: `$InstallDir\\uninstall.ps1`)."""
+    root = tmp_path / "CORPUSfm"
+    _provision_windows(root)
     return root
 
 
-def run_windows(box, tmp_path, *, answers, args=(), elevated=True, probe_rc=0):
+def run_windows(box, tmp_path, *, answers, args=(), elevated=True, probe_rc=0, launcher=None):
     calls = tmp_path / "calls.jsonl"
     calls.write_text("", encoding="utf-8")
     # `python.exe` is what the launcher looks for beside itself; on this host it is a POSIX script,
     # which pwsh runs happily. The launcher's own contract does not care what the interpreter is.
+    (box / "python").mkdir(parents=True, exist_ok=True)
     interpreter = box / "python" / "python.exe"
     interpreter.write_text(_double(calls, answers), encoding="utf-8")
     interpreter.chmod(0o755)
@@ -452,12 +481,9 @@ def run_windows(box, tmp_path, *, answers, args=(), elevated=True, probe_rc=0):
     (tmp_path / "temp").mkdir(exist_ok=True)
     (tmp_path / "pd").mkdir(exist_ok=True)
     proc = subprocess.run(
-        [PWSH, "-NoProfile", "-File", str(box / "src" / "installer" / "windows" / "uninstall.ps1"),
-         *args],
+        [PWSH, "-NoProfile", "-File", str(launcher or box / "uninstall.ps1"), *args],
         capture_output=True, text=True, env=env, timeout=120)
-    recorded = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()
-                if line and json.loads(line).get("verb") != "plan"]
-    return proc, recorded
+    return proc, _recorded(calls)
 
 
 @needs_pwsh
@@ -682,13 +708,81 @@ def test_WINDOWS_NO_INSTALLATION_RECORD_stops_without_guessing(windows_box, tmp_
     (tmp_path / "temp").mkdir(exist_ok=True)
     (tmp_path / "pd").mkdir(exist_ok=True)
     proc = subprocess.run(
-        [PWSH, "-NoProfile", "-File",
-         str(windows_box / "src" / "installer" / "windows" / "uninstall.ps1"), "-Yes"],
+        [PWSH, "-NoProfile", "-File", str(windows_box / "uninstall.ps1"), "-Yes"],
         capture_output=True, text=True, timeout=120,
         env=dict(os.environ, PATH=f"{shims}:{os.environ['PATH']}", TEMP=str(tmp_path / "temp"),
                  ProgramData=str(tmp_path / "pd"), USERNAME="administrator"))
     assert proc.returncode != 0
     assert "No CORPUSfm installation record" in (proc.stdout + proc.stderr)
+
+
+# ── each launcher resolves THE INSTALLATION IT WAS INSTALLED INTO (packet 1397 D1) ───────────
+#
+# The installer provisions each launcher directly in the installation directory, and a real
+# installation may use a non-default one. The retired resolution walked `../../..` from the launcher
+# — a repository depth — and fell back to the default root, so an installed launcher worked only when
+# that fallback happened to land on its own installation. These run the launcher from the REAL
+# installed layout at a NON-DEFAULT root and prove which interpreter answered. The walk-up tests plant
+# a working interpreter exactly where the retired resolution looked, and prove it never runs.
+
+
+def _answered_only_by(calls: Path, interpreter: Path, *, verbs) -> None:
+    rows = [row for row in _recorded(calls, everything=True) if row["verb"] in verbs]
+    assert {row["verb"] for row in rows} == set(verbs), rows
+    for row in rows:
+        assert os.path.realpath(row["invoked_as"]) == os.path.realpath(interpreter), row
+
+
+def test_LINUX_a_NON_DEFAULT_install_dir_runs_ITS_OWN_interpreter(tmp_path):
+    root = tmp_path / "srv" / "CORPUSfm Custom"
+    _provision_linux(root)
+    proc, calls = run_linux(root, tmp_path, answers=[_answer("completed", code=0)], args=["--yes"])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert [call["verb"] for call in calls] == ["start"]
+    _answered_only_by(tmp_path / "calls.jsonl", root / "venv" / "bin" / "python",
+                      verbs=("status", "start"))
+
+
+def test_LINUX_NO_interpreter_beside_the_launcher_REFUSES_and_never_walks_up(tmp_path):
+    launcher = _provision_linux(tmp_path, tmp_path / "checkout" / "installer" / "linux")
+    proc, calls = run_linux(tmp_path, tmp_path, answers=[_answer("completed", code=0)],
+                            args=["--yes"], launcher=launcher)
+    assert proc.returncode != 0 and calls == []
+    assert _recorded(tmp_path / "calls.jsonl", everything=True) == [], "a walked-up interpreter ran"
+    assert "does not exist" in (proc.stdout + proc.stderr)
+
+
+@needs_pwsh
+def test_WINDOWS_a_NON_DEFAULT_install_dir_runs_ITS_OWN_interpreter(tmp_path):
+    root = tmp_path / "D Apps" / "CORPUSfm Server"
+    _provision_windows(root)
+    proc, calls = run_windows(root, tmp_path, answers=[_answer("completed", code=0)], args=["-Yes"])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert [call["verb"] for call in calls] == ["start"]
+    _answered_only_by(tmp_path / "calls.jsonl", root / "python" / "python.exe",
+                      verbs=("status", "runtime"))
+
+
+@needs_pwsh
+def test_WINDOWS_NO_interpreter_beside_the_launcher_REFUSES_and_never_walks_up(tmp_path):
+    launcher = _provision_windows(tmp_path, tmp_path / "checkout" / "installer" / "windows")
+    proc, calls = run_windows(tmp_path, tmp_path, answers=[_answer("completed", code=0)],
+                              args=["-Yes"], launcher=launcher)
+    assert proc.returncode != 0 and calls == []
+    assert _recorded(tmp_path / "calls.jsonl", everything=True) == [], "a walked-up interpreter ran"
+    assert "does not exist" in (proc.stdout + proc.stderr)
+
+
+def test_NEITHER_launcher_can_reach_a_DEFAULT_or_WALKED_UP_root():
+    """The no-default half cannot be executed here: the suite cannot create `/opt/CORPUSfm` or
+    `C:\\Program Files\\CORPUSfm`. It is checked over executable lines; comments may name a root."""
+    for path, forbidden in (
+            ("installer/linux/uninstall.sh", ("/opt/CORPUSfm", "../..")),
+            ("installer/windows/uninstall.ps1", ("Program Files\\CORPUSfm", "..\\..", "../.."))):
+        executable = [line for line in (ROOT / path).read_text(encoding="utf-8").splitlines()
+                      if not line.lstrip().startswith("#")]
+        found = [line for line in executable if any(token in line for token in forbidden)]
+        assert found == [], f"{path}: {found}"
 
 
 # ── the property both platforms must share ───────────────────────────────────

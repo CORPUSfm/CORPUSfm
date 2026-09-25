@@ -108,6 +108,13 @@ def _status() -> dict[str, Any]:
     report["journal"] = journal_state
     report.update(journal_extra)
 
+    # Packet 1398: only when the protected attempt container exists, so ordinary status is unchanged.
+    from .install_attempt import Protection as _AttemptProtection, status_summary
+
+    attempt = status_summary(layout, _AttemptProtection())
+    if attempt is not None:
+        report["fresh_attempt"] = attempt
+
     try:
         locator = locator_for(layout).read()
     except RecordMissing as exc:
@@ -562,6 +569,70 @@ def _recorded_sandbox_decision(*, published, inputs, mode: str, requested):
     return SandboxDecision.REPLACE_EXACT_NAME
 
 
+def _attempt_container_exists(layout) -> bool:
+    from . import install_attempt as ia
+
+    return ia.attempt_paths(layout).container.exists()
+
+
+def _patch_attempt_facts(layout, outcome) -> dict | None:
+    """Packet 1398 §4.3: the patch rollback record's facts, copied BEFORE `_dispose` clears it.
+
+    Emitted only while a fresh-install attempt container exists, so an ordinary apply's output is
+    unchanged. A settled adoption writes no rollback record at all, and says so.
+    """
+    from . import patch_compartment as pc
+
+    if not _attempt_container_exists(layout):
+        return None
+    try:
+        record = pc.read_recovery(layout)
+    except pc.RecoveryEvidenceInvalid:
+        record = None
+    if record is None:
+        return {"settled": outcome.state is pc.CompartmentState.VERIFIED_READY,
+                "slot_touched": False, "slot_before": None,
+                "directory_created_by_this_run": False, "sandbox_existed": False}
+    touched = record.slot_touched
+    before = None
+    if touched:
+        for slot in record.before.slots:
+            if str(slot.index) == str(touched):
+                before = {"fms_path": slot.fms_path, "enabled": bool(slot.enabled)}
+    return {"settled": False, "slot_touched": bool(touched), "slot_before": before,
+            "directory_created_by_this_run": bool(record.directory_created_by_this_run),
+            "sandbox_existed": bool(record.sandbox.existed) if record.sandbox else False}
+
+
+def _proxy_attempt_facts(layout, evidence) -> dict | None:
+    """Packet 1398 §4.3: each front's prior IIS family and marker facts, read from the operation's
+    digest-bound before-image BEFORE retirement can remove it. Unreadable evidence answers the
+    conservative way — as though the pool and application already existed — so a discard preserves.
+    """
+    from . import proxy_transaction as px
+
+    if not _attempt_container_exists(layout):
+        return None
+    family = {}
+    for proxy_type, binding in (evidence or {}).items():
+        try:
+            verify = getattr(px, "verify_evidence", None)
+            if verify is not None:
+                verify(binding)
+            raw = json.loads(Path(binding["path"]).read_text(encoding="utf-8"))
+            apps = raw.get("apps") or []
+            family[proxy_type] = {
+                "pool_existed": bool(raw.get("pool_existed", False)),
+                "app_existed": any(bool(app.get("app_existed")) for app in apps),
+                "marker_state": str(raw.get("marker_state", "none")),
+                "include_present": bool(raw.get("include_present", False)),
+            }
+        except Exception:  # noqa: BLE001 - unreadable facts are not permission to remove
+            family[proxy_type] = {"pool_existed": True, "app_existed": True,
+                                  "marker_state": "unknown", "include_present": True}
+    return {"prior_family": family}
+
+
 def _patch_compartment(args) -> int:
     """Every failure becomes a JSON report and a per-verb exit code; nothing escapes as a traceback."""
     from . import patch_compartment as pc
@@ -601,6 +672,7 @@ def _patch_compartment(args) -> int:
     layout = platform_layout()
     journal = Journal(layout)
     operation_id = pc.new_operation_id()
+    attempt_facts = None
 
     # An interrupted run is resumable by ONE command, so a new apply must not start on top of it —
     # and the command it names must be the one that works.
@@ -667,6 +739,7 @@ def _patch_compartment(args) -> int:
                                decision=decision,
                                layout=layout, operation_id=operation_id,
                                installation_id=installation_id, mode=args.mode)
+            attempt_facts = _patch_attempt_facts(layout, outcome)
             _dispose(journal, layout, lock, outcome.result, operation_id)
     except LifecycleError as exc:
         _dispose_after_exception(journal, layout, operation_id, installation_id)
@@ -704,7 +777,10 @@ def _patch_compartment(args) -> int:
                 report_out, compartment=compartment, slot=slot,
                 generation=generation, installation_id=installation_id,
                 sandbox_rc_ownership=rc_entries)
-    _pc_emit(_pc_payload(outcome.report, operation_id=operation_id, candidate=candidate))
+    payload = _pc_payload(outcome.report, operation_id=operation_id, candidate=candidate)
+    if attempt_facts is not None:
+        payload["attempt_facts"] = attempt_facts
+    _pc_emit(payload)
     return _pc_exit(outcome.result, outcome.state.value)
 
 
@@ -1883,6 +1959,8 @@ def _px_integrator_reconcile(request, *, engine=None) -> int:
                     for t in request["types"]},
             evidence=evidence)
         settled = px.totally_rolled_back(run.recovery_record)
+        # Packet 1398: read before `_px_finish_retirement` or a later `retire` can remove the evidence.
+        attempt_facts = _proxy_attempt_facts(layout, evidence)
         with LifecycleLock(layout) as lock:
             px.write_recovery(layout, run.recovery_record, lock=lock)
             if settled:
@@ -1914,6 +1992,8 @@ def _px_integrator_reconcile(request, *, engine=None) -> int:
         "Compose the manifest write, then call finalize with the committed generation; call abort "
         "if any later phase fails."))
     payload["composition_state"] = None if settled else px.AWAITING_COMPOSITION
+    if attempt_facts is not None:
+        payload["attempt_facts"] = attempt_facts
     payload["awaiting_composition"] = not settled
     payload["abort_fms_admin_login_required"] = px.abort_needs_credential(run.recovery_record)
     _px_emit(payload)
@@ -3875,6 +3955,24 @@ def _uninstall(args, *, lifecycle=None, driver=None, collaborators=None, termina
             posix_service_uid = pwd.getpwnam("corpusfm").pw_uid
         except KeyError:
             pass
+    # Packet 1398: an install attempt past its frozen plan finishes WITHOUT the lifecycle lock, because
+    # terminal retirement removes the lock's own directory. Nothing else changes for anyone else.
+    finishes = getattr(engine, "attempt_finishes_outside_lock", None)
+    if finishes is not None and finishes(layout):
+        try:
+            report = engine.finish_attempt(layout, installation_id=raw["installation_id"],
+                                           posix_service_uid=posix_service_uid)
+        except ResumeRefused as exc:
+            _un_emit(_un_refusal(exc.reason, exc.detail))
+            return _UN_EXIT_CODES[FAILED_BEFORE_CHANGE]
+        except TerminalCleanupRefused as exc:
+            _un_emit(_un_refusal(type(exc).__name__, str(exc), result=MANUAL_ACTION_REQUIRED))
+            return _UN_EXIT_CODES[MANUAL_ACTION_REQUIRED]
+        except LifecycleError as exc:
+            _un_emit(_un_refusal(type(exc).__name__, str(exc), result=MANUAL_ACTION_REQUIRED))
+            return _UN_EXIT_CODES[MANUAL_ACTION_REQUIRED]
+        _un_emit(report.to_dict())
+        return _UN_EXIT_CODES[report.result]
     progress = Progress()
     parties = None
     try:
@@ -3892,7 +3990,10 @@ def _uninstall(args, *, lifecycle=None, driver=None, collaborators=None, termina
         # ordinary pending operation.  A finalized report proves all recorded work and the entire
         # control plane are gone; outside the lock, the lifecycle retires those now-empty-or-stale
         # containers itself.  No path comes from the launcher.
-        if report.finalized:
+        if report.finalized and getattr(report, "attempt_terminal", False):
+            report = engine.finish_attempt(layout, installation_id=raw["installation_id"],
+                                           posix_service_uid=posix_service_uid)
+        elif report.finalized:
             cleaner = terminal_cleaner
             if cleaner is None:
                 from .os_layout import os_layout_for_lifecycle
@@ -3938,6 +4039,76 @@ def _uninstall(args, *, lifecycle=None, driver=None, collaborators=None, termina
 
     _un_emit(report.to_dict())
     return _UN_EXIT_CODES[report.result]
+
+
+# ── packet 1398: the fresh-install attempt ────────────────────────────────────
+
+_AT_SCHEMA_VERSION = 1
+_AT_REQUEST_KEYS: dict[str, frozenset[str]] = {
+    "complete": frozenset({"schema_version", "installation_id", "attempt_id", "actor"}),
+    "inspect": frozenset({"schema_version", "installation_id", "actor"}),
+}
+
+
+def _at_read_request(path: str, verb: str, *, authority_api=None) -> dict:
+    text = _open_privileged_request(Path(path), authority_api=authority_api)
+    try:
+        raw = json.loads(text)
+    except ValueError as exc:
+        raise _RequestRefused(f"{path} is not readable JSON: {exc}") from exc
+    if not isinstance(raw, dict) or raw.get("schema_version") != _AT_SCHEMA_VERSION:
+        raise _RequestRefused(f"attempt {verb} requires schema_version {_AT_SCHEMA_VERSION}")
+    expected = _AT_REQUEST_KEYS[verb]
+    if set(raw) != expected:
+        raise _RequestRefused(f"attempt {verb} requires exactly {sorted(expected)}")
+    for key in expected & {"installation_id", "attempt_id"}:
+        if not isinstance(raw[key], str) or not _UN_UUID.match(raw[key]):
+            raise _RequestRefused(f"{key} must be a canonical lowercase UUID")
+    if not isinstance(raw["actor"], str) or not raw["actor"]:
+        raise _RequestRefused("actor must be a non-empty string")
+    return raw
+
+
+def _at_users_exist() -> bool:
+    from corpusfm.app.web import users
+
+    return users.users_exist(raise_on_error=True)
+
+
+def _attempt(args, *, lifecycle=None, protection=None, users_exist=None) -> int:
+    """`attempt inspect` reads; `attempt complete` writes the completion stamp and retires the record."""
+    from . import install_attempt as ia
+    from .secret_guard import assert_no_secrets
+
+    def emit(payload):
+        assert_no_secrets(payload, what="the attempt report")
+        print(json.dumps(payload, indent=2, sort_keys=True))
+
+    verb = args.at_verb
+    try:
+        raw = _at_read_request(args.request, verb)
+    except _RequestRefused as exc:
+        emit({"result": FAILED_BEFORE_CHANGE, "reason": "request_refused", "detail": str(exc)})
+        return 4
+    layout = lifecycle if lifecycle is not None else platform_layout()
+    prot = protection if protection is not None else ia.Protection()
+    if verb == "inspect":
+        emit(ia.inspect(layout, prot, installation_id=raw["installation_id"]))
+        return 0
+    try:
+        with LifecycleLock(layout) as lock:
+            out = ia.complete_fresh_install(
+                layout, lock=lock, installation_id=raw["installation_id"],
+                attempt_id=raw["attempt_id"], protection=prot,
+                users_exist=users_exist if users_exist is not None else _at_users_exist)
+    except ia.AttemptRefused as exc:
+        emit({"result": FAILED_BEFORE_CHANGE, "reason": exc.reason, "detail": exc.detail})
+        return 1
+    except LifecycleError as exc:
+        emit({"result": MANUAL_ACTION_REQUIRED, "reason": type(exc).__name__, "detail": str(exc)})
+        return 3
+    emit(out)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -4081,6 +4252,18 @@ def main(argv: list[str] | None = None) -> int:
         help="INSTALLER: establish this installation's Corpus and Machine keys at the fixed path")
     p_keys.add_argument("--request", required=True)
 
+    # THE FRESH-INSTALL ATTEMPT (packet 1398). `inspect` reads; `complete` is the completion
+    # boundary. Discard is `uninstall start|resume`, which selects the attempt from protected evidence.
+    p_attempt = sub.add_parser(
+        "attempt", help="INSTALLER: inspect a fresh-install attempt, or stamp its completion")
+    at_sub = p_attempt.add_subparsers(dest="at_verb", required=True)
+    for verb, helptext in (
+        ("inspect", "READ ONLY: classify the attempt and show what a discard would do"),
+        ("complete", "MUTATES: stamp last_result with the attempt id, then retire the record"),
+    ):
+        at_verb = at_sub.add_parser(verb, help=helptext)
+        at_verb.add_argument("--request", required=True)
+
     # THE COMPOSITION ROOT (packet 1246-04). Two integrator-only verbs; no administrator surface.
     p_comp = sub.add_parser(
         "composition",
@@ -4115,6 +4298,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.verb == "composition":
         return _composition(args)
+
+    if args.verb == "attempt":
+        return _attempt(args)
 
     if args.verb == "provision-keys":
         return _provision_keys(args)

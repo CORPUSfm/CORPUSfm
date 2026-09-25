@@ -62,6 +62,9 @@ SUPPORTED = {
     "--proxy-policy-add", "--proxy-policy-ignore",
     "--repair-storage-access", "--replace-existing-install",
     "--yes", "--silent", "--verbose",
+    # Packet 1398 (ruling 3): the one switch that discards an incomplete fresh-install attempt
+    # without the Inspect/Discard/Quit menu. An addition by ruling, not a retired spelling returning.
+    "--discard-incomplete-attempt",
 }
 
 
@@ -187,7 +190,8 @@ def test_install_root_preparation_executes_every_consent_cell(
     script = (
         _shell_function(sh, "install_root_state")
         + _shell_function(sh, "prepare_install_root")
-        + '\nwarn() { :; }\ndie() { exit 97; }\nprepare_install_root "$1" "$2" "$3"\n'
+        + _shell_function(sh, "la_do")
+        + '\nCFM_ATTEMPT=false\nwarn() { :; }\ndie() { exit 97; }\nprepare_install_root "$1" "$2" "$3"\n'
     )
     result = subprocess.run(
         ["bash", "-c", script, "test", str(root), str(published).lower(), str(replace).lower()],
@@ -510,7 +514,9 @@ def test_phase_12_provisions_through_the_PRIVILEGED_lifecycle_operation(sh: str)
     assert "provision-keys" in sh, "phase 12 does not invoke the key-provisioning operation"
     # `lc_run`, not `lc_run_raw`: lc_run dispatches a non-zero exit into `die`, which is what makes
     # a failure fatal before phase 15 rather than a warning carried past it.
-    assert re.search(r'lc_run "key provisioning" provision-keys --request', sh), \
+    # Packet 1398: `la_lc_run` records the call in a fresh-install attempt and otherwise IS `lc_run`;
+    # in both modes the exit code is dispatched before anything continues.
+    assert re.search(r'la_lc_run provision_keys "\$_la_prior" "key provisioning" provision-keys --request', sh), \
         "key provisioning is not run through the dispatching runner, so a failure would not be fatal"
 
 

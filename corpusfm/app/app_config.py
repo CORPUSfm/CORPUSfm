@@ -278,42 +278,62 @@ def load_app_config(path: Optional[Path] = None, *, require_authority: bool = Fa
     if backend is not None:
         b = backend if hasattr(backend, "load_fm_settings") else None
     else:
-        b = _try_fm_backend()
-    if b is not None:
-        if require_authority:
-            try:
-                fm = b.load_fm_settings(strict=True)
-            except Exception as exc:
+        try:
+            b = _try_fm_backend()
+        except Exception as exc:
+            # Packet 1396: a require_authority caller must not see a backend that will not load as a
+            # 500 or a silent stale-YAML fallback — it is the authority being unavailable.
+            if require_authority:
                 raise SettingsUnavailable(
-                    "the authoritative settings store could not be read") from exc
-        else:
-            fm = b.load_fm_settings()
-        if fm:
-            return AppConfig(
-                encrypt_blobs=bool(fm.get("encrypt_blobs", False)),
-                preferred_addon_locale=str(fm.get("preferred_addon_locale", "")),
-                ui_locale=str(fm.get("ui_locale", "")),
-                landing_page=str(fm.get("landing_page", "") or "artifacts"),
-                docs_drawer_side=str(fm.get("docs_drawer_side", "") or "right"),
-                ai_summary_provider=str(fm.get("ai_summary_provider", "")),
-                ai_summary_model=str(fm.get("ai_summary_model", "")),
-                ai_summary_base_url=str(fm.get("ai_summary_base_url", "")),
-                ai_summary_api_version=str(fm.get("ai_summary_api_version", "")),
-                ai_embedding_provider=str(fm.get("ai_embedding_provider", "")),
-                ai_embedding_model=str(fm.get("ai_embedding_model", "")),
-                ai_embedding_base_url=str(fm.get("ai_embedding_base_url", "")),
-                ai_embedding_api_version=str(fm.get("ai_embedding_api_version", "")),
-                ai_embedding_batch_size=int(fm.get("ai_embedding_batch_size", 0) or 0),
-                ai_embedding_verified=bool(fm.get("ai_embedding_verified", False)),
-                ai_summary_verified=bool(fm.get("ai_summary_verified", False)),
-                enable_fms_admin_mcp_tools=bool(fm.get("enable_fms_admin_mcp_tools", False)),
-                enable_patching_mcp_tools=bool(fm.get("enable_patching_mcp_tools", False)),
-                initial_mcp_address_acknowledged=bool(fm.get("initial_mcp_address_acknowledged", False)),
-                browser_connection_lifetime=_browser_connection_lifetime(
-                    fm.get("browser_connection_lifetime", "")),
-                restrict_apply_to_compartment=bool(fm.get("restrict_apply_to_compartment", True)),
-                external_auth=dict(fm.get("external_auth") or {}),
-            )
+                    "the storage backend holding settings could not be loaded") from exc
+            raise
+    if b is not None:
+        try:
+            fm = b.load_fm_settings(strict=True) if require_authority else b.load_fm_settings()
+            if fm:
+                return AppConfig(
+                    encrypt_blobs=bool(fm.get("encrypt_blobs", False)),
+                    preferred_addon_locale=str(fm.get("preferred_addon_locale", "")),
+                    ui_locale=str(fm.get("ui_locale", "")),
+                    landing_page=str(fm.get("landing_page", "") or "artifacts"),
+                    docs_drawer_side=str(fm.get("docs_drawer_side", "") or "right"),
+                    ai_summary_provider=str(fm.get("ai_summary_provider", "")),
+                    ai_summary_model=str(fm.get("ai_summary_model", "")),
+                    ai_summary_base_url=str(fm.get("ai_summary_base_url", "")),
+                    ai_summary_api_version=str(fm.get("ai_summary_api_version", "")),
+                    ai_embedding_provider=str(fm.get("ai_embedding_provider", "")),
+                    ai_embedding_model=str(fm.get("ai_embedding_model", "")),
+                    ai_embedding_base_url=str(fm.get("ai_embedding_base_url", "")),
+                    ai_embedding_api_version=str(fm.get("ai_embedding_api_version", "")),
+                    ai_embedding_batch_size=int(fm.get("ai_embedding_batch_size", 0) or 0),
+                    ai_embedding_verified=bool(fm.get("ai_embedding_verified", False)),
+                    ai_summary_verified=bool(fm.get("ai_summary_verified", False)),
+                    enable_fms_admin_mcp_tools=bool(fm.get("enable_fms_admin_mcp_tools", False)),
+                    enable_patching_mcp_tools=bool(fm.get("enable_patching_mcp_tools", False)),
+                    initial_mcp_address_acknowledged=bool(fm.get("initial_mcp_address_acknowledged", False)),
+                    browser_connection_lifetime=_browser_connection_lifetime(
+                        fm.get("browser_connection_lifetime", "")),
+                    restrict_apply_to_compartment=bool(fm.get("restrict_apply_to_compartment", True)),
+                    external_auth=dict(fm.get("external_auth") or {}),
+                )
+            if require_authority:
+                # A SUCCESSFUL but EMPTY authoritative read is "nothing is set" → defaults, NEVER the
+                # local YAML file, which FM mode does not maintain (packet 1396). Falling through here
+                # would let a stale YAML value (e.g. browser_connection_lifetime, external_auth)
+                # resurrect a policy the administrator cleared. The permissive path below keeps its
+                # historical fall-through, where an outage and a fresh install both produce defaults.
+                return AppConfig()
+        except SettingsUnavailable:
+            raise
+        except Exception as exc:
+            # Packet 1396: under require_authority, an unreadable OR MALFORMED authoritative record is
+            # "unavailable" — both the store that will not read and the record whose fields will not
+            # parse (a bad int/dict) must refuse the same way, never a bare 500 and never stale YAML.
+            # The permissive path keeps its historical behavior (propagate).
+            if require_authority:
+                raise SettingsUnavailable(
+                    "the authoritative settings store could not be read or is malformed") from exc
+            raise
     p = path or default_app_config_path()
     try:
         import yaml

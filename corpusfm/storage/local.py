@@ -325,8 +325,14 @@ class LocalBackend:
             "xml_bytes": len(xml_bytes),
         }
         committed = self._engine.create(_STORAGE, record_uuid, jor)
-        self._engine.blob_put(_STORAGE, record_uuid, "ArtifactData",
-                              encode_blob(compress(xml_bytes), encrypt_on=self._encrypt_blobs()))
+        try:
+            self._engine.blob_put(_STORAGE, record_uuid, "ArtifactData",
+                                  encode_blob(compress(xml_bytes), encrypt_on=self._encrypt_blobs()))
+        except Exception:
+            from corpusfm.server import catalog
+            catalog.note_unpublishable_write(_STORAGE, record_uuid,
+                                             "store_deliverable (content write failed)")
+            raise
         _publish_committed(self, committed, record_uuid)
         return meta_from_jor(jor, uuid=record_uuid)
 

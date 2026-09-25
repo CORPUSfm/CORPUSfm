@@ -715,6 +715,10 @@ class FileMakerODataBackend:
             # be the one claim that misleads an administrator (packet 1361-01).
             if self._delete_record_best_effort(record_uuid):
                 _publish_removed(self, record_uuid)
+            else:
+                from corpusfm.server import catalog
+                catalog.note_unpublishable_write(catalog.TABLE_STORAGE, record_uuid,
+                                                 "store_deliverable (compensation failed)")
             raise
 
         _publish_response(self, _created, record_uuid)
@@ -1358,6 +1362,9 @@ class FileMakerODataBackend:
                 data="{}", headers={"Content-Type": "application/json"},
                 timeout=self._REFRESH_TIMEOUT,
             )
+            # The script rewrites records inside FileMaker and returns none of them (packet 1388-03).
+            from corpusfm.server import catalog
+            catalog.note_unpublishable_write(catalog.TABLE_STORAGE, "*", "refresh_index_projections")
             if not resp.ok:
                 logger.debug("FM OData: refresh-projections script HTTP %s", resp.status_code)
                 return False
@@ -1423,6 +1430,10 @@ class FileMakerODataBackend:
         # JSONOfRecord in bulk and holds no per-record response worth publishing, and a partial
         # sweep must never be presented as a completed batch. The ordinary 15 s reconciliation is
         # the recovery — there is no dirty-tick to raise and no counter to advance.
+        # It IS reported, so an idle synchronizer validates promptly (packet 1388-03).
+        if total:
+            from corpusfm.server import catalog
+            catalog.note_unpublishable_write(catalog.TABLE_STORAGE, "*", "reproject_all_records")
         if failed:
             # Partial completion is NOT success: signal incompleteness so the caller does NOT advance
             # ProjectionVersion (packet 1000 P2). Version-gating decoupled the sweep from the map diff

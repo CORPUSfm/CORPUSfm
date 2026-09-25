@@ -3880,7 +3880,10 @@ if _SERVER_MODE:
             if last.get("at_utc"):
                 lines.append(f"  last scan: {last.get('duration_s')}s  "
                              f"counts={last.get('counts')}  bytes={last.get('raw_bytes')}")
-            lines.append(f"  cycle: {d.get('sync_interval_s')}s  "
+            s = d.get("synchronizer") or {}
+            lines.append(f"  cycle: {s.get('current_interval_s', d.get('sync_interval_s'))}s "
+                         f"(fast {d.get('sync_interval_s')}s, idle {d.get('sync_max_interval_s')}s)  "
+                         f"state={s.get('state', 'stopped')}  "
                          f"running={d.get('synchronizer_running')}")
             r = d.get("readiness") or {}
             lines.append(f"  readiness: {r.get('state', '?')}"
@@ -3904,6 +3907,19 @@ if _SERVER_MODE:
                     lines.append(f"  active: {', '.join(st['active_jobs'])}")
         except Exception:
             lines.append("Scheduler: (status unavailable)")
+        try:
+            from corpusfm.server import queue_workers as _qw
+            q = _qw.discovery_diagnostics()
+            if not q.get("started"):
+                lines.append("Queue discovery: not started")
+            else:
+                state = ("EXITED — restarts on the next poke/resume" if q.get("exited_unexpectedly")
+                         else ("running" if q.get("running") else "stopped"))
+                lines.append(f"Queue discovery: {state}  (cycle {q.get('interval_s')}s, "
+                             f"{q.get('cycles', 0)} ok, {q.get('failures', 0)} failed)"
+                             + (f"  last error: {q.get('last_error')}" if q.get("last_error") else ""))
+        except Exception:
+            lines.append("Queue discovery: (status unavailable)")
         return lines
 
     @mcp.tool()

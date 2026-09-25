@@ -17,15 +17,23 @@
 #   * no `--keep-data`. It left an installation the installer then refused to reinstall over.
 #   * no direct FMS, proxy, service, account or file removal, and no `fmsadmin` call.
 #   * no persisted credential. A known required FMS credential is validated before confirmation,
-#     framed to one lifecycle process, wiped after that call, and never written to the request or log.
+#     held by this launcher for this one run, framed afresh to each lifecycle call that needs it,
+#     wiped when the run ends, and never written to the request or log.
 #
 # Usage:
-#   sudo ./installer/linux/uninstall.sh [OPTIONS]
+#   sudo <install-dir>/uninstall.sh [OPTIONS]
 #
 # Options (the complete set; every other option is refused as unknown):
 #   --yes       Consent pre-granted: no confirmation prompt, normal output.
 #   --force     --yes, PLUS continue past work that cannot be completed now (the lifecycle
 #               component still refuses anything it has no authority for).
+#   --credential-stdin (with --silent) reads ONE credential frame from this launcher's standard
+#               input: a 4-byte big-endian length and UTF-8 account, then the same for the password.
+#               It is the only non-interactive route. The values never enter an environment
+#               variable, an argument list, the request, the transcript or the output. A malformed,
+#               truncated, empty or over-long frame, or trailing bytes, is refused before anything
+#               is removed. Without it, a console run prompts and a --silent run stops
+#               incomplete_safe with the credential-dependent work recorded and resumable.
 #   --silent    --yes, PLUS decoration suppressed and detail routed to the transcript. NEVER prompts
 #               for anything, including a credential.
 #   --verbose   Stream detail to the console (it always reaches the transcript).
@@ -66,6 +74,12 @@ while [[ $# -gt 0 ]]; do
         --force)      export CFM_FORCE=true CFM_ASSUME_YES=true; shift ;;
         --yes)        export CFM_ASSUME_YES=true; shift ;;
         --silent)     SILENT=true; export CFM_SILENT=true CFM_ASSUME_YES=true; shift ;;
+        # Reads ONE lifecycle credential frame from this launcher's own stdin - the same wire shape
+        # the lifecycle component already consumes. Packet 1236 removed the environment route on
+        # purpose: an exported credential is inherited by apt-get, git and pip, which is not
+        # "transient" in the sense SPEC 4 promises. A frame on stdin is inherited by nothing,
+        # appears in no argv, and is consumed once. --silent only.
+        --credential-stdin) CREDENTIAL_STDIN=true; shift ;;
         --verbose|-v) export CFM_VERBOSE=true; shift ;;
         -h|--help)    sed -n '/^# Usage:/,/^[^#]/{ /^#/p }' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) die "Unknown option: $1  (use --help)
@@ -85,17 +99,16 @@ FORCE="${CFM_FORCE:-false}"
 cfm_log_init "${CFM_UNINSTALL_LOG:-/var/log/corpusfm-uninstall-$(date +%Y%m%d-%H%M%S).log}"
 if [[ -n "${CFM_LOG:-}" ]]; then ok "Uninstall transcript: $CFM_LOG"; else warn "No transcript could be opened; detail goes to the console only."; fi
 
-# THE PROGRAM TO RUN. Prefer the copy beside an installed launcher; the packaged launcher falls
-# back to the one supported Linux installation path so `sudo bash uninstall.sh` works as documented.
-CFM_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# THE PROGRAM TO RUN: the interpreter of the installation this launcher was installed into. The
+# installer provisions the launcher directly in the installation directory, so its own directory IS
+# that root, for a default or a non-default `--install-dir` alike (packet 1397 D1). There is no
+# fallback to a default path: a guessed root would aim this uninstall at another installation, or at
+# none.
+CFM_ROOT="$SCRIPT_DIR"
 PY="$CFM_ROOT/venv/bin/python"
-if [[ ! -x "$PY" ]]; then
-    CFM_ROOT="/opt/CORPUSfm"
-    PY="$CFM_ROOT/venv/bin/python"
-fi
-[[ -x "$PY" ]] || die "This launcher runs the CORPUSfm that ships beside it, and none is here:
-       $PY does not exist.
-       Install CORPUSfm first, then run this packaged uninstaller again."
+[[ -x "$PY" ]] || die "This launcher runs the CORPUSfm installation it was installed into, and none is
+       beside it: $PY does not exist.
+       Run the uninstall.sh inside the CORPUSfm installation directory."
 CFM_LIFECYCLE=("$PY" -m corpusfm.lifecycle)
 
 # The lifecycle process may successfully remove the installed interpreter before this launcher
@@ -140,7 +153,12 @@ info "Installation: $INSTALLATION_ID"
 # makes the request acceptable is its OWNERSHIP AND MODE, which the CLI re-judges on the open
 # descriptor — the location is where we put it, never why it is trusted.
 LC_REQ_DIR=""
-lc_cleanup() { [[ -n "$LC_REQ_DIR" ]] && rm -rf "$LC_REQ_DIR" 2>/dev/null; return 0; }
+# The held FMS credential is wiped here too, so every way out - completion, refusal, die, interrupt -
+# ends with it cleared (bash runs the EXIT trap when a signal terminates the script).
+lc_cleanup() {
+    FM_ADMIN_PASS=""; FM_ADMIN_USER=""
+    [[ -n "$LC_REQ_DIR" ]] && rm -rf "$LC_REQ_DIR" 2>/dev/null; return 0
+}
 trap lc_cleanup EXIT
 
 lc_req_dir() {
@@ -171,8 +189,125 @@ print(json.dumps({"schema_version": 2,
     printf '%s' "$f"
 }
 
+# UNSET, not merely emptied: an inherited exported entry keeps its export attribute through a plain
+# assignment, and a credential held for the whole run would then reach every child (packet 1236).
+unset FM_ADMIN_USER FM_ADMIN_PASS
 FM_ADMIN_USER=""
 FM_ADMIN_PASS=""
+: "${CREDENTIAL_STDIN:=false}"
+
+# --credential-stdin is a NON-INTERACTIVE route; pairing it with a run that can prompt would leave
+# two credential sources live at once and no rule for which wins. Refused before the plan is read.
+if $CREDENTIAL_STDIN && ! $SILENT; then
+    die "--credential-stdin requires --silent.
+       A run that can prompt already has a credential route. Nothing has changed."
+fi
+
+# ONE FRAME, READ ONCE, FROM THIS LAUNCHER'S OWN STDIN:
+#   [4-byte big-endian length][UTF-8 account][4-byte big-endian length][UTF-8 password]
+# Every refusal happens before the plan is acted on. The reader is the interpreter the launcher
+# already uses, so the parse is one implementation rather than a second shell transcription.
+lc_read_framed_credential() {
+    # THE TRANSFER FROM PYTHON TO BASH IS TEXTUAL, ON PURPOSE.
+    #
+    # The first version of this reader wrote `account\0password` and split it in bash. That cannot
+    # work and was measured failing twice over: a Bash variable cannot hold a NUL at all, so command
+    # substitution silently concatenated the two fields ("acct\0secret" arrived as "acctsecret"),
+    # and the separator expressions were themselves a syntax error - bash reported
+    # `bad substitution: no closing "}"` and left BOTH variables empty. An empty pair would then
+    # have been handed to fmsadmin as a login attempt.
+    #
+    # So the parser emits TWO BASE64 RECORDS, one per line. Base64 contains no NUL, no newline and
+    # nothing bash rewrites, so each record survives command substitution byte for byte. The record
+    # count is proved BEFORE anything is decoded, and each record is decoded through stdin rather
+    # than argv - base64 of a password is trivially reversible and argv is world-readable in ps.
+    local parsed records=() b64
+    parsed="$("$RESULT_PY" -I -c '
+import base64, struct, sys
+MAX = 4096
+# THE REASON MUST REACH THE OPERATOR. `sys.exit(message)` writes to stderr, but this parser is read
+# through command substitution, which captures stdout only - so every framing refusal arrived as a
+# blank reason followed by "Nothing has changed.". The reason goes to stdout and the exit code
+# carries the failure; nothing here ever names a credential VALUE, only a field and a fault.
+def refuse(message):
+    sys.stdout.write(message)
+    raise SystemExit(1)
+def take(n, what):
+    buf = b""
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            refuse("the credential frame ended before its " + what)
+        buf += chunk
+    return buf
+fields = []
+for what in ("account", "password"):
+    (size,) = struct.unpack(">I", take(4, what + " length"))
+    if size == 0:
+        refuse("the credential frame declares an empty " + what)
+    if size > MAX:
+        refuse("the credential frame declares an implausible " + what + " length")
+    raw = take(size, what)
+    try:
+        fields.append(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        refuse("the credential frame " + what + " is not valid UTF-8")
+if sys.stdin.buffer.read(1):
+    refuse("the credential frame carries trailing bytes after the password")
+if not fields[0] or not fields[1]:
+    refuse("the credential frame carries an empty field")
+# REFUSED RATHER THAN MANGLED. A NUL cannot exist in a Bash variable or in an argv string, and a
+# newline or carriage return is stripped or altered by command substitution - so a credential
+# containing one could not be carried faithfully to fmsadmin. Changing it silently would present
+# the operator with an authentication failure instead of the representation problem that caused it.
+for what, value in zip(("account", "password"), fields):
+    for bad, name in ((chr(0), "NUL"), ("\n", "newline"), ("\r", "carriage return")):
+        if bad in value:
+            refuse("the credential " + what + " contains a " + name +
+                     ", which cannot be carried to fmsadmin faithfully")
+for value in fields:
+    sys.stdout.write(base64.b64encode(value.encode("utf-8")).decode("ascii") + chr(10))
+')" || die "$parsed
+       Nothing has changed."
+
+    # EXACTLY TWO RECORDS, PROVED BEFORE ANY DECODE. One record would decode as an account with no
+    # password; three would mean the parser and this reader disagree about the wire.
+    # A plain read loop rather than `mapfile`: mapfile is bash 4+, and a credential reader is the
+    # last place to acquire a shell-version dependency. This works on 3.2 and on 5.
+    local _line
+    while IFS= read -r _line; do records+=("$_line"); done <<< "$parsed"
+    parsed=""; _line=""
+    if [[ ${#records[@]} -ne 2 || -z "${records[0]}" || -z "${records[1]}" ]]; then
+        die "the credential transfer did not carry exactly two records. Nothing has changed."
+    fi
+    for b64 in "${records[0]}" "${records[1]}"; do
+        [[ "$b64" =~ ^[A-Za-z0-9+/=]+$ ]] || \
+            die "the credential transfer carried a record that is not base64. Nothing has changed."
+    done
+    # Decoded through STDIN, never argv.
+    FM_ADMIN_USER="$(printf '%s' "${records[0]}" | "$RESULT_PY" -I -c \
+        'import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode("utf-8"))')"
+    FM_ADMIN_PASS="$(printf '%s' "${records[1]}" | "$RESULT_PY" -I -c \
+        'import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode("utf-8"))')"
+    records=()
+    if [[ -z "$FM_ADMIN_USER" || -z "$FM_ADMIN_PASS" ]]; then
+        FM_ADMIN_PASS=""; FM_ADMIN_USER=""
+        die "the credential transfer decoded to an empty field. Nothing has changed."
+    fi
+    info "Read one FMS administrator credential frame from standard input."
+    info "It is used for this run only and is never written down."
+    [[ -x "$PLAN_FMSADMIN" ]] || { FM_ADMIN_PASS=""; FM_ADMIN_USER=""; die \
+        "The recorded fmsadmin executable is unavailable at $PLAN_FMSADMIN. Nothing has changed."; }
+    info "Verifying FM Server credentials..."
+    # PRE-EXISTING, OWNED FINDING: this validation places the password in the fmsadmin child's argv.
+    # The interactive path has always done so; unchanged here on purpose, recorded rather than newly
+    # accepted. Closing it is a separate correction touching both credential routes.
+    if ! "$PLAN_FMSADMIN" -u "$FM_ADMIN_USER" -p "$FM_ADMIN_PASS" list files &>/dev/null; then
+        FM_ADMIN_PASS=""; FM_ADMIN_USER=""
+        die "FM Server admin login failed. Nothing has changed."
+    fi
+    ok "FileMaker Server administrator '$FM_ADMIN_USER' authenticated."
+}
 lc_fms_frame() {
     printf '%s\0%s' "$FM_ADMIN_USER" "$FM_ADMIN_PASS" \
         | "$RESULT_PY" -I -c \
@@ -295,10 +430,22 @@ if p.get("fms_admin_login_reasons"):
         print("  - " + reason)
 ' | while IFS= read -r line; do info "$line"; done
 
+# ONE VALIDATED CREDENTIAL SUPPLIES ONE APPROVED RUN (packet 1380-04 ruling, narrowing 1236). Once
+# validated it is held in THIS process only and reused for every start or resume that answers
+# credential_required; each lifecycle child still receives its own freshly framed copy on stdin. The
+# lifecycle asks per operation - a live run asked for start and again for the PKI read-back - and
+# the one frame on stdin cannot be read twice. Wiped by lc_cleanup on every exit.
 START_TRANSPORT="none"
+CREDENTIAL_FRAME_READ=false
 if [[ "$PLAN_MODE" == "start" && "$PLAN_NEEDS_CREDENTIAL" == "true" ]]; then
-    if $SILENT || [[ ! -t 0 ]]; then
+    if $CREDENTIAL_STDIN; then
+        lc_read_framed_credential
+        CREDENTIAL_FRAME_READ=true
+        START_TRANSPORT="stdin"
+    elif $SILENT || [[ ! -t 0 ]]; then
         warn "The plan needs an FMS administrator credential, but this invocation cannot prompt."
+        warn "Pass --credential-stdin with --silent and write one credential frame to this"
+        warn "launcher's standard input to supply one without a console."
         warn "Independent safe removal may proceed; FMS-dependent work will remain resumable."
     else
         info "FileMaker Server administrator credentials are required by this removal plan."
@@ -341,26 +488,39 @@ if [[ "$LC_REASON" == "pending_record_exists__resume_it_rather_than_starting_aga
     lc_invoke "resume" "none"
 fi
 
-# Ask whenever the next recorded operation requires a fresh one-use credential. Linux normally asks
-# once for proxy activation and once more for the later PKI read-back.
+# Continue while the next recorded operation requires a credential. A held credential is reused; the
+# frame is read at most once per run; a silent run with nothing held stops resumable, as before.
+CONTINUATIONS=0
 while [[ "$LC_REASON" == "credential_required" ]]; do
-    if $SILENT; then
-        warn "An FMS administrator credential is required to finish, and --silent never prompts."
-        warn "Re-run without --silent to supply one. Nothing is lost: the uninstall is recorded and"
-        warn "resumes where it stopped."
-        break
-    else
-        if [[ -n "$FM_ADMIN_USER" && -n "$FM_ADMIN_PASS" ]]; then
-            info "Continuing the approved plan with the FMS administrator credential already"
-            info "validated before confirmation; it remains transient and is not written down."
-            lc_invoke "resume" "stdin"
+    if [[ -z "$FM_ADMIN_USER" || -z "$FM_ADMIN_PASS" ]]; then
+        if $CREDENTIAL_STDIN && ! $CREDENTIAL_FRAME_READ; then
+            info "A later operation now requires an FMS administrator credential."
+            lc_read_framed_credential
+            CREDENTIAL_FRAME_READ=true
+        elif $SILENT; then
+            warn "An FMS administrator credential is required to finish, and --silent never prompts."
+            warn "Pass --credential-stdin with --silent and write one credential frame to standard"
+            warn "input, or re-run without --silent. Nothing is lost: the uninstall is recorded and"
+            warn "resumes where it stopped."
+            break
         else
             info "A later operation now requires an FMS administrator credential."
             info "CORPUSfm will ask for it itself; it is used for this run only."
             lc_invoke "resume" "prompt"
+            continue
         fi
     fi
+    # A lifecycle that keeps asking with a validated credential in hand is not making progress; stop
+    # resumable rather than resubmit it without end.
+    CONTINUATIONS=$((CONTINUATIONS + 1))
+    if (( CONTINUATIONS > 8 )); then
+        warn "The uninstall still requires a credential after 8 continuations; stopping. It is"
+        warn "recorded and resumes where it stopped."
+        break
+    fi
+    lc_invoke "resume" "stdin"
 done
+FM_ADMIN_PASS=""; FM_ADMIN_USER=""
 unset FM_ADMIN_PASS FM_ADMIN_USER
 
 # ── S6 Summary ────────────────────────────────────────────────────────────────

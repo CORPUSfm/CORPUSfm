@@ -740,6 +740,9 @@ def test_every_lifecycle_verb_either_installer_invokes_is_a_REAL_verb():
         (SH.read_text(encoding="utf-8"), r'CFM_LIFECYCLE\[@\]\}"\s+([a-z-]+)\s+([a-z-]+)'),
         (SH.read_text(encoding="utf-8"), r'lc_run "[^"]*" ([a-z-]+) ([a-z-]+)'),
         (SH.read_text(encoding="utf-8"), r'lc_provider_run "[^"]*" \S+ ([a-z-]+) ([a-z-]+)'),
+        # Packet 1398: `la_lc_run <intent> <prior> "<what>" <verb...>` records the call in a
+        # fresh-install attempt and otherwise IS `lc_run`; its verbs must resolve the same way.
+        (SH.read_text(encoding="utf-8"), r'la_lc_run \S+ \S+ "[^"]*" ([a-z-]+) ([a-z-]+)'),
         # ONLY where the array is the argv of a lifecycle call. `@('web','scheduler')` is a service
         # name list, not an invocation, and a pattern that cannot tell them apart reports it.
         (PS1.read_text(encoding="ascii"), r"@\('([a-z-]+)','([a-z-]+)','--request'"),
@@ -1397,7 +1400,22 @@ def test_the_updater_LOADS_ITS_JUDGE_FROM_OUTSIDE_THE_CHECKOUT(phases):
             f"the updater runs the tree inspector as a module from a path it does not control: "
             f"{line.strip()[:100]}"
         )
-    assert "@@HELPER@@" in template and "@@PUBLISHER@@" in template and "@@LIB_DIR@@" in template
+    # WHERE that authority lives now differs by platform (packet 1380-02). Linux still renders the
+    # three locations in; the Windows updater is static and signed, so it takes them from the layout it
+    # derives from the fixed locator (test_windows_updater_paths proves that layout equals the
+    # application's). The rule is unchanged - the judge comes from installation authority, never from
+    # the checkout - so the assertion follows the authority instead of pinning one spelling onto both.
+    if phases is linux_phases:
+        assert "@@HELPER@@" in template and "@@PUBLISHER@@" in template and "@@LIB_DIR@@" in template
+    else:
+        for assignment in ("$Helper = $UpdaterLayout.Helper", "$Publisher = $UpdaterLayout.Publisher",
+                           "$LibDir = $UpdaterLayout.LibDir"):
+            assert assignment in template, (
+                f"the Windows updater no longer takes {assignment.split()[0]} from its derived layout"
+            )
+        assert "@@HELPER@@" not in template, (
+            "a rendered seam is back in an artifact that must be installed byte-for-byte"
+        )
 
 
 # ── R7: the phase-3 gate fails closed ────────────────────────────────────────────────

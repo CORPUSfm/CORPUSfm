@@ -49,14 +49,21 @@ def test_recorded_linux_installer_entry_becomes_a_copy_paste_command():
 
 
 def test_recorded_windows_installer_entry_becomes_a_copy_paste_command():
+    """Re-expressed for packet 1380-02 D20: assert the RULE, not the spelling.
+
+    This used to pin the exact string, Bypass included, so removing the flag read as a stale test
+    rather than as the guard it is. What must be true: the command runs the ONE recorded entry point
+    as a script file, and instructs no execution-policy override of any kind.
+    """
     from corpusfm.server import update_service as us
 
-    assert us._command_for_installer_entry(
+    cmd = us._command_for_installer_entry(
         r"C:\Program Files\CORPUSfm\bin\corpusfm-installer.ps1", windows=True
-    ) == (
-        "powershell -ExecutionPolicy Bypass -File "
-        "'C:\\Program Files\\CORPUSfm\\bin\\corpusfm-installer.ps1'"
     )
+    assert "'C:\\Program Files\\CORPUSfm\\bin\\corpusfm-installer.ps1'" in cmd
+    assert "-File" in cmd
+    assert "-ExecutionPolicy" not in cmd and "Bypass" not in cmd
+    assert "Unblock-File" not in cmd
 
 
 def _published(monkeypatch, entry):
@@ -106,7 +113,11 @@ def test_windows_entry_with_a_quote_is_still_safely_quoted():
     from corpusfm.server import update_service as us
 
     cmd = us._command_for_installer_entry(r"C:\O'Brien\run.ps1", windows=True)
-    assert "''" in cmd and cmd.startswith("powershell -ExecutionPolicy Bypass -File ")
+    # Re-expressed for packet 1380-02 D20: the quoting rule is what this test defends, so assert
+    # the apostrophe is doubled inside a -File invocation — not the launcher's exact spelling.
+    assert "''" in cmd
+    assert cmd.startswith("powershell ") and "-File " in cmd
+    assert "-ExecutionPolicy" not in cmd and "Bypass" not in cmd
 
 
 def test_the_route_returns_what_apply_decided(monkeypatch):

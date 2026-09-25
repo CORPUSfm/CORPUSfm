@@ -633,6 +633,7 @@ INSTALLER_ENTRY_POINT="${LOG}.installer"; touch "$INSTALLER_ENTRY_POINT"
 # enable/start, not the first-activation warning, so supply the already-present update shape rather
 # than leaving the new observation unbound under `set -u`.
 SCHED_UNIT_PREEXISTED=true
+CFM_ATTEMPT=false
 die() { echo "die: $*"; exit 1; }
 ok() { echo "ok: $*"; }
 chown() { :; }
@@ -663,7 +664,9 @@ def summary_body(sh: str) -> str:
 def run_phase21(sh, tmp_path, *, is_upgrade: bool, tag="") -> list[str]:
     log = tmp_path / f"calls-{is_upgrade}{tag}.log"
     script = tmp_path / f"p21-{is_upgrade}{tag}.sh"
-    script.write_text(PHASE21_HARNESS % ("true" if is_upgrade else "false", phase21_body(sh)))
+    # The phase-21 body enables through the packet-1398 attempt wrapper, a pass-through here.
+    wrapper = sh[sh.index("la_unit_toggle() {"):sh.index("\n}\n", sh.index("la_unit_toggle() {")) + 3]
+    script.write_text(PHASE21_HARNESS % ("true" if is_upgrade else "false", wrapper + phase21_body(sh)))
     r = subprocess.run(["bash", str(script)], capture_output=True, text=True,
                        env={**os.environ, "LOG": str(log)})
     assert r.returncode == 0, f"phase 21 body failed: {r.stdout}{r.stderr}"
@@ -833,6 +836,7 @@ CFM_STORAGE=%(storage)s
 CFM_HTTP=%(http)s
 CFM_PROXY=%(proxy)s
 CFM_MCP=%(mcp)s
+CFM_ATTEMPT=false
 die() { echo "DIE: $*"; exit 9; }
 ok() { echo "OK: $*"; }
 warn() { echo "WARN: $*"; }

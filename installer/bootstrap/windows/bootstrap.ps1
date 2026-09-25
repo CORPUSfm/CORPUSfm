@@ -201,7 +201,13 @@ try {
   # Delegate through the fixed Windows PowerShell executable so each verified argument remains a
   # real argv token for install.ps1's own parameter binder.  No credential is present here; the
   # four credential values stay in the inherited process environment and the installer clears them.
-  $delegate = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+  # NO -ExecutionPolicy Bypass (packet 1380-02 D20). Measured in parent 3.5: Invoke-WebRequest
+  # -OutFile plus Expand-Archive apply no Mark of the Web, so the extracted install.ps1 is an
+  # ordinary local file that RemoteSigned already permits. Under AllSigned the incoming package's
+  # own verifier has already run IN THIS PROCESS above, so that policy decides the outcome before
+  # this line either way - the flag never made the delegation reachable, it only hid which
+  # authority was doing the work.
+  $delegate = @('-NoProfile', '-File',
                 (Join-Path $bundleDir 'install.ps1'))
   if ($Yes) { $delegate += '-Yes' }
   if ($Silent) { $delegate += '-Silent' }

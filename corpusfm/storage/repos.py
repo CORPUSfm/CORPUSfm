@@ -519,6 +519,13 @@ class QueueRepo:
         rows = self.list_by_type(step_type, include_failed=False)
         return rows[0] if rows else None
 
+    def active_types(self) -> set:
+        """The ``Type`` values carried by non-failed records — the discovery coordinator's WAKE HINT
+        (packet 1388-02), never a claim. One exhaustive filtered read that follows the server's
+        ``nextLink`` (``list_where``), so the ordinary small case is one request, a backlog past a page
+        is not truncated, and a failed continuation RAISES rather than looking like an empty queue."""
+        return {r.jor.get("Type", "") for r in self._e.list_where(_QUEUE, eq={"IsFailed": False})}
+
     def list_failed(self) -> list[Row]:
         """Every parked failure (``IsFailed=1``), oldest-first — the Queue-page failed surface."""
         return self._by({"IsFailed": True})

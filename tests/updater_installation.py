@@ -273,16 +273,48 @@ def substitutions(life, locator, monkeypatch, *, git_executable: Path | str | No
     return _ub.updater_substitutions()
 
 
+class WindowsIsStaticNow(AssertionError):
+    """Raised when a test asks this harness to render the Windows updater.
+
+    Packet 1380-02 D-A removed the Windows renderer: the artifact is static and signed, and it derives
+    its installation-specific values from the fixed HKLM locator instead.
+
+    **This harness deliberately cannot produce a runnable Windows updater off a Windows box, and that
+    refusal is the honest outcome rather than a gap to paper over.** Running one requires a
+    published HKLM locator and manifest and the fixed `C:\\ProgramData\\CORPUSfm` layout.
+    Supplying those from a fixture would mean giving the updater an injectable authority root - which
+    is precisely the seam D-A exists to remove, reintroduced in the name of testing it.
+
+    What replaces the executed coverage: the updater's *decision* is a pure function exercised with
+    injected facts (offline, mutation-tested), and its *collection* - the registry and manifest
+    reads - is Windows-only and belongs to the authorized private Windows gate.
+    """
+
+
 def render(artifact: str) -> str:
-    """Render focused-installer template bytes through the application's production boundary.
+    """Render LINUX focused-installer template bytes through the application's production boundary.
 
     Repository separation moved the verified template into this repository while the application
     retained installation-specific derivation and substitution. The caller may supply bytes but no
     path, layout, locator, or substitution authority.
     """
+    if artifact.endswith(".ps1"):
+        raise WindowsIsStaticNow(
+            f"{artifact} is installed byte-for-byte and derives its paths from the HKLM locator; "
+            "there is nothing to render. Its decision logic is covered offline and its filesystem, "
+            "registry and policy behaviour belongs to the Windows gate."
+        )
     template = (INSTALLER_REPO / artifact).read_text(encoding="utf-8")
-    return (_ub.render_windows_updater(template) if artifact.endswith(".ps1")
-            else _ub.render_linux_updater(template))
+    return _ub.render_linux_updater(template)
+
+
+def static_windows_updater() -> str:
+    """The shipped Windows updater EXACTLY as it will be installed - a copy, never a render.
+
+    The installer copies this file and proves the copy byte-identical, so a test that wants the
+    installed bytes should read the same bytes rather than a transformation of them.
+    """
+    return (INSTALLER_REPO / "installer/windows/corpusfm-update.ps1").read_text(encoding="ascii")
 
 
 def request(state_dir: Path, *, trigger_id: str = "trig-1", expected_head: str) -> Path:

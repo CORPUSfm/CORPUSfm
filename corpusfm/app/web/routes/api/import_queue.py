@@ -72,7 +72,7 @@ async def import_source(request: Request,
         import logging
         logging.getLogger(__name__).warning("import/source: enqueue_import failed", exc_info=True)
         return JSONResponse({"ok": False, "error": f"Could not stage the import: {exc}"}, status_code=502)
-    queue_workers.poke(INGEST)   # wake the ingest worker (redundant with its poll — a bare wake signal)
+    queue_workers.poke(INGEST)   # wake the ingest worker now (discovery would find it later — a bare wake signal)
     return JSONResponse({"ok": True, "id": queue_id, "filename": filename})
 
 

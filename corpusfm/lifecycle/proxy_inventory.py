@@ -576,7 +576,10 @@ def windows_probe(root: Path | None, *, prefix: str, iis_app_dir, metadata_dir,
 
     if root is None or script is None:
         return {}
-    argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+    # No -ExecutionPolicy Bypass (packet 1380-02 D20): the executor is an installed local file with
+    # no Mark of the Web, which RemoteSigned permits unaided, and under AllSigned the organization's
+    # deployed publisher leaf is what admits it. CORPUSfm never overrides execution policy.
+    argv = ["powershell", "-NoProfile", "-File", str(script),
             "-Verb", "probe", "-Type", "iis", "-FmsRoot", str(root), "-Prefix", prefix,
             "-IisAppDir", str(iis_app_dir or ""), "-MetadataDir", str(metadata_dir or "")]
     run = runner or (lambda a: sp.run(a, capture_output=True, text=True, timeout=120))

@@ -397,7 +397,8 @@ def test_windows_acl_failure_is_fatal_not_a_warning(ps1):
 
     # …and the secrets themselves are the provider's, reached through a dispatcher with no
     # non-fatal branch except success.
-    assert re.search(r"Lc-Run [^\n]*'provision-keys'", body), (
+    # Packet 1398: `La-LcRun`'s ordinary path IS `Lc-Run`, and its attempt path dispatches too.
+    assert re.search(r"(La-)?Lc-?Run [^\n]*'provision-keys'", body), (
         "the installed secrets are no longer protected through the provider")
     dispatch = body[body.index("function Lc-Dispatch"):]
     dispatch = dispatch[:dispatch.index("\n}")]

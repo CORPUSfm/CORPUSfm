@@ -23,7 +23,7 @@ uuid).
 
 Public API:
     RemoteServer                                    # the dataclass (name/host/account/password/id)
-    add_server(cfg, overwrite=False) -> None
+    add_server(cfg, overwrite=False) -> RemoteServer   # cfg.id set = edit THAT record; else create
     get_server(name) -> RemoteServer                # raises KeyError if absent
     get_server_by_id(server_id) -> RemoteServer | None
     list_servers() -> list[RemoteServer]            # sorted by name
@@ -189,11 +189,22 @@ def _save_secret(eng, key: str, cfg: "RemoteServer") -> None:
     eng.blob_put(_SERVER, key, "SecretData", blob)
 
 
-def add_server(cfg: "RemoteServer", overwrite: bool = False) -> None:
+def add_server(cfg: "RemoteServer", overwrite: bool = False) -> "RemoteServer":
     """Store a remote server in the SERVER table (config in jor, fmsadmin password in the SecretData
-    container).
+    container). Returns the stored record, carrying its stable ``id``.
 
-    Raises ValueError if the name is invalid, or if it already exists and overwrite=False.
+    IDENTITY (packet 1384). When ``cfg.id`` is set the record is located by that **key**, never by
+    name: the name is a label an administrator may change, and the Jobs page selects and saves a
+    server by id, so resolving an edit by name lets the edited record and the selected record diverge
+    after an ordinary rename. Name lookup remains the CREATE path. Two refusals follow, neither of
+    which a name-only lookup could express:
+
+    * an ``id`` naming no record is refused, rather than quietly creating a second server; and
+    * a rename onto a name another record already holds is refused, rather than producing two rows
+      that every by-name read would then have to choose between.
+
+    Raises ValueError if the name is invalid, if the id is unknown, if the new name belongs to a
+    different record, or if the name already exists and overwrite=False.
     """
     if not is_valid_server_name(cfg.name):
         raise ValueError(
@@ -203,9 +214,19 @@ def add_server(cfg: "RemoteServer", overwrite: bool = False) -> None:
     eng = _engine()
     if eng is None:
         raise RuntimeError("No storage backend available to store the server.")
-    existing = _find(eng, cfg.name)
-    if existing is not None and not overwrite:
-        raise ValueError(f"Server '{cfg.name}' already exists. Pass overwrite=True to replace.")
+    target = (cfg.id or "").strip()
+    if target:
+        rows = eng.get_by_keys(_SERVER, [target])
+        if not rows:
+            raise ValueError("That remote server no longer exists — reload the server list.")
+        existing = rows[0]
+        clash = _find(eng, cfg.name)
+        if clash is not None and clash.key != existing.key:
+            raise ValueError(f"Another remote server is already named '{cfg.name}'.")
+    else:
+        existing = _find(eng, cfg.name)
+        if existing is not None and not overwrite:
+            raise ValueError(f"Server '{cfg.name}' already exists. Pass overwrite=True to replace.")
     key = existing.key if existing is not None else str(_uuidlib.uuid4())
     cfg.id = key
     # On overwrite, an empty password field means "keep the stored secret" (the UI never round-trips a
@@ -217,6 +238,7 @@ def add_server(cfg: "RemoteServer", overwrite: bool = False) -> None:
     else:
         eng.create(_SERVER, key, _to_jor(cfg))
     _save_secret(eng, key, cfg)
+    return cfg
 
 
 def get_server(name: str) -> "RemoteServer":

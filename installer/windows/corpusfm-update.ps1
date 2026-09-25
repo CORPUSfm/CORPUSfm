@@ -20,12 +20,88 @@ $ErrorActionPreference = 'Stop'
 # that the whole operational body was enclosed false.
 & {
 
-# FIXED LOCATIONS, rendered into this artifact by the installer. No environment override: this
-# script runs elevated and rewrites the code the box executes, so anything that could set
-# CFM_SRC_DIR could choose the tree it advances. Tests render their own copy - a seam, not an input.
-$InstallDir = '@@INSTALL_DIR@@'
-$StateDir   = '@@STATE_DIR@@'
-$LogDir     = '@@LOG_DIR@@'
+# FIXED LOCATIONS, FROM FIXED AUTHORITY (packet 1380-02). This artifact is STATIC and SIGNED: it
+# carries no rendered placeholder seam, so its installed bytes are the bytes that were signed. (That
+# sentence deliberately does not spell the seam out: the installer scans this file for one.)
+#
+# The installation root comes from the FIXED machine locator's committed slot, corroborated by the
+# manifest that slot names, and this script must be running from that installation's bin directory.
+# Every other path is a fixed constant or a fixed path beneath that root. No parameter, environment
+# variable or data file selects any of them: this script runs elevated and rewrites the code the box
+# executes, so anything that could choose a path could choose the tree it advances.
+function Deny([string]$Message) {
+  # No installation has been established yet, so there is nowhere validated to write. Exit
+  # non-zero and let the caller's task result carry it.
+  Write-Error ("corpusfm-update: " + $Message)
+  exit 1
+}
+
+function Get-CfmUpdaterRootVerdict {
+  # Every fact is injected, so the rule is executable off a Windows box; the registry and manifest
+  # reads below are Windows-only. Path rules use Windows semantics spelled out rather than the host's
+  # .NET path APIs, which answer with the semantics of the machine running them and silently
+  # normalise `..` away.
+  param(
+    [string]$ScriptRoot = '',
+    [string]$LocatorId = '',
+    [string]$ManifestId = '',
+    [string]$LocatorInstallDir = '',
+    [string]$ManifestInstallDir = ''
+  )
+  $reason = 'ok'
+  if (-not $LocatorId -or -not $ManifestId -or -not $LocatorInstallDir) { $reason = 'authority_unreadable' }
+  elseif ($ManifestId -cne $LocatorId) { $reason = 'locator_manifest_disagree' }
+  elseif ($LocatorInstallDir -notmatch '^[A-Za-z]:\\' -or $LocatorInstallDir -match '\\\.\.?(\\|$)' -or
+          $LocatorInstallDir -match '\\\\' -or $LocatorInstallDir.EndsWith('\')) { $reason = 'install_dir_not_canonical' }
+  elseif ($ManifestInstallDir -ne $LocatorInstallDir) { $reason = 'install_dir_disagrees' }
+  elseif ($ScriptRoot -ne ($LocatorInstallDir + '\bin')) { $reason = 'script_root_disagrees' }
+  return [pscustomobject]@{ Allow = ($reason -eq 'ok'); Reason = $reason }
+}
+
+function Get-CfmUpdaterPaths([string]$InstallDir) {
+  # The fixed layout beneath the installation root, and the fixed OS layout. These must agree with
+  # update_boundary's own derivation; a test compares the two.
+  $fixed = 'C:\ProgramData\CORPUSfm'
+  return [pscustomobject]@{
+    InstallDir = $InstallDir
+    StateDir   = $fixed + '\state'
+    LogDir     = $fixed + '\logs'
+    Src        = $InstallDir + '\src'
+    Py         = $InstallDir + '\python\python.exe'
+    Helper     = $InstallDir + '\bin\tree_inspection.py'
+    Publisher  = $InstallDir + '\bin\publish_outcome.py'
+    LibDir     = $InstallDir + '\lib'
+    Git        = $InstallDir + '\git\cmd\git.exe'
+  }
+}
+
+# -- collection: the fixed machine locator and the manifest it names ----------------------------
+$LocatorRoot = 'HKLM:\SOFTWARE\CORPUSfm\Installation'
+$locId = ''; $locDir = ''; $manId = ''; $manDir = ''
+try {
+  $CommittedSlot = (Get-ItemProperty -LiteralPath $LocatorRoot -Name committed_slot -ErrorAction Stop).committed_slot
+  if ($CommittedSlot -in @(0,1)) {
+    $LocatorValues = Get-ItemProperty -LiteralPath (Join-Path $LocatorRoot ([string]$CommittedSlot)) -ErrorAction Stop
+    $locId = [string]$LocatorValues.installation_id
+    $locDir = [string]$LocatorValues.install_dir
+    $ManifestRaw = Get-Content -LiteralPath (Join-Path $locDir ([string]$LocatorValues.manifest_relative_path)) -Raw -ErrorAction Stop
+    $Manifest = $ManifestRaw | ConvertFrom-Json
+    $manId = [string]$Manifest.installation_id
+    $manDir = [string]$Manifest.paths.install_dir
+  }
+} catch { $locId = ''; $manId = '' }
+
+$RootVerdict = Get-CfmUpdaterRootVerdict -ScriptRoot ([string]$PSScriptRoot) -LocatorId $locId `
+  -ManifestId $manId -LocatorInstallDir $locDir -ManifestInstallDir $manDir
+if (-not $RootVerdict.Allow) {
+  Deny ("the installation root was refused: " + $RootVerdict.Reason)
+}
+
+# -- only now may these values be used -----------------------------------------------------------
+$UpdaterLayout = Get-CfmUpdaterPaths $locDir
+$InstallDir = $UpdaterLayout.InstallDir
+$StateDir   = $UpdaterLayout.StateDir
+$LogDir     = $UpdaterLayout.LogDir
 # TWO AUTHORITIES, TWO DIRECTORIES (ruling 2026-08-03). The inbox is service-writable; the outcome
 # directory is SYSTEM-owned and merely readable by the services, so a service cannot forge a result
 # naming its own trigger id. These must be the SAME paths update_boundary defines - they were not,
@@ -34,23 +110,22 @@ $InboxDir    = Join-Path $StateDir 'update-inbox'
 $OutcomeDir  = Join-Path $StateDir 'update-outcome'
 $RequestFile = Join-Path $InboxDir 'update_request.json'
 $LogFile     = Join-Path $LogDir 'update.log'
-$Src = '@@SRC_DIR@@'
-$Py  = '@@VENV_PY@@'
+$Src = $UpdaterLayout.Src
+$Py  = $UpdaterLayout.Py
 # The tree inspector as an ADMINISTRATOR-OWNED FILE outside the checkout (R7b). This used to be
 # `$env:PYTHONPATH = $Src; & $Py -m corpusfm.lifecycle.tree_inspection` - loading the judge from the
 # tree being judged, so a modified helper inside a modified checkout declared it clean. Proven on
 # BOTH platforms deliberately: a provenance property established on one says nothing about the other.
-$Helper = '@@HELPER@@'
+$Helper = $UpdaterLayout.Helper
 # The outcome publisher, same location and same reason (N2). This script COLLECTS fields; that
 # boundary validates them against the record schema and the structural secret fence and performs the
 # atomic write. Nothing here composes an outcome document any more.
-$Publisher = '@@PUBLISHER@@'
+$Publisher = $UpdaterLayout.Publisher
 # The administrator-owned Python library the publisher and the classifier load from - deliberately
 # not $Src, because both are judgments about the checkout.
-$LibDir = '@@LIB_DIR@@'
-# An ABSOLUTE git, rendered rather than composed, so it is the installation's own record that says
-# which binary runs.
-$Git = '@@GIT@@'
+$LibDir = $UpdaterLayout.LibDir
+# An ABSOLUTE git beneath the installation root, never resolved through PATH.
+$Git = $UpdaterLayout.Git
 # NOTHING IS RESTARTED HERE ANY MORE (application packet 1361-01, round 3).
 #
 # This step used to restart and verify `corpusfm-scheduler`, and deliberately NOT the web service:
@@ -272,7 +347,20 @@ function Write-Outcome($state, $reason, $detail, $rolledBack) {
     $r = Invoke-Fixed -FilePath $Py -Arguments (@('-I', $Publisher) + $fields) -Environment $PyEnv
     # Exit status only. The publisher redacts its own message, but it is still child output and
     # "prefer not retaining it" applies to the trusted component too.
-    if ($r.ExitCode -ne 0) { Write-Log ("NO OUTCOME PUBLISHED (publisher exit " + $r.ExitCode + ")") }
+    if ($r.ExitCode -ne 0) { Write-Log ("NO OUTCOME PUBLISHED (publisher exit " + $r.ExitCode + ")"); return }
+    # Packet 1380-02: the terminal outcome is now durably published, so the ACTIVE request may be
+    # removed - and ONLY now, and only for this trigger (ruling 3). A crash before this line leaves
+    # ACTIVE, and the next invocation sees the matching terminal outcome and removes it without
+    # re-running. finalize is a no-op when there is no ACTIVE (the scheduled-observation path).
+    if ($script:TriggerId) {
+        $finCode = @'
+import sys
+from corpusfm.lifecycle import update_boundary as ub
+ub.finalize_request(sys.argv[1], sys.argv[2])
+'@
+        [void](Invoke-Fixed -FilePath $Py -Arguments @('-c', $finCode, $StateDir, $script:TriggerId) `
+            -Environment (New-ChildEnvironment -Kind python -Extra @{ 'PYTHONPATH' = $LibDir }))
+    }
 }
 
 # THE REASON CODE ONLY. `$detail` is built from real filesystem pathnames out of the checkout, and a
@@ -290,19 +378,35 @@ function Stop-With($state, $reason, $detail, $rolledBack = $false) {
     exit 1
 }
 
-# -- the request ---------------------------------------------------------------------------------
-if (-not (Test-Path $RequestFile)) { Stop-With 'refused' 'no_request' 'no update request was recorded' }
-# THE REQUEST IS SERVICE-WRITABLE, so parsing it is handling untrusted input. With
-# $ErrorActionPreference = 'Stop' a malformed document raises a TERMINATING error whose message
-# quotes the offending content to the console - the service choosing what appears in the journal.
-# Caught, and answered with a fixed reason code.
+# -- claim the request (packet 1380-02 / F-UPD-REPLAY) -------------------------------------------
+# The request is no longer read in place: it is CLAIMED by update_boundary, which gives an ACTIVE
+# request strict precedence over a PENDING one and claims a PENDING with an atomic same-directory
+# rename to update_request.active.json. A manual Start-ScheduledTask after a completed run finds
+# neither slot and does nothing here - the stale-trigger replay is gone. The claim loads from the
+# administrator-owned library ($LibDir), not the checkout, for the same R7b reason as the classifier.
+$claimCode = @'
+import json, sys
+from corpusfm.lifecycle import update_boundary as ub
+r = ub.claim_request(sys.argv[1])
+sys.stdout.write(json.dumps({"disposition": r.disposition, "trigger_id": r.trigger_id, "expected_head": r.expected_head}))
+'@
+$claimEnv = New-ChildEnvironment -Kind python -Extra @{ 'PYTHONPATH' = $LibDir }
+$claimResult = Invoke-Fixed -FilePath $Py -Arguments @('-c', $claimCode, $StateDir) -Environment $claimEnv
+if ($claimResult.ExitCode -ne 0) { Write-Log 'the claim helper failed'; exit 1 }
 try {
-    $request = Get-Content $RequestFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    $claim = $claimResult.StdOut | ConvertFrom-Json
 } catch {
-    Stop-With 'refused' 'bad_request' 'the update request could not be read'
+    Write-Log 'the claim output could not be parsed'
+    exit 1
 }
-$script:TriggerId = [string]$request.trigger_id
-$script:Requested = [string]$request.expected_head
+switch ([string]$claim.disposition) {
+    'run'               { }
+    'already_completed' { Write-Log 'the active request already has a terminal outcome; nothing to do'; exit 0 }
+    'no_request'        { Write-Log 'no update request to claim'; exit 1 }
+    default             { $script:TriggerId = ''; Stop-With 'refused' 'bad_request' 'the update request could not be read' }
+}
+$script:TriggerId = [string]$claim.trigger_id
+$script:Requested = [string]$claim.expected_head
 if ($script:TriggerId -notmatch '^[A-Za-z0-9_-]{1,64}$') { Stop-With 'refused' 'bad_trigger_id' 'the trigger id is not a plain identifier' }
 if ($script:Requested -notmatch '^[0-9a-f]{40,64}$')     { Stop-With 'refused' 'bad_expected_head' 'expected_head is not a full commit SHA' }
 

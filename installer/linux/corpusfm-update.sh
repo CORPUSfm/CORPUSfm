@@ -163,6 +163,18 @@ write_outcome() {
         # retaining it" applies to the trusted component too. The exit status says everything an
         # administrator can act on: the record was refused and nothing was written.
         log "NO OUTCOME PUBLISHED (publisher exit $rc)"
+        return
+    fi
+    # Packet 1380-02: the terminal outcome is now durably published, so the ACTIVE request may be
+    # removed — and ONLY now, and only for this trigger (ruling 3). A crash before this line leaves
+    # ACTIVE, and the next invocation sees the matching terminal outcome and removes it without
+    # re-running. finalize is a no-op when there is no ACTIVE (the scheduled-observation path).
+    if [[ -n "$TRIGGER_ID" ]]; then
+        PYTHONPATH="$LIB_DIR" "$VENV_PY" -c '
+import sys
+from corpusfm.lifecycle import update_boundary as ub
+ub.finalize_request(sys.argv[1], sys.argv[2])
+' "$STATE_DIR" "$TRIGGER_ID" >/dev/null 2>&1 || true
     fi
 }
 
@@ -174,12 +186,27 @@ die() {
     exit 1
 }
 
-# ── the request ───────────────────────────────────────────────────────────────────────
-# A fixed path, and only two fields are read out of it. Anything else in the file is ignored —
-# there is no field that could become a ref, a path, a command or an environment entry.
-[[ -f "$REQUEST_FILE" ]] || die refused no_request "no update request was recorded"
-TRIGGER_ID="$("$VENV_PY" -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get("trigger_id",""))' "$REQUEST_FILE" 2>/dev/null || true)"
-REQUESTED="$("$VENV_PY" -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get("expected_head",""))' "$REQUEST_FILE" 2>/dev/null || true)"
+# ── claim the request (packet 1380-02 / F-UPD-REPLAY) ─────────────────────────────────
+# The request is no longer read in place: it is CLAIMED by update_boundary, which gives an ACTIVE
+# request strict precedence over a PENDING one and claims a PENDING with an atomic same-directory
+# rename to update_request.active.json. A manual `systemctl start` after a completed run finds
+# neither slot and does nothing here — the stale-trigger replay is gone. The claim loads from the
+# administrator-owned library ($LIB_DIR), not the checkout, for the same R7b reason as the classifier.
+CLAIM_OUT="$(PYTHONPATH="$LIB_DIR" "$VENV_PY" -c '
+import sys
+from corpusfm.lifecycle import update_boundary as ub
+r = ub.claim_request(sys.argv[1])
+print(r.disposition)
+print(r.trigger_id)
+print(r.expected_head)
+' "$STATE_DIR" 2>/dev/null || true)"
+{ read -r DISPOSITION; read -r TRIGGER_ID; read -r REQUESTED; } <<< "$CLAIM_OUT" || true
+case "$DISPOSITION" in
+    run) : ;;
+    already_completed) log "the active request already has a terminal outcome; nothing to do"; exit 0 ;;
+    no_request) log "no update request to claim"; exit 1 ;;
+    *) TRIGGER_ID=""; die refused bad_request "the update request could not be read" ;;
+esac
 [[ "$TRIGGER_ID" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || die refused bad_trigger_id "the trigger id is not a plain identifier"
 [[ "$REQUESTED" =~ ^[0-9a-f]{40,64}$ ]] || die refused bad_expected_head "expected_head is not a full commit SHA"
 

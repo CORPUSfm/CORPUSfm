@@ -214,12 +214,22 @@
             <span x-show="copiedId === 'addr'" class="cfm-ok cfm-ml-8">Copied</span>
           </li>
           </template>
+          {# TWO clipboard products from ONE payload (packet 1383). An administrator often hands this
+             to a coding agent rather than to a terminal, and a bare command tells the agent nothing
+             about the outcome expected of it — so it explains the command, or stops once the server is
+             registered, and reports success before any tool is reachable. `CLI config` is the payload
+             byte-for-byte, still directly pasteable; `Prompt config` wraps that SAME payload in an
+             execution contract. The prompt never rebuilds the command, JSON, server name or address —
+             it embeds `text` — so the two products cannot drift apart. #}
           <li class="cfm-mt-6"><strong>Add it to your client — with no token.</strong>
             <code class="cfm-mono cfm-mt-6" style="white-space:pre-wrap; display:block; word-break:break-all"
                   x-text="currentOauthSnippet.text"></code>
             <button type="button" class="cfm-btn cfm-btn--sm cfm-mt-6"
-                    @click="copyText(currentOauthSnippet)">Copy</button>
-            <span x-show="copiedId === oauthClient" class="cfm-ok cfm-ml-8">Copied</span>
+                    @click="copyText({id: oauthClient + ':cli', text: currentOauthSnippet.text})">CLI config</button>
+            <span x-show="copiedId === oauthClient + ':cli'" class="cfm-ok cfm-ml-8">Copied</span>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-mt-6 cfm-ml-8"
+                    @click="copyText({id: oauthClient + ':prompt', text: oauthPrompt(currentOauthSnippet)})">Prompt config</button>
+            <span x-show="copiedId === oauthClient + ':prompt'" class="cfm-ok cfm-ml-8">Copied</span>
             <p class="cfm-muted cfm-mt-6" x-text="currentOauthSnippet.hint"></p>
           </li>
           {# Step 3 is per-client because the clients genuinely differ — Codex signs in with a second
@@ -542,6 +552,10 @@ function mcpAccess() {
         return [
           { id: p('cli'), label: 'Claude Code', needsAddress: false, hint: 'Run this in your terminal.',
             text: `claude mcp add --transport http ${name} ${base}`,
+            agent: `run the command below in a terminal, then start authentication with `
+                 + `"claude mcp login" for that server, or the /mcp panel's Authenticate action. No `
+                 + `restart is needed — confirm with "claude mcp list" or /mcp that the server reports `
+                 + `connected and shows its tools.`,
             approve: `Run /mcp, pick ${name}, and choose Authenticate — or, in a terminal, `
                    + `claude mcp login ${name}. Your browser opens. ${stale} `
                    + `(Claude Code: claude mcp logout ${name}, then sign in again.)` },
@@ -549,11 +563,20 @@ function mcpAccess() {
             hint: `Run this in your terminal. It writes [mcp_servers.${name}] url = "${base}" to `
                 + `~/.codex/config.toml, which the Codex CLI, the IDE extension and the ChatGPT desktop app share.`,
             text: `codex mcp add ${name} --url ${base}`,
+            agent: `run the command below in a terminal, then run "codex mcp login" with the server `
+                 + `name from that command and ask me to approve in the browser. Run "codex mcp get" `
+                 + `with that same server name and "--json" to check what was saved; this proves only `
+                 + `the configuration file, so restart the Codex CLI session, the IDE `
+                 + `extension or the ChatGPT desktop app and confirm the tools are present there.`,
             approve: `Run codex mcp login ${name} and approve in your browser. In the ChatGPT desktop app or `
                    + `the IDE extension choose Restart / Restart extension so CORPUSfm's tools appear. ${stale}` },
           { id: p('cursor'), label: 'Cursor', needsAddress: true,
             hint: `Add to ~/.cursor/mcp.json, or the project’s .cursor/mcp.json.`,
             text: j({ mcpServers: { [name]: { url: base } } }),
+            agent: `merge the JSON below into the existing project or user MCP configuration without `
+                 + `replacing other servers — ask me which of the two to use if that is ambiguous. `
+                 + `Then complete the OAuth sign-in from Cursor's MCP settings, reload if Cursor has `
+                 + `not picked up the change, and confirm the tools are listed under Available Tools.`,
             approve: `Open Cursor Settings → MCP; the server shows Needs login — click it and approve in your browser. ${stale}` },
           // VS Code's OWN MCP support, which is not the same thing as running Codex inside VS Code —
           // that reads ~/.codex/config.toml and belongs on the Codex tab. Said in the hint because
@@ -562,9 +585,16 @@ function mcpAccess() {
             hint: `Add to .vscode/mcp.json (servers) — VS Code's own MCP support. ${jsonHint} `
                 + 'Running Codex inside VS Code is the Codex tab instead.',
             text: j({ servers: { [name]: { type: 'http', url: base } } }),
+            agent: `merge the JSON below into the chosen workspace or user mcp.json without replacing `
+                 + `other servers. Then start the server from the MCP view and accept the trust `
+                 + `prompt, complete the browser sign-in, restart the server if the configuration `
+                 + `changed after it started, and confirm the tools appear in chat under Configure Tools.`,
             approve: `Start the server in the MCP view; your browser opens for the sign-in. ${stale}` },
           { id: p('raw'), label: 'Universal', needsAddress: true,
             hint: 'Any client that takes an HTTP MCP endpoint and can do OAuth — or an agent configuring itself.',
+            agent: `enter the fields below exactly in this client's MCP server configuration. If you `
+                 + `cannot identify the client or its configuration surface, ask me rather than `
+                 + `guessing a path. Then start its OAuth sign-in and confirm the client lists the tools.`,
             text: `URL:        ${base}\nTransport:  HTTP (streamable)\n`
                 + `Auth:       OAuth 2.1, discovered from the 401 (WWW-Authenticate → resource_metadata); configure no token\n`
                 + `Client:     public, PKCE S256, registered at ${base}register (Dynamic Client Registration)\n`
@@ -606,6 +636,32 @@ function mcpAccess() {
     // getter still computed a command nobody should copy. The TOKEN half keeps that fallback
     // deliberately: a bearer works on whatever origin you reached.
     get oauthSnippets() { return this.servedAddress ? this._snippets('', this.servedAddress) : []; },
+    // The second clipboard product (packet 1383): the same entry, addressed to a coding agent.
+    // Composed HERE from `s.text` rather than carried as a second per-client literal — the server
+    // name, address, transport and OAuth method exist once on this page, and a prompt that restated
+    // them would be a second authority free to drift. The per-client `agent` clause says what that
+    // client's setup actually involves and deliberately does NOT name the server or repeat the
+    // payload. Three boundaries the wording holds: the agent DOES the setup, the human approves in
+    // the browser, and anything left undone is reported instead of called success.
+    oauthPrompt(s) {
+      if (!s) return '';
+      return [
+        `Configure CORPUSfm MCP in ${s.label}. Perform the setup; do not only explain it.`,
+        'Use the configuration below exactly. Do not change the server name, address, transport or',
+        'OAuth method, and do not add a token. Preserve any other MCP servers already configured.',
+        '',
+        `In ${s.label}: ${s.agent}`,
+        '',
+        'When browser approval is required, pause and ask me to complete it — do not claim to approve',
+        `it for me. Report success only once you have observed CORPUSfm's tools available in ${s.label};`,
+        'otherwise report exactly what remains to be done, or the error you hit.',
+        '',
+        'Configuration:',
+        '```text',
+        s.text,
+        '```',
+      ].join('\n');
+    },
     get currentOauthSnippet() {
       return this.oauthSnippets.find(s => s.id === this.oauthClient) || this.oauthSnippets[0];
     },

@@ -15,7 +15,7 @@
   installation published. See installer/SPEC.md.
 
   Run from an ELEVATED PowerShell:
-      powershell -ExecutionPolicy Bypass -File install.ps1 [options]
+      powershell -File install.ps1 [options]
 
   Options (parent 1246-04 section 4H.1 - ten switches, nine declared; the same set on Linux):
       -InstallDir <str>         Installation directory (default C:\Program Files\CORPUSfm)
@@ -29,6 +29,10 @@
       -RepairStorageAccess      Repair automation access to an existing storage database
       -ReplaceExistingInstall   Authorize moving an existing, non-empty install directory that
                                 carries no CORPUSfm installation trace
+      -DiscardIncompleteAttempt When an earlier fresh install stopped part-way, discard what that
+                                attempt recorded creating, without the Inspect/Discard/Quit menu
+                                (required for -Silent), then exit. Packet 1398 adds this one
+                                switch on both platforms.
       -Yes                      Consent pre-granted; skip the confirmation wait (normal output)
       -Silent                   Non-interactive: inputs from the environment, fail loud on a missing
                                 required input
@@ -81,6 +85,7 @@ param(
   [string[]]$ProxyPolicyIgnore = @(),
   [switch]$RepairStorageAccess,
   [switch]$ReplaceExistingInstall,
+  [switch]$DiscardIncompleteAttempt,
   [switch]$Silent,
   [switch]$Yes
 )
@@ -150,6 +155,13 @@ if ($InstallerSeries) {
   Register-EngineEvent PowerShell.Exiting -SupportEvent -Action ([scriptblock]::Create(
     "Remove-Item -Recurse -Force '" + ($RuntimeTemp -replace "'", "''") + "' -ErrorAction SilentlyContinue")) | Out-Null
 }
+# Where an administrator obtains the release AND the publisher trust material that goes with it
+# (packet 1380 section 4.2A.1: the trust record and the DER leaf ship as release assets, because a
+# leaf carried INSIDE the package is unreachable in the one case that needs it - AllSigned with the
+# leaf absent, where nothing in the package executes). The SYSTEM updater task's AllSigned refusal
+# names it.
+$ReleaseLocation = 'https://github.com/CORPUSfm/CORPUSfm/releases'
+
 if ($env:CFM_BOOTSTRAP_HANDOFF) {
   if (-not $InstallerSeries) {
     Write-Host '  x Bootstrap handoff refused: delegated execution requires a packaged installer' -ForegroundColor Red
@@ -1133,6 +1145,140 @@ function Test-CfmInstallationAuthority {
                 (Test-Path $legacyMarker -PathType Leaf))
 }
 
+# === packet 1380-02: the SYSTEM updater task's AllSigned check ====================================
+#
+# The updater task runs as NT AUTHORITY\SYSTEM, non-interactively. SYSTEM is governed by the
+# machine-wide execution policy (MachinePolicy, then LocalMachine) and reads only LocalMachine
+# certificate stores; the administrator's Process, UserPolicy and CurrentUser scopes, and the fact that
+# this script is running at all, say nothing about it. Measured: under AllSigned with the signing leaf
+# absent from LocalMachine\TrustedPublisher, a correctly signed script exits 1 (UnauthorizedAccess) and
+# no prompt can be answered. So when that machine-wide policy is AllSigned, or cannot be determined, the
+# running installer's valid signer leaf must be in LocalMachine\TrustedPublisher. One release is signed
+# by one leaf, so the installer's leaf is the updater's leaf.
+function Get-CfmSystemTaskTrustVerdict {
+  param(
+    [string]$MachinePolicy = '',
+    [string]$LocalMachine = '',
+    [string]$SignatureStatus = '',
+    [string]$SignerThumbprint = '',
+    [string[]]$LocalMachineThumbprints = @()
+  )
+  $known = @('AllSigned', 'Bypass', 'Default', 'RemoteSigned', 'Restricted', 'Unrestricted', 'Undefined')
+  $policy = 'Undefined'
+  foreach ($value in @($MachinePolicy, $LocalMachine)) {
+    if ($known -notcontains $value) { $policy = 'Indeterminate'; break }
+    if ($value -ne 'Undefined') { $policy = $value; break }
+  }
+  $result = { param($allow, $reason, $detail)
+    [pscustomobject]@{ Allow = $allow; Reason = $reason; Policy = $policy; Detail = $detail } }
+  if ($policy -ne 'AllSigned' -and $policy -ne 'Indeterminate') { return (& $result $true 'not_applicable' '') }
+  if ($SignatureStatus -ne 'Valid') {
+    $observed = if ($SignatureStatus) { $SignatureStatus } else { 'Unreadable' }
+    return (& $result $false 'signature_not_valid' $observed)
+  }
+  if (-not $SignerThumbprint) { return (& $result $false 'no_signer_certificate' '') }
+  $want = $SignerThumbprint.Trim().ToUpperInvariant()
+  $have = @(foreach ($t in @($LocalMachineThumbprints)) { ([string]$t).Trim().ToUpperInvariant() })
+  if ($have -notcontains $want) { return (& $result $false 'leaf_not_in_localmachine_trustedpublisher' $want) }
+  return (& $result $true 'trusted' $want)
+}
+
+function Assert-CfmSystemTaskTrust {
+  param([Parameter(Mandatory=$true)][string]$EntryPoint)
+  $machinePolicy = ''; $localMachine = ''
+  try { $machinePolicy = [string](Get-ExecutionPolicy -Scope MachinePolicy -ErrorAction Stop) } catch { $machinePolicy = '' }
+  try { $localMachine = [string](Get-ExecutionPolicy -Scope LocalMachine -ErrorAction Stop) } catch { $localMachine = '' }
+  $status = ''; $thumb = ''; $subject = ''
+  try {
+    $sig = Get-AuthenticodeSignature -LiteralPath $EntryPoint
+    $status = [string]$sig.Status
+    if ($sig.SignerCertificate) {
+      $thumb = [string]$sig.SignerCertificate.Thumbprint
+      $subject = [string]$sig.SignerCertificate.Subject
+    }
+  } catch { $status = 'Unreadable' }
+  $trusted = @()
+  try {
+    $trusted = @(Get-ChildItem Cert:\LocalMachine\TrustedPublisher -ErrorAction Stop |
+                 ForEach-Object { [string]$_.Thumbprint })
+  } catch { $trusted = @() }
+  $verdict = Get-CfmSystemTaskTrustVerdict -MachinePolicy $machinePolicy -LocalMachine $localMachine `
+               -SignatureStatus $status -SignerThumbprint $thumb -LocalMachineThumbprints $trusted
+  if ($verdict.Allow) {
+    if ($verdict.Reason -eq 'trusted') {
+      Ok ("Updater task trust: signing leaf " + $verdict.Detail + " is in LocalMachine\TrustedPublisher")
+    } else {
+      Info ("Updater task trust: machine-wide execution policy is " + $verdict.Policy + "; AllSigned does not apply")
+    }
+    return
+  }
+  $who = if ($subject) { $subject } else { '(no signer certificate on the running installer)' }
+  $what = if ($thumb) { $thumb } else { '(none)' }
+  Die ("Refused before any installation change: the CORPUSfm updater task runs as NT AUTHORITY\SYSTEM," +
+       " and the machine-wide execution policy (MachinePolicy/LocalMachine) is " + $verdict.Policy + "." + "`n" +
+       "     Under that policy SYSTEM runs only scripts whose signing certificate is in LocalMachine\TrustedPublisher." + "`n" +
+       "     Reason: " + $verdict.Reason + " (" + $verdict.Detail + ")" + "`n" +
+       "     Publisher: " + $who + "`n" +
+       "     Certificate thumbprint: " + $what + "`n" +
+       "     Your organization deploys that exact certificate to LocalMachine\TrustedPublisher with its own tooling." +
+       " The certificate and its details ship with the release: " + $ReleaseLocation + "`n" +
+       "     Nothing was installed or changed. Re-run this installer once the certificate is deployed.")
+}
+
+# === Windows lifecycle recovery (packet 1380-02, reduced) =========================================
+#
+# Recovery is the lifecycle CLI run directly by this installer with the runtime this invocation already
+# selected: the installed interpreter, or the verified package runtime when Get-LcState or phase 2
+# selected it. Execution policy governs script FILES, not python.exe, so recovery needs no staged or
+# signed script and takes no publisher-trust dependency. The disposition boundary proposes the family,
+# verb and request; the closed table below decides whether that pair may run at all.
+function Test-CfmLifecycleRecoverySucceeded([int]$Code) {
+  # 0 completed and 2 rolled back are both a recovered journal; everything else is not.
+  return ($Code -eq 0 -or $Code -eq 2)
+}
+
+function Invoke-CfmLifecycleRecovery {
+  $family = "" + $script:LcRecoveryFamily
+  $verb = "" + $script:LcRecoveryVerb
+  $expectedVerb = switch -CaseSensitive ($family) {
+    'patch-compartment' { 'rollback' }
+    'proxy' { 'abort' }
+    'admin-identity' { 'abort' }
+    'storage' { 'abort' }
+    default { '' }
+  }
+  if (-not $expectedVerb -or $verb -cne $expectedVerb) {
+    Die "The installer-disposition boundary returned a recovery verb this installer does not run; the journal remains untouched."
+  }
+  if ($family -ceq 'patch-compartment') {
+    $childArgs = @($family, $verb, '--operation-id', ("" + $script:LcOp))
+  } else {
+    if (-not (Lc-IsOneJsonObject $script:LcRecoveryRequest)) {
+      Die "The installer-disposition boundary returned no recovery request document; the journal remains untouched."
+    }
+    $request = Lc-Request 'installer-recovery' $script:LcRecoveryRequest
+    $childArgs = @($family, $verb, '--request', $request)
+  }
+  $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try {
+    & $script:Py -m corpusfm.lifecycle @childArgs | Out-Host
+    $rc = $LASTEXITCODE
+  } finally { $ErrorActionPreference = $eap }
+  return $rc
+}
+
+function Complete-CfmOwedLifecycleRecovery {
+  # An owed recovery OWNS this invocation: both outcomes end it, so no new mutation can follow it.
+  Info ("Recovering the prior lifecycle operation with the " + $script:RecoveryRuntimeKind + " runtime")
+  $recoveryRc = Invoke-CfmLifecycleRecovery
+  if (Test-CfmLifecycleRecoverySucceeded $recoveryRc) {
+    Die "The prior lifecycle recovery completed. Re-run this Series 2 package to begin a separate installation invocation."
+  }
+  Die ("The prior lifecycle recovery did not complete (exit " + $recoveryRc +
+       "). Its journal and recovery evidence remain in place. Re-run this same verified" +
+       " Series 2 package to try recovery again.")
+}
+
 $script:LcStateRaw = $null
 function Get-LcState {
   # ONE OBSERVATION BY DEFAULT, and that default is load-bearing: phases 2 and 3 classify from the
@@ -1261,7 +1407,8 @@ if "journal" not in value or "locator" not in value:
 # every one of those requests was refused, and the id the commit named was one nothing had ever used.
 # `Lc-ProviderRun` is the only place either value is obtained.
 $script:LcCondition = ''; $script:LcCompose = $false; $script:LcRetireProvider = ''
-$script:LcRecoveryCommand = ''; $script:LcDispositionReason = ''
+$script:LcRecoveryFamily = ''; $script:LcRecoveryVerb = ''; $script:LcRecoveryRequest = ''
+$script:LcDispositionReason = ''
 $script:LcFirstAdminOwedByDisposition = $false
 
 function Lc-PreflightDisposition {
@@ -1277,9 +1424,6 @@ request = {
     "install_dir": sys.argv[3], "platform": "windows", "provider_result": None,
     "journal": journal,
 }
-if sys.argv[4] == "package":
-    request["recovery_python"] = sys.argv[5]
-    request["recovery_source"] = sys.argv[6]
 print(json.dumps(classify(request), separators=(",", ":"), sort_keys=True))
 '@
   $probeFile = New-CfmProbeFile $probe
@@ -1287,8 +1431,7 @@ print(json.dumps(classify(request), separators=(",", ":"), sort_keys=True))
   try {
     $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     $disp = (& $script:Py $probeFile $script:RecoverySource $script:CfmJournalFile `
-      $script:InstallDir $script:RecoveryRuntimeKind $script:Py $script:RecoverySource `
-      2>$errFile | Out-String)
+      $script:InstallDir 2>$errFile | Out-String)
     $rc = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $eap
@@ -1305,7 +1448,9 @@ print(json.dumps(classify(request), separators=(",", ":"), sort_keys=True))
   $script:LcCondition = "" + (Lc-Field $disp 'condition')
   $script:LcRetireProvider = "" + (Lc-Field $disp 'retire_provider')
   $script:LcOp = "" + (Lc-Field $disp 'operation_id')
-  $script:LcRecoveryCommand = "" + (Lc-Field $disp 'recovery_command')
+  $script:LcRecoveryFamily = "" + (Lc-Field $disp 'recovery_family')
+  $script:LcRecoveryVerb = "" + (Lc-Field $disp 'recovery_verb')
+  $script:LcRecoveryRequest = "" + (Lc-Field $disp 'recovery_request')
   $script:LcDispositionReason = "" + (Lc-Field $disp 'reason')
 }
 
@@ -1349,6 +1494,739 @@ function Resume-PackagedInterruptedUninstall([string]$InstallationId) {
                    $result.reason + "). " + $result.detail +
                    " Its journal and recovery evidence remain untouched.") }
   }
+}
+
+# -- The fresh-install attempt (packet 1398) ------------------------------------------------------
+# A fresh install that fails part-way leaves resources nothing else owns. From consent onward, a
+# no-authority fresh run records every durable mutation in a protected attempt record BEFORE it
+# happens: observe the exact target, publish the intent with that prior, mutate, then publish the
+# result - a failed command publishes its post-observation too. The record is the only ownership
+# evidence a later Discard may use (corpusfm.lifecycle.install_attempt reads and validates it).
+#
+# EVERY WRAPPER BELOW IS A PASS-THROUGH WHEN NO ATTEMPT IS ACTIVE: an update, and every run that is
+# not a no-authority fresh start, executes exactly the command it always did.
+#
+# Native PowerShell writes the record (packet 1398 section 2.4). The whole document is serialized
+# from this process's own data, staged inside the protected container, flushed, replaced,
+# re-protected and read back. Nothing here reads a record back in order to re-serialize it.
+$script:CfmAttempt = $false
+$script:AttemptDir = Join-Path (Split-Path $ConfigHome -Parent) 'CORPUSfm-Attempt'
+$script:AttemptRecord = $null
+$script:AttemptId = ''
+$script:LaSeqs = @()
+$script:LaLeftoverEmpty = $false
+$script:LaRouteDeferred = $false
+$script:LaProviderIntent = ''
+$script:LaProviderPrior = $null
+$script:LaProviderSeqs = @()
+$script:LaProviderTargetSeqs = @()
+$script:LaLifecycleRc = 0
+# The closed WINDOWS vocabulary this installer writes (rulings 5 and 6). `journal` is written by the
+# application's discard and never here; `set_owner_mode`, `account`, `unit`, `package_set` and
+# `firewall_rule` are POSIX.
+$script:LaKinds = [ordered]@{
+  'dir'              = @('create', 'set_acl', 'move_aside')
+  'file'             = @('create', 'overwrite', 'append', 'delete')
+  'service'          = @('create')
+  'task'             = @('create')
+  'git_config_entry' = @('append', 'unset')
+  'iis_setting'      = @('enable_arr_proxy')
+  'provider_op'      = @('foundation', 'provision_keys', 'admin_identity_reconcile', 'patch_apply',
+                         'proxy_reconcile', 'storage_bootstrap', 'storage_adopt', 'create_first_admin',
+                         'retire_scheduler_authority', 'backfill_storage_projections')
+}
+$script:LaFsKinds = @('dir', 'file')
+$script:LaAllowedSids = @('S-1-5-18', 'S-1-5-32-544')
+
+function La-RefuseFirst {
+  # Packet 1398 section 4.2, Windows: the install root, install.yaml, the web service, the task.
+  return @(
+    @{ kind = 'dir';     target = $script:InstallDir },
+    @{ kind = 'file';    target = (Join-Path $script:FixedConfig 'install.yaml') },
+    @{ kind = 'service'; target = $script:WebService },
+    @{ kind = 'task';    target = '\CORPUSfm Update' }
+  )
+}
+
+function La-Now { return (Get-Date).ToUniversalTime().ToString('o') }
+function La-PathItem([string]$Path) { return (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue) }
+function La-Parent([string]$Path) { return (Split-Path $Path -Parent) }
+function La-Sddl([string]$Path) { return ("" + (Get-Acl -LiteralPath $Path).Sddl) }
+function La-Sha256([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+
+function La-Canon([string]$Path) {
+  $full = [IO.Path]::GetFullPath($Path)
+  if ($full.Length -gt 3) { $full = $full.TrimEnd('\') }
+  return $full
+}
+
+function La-Inside([string]$Child, [string]$Parent) {
+  $c = (La-Canon $Child).ToLowerInvariant()
+  $p = (La-Canon $Parent).ToLowerInvariant().TrimEnd('\')
+  return (($c -ne $p) -and $c.StartsWith($p + '\'))
+}
+
+function La-ProtectedSecurity([bool]$Directory) {
+  if ($Directory) { $sec = New-Object System.Security.AccessControl.DirectorySecurity }
+  else { $sec = New-Object System.Security.AccessControl.FileSecurity }
+  $sec.SetAccessRuleProtection($true, $false)
+  $admins = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
+  $system = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')
+  $sec.SetOwner($admins)
+  $inherit = [System.Security.AccessControl.InheritanceFlags]::None
+  if ($Directory) { $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' }
+  foreach ($sid in @($system, $admins)) {
+    $sec.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $sid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit,
+      [System.Security.AccessControl.PropagationFlags]::None,
+      [System.Security.AccessControl.AccessControlType]::Allow)))
+  }
+  return $sec
+}
+
+function La-SetProtected([string]$Path, [bool]$Directory) {
+  Set-Acl -LiteralPath $Path -AclObject (La-ProtectedSecurity $Directory)
+}
+
+function La-AuthorityProblem([string]$Path) {
+  # The application's rule, in the same terms: a protected DACL, nothing inherited, owned by
+  # Administrators or SYSTEM, and nobody else named.
+  $acl = Get-Acl -LiteralPath $Path
+  if (-not $acl.AreAccessRulesProtected) { return ($Path + ' does not carry a protected DACL') }
+  $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+  if ($script:LaAllowedSids -notcontains $owner) { return ($Path + ' is owned by ' + $owner) }
+  foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+    if ($rule.IsInherited) { return ($Path + ' inherits access from its parent') }
+    if ($script:LaAllowedSids -notcontains $rule.IdentityReference.Value) {
+      return ($Path + ' grants access to ' + $rule.IdentityReference.Value)
+    }
+  }
+  return ''
+}
+
+function La-ContainerProblem {
+  $item = La-PathItem $script:AttemptDir
+  if (-not $item) { return ($script:AttemptDir + ' does not exist') }
+  if (-not $item.PSIsContainer) { return ($script:AttemptDir + ' is not a directory') }
+  if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return ($script:AttemptDir + ' is a reparse point') }
+  return (La-AuthorityProblem $script:AttemptDir)
+}
+
+function La-ContainerIsEmpty {
+  $item = La-PathItem $script:AttemptDir
+  if (-not $item -or -not $item.PSIsContainer) { return $false }
+  $foreign = @(Get-ChildItem -LiteralPath $script:AttemptDir -Force |
+               Where-Object { $_.Name -notmatch '^\.(attempt|pending|journal)\.json\..+\.tmp$' })
+  return ($foreign.Count -eq 0)
+}
+
+function La-Write {
+  $problem = La-ContainerProblem
+  if ($problem) {
+    Die ("The fresh-install attempt container is not protected: " + $problem + ". Nothing further was changed.")
+  }
+  $json = ConvertTo-Json -InputObject $script:AttemptRecord -Depth 20
+  $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($json + "`n")
+  $record = Join-Path $script:AttemptDir 'attempt.json'
+  $staged = Join-Path $script:AttemptDir ('.attempt.json.' + [guid]::NewGuid().ToString('N') + '.tmp')
+  $stream = [IO.File]::Open($staged, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+  try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+  try {
+    La-SetProtected $staged $false
+    # [NullString]::Value, never $null: PowerShell converts $null to '' for a .NET string argument,
+    # and File.Replace refuses an empty backup path (measured under pwsh).
+    if (Test-Path -LiteralPath $record) { [IO.File]::Replace($staged, $record, [NullString]::Value) }
+    else { [IO.File]::Move($staged, $record) }
+  } catch {
+    Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+    Die ("The fresh-install attempt record could not be published: " + $_.Exception.Message)
+  }
+  La-SetProtected $record $false
+  $sha = [Security.Cryptography.SHA256]::Create()
+  if ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($record))) -ne
+      [BitConverter]::ToString($sha.ComputeHash($bytes))) {
+    Die "The fresh-install attempt record did not read back as written."
+  }
+  $problem = La-AuthorityProblem $record
+  if ($problem) { Die ("The fresh-install attempt record is not protected: " + $problem) }
+}
+
+function La-ServiceState([string]$Name) {
+  $svc = Get-CimInstance Win32_Service -Filter ("Name='" + $Name + "'") -ErrorAction SilentlyContinue
+  if (-not $svc) { return [ordered]@{ exists = $false } }
+  $path = "" + $svc.PathName
+  if (-not $path) { $path = '<unreadable>' }
+  return [ordered]@{ exists = $true; binary_path = $path }
+}
+
+function La-TaskState([string]$Target) {
+  $task = Get-ScheduledTask -TaskName $Target.TrimStart('\') -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $task) { return [ordered]@{ exists = $false } }
+  return [ordered]@{ exists = $true; task_path = ("" + $task.TaskPath + $task.TaskName) }
+}
+
+function La-Observe([string]$Kind, [string]$Intent, [string]$Target, $Extra) {
+  # The exact current facts for one target, in the ledger shape for its kind.
+  if ($script:LaFsKinds -contains $Kind) {
+    $item = La-PathItem $Target
+    if (-not $item) { return [ordered]@{ exists = $false } }
+    $isDir = [bool]$item.PSIsContainer
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or ($isDir -ne ($Kind -eq 'dir'))) {
+      Die ("An unexpected object stands at " + $Target + "; the fresh-install attempt refuses before any change.")
+    }
+    if ($isDir) { return [ordered]@{ exists = $true; type = 'dir'; sddl = (La-Sddl $Target) } }
+    return [ordered]@{ exists = $true; type = 'file'; size = [long]$item.Length
+                       sha256 = (La-Sha256 $Target); sddl = (La-Sddl $Target) }
+  }
+  if ($Kind -eq 'service') { return (La-ServiceState $Target) }
+  if ($Kind -eq 'task') { return (La-TaskState $Target) }
+  if ($Kind -eq 'git_config_entry') {
+    $exists = [bool](Test-Path -LiteralPath $Target -PathType Leaf)
+    $sha = $null
+    if ($exists) { $sha = La-Sha256 $Target }
+    return [ordered]@{ file = $Target; exists = $exists; sha256 = $sha; values = @($Extra.values) }
+  }
+  return $Extra
+}
+
+function La-EntriesFor($Ledger, [string]$Kind, [string]$Target) {
+  $found = @()
+  foreach ($e in $Ledger) {
+    if ($e.kind -ne $Kind) { continue }
+    if ($script:LaFsKinds -contains $Kind) { $same = ((La-Canon $e.target) -ieq (La-Canon $Target)) }
+    else { $same = ($e.target -eq $Target) }
+    if ($same) { $found += ,$e }
+  }
+  $moved = -1
+  for ($i = 0; $i -lt $found.Count; $i++) {
+    if ($found[$i].intent -eq 'move_aside' -and $found[$i].state -eq 'done') { $moved = $i }
+  }
+  # Returned UNROLLED: every caller wraps the answer in @(...). A unary-comma return would arrive as
+  # one element holding the array, and an empty answer would count as one entry (measured under pwsh).
+  if ($moved -ge 0) { return @($found | Select-Object -Skip ($moved + 1)) }
+  return $found
+}
+
+function La-Contained($Ledger, [string]$Target) {
+  foreach ($e in $Ledger) {
+    if ($e.kind -eq 'dir' -and $e.intent -eq 'create' -and $e.prior.Count -eq 1 -and
+        $e.prior.exists -eq $false -and (La-Inside $Target $e.target)) { return $true }
+  }
+  return $false
+}
+
+function La-Created([string]$Kind, [string]$Target) {
+  $found = @(La-EntriesFor $script:AttemptRecord.ledger $Kind $Target)
+  return ($found.Count -gt 0 -and $found[0].intent -eq 'create' -and $found[0].prior.exists -eq $false -and
+          ($found[0].state -eq 'done' -or $found[0].state -eq 'intended'))
+}
+
+function La-SeqOf([string]$Kind, [string]$Target) {
+  $found = @(La-EntriesFor $script:AttemptRecord.ledger $Kind $Target)
+  if ($found.Count) { return [int]$found[$found.Count - 1].seq }
+  return 0
+}
+
+function La-Step([string]$Kind, [string]$Intent, $Extra, [string[]]$Targets) {
+  $script:LaSeqs = @()
+  if (-not $script:LaKinds.Contains($Kind)) { Die ("Unknown fresh-install ledger kind " + $Kind) }
+  $ledger = $script:AttemptRecord.ledger
+  $before = @($ledger.ToArray())
+  $planned = New-Object System.Collections.ArrayList
+  $fs = $script:LaFsKinds -contains $Kind
+  if ($fs -and ($Intent -eq 'ensure' -or $Intent -eq 'create')) {
+    foreach ($t in $Targets) {
+      $chain = @()
+      $parent = La-Parent (La-Canon $t)
+      while ($parent -and -not (La-PathItem $parent)) { $chain = @($parent) + $chain; $parent = La-Parent $parent }
+      foreach ($a in $chain) { [void]$planned.Add(@('dir', $a)) }
+    }
+  }
+  foreach ($t in $Targets) {
+    if ($fs) { [void]$planned.Add(@($Kind, (La-Canon $t))) } else { [void]$planned.Add(@($Kind, $t)) }
+  }
+  $refuse = La-RefuseFirst
+  $seqs = @()
+  foreach ($p in $planned) {
+    $entryKind = $p[0]; $target = $p[1]
+    $entryFs = $script:LaFsKinds -contains $entryKind
+    if ($entryFs -and (La-Contained $before $target)) { continue }
+    if (@($ledger | Where-Object { $_.intent -eq 'create' -and $_.state -eq 'intended' -and $_.kind -eq $entryKind -and
+          $_.target -ieq $target -and $_.seq -gt $before.Count }).Count) { continue }
+    $word = $Intent
+    if ($entryKind -ne $Kind) { $word = 'create' }
+    $present = $false
+    if ($entryFs) { $present = [bool](La-PathItem $target) }
+    elseif ($entryKind -eq 'service') { $present = [bool](La-ServiceState $target).exists }
+    elseif ($entryKind -eq 'task') { $present = [bool](La-TaskState $target).exists }
+    if ($word -eq 'ensure') {
+      if ($entryKind -eq 'dir') { if ($present) { $word = 'set_acl' } else { $word = 'create' } }
+      elseif ($entryKind -eq 'file') { if ($present) { $word = 'overwrite' } else { $word = 'create' } }
+      else { $word = 'create' }
+    }
+    if ($script:LaKinds[$entryKind] -notcontains $word) {
+      Die ("Intent " + $word + " is not allowed for the fresh-install ledger kind " + $entryKind)
+    }
+    if ($word -eq 'delete' -and $entryFs -and -not $present) { continue }
+    if ($present -and @('create', 'set_acl', 'overwrite') -contains $word) {
+      foreach ($r in $refuse) {
+        if ($r.kind -ne $entryKind) { continue }
+        if ($entryFs) { $match = ((La-Canon $r.target) -ieq $target) } else { $match = ($r.target -eq $target) }
+        if ($match -and @(La-EntriesFor $before $entryKind $target).Count -eq 0) {
+          Die ("REFUSE-FIRST: " + $target + " already exists and no ledger entry of this attempt created it." +
+               " A fresh install does not take over a CORPUSfm resource it cannot account for. Re-run the" +
+               " installer to inspect or discard the incomplete attempt.")
+        }
+      }
+    }
+    $entry = [ordered]@{
+      seq        = [int]($ledger.Count + 1)
+      target     = $target
+      kind       = $entryKind
+      intent     = $word
+      prior      = (La-Observe $entryKind $word $target $Extra)
+      state      = 'intended'
+      post       = $null
+      intent_utc = (La-Now)
+      result_utc = $null
+    }
+    [void]$ledger.Add($entry)
+    $seqs += [int]$entry.seq
+  }
+  if ($seqs.Count) { La-Write }
+  $script:LaSeqs = $seqs
+}
+
+function La-Result($Seqs, [string]$State, $Extra) {
+  $list = @($Seqs | Where-Object { $_ })
+  if ($list.Count -eq 0) { return }
+  foreach ($seq in $list) {
+    $entry = $script:AttemptRecord.ledger[[int]$seq - 1]
+    if ($entry.state -ne 'intended') { Die ("Fresh-install ledger entry " + $seq + " is not awaiting a result.") }
+    if ($entry.kind -eq 'dir' -and $entry.intent -eq 'move_aside' -and -not (La-PathItem $entry.target)) {
+      $post = [ordered]@{ exists = $false; moved_to = $Extra.moved_to }
+    } else {
+      $post = La-Observe $entry.kind $entry.intent $entry.target $Extra
+    }
+    $entry.state = $State
+    $entry.post = $post
+    $entry.result_utc = (La-Now)
+  }
+  La-Write
+}
+
+function La-Do([string]$Kind, [string]$Intent, $Extra, [string[]]$Targets, [scriptblock]$Action) {
+  if (-not $script:CfmAttempt) { return (& $Action) }
+  La-Step $Kind $Intent $Extra $Targets
+  $seqs = $script:LaSeqs
+  $ok = $false
+  try {
+    $global:LASTEXITCODE = 0
+    $out = & $Action
+    $ok = ($LASTEXITCODE -eq 0)
+    return $out
+  } finally {
+    if ($ok) { La-Result $seqs 'done' $Extra } else { La-Result $seqs 'failed' $Extra }
+  }
+}
+
+function La-KeysPrior {
+  return [ordered]@{
+    corpus_key     = [bool](Test-Path -LiteralPath (Join-Path $script:FixedSecrets 'corpus.key'))
+    machine_key    = [bool](Test-Path -LiteralPath (Join-Path $script:FixedSecrets 'machine.key'))
+    session_secret = [bool](Test-Path -LiteralPath (Join-Path $script:FixedSecrets 'session_secret'))
+  }
+}
+
+function La-ProviderBegin([string]$Intent, $Prior, [string]$Target) {
+  $script:LaProviderSeqs = @()
+  if (-not $script:CfmAttempt) { return }
+  if (-not $Intent -or $null -eq $Prior) {
+    Die "A provider call reached the fresh-install attempt with no recorded observation."
+  }
+  La-Step 'provider_op' $Intent $Prior @($Target)
+  $script:LaProviderSeqs = $script:LaSeqs
+}
+
+function La-JsonObject([string]$Text) {
+  $t = ("" + $Text).Trim()
+  foreach ($candidate in @($t, $(if ($t.IndexOf('{') -ge 0) { $t.Substring($t.IndexOf('{')) } else { '' }))) {
+    if (-not $candidate) { continue }
+    try {
+      $o = $candidate | ConvertFrom-Json -ErrorAction Stop
+      if ($o -is [System.Management.Automation.PSCustomObject]) { return $o }
+    } catch {}
+  }
+  return (New-Object PSObject)
+}
+
+function La-ProviderPost([string]$Intent, [int]$Rc, [string]$Text) {
+  $words = @('completed', 'no_change', 'rolled_back', 'incomplete_safe', 'manual_action_required',
+             'failed_before_change')
+  $out = La-JsonObject $Text
+  $word = "" + $out.result
+  if ($words -notcontains $word) {
+    switch ($Rc) {
+      0 { $word = 'completed' }
+      1 { $word = 'failed_before_change' }
+      2 { $word = 'rolled_back' }
+      3 { $word = 'manual_action_required' }
+      5 { $word = 'incomplete_safe' }
+      default { $word = 'manual_action_required' }
+    }
+  }
+  if ($Intent -eq 'backfill_storage_projections') {
+    if ($Rc -eq 0) { $word = 'completed' } else { $word = 'incomplete_safe' }
+  }
+  $post = [ordered]@{ result = $word }
+  $facts = $out.attempt_facts
+  switch ($Intent) {
+    'foundation' {
+      $g = $out.generation
+      if (($g -is [int] -or $g -is [long]) -and $g -ge 1) { $post.generation = [int]$g } else { $post.generation = $null }
+    }
+    'provision_keys' {
+      $generated = @(); $reused = @()
+      foreach ($k in @($out.keys)) {
+        if (-not $k -or -not $k.name) { continue }
+        if ($k.action -eq 'generated') { $generated += ("" + $k.name) }
+        elseif ($k.action -eq 'reused') { $reused += ("" + $k.name) }
+      }
+      $post.generated = $generated
+      $post.reused = $reused
+    }
+    'admin_identity_reconcile' { $post.committed = $false }
+    'patch_apply' {
+      $shaped = $facts -and ($facts.settled -is [bool]) -and ($facts.slot_touched -is [bool]) -and
+                ($facts.directory_created_by_this_run -is [bool]) -and ($facts.sandbox_existed -is [bool]) -and
+                (@($facts.PSObject.Properties.Name) -contains 'slot_before')
+      if ($shaped) {
+        $post.settled = $facts.settled
+        $post.slot_touched = $facts.slot_touched
+        $before = $null
+        if ($null -ne $facts.slot_before) {
+          $before = [ordered]@{ fms_path = $facts.slot_before.fms_path; enabled = [bool]$facts.slot_before.enabled }
+        }
+        $post.slot_before = $before
+        $post.directory_created_by_this_run = $facts.directory_created_by_this_run
+        $post.sandbox_existed = $facts.sandbox_existed
+      } else {
+        # Unreadable facts never authorize removal: report the adoption as settled.
+        $post.settled = $true; $post.slot_touched = $false; $post.slot_before = $null
+        $post.directory_created_by_this_run = $false; $post.sandbox_existed = $true
+      }
+    }
+    'proxy_reconcile' {
+      $family = [ordered]@{}
+      if ($facts -and $null -ne $facts.prior_family) {
+        foreach ($prop in $facts.prior_family.PSObject.Properties) {
+          $f = $prop.Value
+          $marker = "" + $f.marker_state
+          if (-not $marker) { $marker = 'unknown' }
+          $family[$prop.Name] = [ordered]@{ pool_existed = [bool]$f.pool_existed; app_existed = [bool]$f.app_existed
+                                            marker_state = $marker; include_present = [bool]$f.include_present }
+        }
+      } else {
+        foreach ($t in @($script:CfmProxyTypes)) {
+          $family[$t] = [ordered]@{ pool_existed = $true; app_existed = $true; marker_state = 'unknown'
+                                    include_present = $true }
+        }
+      }
+      $post.prior_family = $family
+    }
+    'create_first_admin' { $post.created = ($Rc -eq 0 -and $word -eq 'completed') }
+  }
+  return $post
+}
+
+function La-ProviderEnd([string]$Intent, [int]$Rc, [string]$Text) {
+  if (-not $script:CfmAttempt) { return }
+  $post = La-ProviderPost $Intent $Rc $Text
+  $state = 'failed'
+  if ($Rc -eq 0) { $state = 'done' }
+  La-Result $script:LaProviderSeqs $state $post
+  $script:LaProviderSeqs = @()
+  if (@($script:LaProviderTargetSeqs).Count) {
+    La-Result $script:LaProviderTargetSeqs $state $null
+    $script:LaProviderTargetSeqs = @()
+  }
+}
+
+# `Lc-Run`, write-ahead. The ordinary path IS `Lc-Run`; an attempt publishes the intent, runs the verb,
+# publishes the result, and only then dispatches the exit code.
+function La-LcRun([string]$Intent, $Prior, [string]$What, [string[]]$LcArgs) {
+  if (-not $script:CfmAttempt) { return (Lc-Run $What $LcArgs) }
+  La-ProviderBegin $Intent $Prior $Intent
+  $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  $out = (& $script:Py -m corpusfm.lifecycle @LcArgs 2>&1 | Out-String)
+  $rc = $LASTEXITCODE
+  $ErrorActionPreference = $eap
+  Cfm-Logline $out
+  La-ProviderEnd $Intent $rc $out
+  Lc-Dispatch $rc $What
+  return $out
+}
+
+# -- Rerun routing: Inspect / Discard / Quit (packet 1398 section 7) ------------------------------
+function La-Field($Text, [string[]]$Keys) {
+  $v = La-JsonObject $Text
+  foreach ($k in $Keys) { if ($null -eq $v) { return '' }; $v = $v.$k }
+  if ($null -eq $v) { return '' }
+  return $v
+}
+
+function La-Lifecycle([string[]]$LcArgs) {
+  $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try {
+    $out = (& $script:Py -m corpusfm.lifecycle @LcArgs 2>$null | Out-String)
+    $script:LaLifecycleRc = $LASTEXITCODE
+  } finally { $ErrorActionPreference = $eap }
+  Cfm-Logline $out
+  return $out
+}
+
+function La-AttemptInspect([string]$InstallationId, [switch]$WithCommands) {
+  $req = Lc-Request 'attempt-inspect' (Lc-Json ([ordered]@{
+    schema_version = 1; installation_id = $InstallationId; actor = 'installer' }))
+  $report = La-JsonObject (La-Lifecycle @('attempt', 'inspect', '--request', $req))
+  $planReq = Lc-Request 'attempt-plan' (Lc-Json ([ordered]@{
+    schema_version = 2; installation_id = $InstallationId; actor = 'installer'; force = $false
+    credential_transport = 'none' }))
+  $plan = La-JsonObject (La-Lifecycle @('uninstall', 'plan', '--request', $planReq))
+  $observed = $null
+  if ($report.package) { $observed = $report.package.observed }
+  $recorded = 'development'
+  if ($observed) { $recorded = ("" + $observed.installer_series + " / " + $observed.installer_version + " @ " + $observed.application_commit) }
+  $running = 'development'
+  if ($InstallerSeries) { $running = ($InstallerSeries + " / " + $InstallerVersion + " @ " + $PackageCommit) }
+  Info ("Attempt:       " + $report.attempt_id)
+  Info ("Installation:  " + $report.installation_id)
+  Info ("State:         " + $report.state + " (phase " + $report.phase + ")")
+  Info ("Recorded by:   " + $recorded)
+  Info ("Running now:   " + $running)
+  if ($report.reason) { Info ("Finding:       " + $report.reason + ": " + $report.detail) }
+  Info "Recorded changes (seq, kind, intent, state, class, target):"
+  foreach ($row in @($report.ledger)) {
+    if (-not $row) { continue }
+    $class = "" + $row.class
+    if (-not $class) { $class = 'reported' }
+    Info ("  " + $row.seq + "  " + $row.kind + "  " + $row.intent + "  " + $row.state + "  " + $class + "  " + $row.target)
+  }
+  $removes = @($plan.operations | Where-Object { $_ } | ForEach-Object { "" + $_.resource })
+  if ($removes.Count) { Info ("Discard would remove or restore: " + ($removes -join ', ')) }
+  foreach ($kept in @($plan.retained)) {
+    if ($kept) { Info ("Discard would keep " + $kept.resource + " (" + $kept.because + ")") }
+  }
+  Info "Kept and reported: every row above whose class is not 'created' (logs are always kept)."
+  if ($WithCommands -and @($report.manual_commands).Count) {
+    Warn "Verified cleanup cannot run here. These commands remove only what this attempt recorded creating, newest first; read them before running any:"
+    foreach ($command in @($report.manual_commands)) { Write-Host ("    " + $command) }
+  }
+}
+
+function La-AttemptDiscard([string]$InstallationId) {
+  if ($script:RecoveryRuntimeKind -ne 'package') {
+    La-AttemptInspect $InstallationId -WithCommands
+    # The protected attempt record and its frozen plan are the deletion authority; no package identity
+    # grants any, and "verified" here is not an Authenticode claim. A complete package runtime is an
+    # EXECUTION requirement: cleanup may remove the installed runtime that would otherwise be running it.
+    Die ("Executable Discard needs a complete private CORPUSfm Series 2 package, whose own runtime keeps" +
+         " running while cleanup removes the installed one. Deletion authority is the protected attempt" +
+         " record and its frozen plan, not the package. The commands above are the bounded filesystem" +
+         " fallback; to discard through verified cleanup, rerun a complete private package. Nothing has" +
+         " been changed.")
+  }
+  $account = $env:FM_ADMIN_USER; $password = $env:FM_ADMIN_PASS
+  $transport = 'prompt'
+  if ($Silent) { if ($account -and $password) { $transport = 'stdin' } else { $transport = 'none' } }
+  La-AttemptInspect $InstallationId
+  $request = Lc-Request 'attempt-discard' (Lc-Json ([ordered]@{
+    schema_version = 2; installation_id = $InstallationId; actor = 'installer'; force = $false
+    credential_transport = $transport }))
+  $discardArgs = @('uninstall', 'start', '--request', $request)
+  Info "Discarding the incomplete fresh-install attempt with the verified package runtime"
+  if ($transport -eq 'stdin') {
+    $out = Lc-RunFramedRaw 'the incomplete attempt discard' $discardArgs $account $password
+    $rc = $script:LcRawRc
+  } else {
+    $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try {
+      $out = (& $script:Py -m corpusfm.lifecycle @discardArgs 2>&1 | Out-String)
+      $rc = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $eap }
+    Cfm-Logline $out
+  }
+  $account = $null; $password = $null
+  $result = La-JsonObject $out
+  if ($rc -eq 0) {
+    Ok ("The incomplete fresh-install attempt was discarded (" + $result.result + ").")
+    Write-Host "  Everything listed above as kept or reported remains in place; logs were preserved."
+    Write-Host "  Run the installer again to start a fresh installation."
+    Lc-Cleanup
+    exit 0
+  }
+  if ($rc -eq 3 -or $rc -eq 5) {
+    Die ("The discard stopped safely part-way (" + $result.result + "; " + $result.reason + "). " +
+         $result.detail + " Re-run this same verified package and choose Discard again.")
+  }
+  if (("" + $result.reason) -eq 'lock_unavailable') { La-AttemptInspect $InstallationId -WithCommands }
+  Die ("The discard refused (" + $result.result + "; " + $result.reason + "). " + $result.detail +
+       " The attempt record is unchanged.")
+}
+
+function La-AttemptMenu([string]$State, [string]$InstallationId) {
+  Warn ("An earlier CORPUSfm fresh installation stopped part-way (" + $State + "). It must be discarded" +
+        " before a new installation can start; nothing it recorded is continued or published.")
+  if ($DiscardIncompleteAttempt) { La-AttemptDiscard $InstallationId }
+  if ($Silent) {
+    La-AttemptInspect $InstallationId
+    Die ("failed_before_change: an incomplete fresh-install attempt owns this machine. Review the summary" +
+         " above, then re-run with -DiscardIncompleteAttempt to discard it. Nothing has been changed.")
+  }
+  while ($true) {
+    $reply = Read-Host "  [I] Inspect  [D] Discard  [Q] Quit"
+    if ($reply -match '^[Ii]$') { La-AttemptInspect $InstallationId }
+    elseif ($reply -match '^[Dd]$') { La-AttemptDiscard $InstallationId }
+    elseif ($reply -match '^[Qq]$') { Write-Host "  Quit - nothing changed."; Lc-Cleanup; exit 0 }
+    else { Write-Host "  Choose I, D or Q." }
+  }
+}
+
+function La-RouteExistingAttempt([string]$Pass) {
+  $savedPy = $script:Py; $savedSource = $script:RecoverySource; $savedKind = $script:RecoveryRuntimeKind
+  if ($InstallerSeries -and $RuntimeTemp -and
+      (Test-Path -LiteralPath (Join-Path $RuntimeRoot 'corpusfm-recovery-source.zip') -PathType Leaf)) {
+    Initialize-PackagedRecoveryRuntime
+  } elseif (-not ((Test-Path -LiteralPath $script:Py) -and
+                  (Test-Path -LiteralPath (Join-Path $Src 'corpusfm\lifecycle\__main__.py')))) {
+    Die ("This machine holds an incomplete CORPUSfm fresh-install attempt at " + $script:AttemptDir +
+         ", and this installer carries no verified lifecycle runtime to read it. Re-run from a complete" +
+         " verified Series 2 package. Nothing has been changed.")
+  }
+  $state = La-Lifecycle @('status', '--json')
+  if (-not ("" + $state).Trim()) {
+    Die ("corpusfm-lifecycle status --json produced no output beside the attempt container " +
+         $script:AttemptDir + ". Nothing has been changed.")
+  }
+  $st = "" + (La-Field $state @('fresh_attempt', 'state'))
+  $inst = "" + (La-Field $state @('fresh_attempt', 'installation_id'))
+  $attempt = "" + (La-Field $state @('fresh_attempt', 'attempt_id'))
+  if (-not $st -or $st -eq 'none') { return }
+  if ($st -eq 'leftover_empty_container') { $script:LaLeftoverEmpty = $true; return }
+  if ($st -eq 'complete_stale_record') {
+    $req = Lc-Request 'attempt-complete-stale' (Lc-Json ([ordered]@{
+      schema_version = 1; installation_id = $inst; attempt_id = $attempt; actor = 'installer' }))
+    $out = La-Lifecycle @('attempt', 'complete', '--request', $req)
+    if ($script:LaLifecycleRc -ne 0) {
+      Die ("A completed installation still carries its attempt record, and it could not be retired (" +
+           (La-Field $out @('reason')) + ": " + (La-Field $out @('detail')) + "). Nothing else changed.")
+    }
+    Ok "Retired the completed installation's leftover attempt record"
+    # This invocation continues as the ordinary run it would have been: the recovery runtime prepared
+    # to read the record does not become its lifecycle runtime.
+    $script:Py = $savedPy; $script:RecoverySource = $savedSource; $script:RecoveryRuntimeKind = $savedKind
+    return
+  }
+  if ($st -eq 'undecidable') {
+    Die ("The fresh-install attempt at " + $script:AttemptDir + " cannot be trusted: " +
+         (La-Field $state @('fresh_attempt', 'reason')) + ": " + (La-Field $state @('fresh_attempt', 'detail')) +
+         ". Nothing has been changed, and no cleanup command is offered for a record that cannot be verified.")
+  }
+  if ($st -eq 'post_foundation' -and $Pass -eq 'first') {
+    $journal = "" + (La-Field $state @('journal'))
+    if ($journal -and $journal -ne 'none') { $script:LaRouteDeferred = $true; return }
+  }
+  if (@('pre_foundation', 'foundation_window', 'post_foundation', 'discarding', 'terminal_pending',
+        'terminal_done', 'bookkeeping_only') -contains $st) {
+    La-AttemptMenu $st $inst
+  }
+  Die ("The fresh-install attempt reports state '" + $st + "', which this installer cannot route. Nothing has been changed.")
+}
+
+# A no-authority fresh start becomes a recorded attempt, after consent and before the first mutation.
+function La-NestedHostingDir {
+  # A patch hosting folder AT or INSIDE the install root is contained by the root's own ledger entry,
+  # so the patch compartment could never be recorded against an entry of its own.
+  $root = La-Canon $script:InstallDir
+  $hosting = La-Canon $script:PatchHostingDir
+  return (($hosting -ieq $root) -or (La-Inside $hosting $root))
+}
+
+function La-BeginAttempt {
+  # The normalized path relationship is known now: refuse before the container or any attempt mutation.
+  if (La-NestedHostingDir) {
+    Die ("-PatchHostingDir " + $PatchHostingDir + " is the install directory or lies inside it (" + $InstallDir +
+         "). A fresh install records its patch hosting folder as its own resource, which a folder inside the" +
+         " install root cannot be. Choose a patch hosting folder outside " + $InstallDir + ". Nothing has been changed.")
+  }
+  if ([bool]$SchedRetiredPresent) {
+    # The closed ledger vocabulary has no service deletion, so this removal could not be recorded.
+    Die ("The retired " + $SchedServiceRetired + " service is registered on a box that has no CORPUSfm" +
+         " installation record. A fresh install records every change it makes and cannot record that" +
+         " removal, so it refuses before any change. Remove that service deliberately, then re-run.")
+  }
+  $refused = @()
+  foreach ($r in (La-RefuseFirst)) {
+    if ($r.kind -eq 'dir') { if ((La-PathItem $r.target) -and -not $ReplaceAside) { $refused += $r.target } }
+    elseif ($r.kind -eq 'file') { if (La-PathItem $r.target) { $refused += $r.target } }
+    elseif ($r.kind -eq 'service') { if ((La-ServiceState $r.target).exists) { $refused += ('service ' + $r.target) } }
+    elseif ($r.kind -eq 'task') { if ((La-TaskState $r.target).exists) { $refused += ('scheduled task ' + $r.target) } }
+  }
+  if ($refused.Count) {
+    Die ("REFUSE-FIRST: this fresh install found CORPUSfm resources that no installation record accounts" +
+         " for: " + ($refused -join '; ') + ". They may belong to an earlier installation. Resolve them" +
+         " deliberately, then re-run. Nothing has been changed.")
+  }
+  if (-not (La-PathItem $script:AttemptDir)) {
+    try { [IO.Directory]::CreateDirectory($script:AttemptDir, (La-ProtectedSecurity $true)) | Out-Null }
+    catch {
+      New-Item -ItemType Directory -Path $script:AttemptDir | Out-Null
+      La-SetProtected $script:AttemptDir $true
+    }
+  }
+  $problem = La-ContainerProblem
+  if ($problem) { Die ("The fresh-install attempt container cannot be used: " + $problem + ". Nothing has been changed.") }
+  if (-not (La-ContainerIsEmpty)) {
+    Die ($script:AttemptDir + " is not empty; it is not adopted. Nothing has been changed.")
+  }
+  Get-ChildItem -LiteralPath $script:AttemptDir -Force | Remove-Item -Force
+  $script:AttemptId = [guid]::NewGuid().ToString()
+  $script:InstallationId = [guid]::NewGuid().ToString()
+  $package = $null
+  if ($InstallerSeries) {
+    $commit = $null
+    if ($PackageCommit) { $commit = $PackageCommit }
+    $package = [ordered]@{
+      observed   = [ordered]@{ installer_series = $InstallerSeries; installer_version = $InstallerVersion
+                               application_commit = $commit; installer_source_commit = $null
+                               payload_digest_sha256 = $null }
+      provenance = @('self_consistent')
+    }
+  }
+  $databases = Join-Path $FmDbDir 'CORPUSfm'
+  $script:AttemptRecord = [ordered]@{
+    schema_version  = 1
+    attempt_id      = $script:AttemptId
+    installation_id = $script:InstallationId
+    platform        = 'windows'
+    created_utc     = (La-Now)
+    paths           = [ordered]@{
+      install_dir = $InstallDir; patch_hosting_dir = $PatchHostingDir; fms_root = $FmsBin
+      fms_database_dir = $FmDbDir; config_dir = $FixedConfig; state_dir = $FixedState
+      secrets_dir = $FixedSecrets; log_dir = $LogDir; run_dir = $FixedRun
+      storage_target = (Join-Path $databases 'CORPUSfm_DB.fmp12'); support_dir = $SupportDir
+    }
+    package         = $package
+    ledger          = (New-Object System.Collections.ArrayList)
+    discard         = $null
+    phase           = 'installing'
+  }
+  La-Write
+  $script:CfmAttempt = $true
+  $script:LaLeftoverEmpty = $false
+  # No package cache outside the recorded roots: pip otherwise writes the administrator's profile.
+  $env:PIP_NO_CACHE_DIR = '1'
+  Ok ("Fresh-install attempt " + $script:AttemptId + " recorded at " + $script:AttemptDir)
 }
 
 function Lc-ProviderDisposition($provider, $exitCode, $resultJson) {
@@ -1397,7 +2275,9 @@ print(json.dumps(classify(request), separators=(",", ":"), sort_keys=True))
   $script:LcCompose = [bool](Lc-Field $disp 'compose')
   $script:LcRetireProvider = "" + (Lc-Field $disp 'retire_provider')
   $script:LcOp = "" + (Lc-Field $disp 'operation_id')
-  $script:LcRecoveryCommand = "" + (Lc-Field $disp 'recovery_command')
+  $script:LcRecoveryFamily = "" + (Lc-Field $disp 'recovery_family')
+  $script:LcRecoveryVerb = "" + (Lc-Field $disp 'recovery_verb')
+  $script:LcRecoveryRequest = "" + (Lc-Field $disp 'recovery_request')
   $script:LcDispositionReason = "" + (Lc-Field $disp 'reason')
   $script:LcFirstAdminOwedByDisposition = [bool](Lc-Field $disp 'first_administrator_owed')
 }
@@ -1415,19 +2295,29 @@ function Lc-ApplyProviderDisposition($what) {
     'recover_first' {
       Warn $script:LcDispositionReason
       Die ("$what left an operation that must be recovered before installation continues.`n" +
-           "     Run this exact command in an elevated PowerShell, then re-run the installer:`n" +
-           "     " + $script:LcRecoveryCommand)
+           "     Re-run this same verified installer from an elevated Windows PowerShell. Before any" +
+           " new work it recovers this operation automatically; nothing needs to be run by hand first.")
     }
     default { Die "$what received unknown installer condition '$script:LcCondition'; the journal remains untouched." }
   }
 }
 
 function Lc-ProviderRun($what, $candidateField, [string[]]$LcArgs) {
-  if ($script:LcFrameAccount) {
-    $out = Lc-RunFramedRaw $what $LcArgs $script:LcFrameAccount $script:LcFramePassword
-  } else {
-    Lc-RunRaw $LcArgs
-    $out = $script:LcRawOut
+  # Packet 1398: inside a fresh-install attempt the call is intended before it runs and its result -
+  # a refusal or an unreadable answer included - is published before anything is dispatched. With
+  # no attempt both La- calls return immediately.
+  La-ProviderBegin $script:LaProviderIntent $script:LaProviderPrior $script:LaProviderIntent
+  if ($script:CfmAttempt) { $script:LcRawRc = -1; $script:LcRawOut = '' }
+  try {
+    if ($script:LcFrameAccount) {
+      $out = Lc-RunFramedRaw $what $LcArgs $script:LcFrameAccount $script:LcFramePassword
+    } else {
+      Lc-RunRaw $LcArgs
+      $out = $script:LcRawOut
+    }
+  } finally {
+    La-ProviderEnd $script:LaProviderIntent $script:LcRawRc $script:LcRawOut
+    $script:LaProviderIntent = ''; $script:LaProviderPrior = $null
   }
   $script:LcProviderOut = $out
   $script:LcAwaiting = (Lc-Field $out 'awaiting_composition')
@@ -1653,7 +2543,7 @@ function Lc-RetireSchedulerAuthority {
   }))
   # Lc-Run DIES on a refusal, which is the required behaviour: authority retirement that cannot be
   # written or verified fails the installer rather than reporting A001 complete over a stale record.
-  $out = Lc-Run "scheduler authority retirement" @('composition','retire-scheduler-authority','--request',$req)
+  $out = La-LcRun 'retire_scheduler_authority' ([ordered]@{}) "scheduler authority retirement" @('composition','retire-scheduler-authority','--request',$req)
   $committed = Lc-Field $out 'committed_generation'
   if (-not ($committed -match '^[0-9]+$') -or [int]$committed -lt [int]$script:CfmGeneration) {
     Die ("scheduler authority retirement returned generation '" + $committed + "'; expected at least " +
@@ -2029,6 +2919,14 @@ $MarkerPath = Join-Path $LegacyHome 'install.yaml'
 # Do not ask the deployed lifecycle package to classify the box until the executing installer has
 # proved it is the package's own installer. A real checkout is enough to make the check applicable;
 # marker/manifest classification itself is the next read and cannot safely precede this boundary.
+# PACKET 1398: AN INCOMPLETE FRESH-INSTALL ATTEMPT IS ROUTED FIRST - before any other classification
+# and before phase-4+ work. An EMPTY container needs no interpreter to recognise. The one exception to
+# "first" is an ordinary provider journal left inside a published attempt: its existing recover-first
+# route at phase 3 runs first, and the attempt is routed immediately after it.
+if (Test-Path -LiteralPath $script:AttemptDir) {
+  if (La-ContainerIsEmpty) { $script:LaLeftoverEmpty = $true }
+  else { La-RouteExistingAttempt 'first' }
+}
 if (Test-Path (Join-Path $Src '.git')) { Prepare-ExternalSourceAdvance $Src }
 $lcStateEarly = Get-LcState
 $PublishedHere = $false
@@ -2039,6 +2937,16 @@ if ($lcStateEarly) {
                     ($lcRoot) -and ($lcRoot -eq $InstallDir.TrimEnd('\')))
 }
 $IsUpgrade = ((Test-Path $MarkerPath) -and (Test-Path $Src)) -or $PublishedHere
+# An EMPTY protected attempt container is adopted by a fresh run and removed by any other (1398 2.1).
+if ($script:LaLeftoverEmpty -and ($IsUpgrade -or $PublishedHere)) {
+  $laProblem = La-ContainerProblem
+  if ($laProblem) { Warn ("The empty attempt container is not in its protected shape and is left in place: " + $laProblem) }
+  else {
+    try { [IO.Directory]::Delete($script:AttemptDir, $false); Ok ("Removed an empty leftover fresh-install attempt container (" + $script:AttemptDir + ")") }
+    catch { Warn ("Could not remove the empty leftover attempt container " + $script:AttemptDir + ": " + $_.Exception.Message) }
+  }
+  $script:LaLeftoverEmpty = $false
+}
 # THE SCHEDULER RETIREMENT ADAPTER'S SID PREFLIGHT (application packet 1361-01).
 #
 # Taken HERE, before phase 9 quiesces anything, before phase 8 creates or re-permissions a
@@ -2169,23 +3077,7 @@ if (-not (Test-Path $script:Py)) {
     Lc-PreflightDisposition
     if ($LcCondition -eq 'recover_first') {
       Warn $LcDispositionReason
-      if ($script:RecoveryRuntimeKind -eq 'package') {
-        $encoded = ($LcRecoveryCommand -split ' ')[-1]
-        Info "Running the operation-bound recovery with the verified package runtime"
-        $recoveryShell = [IO.Path]::Combine($PSHOME, 'powershell.exe')
-        & $recoveryShell -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded
-        $recoveryRc = $LASTEXITCODE
-        if ($recoveryRc -eq 0) {
-          Die "The prior lifecycle recovery completed. Re-run this Series 2 package to begin a separate installation invocation."
-        }
-        Die ("The prior lifecycle recovery did not complete (exit " + $recoveryRc +
-             "). Its journal and recovery evidence remain in place. Re-run this same verified" +
-             " Series 2 package to try recovery again.")
-      } else {
-        Die ("A previous lifecycle operation must be recovered before installation continues.`n" +
-             "     Run this exact command in an elevated PowerShell, then re-run the installer:`n" +
-             "     " + $LcRecoveryCommand)
-      }
+      Complete-CfmOwedLifecycleRecovery
     }
     elseif ($LcCondition -eq 'continue' -and $LcRetireProvider) {
       $journalRaw = Get-Content -LiteralPath $CfmJournalFile -Raw | ConvertFrom-Json
@@ -2213,6 +3105,7 @@ if (-not (Test-Path $script:Py)) {
          " refusing to work over a record that disagrees with itself. Nothing has been changed.")
   }
 }
+if ($script:LaRouteDeferred) { La-RouteExistingAttempt 'final' }
 
 
 # === PHASE 4 - Accept and validate the authoritative inputs =====================================
@@ -2243,6 +3136,7 @@ if ($ProxyPolicyAdd.Count)    { $declared += ('-ProxyPolicyAdd ' + ($ProxyPolicy
 if ($ProxyPolicyIgnore.Count) { $declared += ('-ProxyPolicyIgnore ' + ($ProxyPolicyIgnore -join ',')) }
 if ($RepairStorageAccess)     { $declared += '-RepairStorageAccess' }
 if ($ReplaceExistingInstall)  { $declared += '-ReplaceExistingInstall' }
+if ($DiscardIncompleteAttempt) { $declared += '-DiscardIncompleteAttempt' }
 if ($Silent)                  { $declared += '-Silent' }
 if ($Yes)                     { $declared += '-Yes' }
 Info ("Options:         " + $(if ($declared.Count) { ($declared -join ' ') } else { "(none)" }))
@@ -2412,6 +3306,12 @@ if (-not $NeedFmsCreds) { Info "No FM admin credential required; existing storag
 
 # === PHASE 8 - Establish or verify the layout and preconditions =================================
 Section "Progress"
+# packet 1380-02: the SYSTEM updater task's AllSigned prerequisite, immediately before phase 8's first
+# installation mutation, so a refusal leaves phases 8-12 unstarted and nothing installed or changed.
+Assert-CfmSystemTaskTrust -EntryPoint $PSCommandPath
+# PACKET 1398: the protected attempt container and its record are the first durable change of a
+# no-authority fresh start. An update, and any run with published authority, never creates one.
+if (-not $IsUpgrade -and -not $PublishedHere) { La-BeginAttempt }
 Info "Fixed OS state locations"
 if ($ReplaceAside) {
   # The facts used to authorize replacement were observed before consent. Re-observe the exact
@@ -2438,10 +3338,14 @@ if ($ReplaceAside) {
   if ($replaceNow.Count -eq 0) {
     Die "The directory approved for replacement is now empty; nothing was moved. Re-run to review the new plan."
   }
-  Move-Item -LiteralPath $InstallDir -Destination $ReplaceAside
+  La-Do 'dir' 'move_aside' ([ordered]@{ moved_to = $ReplaceAside }) @($InstallDir) {
+    Move-Item -LiteralPath $InstallDir -Destination $ReplaceAside
+  }
   Warn ("Moved the approved existing directory aside to " + $ReplaceAside)
 }
-New-Item -ItemType Directory -Force -Path $InstallDir,$ConfigHome,$SvcDir,$BinDir,$LibDir,$LogDir,$ProxyDir,$Dl | Out-Null
+La-Do 'dir' 'ensure' $null @($InstallDir,$ConfigHome,$SvcDir,$BinDir,$LibDir,$LogDir,$ProxyDir,$Dl) {
+  New-Item -ItemType Directory -Force -Path $InstallDir,$ConfigHome,$SvcDir,$BinDir,$LibDir,$LogDir,$ProxyDir,$Dl | Out-Null
+}
 # ConfigHome is HOME for the services' at-rest state, so the app writes secrets there at runtime -
 # corpus.key (the portable Corpus Key), machine.key (the Machine Key, which belongs to this
 # installation and never leaves it), install.yaml, server_configs.yaml. On Windows POSIX chmod is a
@@ -2450,11 +3354,13 @@ New-Item -ItemType Directory -Force -Path $InstallDir,$ConfigHome,$SvcDir,$BinDi
 # ConfigHome is CORPUSfm-only (never IIS-read), so a tree lock is safe here; InstallDir is NOT
 # tree-locked (its proxy\web.config must stay IIS-readable). Installed secrets remain under the
 # provider-owned ConfigHome tree and are read-only to both runtime services.
-Lock-DirTreeAcl $ConfigHome
+La-Do 'dir' 'set_acl' $null @($ConfigHome) { Lock-DirTreeAcl $ConfigHome }
 # The separated fixed locations. State, logs and run become service-writable at phase 20, once the
 # service identities exist; SECRETS never does, and neither service may create, delete or rename
 # anything in it - which is what makes the per-file protection at phase 20 mean something.
-New-Item -ItemType Directory -Force -Path $FixedConfig,$FixedState,$FixedSecrets,$FixedRun,$InboxDir,$OutcomeDir,$LegacyHome | Out-Null
+La-Do 'dir' 'ensure' $null @($FixedConfig,$FixedState,$FixedSecrets,$FixedRun,$InboxDir,$OutcomeDir,$LegacyHome) {
+  New-Item -ItemType Directory -Force -Path $FixedConfig,$FixedState,$FixedSecrets,$FixedRun,$InboxDir,$OutcomeDir,$LegacyHome | Out-Null
+}
 # THE OUTCOME DIRECTORY IS SYSTEM'S. The service writes the update REQUEST, so the inbox is
 # service-writable; the OUTCOME is SYSTEM's word about what the elevated operation did, and a
 # directory the service could create, delete or rename entries in would let it forge one naming its
@@ -2744,7 +3650,18 @@ Ok "Installer-created Python bytecode caches retired; future writes suppressed"
 # public installation neither needs nor retains a repository secret.
 $eapC = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 & $Git config --system --unset-all credential.helper 2>$null
-& $Git config --global --unset-all credential.helper 2>$null
+# PACKET 1398: HOME is the product root, so `--global` is ProgramData\CORPUSfm\.gitconfig. It is
+# recorded only when present; `--unset-all` over an absent file writes nothing.
+$laGitGlobal = Join-Path $ConfigHome '.gitconfig'
+if ($script:CfmAttempt -and (Test-Path -LiteralPath $laGitGlobal -PathType Leaf)) {
+  La-Do 'git_config_entry' 'unset' ([ordered]@{ values = @(& $Git config --global --get-all credential.helper 2>$null) }) @($laGitGlobal) {
+    & $Git config --global --unset-all credential.helper 2>$null
+  } | Out-Null
+} else {
+  & $Git config --global --unset-all credential.helper 2>$null
+}
+# PUBLIC PROJECTION: no credential store is configured, because the public tree carries no embedded
+# credential to put in one. The deployed checkout's own helper and any ssh command are cleared too.
 & $Git -C $Src config --unset-all credential.helper 2>$null
 & $Git -C $Src config --unset core.sshCommand 2>$null
 $ErrorActionPreference = $eapC
@@ -2774,17 +3691,26 @@ if ($InstallerSeries) {
 }
 $InstallerBundleProtocol = 1
 
-# -- Series 2 runtime assets (packet 1257) -----------------------------------------
-# The storage database, the paired add-on distribution and the four seed envelopes travel as a
-# separate digest-covered payload built from two pinned asset repositories at package construction,
-# not inside the application Git bundle.
+# -- Series 2 runtime assets -------------------------------------------------------
+# TWO COPIES EXIST, DELIBERATELY, AND THEY ARE NOT THE SAME THING.
 #
-# THEY GO IN A SIBLING OF THE CHECKOUT, NEVER INSIDE IT. Placing them under src\ made them untracked
-# content in a Git working tree, and tree_inspection refuses ANY untracked path so a privileged
-# update never builds on something git cannot account for. Measured on fms-dev at 0.2438: every
-# provider composed, then the eligibility gate refused with 33 untracked-content problems and the
-# services were never started. Widening that allowlist was considered and rejected - the checkout is
-# on the service's import path, so the fix is to keep non-source bytes out of it.
+#   1. src\assets\ -- TRACKED application source. The assets are application content now, so they
+#      are committed on application main, they travel inside the application Git bundle like the
+#      rest of the source, and they land in the deployed checkout as ordinary tracked files.
+#   2. <install root>\assets -- the OPERATIONAL copy placed below, unpacked from the package's
+#      separate digest-covered corpusfm-assets.zip. This is what the service reads.
+#
+# THE OLD FAILURE WAS ABOUT UNTRACKED BYTES, NOT ABOUT LOCATION. Placing the operational copy under
+# src\ put UNTRACKED content into a Git working tree, and tree_inspection refuses ANY untracked path
+# so a privileged update never builds on something git cannot account for. Measured on fms-dev at
+# 0.2438: every provider composed, then the eligibility gate refused with 33 untracked-content
+# problems and the services were never started. Widening that allowlist was considered and rejected
+# - the checkout is on the service's import path, so the fix is to keep UNACCOUNTED bytes out of it.
+#
+# Tracked src\assets\ does not reopen that: git accounts for it exactly as it accounts for
+# src\corpusfm\, so the gate has nothing to object to. The operational copy stays a sibling of the
+# checkout because it is placed by the installer rather than committed, which is the property that
+# mattered all along.
 if ($InstallerSeries) {
   # $PSScriptRoot, like every other package-relative file here (installer-manifest.json,
   # installer-runtime.zip). $ScriptDir was never defined anywhere in this script, so this line
@@ -2980,7 +3906,6 @@ $InstallerBootstrapStage = Join-Path $BinDir ('.corpusfm-installer.' + $PID + '.
 if (-not (Test-Path -LiteralPath $InstallerBootstrapSource -PathType Leaf)) {
   Die "the verified installer runtime carries no Windows bootstrap source."
 }
-$bootstrapText = [IO.File]::ReadAllText($InstallerBootstrapSource)
 
 function Assert-InstallerBootstrapAclOnly($Path) {
   $acl = Get-Acl -LiteralPath $Path
@@ -3010,11 +3935,13 @@ function Assert-InstallerBootstrapAclOnly($Path) {
   }
 }
 
-# Create and prove an empty protected file before writing the privileged launcher.
-New-Item -ItemType File -Path $InstallerBootstrapStage -Force | Out-Null
+# Stage, protect, prove, then publish by rename - the same discipline as before. What changed is
+# WHAT is written: an exact copy of the verified runtime source rather than a rendered variant. The
+# staged file still receives and proves its protected ACL before publication, so no interval leaves
+# the installed entry point readable under inherited BinDir access.
+Copy-Item -LiteralPath $InstallerBootstrapSource -Destination $InstallerBootstrapStage -Force
 Lock-FileAcl $InstallerBootstrapStage
 Assert-InstallerBootstrapAclOnly $InstallerBootstrapStage
-[IO.File]::WriteAllText($InstallerBootstrapStage, $bootstrapText, [Text.Encoding]::ASCII)
 Move-Item -LiteralPath $InstallerBootstrapStage -Destination $InstallerEntryPoint -Force
 Lock-FileAcl $InstallerEntryPoint
 
@@ -3022,9 +3949,13 @@ function Assert-InstallerBootstrapAcl {
   if (-not (Test-Path -LiteralPath $InstallerEntryPoint -PathType Leaf)) {
     Die ("the durable installer bootstrap is missing: " + $InstallerEntryPoint)
   }
-  $installedText = [IO.File]::ReadAllText($InstallerEntryPoint)
-  if ($installedText -ne $bootstrapText) {
-    Die "the installed durable bootstrap did not read back byte-for-byte."
+  # BYTE EQUALITY with the verified package source, proved by one SHA-256 comparison of the two files:
+  # nothing was substituted into the installed entry point.
+  $sourceHash = (Get-FileHash -LiteralPath $InstallerBootstrapSource -Algorithm SHA256).Hash
+  $installedHash = (Get-FileHash -LiteralPath $InstallerEntryPoint -Algorithm SHA256).Hash
+  if ($sourceHash -ne $installedHash) {
+    Die ("the installed durable bootstrap is not byte-identical to its verified package source " +
+         "(source " + $sourceHash + ", installed " + $installedHash + ").")
   }
   Assert-InstallerBootstrapAclOnly $InstallerEntryPoint
 }
@@ -3039,7 +3970,7 @@ Ok ("Durable installer provisioned and protected (" + $InstallerEntryPoint + ")"
 # deleted on uninstall when non-empty (user work product / hosted files).
 Info "CORPUSfm database folders"
 try {
-  New-Item -ItemType Directory -Force -Path $PatchHostingDir | Out-Null
+  La-Do 'dir' 'ensure' $null @($PatchHostingDir) { New-Item -ItemType Directory -Force -Path $PatchHostingDir | Out-Null }
   # NOT recorded in install.yaml, and the call that tried to is GONE. `corpusfm set-hosting-dir` was
   # retired with the `hosting_dir` marker key by packet 1246-05-02 - the compartment has to be PROVEN,
   # not claimed. The subcommand no longer exists; the path is published by `composition foundation` as
@@ -3049,7 +3980,7 @@ try {
   Warn ("Could not provision the hosting folder at " + $PatchHostingDir + " - generated files fall back to the _generated/ quarantine + promote.")
 }
 try {
-  New-Item -ItemType Directory -Force -Path $SupportDir | Out-Null
+  La-Do 'dir' 'ensure' $null @($SupportDir) { New-Item -ItemType Directory -Force -Path $SupportDir | Out-Null }
   # Same retirement (packet 1246-05-02): the `support_dir` marker key and its setter are both gone.
   Ok ("Support folder provisioned (" + $SupportDir + ") - the apply compartment is proven at phase 16, not recorded here")
 } catch {
@@ -3082,7 +4013,14 @@ if ($lcLocator -ne 'present') {
   if ($lcLocator -and $lcLocator -ne 'missing') {
     Die ("the installation locator reads '" + $lcLocator + "'; refusing to publish a foundation over it.")
   }
-  $InstallationId = [guid]::NewGuid().ToString()
+  # A recorded attempt minted its installation identity with the record and reuses it (packet 1398).
+  if ($script:CfmAttempt) {
+    if (Test-Path -LiteralPath (Join-Path $InstallDir 'manifest\installation.json')) {
+      Die "an unpublished manifest already stands in the install directory; this attempt cannot record a foundation over it."
+    }
+  } else {
+    $InstallationId = [guid]::NewGuid().ToString()
+  }
   $req = Lc-Request 'foundation' (Lc-Json ([ordered]@{
     schema_version    = 1
     installation_id   = $InstallationId
@@ -3100,7 +4038,7 @@ if ($lcLocator -ne 'present') {
     installer_entry_point      = $InstallerEntryPoint
     actor             = 'installer'
   }))
-  $out = Lc-Run "foundation publication" @('composition','foundation','--request',$req)
+  $out = La-LcRun 'foundation' ([ordered]@{ locator = $false; manifest = $false }) "foundation publication" @('composition','foundation','--request',$req)
   $CfmGeneration = Lc-Field $out 'generation'
   if ("$CfmGeneration" -ne "1") { Die "foundation published generation '$CfmGeneration', expected 1." }
   if (("" + (Lc-Field $out 'uninstaller_path')) -ne $UninstallerPath) {
@@ -3193,7 +4131,9 @@ $req = Lc-Request 'provision-keys' (Lc-Json ([ordered]@{
   database_search_dirs = @($FmDbDir, $PatchHostingDir)
   pre_service          = $true
 }))
-Lc-Run "key provisioning" @('provision-keys','--request',$req) | Out-Null
+$laPrior = $null
+if ($script:CfmAttempt) { $laPrior = La-KeysPrior }
+La-LcRun 'provision_keys' $laPrior "key provisioning" @('provision-keys','--request',$req) | Out-Null
 Ok ("Corpus and Machine keys established at " + $FixedSecrets + " and proven through the published resolvers")
 
 Info "Install marker"
@@ -3324,22 +4264,20 @@ $UpdaterInstalled = $false
 if (-not (Test-Path $UpdaterSrc)) {
   Warn ("corpusfm-update.ps1 not found at " + $UpdaterSrc + " - in-app updates disabled")
 } else {
-  # RENDERED BY THE SHIPPED RENDERER, not by this script (packet 1246-04-04, correction F).
+  # NOT RENDERED AT ALL ANY MORE (packet 1380-02 D-A). There is no Windows renderer to call.
   #
-  # This used to be nine hand-written `.Replace()` calls over nine `Esc-PsLiteral` values this
-  # script derived for itself. Every one of them was a second opinion about a path the installation
-  # record already states, and a second opinion is how the two sides come to disagree - which they
-  # did: `update_boundary` derived the Windows interpreter as `venv\Scripts\python.exe`, a path this
-  # installer never creates, because it deliberately ships the EMBEDDABLE Python as the isolated
-  # environment. That is corrected in `update_boundary`; rendering through it is what stops the next
-  # disagreement from being invisible.
+  # The history is worth keeping because it explains the shape. This was once nine hand-written
+  # `.Replace()` calls over values this script derived for itself - a second opinion about paths the
+  # installation record already stated, and the two duly diverged. That was corrected by rendering
+  # through the shipped renderer instead. D-A removes the remaining problem with rendering: a
+  # per-installation artifact cannot be signed, because the bytes on the box are not the bytes that
+  # were signed.
   #
-  # The verified package runtime supplies the template bytes. `render_windows_updater()` derives
-  # all installation-specific values, applies the PowerShell single-quote escaping (every
-  # placeholder sits inside a single-quoted literal, and an apostrophe in a path would otherwise
-  # close it early - a syntax error, or with a crafted directory name, injected code in a script
-  # that runs as SYSTEM), and refuses on any placeholder it did not fill. Phase 11 published the
-  # record it reads, which is why this is not earlier.
+  # So the updater is now STATIC and installed byte-for-byte, and it derives the installation root
+  # itself from the fixed machine locator phase 11 published, corroborated by the manifest. The quoting
+  # hazard rendering carried - a path containing an apostrophe closing a single-quoted literal early,
+  # which on a crafted directory name is code injection into a script that runs as SYSTEM - is gone
+  # with it: no path is ever spliced into PowerShell source.
   #
   # The bundled interpreter's `._pth` carries $Src on sys.path (PYTHONPATH is ignored under a ._pth),
   # while $UpdaterSrc is authenticated as part of the package runtime.
@@ -3359,17 +4297,30 @@ if (-not (Test-Path $UpdaterSrc)) {
   # carries the protected DACL established below with the file and never exposes a half-written or
   # unprotected script at the path SYSTEM runs. Until that rename, $UpdaterDst is untouched: every
   # refusal below removes only what this run created.
+  # -- THE UPDATER IS COPIED, NOT RENDERED -------------------------------------------------------
+  #
+  # It is static and signed, so the installed bytes must be the bytes that were signed. Rendering
+  # is what made every installed copy unique and therefore unsignable; a copy is what makes the
+  # signature mean anything on the box.
   $UpdaterStage = $UpdaterDst + '.' + ([guid]::NewGuid().ToString('N')) + '.new'
-  Cfm-Logline ((& $Py -c "import sys`nfrom corpusfm.lifecycle.update_boundary import render_windows_updater`ntemplate=open(sys.argv[1],encoding='ascii').read()`nopen(sys.argv[2],'w',encoding='ascii',newline='').write(render_windows_updater(template))" $UpdaterSrc $UpdaterStage 2>&1 | Out-String))
-  if ($LASTEXITCODE -ne 0 -or -not (Test-Path $UpdaterStage -PathType Leaf)) {
-    Remove-Item -Force $UpdaterStage -ErrorAction SilentlyContinue
-    Die "the one-shot updater could not be rendered from this installation's own record"
+  Copy-Item -LiteralPath $UpdaterSrc -Destination $UpdaterStage -Force
+  if (-not (Test-Path $UpdaterStage -PathType Leaf)) {
+    Die "the one-shot updater could not be staged from the verified package runtime"
   }
-  # Belt and braces. The renderer already refuses on a surviving placeholder, but it only knows the
-  # nine it derives - this catches a TENTH one added to the template and to nothing else.
-  if ((Get-Content $UpdaterStage -Raw) -match '@@') {
+  # A PLACEHOLDER-SHAPED token must not survive anywhere in a static artifact. The pattern is the
+  # rendered SEAM shape, not a bare '@@': prose may legitimately discuss the mechanism, and a guard
+  # a comment can trip is a guard that gets weakened rather than obeyed.
+  if ((Get-Content $UpdaterStage -Raw) -match '@@\w+@@') {
     Remove-Item -Force $UpdaterStage -ErrorAction SilentlyContinue
-    Die "the one-shot updater still has unrendered placeholders - refusing to install it"
+    Die "the shipped updater still carries a rendered placeholder - refusing to install it"
+  }
+  # BYTE-IDENTICAL to its verified source, proved rather than assumed.
+  $usSourceHash = (Get-FileHash -LiteralPath $UpdaterSrc -Algorithm SHA256).Hash
+  $usStageHash = (Get-FileHash -LiteralPath $UpdaterStage -Algorithm SHA256).Hash
+  if ($usSourceHash -ne $usStageHash) {
+    Remove-Item -Force $UpdaterStage -ErrorAction SilentlyContinue
+    Die ("the staged updater is not byte-identical to its verified package source (source " +
+         $usSourceHash + ", staged " + $usStageHash + ")")
   }
   # The script IS the action, so write access to it would be write access to what the elevated task
   # executes. Established on the STAGED file and READ BACK there - an ACL that cannot be applied now
@@ -3448,16 +4399,25 @@ if (-not (Test-Path $UpdaterSrc)) {
   }
 
   # A FIXED action with FIXED arguments. The script itself takes no parameters (see its param()).
-  $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-      -Argument ('-NonInteractive -NoProfile -ExecutionPolicy Bypass -File "' + $UpdaterDst + '"')
+  #
+  # NO -ExecutionPolicy Bypass (packet 1380-02 D20). CORPUSfm does not override execution policy,
+  # including for its own elevated task. Under RemoteSigned the updater is a local file in bin\ with
+  # no Mark of the Web, which the policy already permits. Under a machine-wide AllSigned policy the
+  # check before phase 8's first mutation has already required this release's signing leaf in
+  # LocalMachine\TrustedPublisher, which is the authority that admits it - a policy override would not
+  # have supplied one.
+  $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+      -Argument ('-NonInteractive -NoProfile -File "' + $UpdaterDst + '"')
   $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
       -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew
   try {
     # REGISTERING A TASK DOES NOT RUN IT. It has no trigger; the only thing that starts it is the
     # web service asking, and the web service does not exist yet and does not start before phase 21.
-    Register-ScheduledTask -TaskName $UpdaterTask -Action $action -Principal $principal `
-        -Settings $settings -Description 'CORPUSfm one-shot code update' -Force | Out-Null
+    La-Do 'task' 'create' $null @('\CORPUSfm Update') {
+      Register-ScheduledTask -TaskName $UpdaterTask -Action $taskAction -Principal $principal `
+          -Settings $settings -Description 'CORPUSfm one-shot code update' -Force | Out-Null
+    }
   } catch {
     try { Unregister-ScheduledTask -TaskName $UpdaterTask -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     Die ("Could not register the one-shot updater task: " + $_.Exception.Message)
@@ -3538,6 +4498,21 @@ Ok "Provider prerequisites observed"
 # discard - and calling `commit-provider` anyway is exactly the `ProviderMismatch` that killed every
 # update of a box whose identity was already working.
 $req = Lc-Request 'admin_identity-reconcile' (Lc-Json (Lc-AdminIdentityRequest (Lc-FmsTransport)))
+if ($script:CfmAttempt) {
+  # Observed IMMEDIATELY before the mutation, and refuse-first on a foreign same-name identity.
+  $laObs = Lc-Request 'admin_identity-observe-attempt' (Lc-Json (Lc-AdminIdentityRequest 'absent'))
+  $laState = "" + (La-Field (La-Lifecycle @('admin-identity','observe','--request',$laObs)) @('state'))
+  if (@('remote_only','mismatched') -contains $laState) {
+    Die ("REFUSE-FIRST: FileMaker Server already trusts a same-name Admin API identity this installation" +
+         " does not hold (" + $laState + "). A fresh install does not overwrite it. Remove that" +
+         " registration deliberately, then re-run.")
+  }
+  if (@('not_installed','local_only','working') -notcontains $laState) {
+    Die ("The Admin API identity reads '" + $laState + "' and cannot be recorded for a fresh attempt. Resolve the reported condition, then re-run.")
+  }
+  $script:LaProviderIntent = 'admin_identity_reconcile'
+  $script:LaProviderPrior = [ordered]@{ observe = $laState.ToUpperInvariant() }
+}
 $script:LcFrameAccount = $FmAdminUser; $script:LcFramePassword = $FmAdminPass
 Lc-ProviderRun "admin_identity reconcile" 'candidate' @('admin-identity','reconcile','--request',$req)
 $script:LcFrameAccount = $null; $script:LcFramePassword = $null
@@ -3588,7 +4563,7 @@ if (-not (Test-Path $Winsw)) {
 foreach ($staleMcpEnv in @((Join-Path $FixedSecrets '.mcp_env'), (Join-Path $InstallDir '.mcp_env'))) {
   if (Test-Path -LiteralPath $staleMcpEnv) {
     try {
-      Remove-Item -LiteralPath $staleMcpEnv -Force -ErrorAction Stop
+      La-Do 'file' 'delete' $null @($staleMcpEnv) { Remove-Item -LiteralPath $staleMcpEnv -Force -ErrorAction Stop }
       Ok ("Retired the previous global MCP token at " + $staleMcpEnv)
     } catch {
       Die ("Could not retire the previous global MCP token at " + $staleMcpEnv + ": " + $_.Exception.Message)
@@ -3654,7 +4629,7 @@ foreach ($role in @('web')) {
   # registered, so the ACLs below cannot be granted before this; and the services cannot start before
   # those grants, because ConfigHome is locked to SYSTEM+Administrators and they are neither.
   # Register-all, grant, then start at phase 21 - and Register-CfmService has no start path at all.
-  Register-CfmService $id
+  La-Do 'service' 'create' $null @($id) { Register-CfmService $id }
   Ok ($id + " definition installed, read back (canonical) and registered - not started")
   $VerifiedServices += $id
 }
@@ -3689,7 +4664,7 @@ $WebIcaclsOperand = '*' + $WebSidValue
 # and phase 16 refused "missing 0x40 of the create/read/write/rename/delete set", one bit short.
 # Full Control would also pass and would hand the service WRITE_DAC and WRITE_OWNER, which the
 # component's own constant deliberately excludes - re-permissioning is far past what it claims.
-Grant-OrDie $PatchHostingDir ($WebSid + ':(OI)(CI)(M,DC)') 'the patch compartment'
+La-Do 'dir' 'set_acl' $null @($PatchHostingDir) { Grant-OrDie $PatchHostingDir ($WebSid + ':(OI)(CI)(M,DC)') 'the patch compartment' }
 
 # READ BACK AGAINST THE PRODUCT'S OWN CONSTANT, never a mask this script chose. The previous version
 # verified 0x116 - a number invented here - so it passed while the compartment's requirement went
@@ -3741,6 +4716,14 @@ Ok ($WebService + " registered (not started); " + $WebSid +
 # `{patch, patch_hosting_dir}`, which is exactly what `commit-provider` parses, so the candidate is
 # passed through rather than rebuilt from a field the result does not carry.
 $req = Lc-Request 'patch-apply' (Lc-Json (Lc-PatchRequest))
+if ($script:CfmAttempt) {
+  $laSeq = La-SeqOf 'dir' $PatchHostingDir
+  if (-not $laSeq) {
+    Die ("the patch hosting folder " + $PatchHostingDir + " has no entry in this attempt's record, so the patch compartment cannot be recorded against it. Nothing was changed by this step.")
+  }
+  $script:LaProviderIntent = 'patch_apply'
+  $script:LaProviderPrior = [ordered]@{ hosting_dir_seq = [int]$laSeq }
+}
 Lc-ProviderRun "patch compartment apply" 'candidate' @(
   'patch-compartment','apply','--request',$req,'--mode',$CfmMode
 )
@@ -3849,7 +4832,22 @@ Ok ("Executor authority established over " + $ProxyExecDst + " -> " + $BinDir + 
 # configuration is never touched. Read back rather than assumed: a `Set` that did not take would
 # leave the provider publishing a family that cannot forward.
 if (-not $arr) {
-  Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.webServer/proxy' -Name 'enabled' -Value $true
+  # RULING 6: the one fixed IIS fact, recorded before and after. No rollback, deletion or command.
+  $laArrSeqs = @()
+  if ($script:CfmAttempt) {
+    $laArrBefore = [bool](Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.webServer/proxy' -Name 'enabled' -ErrorAction SilentlyContinue).Value
+    La-Step 'iis_setting' 'enable_arr_proxy' ([ordered]@{ enabled = $laArrBefore }) @('system.webServer/proxy')
+    $laArrSeqs = $script:LaSeqs
+  }
+  try {
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.webServer/proxy' -Name 'enabled' -Value $true
+  } finally {
+    if ($script:CfmAttempt) {
+      $laArrAfter = [bool](Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.webServer/proxy' -Name 'enabled' -ErrorAction SilentlyContinue).Value
+      if ($laArrAfter) { La-Result $laArrSeqs 'done' ([ordered]@{ enabled = $laArrAfter }) }
+      else { La-Result $laArrSeqs 'failed' ([ordered]@{ enabled = $laArrAfter }) }
+    }
+  }
   $arrNow = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.webServer/proxy' -Name 'enabled' -ErrorAction SilentlyContinue).Value
   if (-not $arrNow) {
     Die "The global ARR reverse-proxy toggle could not be enabled; the proxy family would publish but never forward. Nothing has been composed."
@@ -3904,6 +4902,25 @@ ThreadingHTTPServer(('127.0.0.1', 8533), Handler).serve_forever()
            "; no proxy change was attempted.")
     }
     Ok ("Loopback-only proxy activation responder ready on port " + $WebPort)
+  }
+  if ($script:CfmAttempt) {
+    # Each front's owned-block state, observed now. A block that differs from this installation's
+    # rendering is REFUSE-FIRST; only an absent or current block proceeds.
+    $laObs = Lc-Request 'proxy-status-attempt' (Lc-Json (Lc-ProxyRequest 'status'))
+    $laStatus = La-JsonObject (La-Lifecycle @('proxy','status','--request',$laObs))
+    $laBlocks = [ordered]@{}
+    foreach ($laRow in @($laStatus.per_type)) {
+      if (-not $laRow) { continue }
+      $laBlock = "" + $laRow.owned_block
+      if (@('absent','current') -notcontains $laBlock) {
+        Die ("REFUSE-FIRST: the " + $laRow.proxy_type + " front carries a " + $laBlock + " CORPUSfm block that" +
+             " differs from this installation's rendering. A fresh install does not publish over it.")
+      }
+      $laBlocks[("" + $laRow.proxy_type)] = ('BLOCK_' + $laBlock.ToUpperInvariant())
+    }
+    if ($laBlocks.Count -eq 0) { Die "the proxy status observation carries no per-front block state; nothing was changed by this step." }
+    $script:LaProviderIntent = 'proxy_reconcile'
+    $script:LaProviderPrior = [ordered]@{ blocks = $laBlocks }
   }
   $script:LcFrameAccount = $FmAdminUser; $script:LcFramePassword = $FmAdminPass
   Lc-ProviderRun "proxy reconcile" 'candidates' @('proxy','reconcile','--request',$req)
@@ -4014,6 +5031,20 @@ if ($stRoute -eq 'skip') {
 } else {
 $stVerb = $stRoute
 $req = Lc-Request ('storage-' + $stVerb) (Lc-Json (Lc-StorageRequest $CfmStorageMode))
+if ($script:CfmAttempt) {
+  # The storage target is observed and intended IMMEDIATELY before the provider call (section 6.5):
+  # a bootstrap must find it absent, an adoption must find it present, and a contradiction refuses.
+  $laTarget = "" + $script:AttemptRecord.paths.storage_target
+  $laPresent = Test-Path -LiteralPath $laTarget -PathType Leaf
+  if ($stRoute -eq 'bootstrap' -and (Test-Path -LiteralPath $laTarget)) { Die ("storage routed to bootstrap, but " + $laTarget + " already exists. Nothing was changed by this step.") }
+  if ($stRoute -eq 'adopt' -and -not $laPresent) { Die ("storage routed to adoption, but " + $laTarget + " is not present. Nothing was changed by this step.") }
+  if (@('bootstrap','adopt') -notcontains $stRoute) { Die ("storage routed to '" + $stRoute + "', which a fresh attempt cannot record. Nothing was changed by this step.") }
+  La-Step 'file' 'ensure' $null @($laTarget)
+  $script:LaProviderTargetSeqs = $script:LaSeqs
+  $script:LaProviderIntent = 'storage_' + $stRoute
+  $script:LaProviderPrior = [ordered]@{ observe = ("" + (Lc-Field $CfmStorageObservation 'state')); route = $stRoute
+                                        target_seq = [int](La-SeqOf 'file' $laTarget) }
+}
 Lc-ProviderRun ("storage " + $stVerb) 'candidate' @('storage',$stVerb,'--request',$req)
 if ($LcFirstAdminOwedByDisposition) {
   $CfmFirstAdminOwed = $true
@@ -4086,10 +5117,17 @@ Info "Projection backfill"
 # line on the child's stderr (e.g. a urllib3 InsecureRequestWarning from the verify_ssl=False OData
 # call) is otherwise raised as a fatal NativeCommandError - which once killed the whole install at
 # this step. Relax EAP around the call; judge success by $LASTEXITCODE only.
+if ($script:CfmAttempt) {
+  # RULING 6: bound to this attempt's storage-target entry and storage route. It only reports that
+  # projection writes may have occurred; an adopted database is always preserved.
+  La-ProviderBegin 'backfill_storage_projections' ([ordered]@{
+    target_seq = [int](La-SeqOf 'file' ("" + $script:AttemptRecord.paths.storage_target)); route = $stRoute }) 'storage'
+}
 $eapB = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 $pbOut = (& $Py -m corpusfm.server.cli backfill-storage-projections 2>&1 | Out-String).Trim()
 $pbrc = $LASTEXITCODE
 $ErrorActionPreference = $eapB
+La-ProviderEnd 'backfill_storage_projections' $pbrc $pbOut
 $pbLast = if ($pbOut) { ($pbOut -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1).Trim() } else { "" }
 if ($pbrc -eq 0) { Ok ("Projections current" + $(if ($pbLast) { " - $pbLast" } else { "" })) }
 else { Warn ("Projection backfill did not complete - picker uses the scan fallback until it does. " + $pbOut) }
@@ -4155,10 +5193,12 @@ if ($hasUsers -eq '1') {
       admin_username         = $AdminUser
       admin_credential_input = 'stdin'
     }))
+    La-ProviderBegin 'create_first_admin' ([ordered]@{ users_exist = $false }) 'first_admin'
     $eapA = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     $mkOut = ($AdminPass | & $Py -m corpusfm.lifecycle storage create-first-admin --request $faReq 2>&1 | Out-String)
     $rc = $LASTEXITCODE
     $ErrorActionPreference = $eapA
+    La-ProviderEnd 'create_first_admin' $rc $mkOut
     $AdminPass = ''
     Cfm-Logline $mkOut
     $faResult = "" + (Lc-Field $mkOut 'result')
@@ -4228,7 +5268,9 @@ $req = Lc-Request 'provision-keys-final' (Lc-Json ([ordered]@{
   pre_service          = $false
   web_sid              = $WebSid
 }))
-Lc-Run "final secret protection" @('provision-keys','--request',$req) | Out-Null
+$laPrior = $null
+if ($script:CfmAttempt) { $laPrior = La-KeysPrior }
+La-LcRun 'provision_keys' $laPrior "final secret protection" @('provision-keys','--request',$req) | Out-Null
 Ok ("Secrets protected for the registered service (SYSTEM owner, Administrators full, " +
     $WebService + " read-only)")
 
@@ -4254,7 +5296,7 @@ $OneServiceAclPolicyPaths = @($LogDir, $FixedState, $FixedRun, $InboxDir,
 Remove-CfmRetiredSchedulerGrants $OneServiceAclPolicyPaths
 
 foreach ($sid in @($WebSid)) {
-  Grant-OrDie $LogDir      ($sid + ':(OI)(CI)(M)')  'logs'
+  La-Do 'dir' 'set_acl' $null @($LogDir) { Grant-OrDie $LogDir ($sid + ':(OI)(CI)(M)') 'logs' }
   Grant-OrDie $FixedState  ($sid + ':(OI)(CI)(M)')  'service state'
   Grant-OrDie $FixedRun    ($sid + ':(OI)(CI)(M)')  'service run directory'
   Grant-OrDie $InboxDir    ($sid + ':(OI)(CI)(M)')  'update inbox'
@@ -4496,6 +5538,24 @@ if ($CfmSelfTestCrit -ne 0) {
 }
 Ok ("Post-install verification passed - CORPUSfm installed (version " + $Version + ")")
 
+# -- PACKET 1398: the completion boundary - the last lifecycle mutation of a fresh install -----------
+# Stamps last_result.operation_id = attempt_id through the application, then retires the attempt record
+# and its container. Until this succeeds the attempt is incomplete, and a rerun offers
+# Inspect / Discard / Quit rather than reporting an installation.
+if ($script:CfmAttempt) {
+  $laReq = Lc-Request 'attempt-complete' (Lc-Json ([ordered]@{
+    schema_version = 1; installation_id = $InstallationId; attempt_id = $script:AttemptId; actor = 'installer' }))
+  $laOut = La-Lifecycle @('attempt','complete','--request',$laReq)
+  $laResult = "" + (La-Field $laOut @('result'))
+  if ($script:LaLifecycleRc -eq 0 -and ($laResult -eq 'completed' -or $laResult -eq 'no_change')) {
+    $script:CfmAttempt = $false
+    Ok ("Fresh installation complete: attempt " + $script:AttemptId + " stamped and its record retired")
+  } else {
+    Die ("The installation verified, but its completion could not be stamped (" + (La-Field $laOut @('reason')) +
+         ": " + (La-Field $laOut @('detail')) + "). The attempt record is kept; re-run the installer to inspect or discard it.")
+  }
+}
+
 Section "Next steps"
 # SAY THE ADDRESS THE BOX ACTUALLY ASSERTED, not "<your-fms-host>". The app detects and persists its
 # own address at startup, so telling the administrator to work out what the machine already knows is
@@ -4520,7 +5580,7 @@ if (-not $Base) { $Base = "https://<your-fms-host>" + $WebPrefix }
 Write-Host "  Next steps:"
 if ($StorageOk) { Write-Host ("    - Open " + $Base + "/ and log in - storage is live.") }
 else { Write-Host ("    - Open " + $Base + "/ -> Settings -> Connections to finish storage (it was not reachable above).") }
-Write-Host ("    - Installer: powershell -ExecutionPolicy Bypass -File '" + $InstallerEntryPoint + "'")
+Write-Host ("    - Installer: powershell -File '" + $InstallerEntryPoint + "'")
 Write-Host "    - Cleanup: You may delete the original extracted installer package and ZIP; the installed launcher is the durable entry point."
 Write-Host "    - If a PKI 'did not complete' warning appeared above, register the Admin key via Settings -> FileMaker Server (apply features need it)."
 # THE TOKEN IS NEVER PRINTED (developer, 2026-07-29). A line ending in the real bearer token puts a

@@ -55,7 +55,7 @@
 
   {# ── Tag detail pop-over (overlay primitive) ─────────────────────────────── #}
   <div class="cfm-overlay" x-show="detail" x-cloak
-       @click.self="closeDetail()" @keydown.escape.window="closeDetail()"
+       @keydown.escape.window="closeDetail()"
        x-effect="detail ? $nextTick(() => { _trap = window.cfmFocusTrap($refs.tagDlg) }) : (_trap && _trap())">
     <div class="cfm-dialog" x-ref="tagDlg" role="dialog" aria-modal="true">
       <template x-if="detail">

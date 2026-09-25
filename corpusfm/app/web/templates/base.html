@@ -224,8 +224,8 @@
            local development path has no user concept and the page refuses there (packet 1332). This is
            DEPLOYMENT availability, not a gate — Artifacts and Tags above stay locally available. #}
         {% if mode == 'server' %}
-        <a title="MCP" href="{{ url_prefix }}/mcp-access" class="nav-link {% if route_path == '/mcp-access' %}active{% endif %}">
-          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 13l-2.5 2.5a2.1 2.1 0 0 1-3-3L4 10"/><path d="M13 7l2.5-2.5a2.1 2.1 0 0 1 3 3L16 10"/><path d="M8 12l4-4"/></svg></span> MCP
+        <a title="MCP Access" href="{{ url_prefix }}/mcp-access" class="nav-link {% if route_path == '/mcp-access' %}active{% endif %}">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 13l-2.5 2.5a2.1 2.1 0 0 1-3-3L4 10"/><path d="M13 7l2.5-2.5a2.1 2.1 0 0 1 3 3L16 10"/><path d="M8 12l4-4"/></svg></span> MCP Access
         </a>
         {% endif %}
         {% endif %}
@@ -907,7 +907,9 @@
         _lastJobTs: '',
 
         // ── Notification cadence (packet 1361-01) ────────────────────────────
-        // 10s while the document is visible, 60s while it is hidden. It used to be a flat
+        // 30s while the document is visible, 60s while it is hidden. A request gets 10s to settle,
+        // so two consecutive timeouts surface the connectivity state within about 80s in the worst
+        // visible-tab phase. It used to be a flat
         // `setInterval(..., 10000)` with no visibility gate at all — the ONE poller in the product
         // that kept a ten-second database beat running in a tab nobody was looking at, while the
         // queue poller backed off to 60s and the artifacts refresh stopped entirely. Reaching the
@@ -917,9 +919,11 @@
         // flight. Both matter because visibilitychange can fire repeatedly and in bursts: an
         // interval plus a listener that started another loop would leave two beats running with no
         // way to tell, and a slow request under a fast cadence would overlap itself.
-        NOTIF_VISIBLE_MS: 10000,
+        NOTIF_VISIBLE_MS: 30000,
         NOTIF_HIDDEN_MS: 60000,
+        NOTIF_REQUEST_TIMEOUT_MS: 10000,
         _notifTimer: null,
+        _notifDeadline: null,
         _notifInflight: false,
         _notifWired: false,
 
@@ -945,10 +949,11 @@
           document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') {
               // Foreground: answer NOW, then resume the visible cadence. Anything stale is on
-              // screen the moment the user looks at it.
-              this._notificationTick();
+              // screen the moment the user looks at it. An existing request already supplies that
+              // answer; its deadline and completion will re-arm the cadence.
+              if (!this._notifInflight) this._notificationTick();
             } else {
-              this._scheduleNotificationPoll();      // re-arm at the hidden interval
+              if (!this._notifInflight) this._scheduleNotificationPoll(); // re-arm hidden cadence
             }
           });
           // First poll after one interval, exactly as the interval version did.
@@ -1048,10 +1053,16 @@
           // second one on top of it.
           if (this._notifInflight) return;
           this._notifInflight = true;
+          const controller = new AbortController();
+          this._notifDeadline = setTimeout(
+            () => controller.abort(), this.NOTIF_REQUEST_TIMEOUT_MS);
           try {
-            const r = await fetch('/api/status/notifications');
+            const r = await fetch('/api/status/notifications', { signal: controller.signal });
             if (!r.ok) { this._recordMiss(); return; }
             const d = await r.json();
+            // The pause boundary deliberately answers this database-backed route with HTTP 200.
+            // It is an unavailable observation, not recovery and not notification state.
+            if (!d || d.unavailable === true) { this._recordMiss(); return; }
 
             // Connectivity restored
             this._missedPolls = 0;
@@ -1072,6 +1083,10 @@
           } catch (_) {
             this._recordMiss();
           } finally {
+            if (this._notifDeadline) {
+              clearTimeout(this._notifDeadline);
+              this._notifDeadline = null;
+            }
             this._notifInflight = false;
           }
         },

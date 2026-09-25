@@ -4,14 +4,16 @@ The lifecycle providers own mutation, recovery evidence, and the six result word
 sequencing.  This module is the narrow join between them: both platform scripts submit the same
 versioned facts and receive one of three operator conditions without reinterpreting provider JSON.
 
-Nothing here reads machine state or performs recovery.  A returned recovery command is assembled
-only from the installation and operation identities supplied in the request and invokes the
-provider's existing recovery verb.
+Nothing here reads machine state or performs recovery.  A returned POSIX recovery command is
+assembled only from the installation and operation identities supplied in the request and invokes the
+provider's existing recovery verb.  Windows receives STRUCTURED facts instead (packet 1380-02): the
+lifecycle family, verb and request document, which the installer checks against its own closed table and
+runs directly.  It never receives executable text, so no Windows caller composes, splits or evaluates a
+command.
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import re
 import shlex
@@ -152,47 +154,24 @@ def _posix_recovery(provider: str, operation_id: str, installation_id: str,
     )
 
 
-def _ps_single(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+def _windows_recovery(provider: str, operation_id: str, installation_id: str) -> dict[str, Any]:
+    """Structured recovery facts for Windows (packet 1380-02).
 
-
-def _windows_recovery(provider: str, operation_id: str, installation_id: str,
-                      install_dir: str, *, python: str | None = None,
-                      source: str | None = None) -> str:
-    root = str(PureWindowsPath(install_dir))
-    python = python or str(PureWindowsPath(root) / "python" / "python.exe")
-    source = source or str(PureWindowsPath(root) / "src")
+    This used to compose a complete PowerShell program and return it as `-EncodedCommand`, which no
+    signature could cover. The installer now runs the lifecycle CLI itself with its own selected runtime
+    and admits only a family/verb pair its closed table names. Nothing here names an interpreter, a
+    source tree or any other path.
+    """
     argv, request = _recovery_request(provider, operation_id, installation_id)
-    if not request:
-        script = (
-            f"$env:PYTHONPATH={_ps_single(source)}; & {_ps_single(python)} -m corpusfm.lifecycle "
-            + " ".join(_ps_single(part) for part in argv)
-            + "; $code=$LASTEXITCODE; if ($code -eq 0 -or $code -eq 2) { exit 0 }; exit $code"
-        )
-    else:
-        payload = json.dumps(request, separators=(",", ":"), sort_keys=True)
-        cli = " ".join(_ps_single(part) for part in argv[:-1])
-        # The fixed run directory is installation-independent on Windows.  Both the directory and
-        # request receive the same protected SYSTEM/Administrators authority as installer requests.
-        run_dir = r"C:\ProgramData\CORPUSfm\run"
-        script = (
-            "$ErrorActionPreference='Stop'; $code=1; "
-            f"$env:PYTHONPATH={_ps_single(source)}; "
-            f"$d=Join-Path {_ps_single(run_dir)} ('installer-recovery.'+[guid]::NewGuid().ToString('N')); "
-            "New-Item -ItemType Directory -Path $d -Force | Out-Null; "
-            "try { "
-            "& icacls $d /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' "
-            "'*S-1-5-32-544:(OI)(CI)F' | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'icacls directory failed' }; "
-            "$r=Join-Path $d 'request.json'; "
-            f"[IO.File]::WriteAllText($r,{_ps_single(payload)},"
-            "(New-Object System.Text.UTF8Encoding($false))); "
-            "& icacls $r /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'icacls request failed' }; "
-            f"& {_ps_single(python)} -m corpusfm.lifecycle {cli} $r; $code=$LASTEXITCODE "
-            "} finally { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue }; "
-            "if ($code -eq 0 -or $code -eq 2) { exit 0 }; exit $code"
-        )
-    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-    return f"powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}"
+    return {
+        "recovery_family": argv[0],
+        "recovery_verb": argv[1],
+        "recovery_request": (json.dumps(request, separators=(",", ":"), sort_keys=True)
+                             if request else None),
+    }
+
+
+_WINDOWS_RECOVERY_FACTS = ("recovery_family", "recovery_verb", "recovery_request")
 
 
 def _runtime_override(request: Mapping[str, Any], platform: str) -> tuple[str | None, str | None]:
@@ -200,6 +179,10 @@ def _runtime_override(request: Mapping[str, Any], platform: str) -> tuple[str | 
     source = request.get("recovery_source")
     if python is None and source is None:
         return None, None
+    if platform == "windows":
+        raise DispositionRefused(
+            "Windows recovery accepts no runtime paths: the installer runs the lifecycle CLI with the "
+            "runtime it selected itself")
     if not isinstance(python, str) or not isinstance(source, str) or not python or not source:
         raise DispositionRefused(
             "recovery_python and recovery_source must be supplied together as non-empty paths")
@@ -211,20 +194,14 @@ def _runtime_override(request: Mapping[str, Any], platform: str) -> tuple[str | 
     return python, source
 
 
-def _recovery_command(provider: str, operation_id: str, installation_id: str,
-                      install_dir: str, platform: str, *, python: str | None = None,
-                      source: str | None = None) -> str:
-    if platform == "posix":
-        return _posix_recovery(provider, operation_id, installation_id, install_dir,
-                               python=python, source=source)
-    return _windows_recovery(provider, operation_id, installation_id, install_dir,
-                             python=python, source=source)
 
 
 def _answer(condition: str, *, compose: bool = False, retire_provider: str | None = None,
             operation_id: str | None = None, reason: str,
             recovery_command: str | None = None,
+            recovery_facts: Mapping[str, Any] | None = None,
             first_administrator_owed: bool = False) -> dict[str, Any]:
+    facts = dict(recovery_facts or {})
     return {
         "schema_version": SCHEMA_VERSION,
         "condition": condition,
@@ -235,6 +212,7 @@ def _answer(condition: str, *, compose: bool = False, retire_provider: str | Non
         "first_administrator_owed": bool(first_administrator_owed),
         "reason": reason,
         "recovery_command": recovery_command,
+        **{key: facts.get(key) for key in _WINDOWS_RECOVERY_FACTS},
     }
 
 
@@ -244,11 +222,16 @@ def _recover(*, provider: str, operation_id: str | None, installation_id: str,
     if operation_id is None:
         raise DispositionRefused(
             f"{provider} recovery is owed but no canonical operation_id identifies it")
+    if platform == "posix":
+        return _answer(
+            RECOVER_FIRST, operation_id=operation_id, reason=reason,
+            recovery_command=_posix_recovery(
+                provider, operation_id, installation_id, install_dir,
+                python=recovery_python, source=recovery_source),
+        )
     return _answer(
         RECOVER_FIRST, operation_id=operation_id, reason=reason,
-        recovery_command=_recovery_command(
-            provider, operation_id, installation_id, install_dir, platform,
-            python=recovery_python, source=recovery_source),
+        recovery_facts=_windows_recovery(provider, operation_id, installation_id),
     )
 
 

@@ -38,25 +38,25 @@ async def health() -> JSONResponse:
 
 @router.get("/status/notifications", dependencies=[Depends(require_auth)])
 def notifications_status(request: Request, ctx: AppContext = Depends(get_ctx)) -> JSONResponse:
-    """Polling endpoint for browser notifications (10-second interval).
+    """Polling endpoint for browser notifications (30-second visible-tab interval).
 
     Returns the latest job timestamp+status and active alert count so the
     client can detect changes and fire a browser Notification without SSE.
 
     **It is NOT exempt from the pause boundary** (packet 1361-01, round 3). It reads ALERT and JOB,
-    from every open tab, every ten seconds — a database operation on a repeating clock, which is
+    from every open tab on a repeating clock — a database operation which is
     precisely what a paused process may not perform. Its `except` made that worse rather than safer:
     a failed read became a zeroed result indistinguishable from "no alerts, no runs". While paused it
     never executes; the middleware answers with the standard unavailable body.
 
     SYNC `def` on purpose (the packet-061/078 invariant): the jobs read blocks on FM OData and
-    this is polled every 10s by every authed tab — an `async def` would run it on the event loop.
+    this is polled by every authed tab — an `async def` would run it on the event loop.
     Audit #4: one JOBS read serves every job's (cfg, state) — the old per-job `read_state`
     re-fetched the record `list_jobs` had just parsed (N+1: 10 jobs = 11 round-trips per poll).
 
     ONE backend serves BOTH reads (packet 1361-01). Each read used to resolve its own through the
     global `get_backend()`, which on a published installation builds a fresh backend and pays a TLS
-    handshake — twice, on a route every open tab polls every ten seconds.
+    handshake — twice, on a route every open tab polls repeatedly.
 
     And both reads are STRICT. The `except` that used to wrap this returned zeros, which the browser
     cannot tell from "no alerts, no runs": a storage outage was published to every tab as good news.

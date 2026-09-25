@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Iterable
 
 from .atomic import _fsync_dir, atomic_write_text
@@ -44,9 +45,11 @@ JOURNAL_FILE_MODE = 0o600
 class Journal:
     """One machine's lifecycle journal. At most one record: one operation runs at a time."""
 
-    def __init__(self, layout: LifecycleLayout):
+    def __init__(self, layout: LifecycleLayout, *, path=None):
+        # `path` selects the protected install-attempt container's journal (packet 1398 §6.1). The
+        # lock authority is still THIS layout's lock; only where the one record lives changes.
         self._layout = layout
-        self._path = layout.journal_file
+        self._path = layout.journal_file if path is None else Path(path)
 
     def _authority(self, lock: object, action: str):
         """Accept only a held lock for THIS machine's lifecycle state.

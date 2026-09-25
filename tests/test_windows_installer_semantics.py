@@ -60,6 +60,9 @@ DECLARED = {
     "ProxyPolicyAdd", "ProxyPolicyIgnore",
     "RepairStorageAccess", "ReplaceExistingInstall",
     "Silent", "Yes",
+    # Packet 1398 (ruling 3): discard an incomplete fresh-install attempt without the menu. An
+    # addition by ruling on both platforms, not a retired parameter returning.
+    "DiscardIncompleteAttempt",
 }
 #: The fifteen Windows retirements (section 2.3), with no alias and no accept-and-ignore.
 RETIRED = [
@@ -687,7 +690,9 @@ def test_the_recovery_route_NAMES_THE_SHIPPED_PROTOCOL_for_each_subsystem(phases
     """Recovery routing is delegated to the shared application disposition boundary."""
     body = code(phases[3])
     assert "Lc-PreflightDisposition" in body
-    assert "LcRecoveryCommand" in body
+    # Packet 1380-02: routed facts drive a direct lifecycle CLI invocation, never a command string.
+    assert "Complete-CfmOwedLifecycleRecovery" in body
+    assert "LcRecoveryCommand" not in body
     assert "Lc-DiscardProvider" in body, "a resolved-but-undischarged record is not routed"
 
 
@@ -858,31 +863,29 @@ def test_the_updater_is_rendered_by_the_SHIPPED_RENDERER_and_not_by_this_script(
     and the two opinions diverged: `update_boundary` derived the Windows interpreter as
     `venv\\Scripts\\python.exe`, which this installer never creates.
 
-    So the assertion is now that the installer holds NO opinion: it calls
-    `render_windows_updater()`, which takes nothing, derives all nine from the published record and
-    refuses on any it did not fill.
+    So the assertion is now that the installer holds NO opinion: it copies the static updater, which
+    derives every path from the published installation itself.
     """
     body = code(phases[13])
-    assert "render_windows_updater" in body, "the shipped renderer is not called"
     assert not re.search(r"Replace\('@@", body), "the installer still hand-renders placeholders"
-    assert "-match '@@'" in body, "the unrendered-placeholder guard is gone"
-
-    # …and the renderer really does account for every placeholder the shipped template carries.
+    assert "-match '@@\\w+@@'" in body, "the reintroduced-placeholder guard is gone"
+    # …and the shipped artifact really does carry no seam for anything to leave unfilled.
     from corpusfm.lifecycle import update_boundary as _ub
 
-    shipped = {f"@@{n}@@" for n in re.findall(r"@@(\w+)@@", UPDATER_PS1.read_text(encoding="ascii"))}
-    assert shipped <= set(_ub.WINDOWS_PLACEHOLDERS), (
-        f"the renderer knows nothing about {sorted(shipped - set(_ub.WINDOWS_PLACEHOLDERS))}"
-    )
+    shipped = re.findall(r"@@\w+@@", UPDATER_PS1.read_text(encoding="ascii"))
+    assert shipped == [], f"the static Windows updater carries rendered placeholders: {shipped}"
+    assert not hasattr(_ub, "render_windows_updater"), "a Windows renderer is back"
 
 
-def test_the_administrator_owned_library_is_installed_before_the_updater_is_rendered(phases):
+def test_the_administrator_owned_library_is_installed_before_the_updater_is_published(phases):
     """The updater loads its tree inspector and its outcome publisher from OUTSIDE the checkout -
     loading the judge from the tree being judged is how a modified helper in a modified checkout
     declares itself clean. `outcome_publisher` resolves its library as `<its own dir>\\..\\lib`, so
     bin/ and lib/ must be siblings under the install directory and neither may be the checkout."""
     body = code(phases[13])
-    assert body.index("$LibPkg") < body.index("render_windows_updater")
+    # The library must be installed before the updater is PUBLISHED; the renderer that used to
+    # anchor this no longer exists, so the copy is the event that matters.
+    assert body.index("$LibPkg") < body.index("Copy-Item -LiteralPath $UpdaterSrc")
     assert "$LibDir = Join-Path $InstallDir 'lib'" not in body, "lib is re-derived inside the phase"
     assert "corpusfm\\lifecycle" in body or "'lifecycle'" in body, (
         "the installed library is never checked for corpusfm/lifecycle"
@@ -1017,6 +1020,14 @@ def test_every_command_the_script_invokes_actually_resolves(tmp_path):
         "Get-WebConfigurationProperty", "Set-WebConfigurationProperty", "Register-ScheduledTask",
         "Unregister-ScheduledTask", "New-ScheduledTaskAction", "New-ScheduledTaskPrincipal",
         "New-ScheduledTaskSettingsSet", "Expand-Archive", "Get-FileHash", "Get-Acl",
+        # Packet 1398: the fresh-install attempt observes the task it may create and writes its
+        # protected record's DACL.
+        "Get-ScheduledTask", "Set-Acl",
+        # Authenticode is Windows-only and has no POSIX PowerShell implementation. Used by the
+        # packet 1380-02 SYSTEM-task AllSigned check, which reads the running installer's signature
+        # before phase 8's first installation mutation. Listed here rather than excused, because widening
+        # this set is meant to be an edit somebody can see.
+        "Get-AuthenticodeSignature",
         # dot-sourced from the shipped libraries, not from this file
         "Die", "Ok", "Warn", "Info", "Hello", "Section", "Cfm-Run", "Cfm-Confirm", "Cfm-LogInit",
         "Cfm-Logline", "Lock-FileAcl", "Lock-DirTreeAcl",
@@ -1222,7 +1233,9 @@ def test_phase_12_provisions_through_the_PRIVILEGED_lifecycle_operation(ps1: str
     assert "provision-keys" in ps1, "phase 12 does not invoke the key-provisioning operation"
     # Lc-Run, not Lc-RunRaw: Lc-Run dispatches a non-zero exit into Die, which is what makes a
     # failure fatal before phase 15 rather than a warning carried past it.
-    assert re.search(r"Lc-Run \"key provisioning\" @\('provision-keys','--request',\$req\)", ps1), \
+    # Packet 1398: `La-LcRun` records the call in a fresh-install attempt and otherwise IS `Lc-Run`;
+    # both dispatch a non-zero exit before anything continues.
+    assert re.search(r"La-LcRun 'provision_keys' \$laPrior \"key provisioning\" @\('provision-keys','--request',\$req\)", ps1), \
         "key provisioning is not run through the dispatching runner, so a failure would not be fatal"
     assert not re.search(r"get_corpus_key\(\); get_machine_key\(\)", ps1), \
         "phase 12 still calls the runtime resolvers to CREATE the keys"

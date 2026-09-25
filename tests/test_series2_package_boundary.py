@@ -22,7 +22,12 @@ def test_public_package_needs_no_repository_credential_and_uses_declared_release
 
 
 def test_each_package_carries_one_digest_covered_private_runtime():
-    assert 'cp "$runtime" "$stage/installer-runtime.zip"' in PACKAGER
+    # RE-EXPRESSED for packet 1380-04 (was: `cp "$runtime" "$stage/installer-runtime.zip"`). The
+    # packager gained a signing seam and builds the nested archive after adoption, so the variable
+    # changed name. The rule is unchanged: each package carries exactly ONE nested runtime archive,
+    # placed at exactly that member name, and both installers read it from there.
+    assert 'cp "$runtime_zip" "$stage/installer-runtime.zip"' in PACKAGER
+    assert PACKAGER.count('"$stage/installer-runtime.zip"') == 1
     for required in (
         "installer/requirements-server.txt",
         "installer/linux/uninstall.sh",
@@ -38,10 +43,13 @@ def test_each_package_carries_one_digest_covered_private_runtime():
 
 
 def test_public_zip_has_no_uninstaller_or_series_1_adapter_entry_point():
-    build_calls = [line for line in PACKAGER.splitlines()
-                   if line.strip().startswith("build_zip ")]
-    assert build_calls
-    for line in build_calls:
+    # RE-EXPRESSED for packet 1380-04 (was: lines beginning `build_zip `). The outer members of each
+    # platform ZIP are now chosen by `stage_platform`. The rule is unchanged: neither an uninstaller
+    # nor a Series 1 migration launcher is a distribution entry point.
+    outer_calls = [line for line in PACKAGER.splitlines()
+                   if line.strip().startswith("stage_platform ")]
+    assert outer_calls
+    for line in outer_calls:
         assert "uninstall" not in line
         assert "migrate-legacy" not in line
 
@@ -73,8 +81,21 @@ def test_final_series_1_manifest_refuses_before_any_series_2_deployment():
 
 
 def test_verified_package_recovers_a_journal_without_rebuilding_the_install_root_first():
-    assert 'RECOVERY_SOURCE_ARCHIVE="$BUILD_DIR/corpusfm-recovery-source.zip"' in PACKAGER
-    assert PACKAGER.count('zip -q -j "$') >= 2
+    # RE-EXPRESSED TWICE, and the rule has never changed: the recovery source archive is produced,
+    # and it is added to the nested runtime archive of each platform.
+    #   * packet 1380-04 retired `RECOVERY_SOURCE_ARCHIVE=` plus `PACKAGER.count('zip -q -j "$') >= 2`,
+    #     because the archive moved into the signing candidate and the per-platform assembly;
+    #   * packet 1380-03 retired the `zip -q -j` spelling, because archives are now written by
+    #     `zip_deterministic.py` so that repacking one frozen tree is reproducible. The recovery
+    #     archive rides as a FLAT member (its basename), exactly as `zip -j` placed it.
+    assert '"$CANDIDATE/payload/corpusfm-recovery-source.zip"' in PACKAGER
+    flat_add = '--flat "$CANDIDATE/payload/corpusfm-recovery-source.zip"'
+    assert flat_add in PACKAGER
+    build = PACKAGER[PACKAGER.index("build_platform() {"):PACKAGER.index("build_platform linux")]
+    assert flat_add in build, "the recovery archive must ride in the per-platform assembly"
+    runtime_call = build[build.index('zip_deterministic.py" "$runtime_zip"'):]
+    assert flat_add in runtime_call[:runtime_call.index("\n\n")], "it belongs to the runtime archive"
+    assert "build_platform linux" in PACKAGER and "build_platform windows" in PACKAGER
     linux_runtime = LINUX[LINUX.index("prepare_package_recovery_runtime()"):
                             LINUX.index("# The release package carries", LINUX.index(
                                 "prepare_package_recovery_runtime()"))]
@@ -107,8 +128,12 @@ def test_verified_package_recovers_a_journal_without_rebuilding_the_install_root
     assert "Test-Path -LiteralPath $orphanJournal" in windows_route
     assert "Initialize-PackagedRecoveryRuntime" in windows_route
 
+    # POSIX still binds its recovery command to the verified package runtime. Windows no longer
+    # sends runtime paths at all (packet 1380-02): the installer runs the lifecycle CLI itself with the
+    # runtime this invocation selected.
+    assert "recovery_python" in LINUX and "recovery_source" in LINUX
+    assert "recovery_python" not in WINDOWS and "recovery_source" not in WINDOWS
     for script in (LINUX, WINDOWS):
-        assert "recovery_python" in script and "recovery_source" in script
         assert "Restore $INSTALL_DIR/venv" not in script
 
 

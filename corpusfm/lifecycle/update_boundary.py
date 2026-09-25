@@ -474,6 +474,216 @@ def read_outcome(state_dir: Path | str) -> UpdateOutcome | None:
     return UpdateOutcome.from_dict(raw)
 
 
+# ── the request lifecycle: publish (service) → claim (root) → finalize (root) ───────────
+#
+# Packet 1380-02 / finding F-UPD-REPLAY. The request used to be written in place and never removed,
+# so a manual `Start-ScheduledTask` (Windows) or `systemctl start corpusfm-update.service` (Linux)
+# re-ran the LAST recorded request under its stale trigger id, and a Gate-3 outcome record could not
+# be attributed to exactly one submission. The fix is a filesystem STATE MACHINE, not a nonce:
+#
+#   PENDING  update_request.json         — the service published it, no updater has claimed it.
+#   ACTIVE   update_request.active.json  — the elevated updater CLAIMED it (atomic same-directory
+#                                          rename) and is running/resuming it.
+#   (gone)   removed only AFTER a terminal outcome for its trigger is durably published.
+#
+# ACTIVE has strict precedence over PENDING: a crash mid-run leaves ACTIVE, and the next elevated
+# invocation resumes the SAME logical request and trigger — never a different or stale one, and never
+# a fresh completed outcome under an old trigger. A manual re-run after completion finds neither slot
+# and does nothing.
+#
+# This is NOT cryptographic replay prevention (delete-on-consume was rejected as non-atomic). The
+# guarantee is a filesystem invariant: the replayable INPUT is consumed by an atomic rename out of
+# the pending slot, and PUBLICATION is atomic AND exclusive (it can never overwrite an existing
+# request), so two submissions cannot replace one another and an outcome maps to one submission.
+
+ACTIVE_REQUEST_FILENAME = "update_request.active.json"
+
+#: Outcome states that mean the operation is over. A matching one beside an ACTIVE request is the
+#: crash-after-outcome-before-cleanup case: the update already ran, so ACTIVE is removed, not re-run.
+TERMINAL_OUTCOME_STATES: tuple[str, ...] = ("refused", "failed", "rolled_back", "completed")
+
+_TRIGGER_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def active_request_path(state_dir: Path | str) -> Path:
+    return inbox_dir(state_dir) / ACTIVE_REQUEST_FILENAME
+
+
+class RequestExists(LifecycleError):
+    """A PENDING or ACTIVE update request already exists; a new one is refused, never overwriting it."""
+
+
+class RequestMalformed(LifecycleError):
+    """A request record on disk is not a usable {trigger_id, expected_head} document."""
+
+
+def _read_request_file(path: Path) -> dict:
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise RequestMalformed("an update request must be a JSON object")
+    trigger_id = str(raw.get("trigger_id") or "")
+    if not _TRIGGER_RE.match(trigger_id):
+        raise RequestMalformed("the request trigger id is not a plain identifier")
+    return {
+        "trigger_id": trigger_id,
+        "expected_head": str(raw.get("expected_head") or ""),
+        "actor": str(raw.get("actor") or ""),
+    }
+
+
+def _discard_quiet(path: Path) -> None:
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
+
+
+def publish_request(state_dir: Path | str, *, trigger_id: str, expected_head: str,
+                    actor: str = "") -> Path:
+    """The service publishes a PENDING request, ATOMICALLY and EXCLUSIVELY.
+
+    Refuses with :class:`RequestExists` if a PENDING or ACTIVE request already exists — it never
+    overwrites one, so two sequential or concurrent submissions cannot replace each other (the loser
+    gets a clean refusal). Atomicity: the payload is written to a temp file in the same directory,
+    fsync'd, then hard-linked into the pending name — an operation that fails if the name already
+    exists, so a crash mid-publish leaves only a temp (never a half-written PENDING) and a race leaves
+    exactly one PENDING plus one refusal.
+    """
+    import os as _os
+    import tempfile
+
+    if not _TRIGGER_RE.match(trigger_id or ""):
+        raise RequestMalformed("refusing to publish a request with a non-identifier trigger id")
+    inbox = inbox_dir(state_dir)
+    inbox.mkdir(parents=True, exist_ok=True)
+    pending = request_path(state_dir)
+    active = active_request_path(state_dir)
+    # The ordinary, legible refusal first; the exclusive link below is the race-safe backstop for two
+    # publishers that both pass this check in the same instant.
+    if active.exists():
+        raise RequestExists("an update request is already in progress")
+    if pending.exists():
+        raise RequestExists("an update request is already pending")
+    payload = json.dumps({"trigger_id": trigger_id,
+                          "expected_head": (expected_head or "").strip().lower(),
+                          "actor": actor})
+    fd, tmp = tempfile.mkstemp(dir=str(inbox), prefix=".request-", suffix=".tmp")
+    try:
+        with _os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            _os.fsync(fh.fileno())
+        try:
+            _os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        try:
+            _os.link(tmp, str(pending))   # atomic AND exclusive: fails if pending exists → no clobber
+        except FileExistsError as exc:
+            raise RequestExists("an update request is already pending") from exc
+    finally:
+        _discard_quiet(tmp)
+    return pending
+
+
+@dataclass
+class ClaimResult:
+    """What :func:`claim_request` decided. ``disposition`` is one of ``run`` (proceed with the
+    trigger below), ``already_completed`` (a terminal outcome for this request already exists; nothing
+    to do), ``no_request`` (neither slot present), or ``malformed`` (an unreadable record, cleared)."""
+
+    disposition: str
+    trigger_id: str = ""
+    expected_head: str = ""
+    resumed: bool = False
+    detail: str = ""
+
+
+def claim_request(state_dir: Path | str) -> ClaimResult:
+    """The elevated updater claims the next request. ACTIVE has strict precedence over PENDING:
+
+    - **ACTIVE present, its trigger matches a TERMINAL outcome** → the update already ran for this
+      request. Remove ACTIVE and report ``already_completed`` (idempotent; never re-run).
+    - **ACTIVE present otherwise** → resume the SAME logical request and trigger id (crash recovery).
+    - **else PENDING present** → claim it with an ATOMIC same-directory rename PENDING→ACTIVE, then
+      report ``run``.
+    - **else** → ``no_request`` (a manual re-run after completion lands here and does nothing).
+
+    A record that will not parse is reported ``malformed`` and cleared, so a corrupt file cannot wedge
+    the slot forever.
+    """
+    import os as _os
+
+    active = active_request_path(state_dir)
+    pending = request_path(state_dir)
+    if active.exists():
+        try:
+            rec = _read_request_file(active)
+        except (RequestMalformed, ValueError, OSError) as exc:
+            _discard_quiet(active)
+            return ClaimResult("malformed", detail=f"the active request was unreadable: {exc}")
+        try:
+            outcome = read_outcome(state_dir)
+        except Exception:
+            outcome = None
+        if (outcome is not None and outcome.trigger_id == rec["trigger_id"]
+                and outcome.state in TERMINAL_OUTCOME_STATES):
+            _discard_quiet(active)
+            return ClaimResult("already_completed", trigger_id=rec["trigger_id"])
+        return ClaimResult("run", trigger_id=rec["trigger_id"],
+                           expected_head=rec["expected_head"], resumed=True)
+    if pending.exists():
+        try:
+            # Atomic same-directory rename. ACTIVE is proven absent above and runs are single-instance
+            # (Windows -MultipleInstances IgnoreNew; a systemd oneshot will not start a second), so this
+            # cannot clobber an ACTIVE; on Windows os.rename would refuse a clobber anyway.
+            _os.rename(pending, active)
+        except FileNotFoundError:
+            return ClaimResult("no_request")   # a concurrent claim took it; nothing to do here
+        try:
+            rec = _read_request_file(active)
+        except (RequestMalformed, ValueError, OSError) as exc:
+            _discard_quiet(active)
+            return ClaimResult("malformed", detail=f"the claimed request was unreadable: {exc}")
+        return ClaimResult("run", trigger_id=rec["trigger_id"],
+                           expected_head=rec["expected_head"], resumed=False)
+    return ClaimResult("no_request")
+
+
+def finalize_request(state_dir: Path | str, trigger_id: str) -> None:
+    """Remove ACTIVE, but ONLY after its terminal outcome is durably published (ruling 3) and ONLY
+    when the active request's trigger matches — so a late finalize can never delete a request other
+    than the one whose outcome was just written."""
+    active = active_request_path(state_dir)
+    try:
+        rec = _read_request_file(active)
+    except FileNotFoundError:
+        return
+    except (RequestMalformed, ValueError, OSError):
+        _discard_quiet(active)   # an unreadable ACTIVE after its outcome — clear the slot
+        return
+    if rec["trigger_id"] == (trigger_id or ""):
+        _discard_quiet(active)
+
+
+def discard_pending_if_ours(state_dir: Path | str, trigger_id: str) -> bool:
+    """The service removes a PENDING it published but could not trigger. Removes only when PENDING is
+    still present, carries OUR trigger, and no ACTIVE exists — so it can never delete a request the
+    elevated updater has already claimed (which would be an ACTIVE) or someone else's PENDING."""
+    active = active_request_path(state_dir)
+    pending = request_path(state_dir)
+    if active.exists():
+        return False
+    try:
+        rec = _read_request_file(pending)
+    except (FileNotFoundError, RequestMalformed, ValueError, OSError):
+        return False
+    if rec["trigger_id"] == (trigger_id or ""):
+        _discard_quiet(pending)
+        return True
+    return False
+
+
 # ── rendering the updaters from resolved authority ────────────────────────────────────
 #
 # Deliverable 3 / R4-Linux, and N1. The updater artifacts carry fixed locations by design — an
@@ -506,7 +716,13 @@ CHECKOUT_DIRNAME = "src"
 #: NAME is stale on Windows; the VALUE behind it is the platform's real interpreter, below.
 LINUX_PLACEHOLDERS = ("@@INSTALL_DIR@@", "@@STATE_DIR@@", "@@LOG_DIR@@", "@@SRC_DIR@@",
                       "@@VENV_PY@@", "@@HELPER@@", "@@PUBLISHER@@", "@@LIB_DIR@@", "@@GIT@@")
-WINDOWS_PLACEHOLDERS = LINUX_PLACEHOLDERS
+
+#: THERE IS NO `WINDOWS_PLACEHOLDERS` ANY MORE, and no Windows renderer (packet 1380-02 D-A).
+#: The Windows updater is STATIC and SIGNED: it is installed byte-for-byte and derives its
+#: installation-specific paths from the fixed machine locator instead. An empty tuple
+#: and a surviving `render_windows_updater` were considered and rejected - that pair would
+#: keep a renderer that silently returns an unchanged template, which reads as working.
+#: Linux is deliberately untouched (D-B); the asymmetry is intentional.
 
 
 class UpdaterPathsUnresolved(LifecycleError):
@@ -821,12 +1037,6 @@ def _plan_from_authority(template: str, placeholders, quoting: str) -> _UpdaterP
 def render_linux_updater(template: str) -> str:
     """Render verified focused-installer bytes with this installation's own record."""
     return _substitute(_plan_from_authority(template, LINUX_PLACEHOLDERS, "none"))
-
-
-def render_windows_updater(template: str) -> str:
-    """Render verified focused-installer bytes with this installation's own record."""
-    return _substitute(
-        _plan_from_authority(template, WINDOWS_PLACEHOLDERS, "powershell"))
 
 
 def _substitute(plan: "_UpdaterPlan") -> str:

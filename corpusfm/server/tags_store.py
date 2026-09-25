@@ -112,9 +112,23 @@ def _publishing(backend):
         # Partial failure. Some writes may have landed and must never be concealed, but this
         # process does not know which — so publish nothing and let reconciliation recover.
         _batches.current = None
+        _report_unpublished(batch, "tag operation failed part-way")
         raise
     _batches.current = None
     _publish(batch)
+
+
+def _report_unpublished(batch: "_Batch", operation: str) -> None:
+    """Confirmed writes this operation will not publish still reach the synchronizer's prompt wake
+    (packet 1388-03); otherwise an idle catalog could hold the stale picture for a full idle wait."""
+    confirmed = batch.upserts or batch.removals
+    if not confirmed:
+        return
+    try:
+        from corpusfm.server import catalog
+        catalog.note_unpublishable_write(confirmed[0][0], confirmed[0][1], operation)
+    except Exception:
+        logger.debug("catalog unpublished-batch bookkeeping failed", exc_info=True)
 
 
 @contextlib.contextmanager
@@ -148,6 +162,7 @@ def _publish(batch: "_Batch") -> None:
     An operation carrying even ONE unpublishable response publishes nothing at all: memory may not
     hold half of a multi-record operation, and the next validation pass is the recovery."""
     if batch.unpublishable:
+        _report_unpublished(batch, "tag operation not published")
         return
     try:
         from corpusfm.server import catalog

@@ -59,6 +59,11 @@ PENDING_FILENAME = "uninstall-pending.json"
 #: deregistration and keeps their shared identity store until all have completed. Versions 2 and 3
 #: remain readable below; v2 maps scaffolding to an empty set and keeps its conservative behavior.
 PENDING_SCHEMA_VERSION = 4
+
+#: Packet 1398 §6.1: the failed-fresh-attempt form. Written ONLY into the protected attempt
+#: container, never at `pending_path`, and never by an ordinary uninstall — which keeps writing v4.
+ATTEMPT_PENDING_SCHEMA_VERSION = 5
+SOURCE_INSTALL_ATTEMPT = "install_attempt"
 PENDING_SCHEMA_UNSUPPORTED = "pending_schema_unsupported"
 PENDING_FILE_MODE = 0o600
 
@@ -659,14 +664,18 @@ class PendingRecord:
 
     operation_id: str
     installation_id: str
-    manifest_generation: int
+    manifest_generation: int | None
     remaining: tuple
     schema_version: int = PENDING_SCHEMA_VERSION
     created_utc: str = ""
     updated_utc: str = ""
+    #: Packet 1398: set ONLY for a failed-fresh-attempt discard. `None` keeps the v4 document
+    #: byte-identical — neither key is emitted and `schema_version` stays 4.
+    source: str | None = None
+    attempt_id: str | None = None
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "operation_id": self.operation_id,
             "installation_id": self.installation_id,
@@ -675,6 +684,11 @@ class PendingRecord:
             "updated_utc": self.updated_utc,
             "remaining": [op.to_dict() for op in self.remaining],
         }
+        if self.source is not None:
+            payload["schema_version"] = ATTEMPT_PENDING_SCHEMA_VERSION
+            payload["source"] = self.source
+            payload["attempt_id"] = self.attempt_id
+        return payload
 
     @staticmethod
     def from_dict(data: object) -> "PendingRecord":
@@ -683,6 +697,8 @@ class PendingRecord:
         version = data.get("schema_version")
         if not isinstance(version, int) or isinstance(version, bool):
             raise RecordInvalid("pending schema_version must be an integer")
+        if version == ATTEMPT_PENDING_SCHEMA_VERSION:
+            return _attempt_record_from_dict(data)
         if version not in (2, 3, PENDING_SCHEMA_VERSION):
             # A NAMED refusal, not a parse error. Version 1 was never written to any box and held
             # untyped resource/identifier pairs. Versions 2 and 3 are historical typed documents;
@@ -737,6 +753,52 @@ class PendingRecord:
 
     def validated(self) -> "PendingRecord":
         return PendingRecord.from_dict(self.to_dict())
+
+
+def _attempt_record_from_dict(data: dict) -> "PendingRecord":
+    """The v5 `install_attempt` form (packet 1398 §6.1). Same operations, order and coherence rules;
+    two more keys; a generation that is null only when nothing was ever published."""
+    allowed = {"schema_version", "operation_id", "installation_id", "manifest_generation",
+               "created_utc", "updated_utc", "remaining", "source", "attempt_id"}
+    unknown = set(data) - allowed
+    if unknown:
+        raise RecordInvalid(f"the pending record has unknown key(s): {', '.join(sorted(unknown))}")
+    missing = allowed - set(data)
+    if missing:
+        raise RecordInvalid(f"the pending record is missing key(s): {', '.join(sorted(missing))}")
+    if data.get("source") != SOURCE_INSTALL_ATTEMPT:
+        raise RecordInvalid(
+            f"a schema-{ATTEMPT_PENDING_SCHEMA_VERSION} pending record must have source "
+            f"{SOURCE_INSTALL_ATTEMPT!r}")
+    for field_name in ("operation_id", "installation_id", "attempt_id"):
+        value = data.get(field_name)
+        if not isinstance(value, str) or not _CANONICAL_UUID.match(value):
+            raise RecordInvalid(
+                f"the pending record's {field_name} must be a canonical lowercase UUID, got {value!r}")
+    generation = data.get("manifest_generation")
+    if generation is not None and (not isinstance(generation, int) or isinstance(generation, bool)
+                                   or generation < 1):
+        raise RecordInvalid("manifest_generation must be null or a positive integer")
+    raw_remaining = data.get("remaining")
+    if not isinstance(raw_remaining, list):
+        raise RecordInvalid("the pending record's remaining set must be a list")
+    remaining = tuple(parse_operation(op) for op in raw_remaining)
+    _reject_duplicates(remaining)
+    _require_coherence(remaining)
+    _require_order(remaining)
+    if generation is None:
+        bound = sorted({op.tag for op in remaining} - {OP_EXACT_PATH, OP_ACCOUNT})
+        if bound:
+            raise RecordInvalid(
+                f"a pending record with no published generation may not hold {bound}; those "
+                "operations read the published installation")
+    return PendingRecord(
+        operation_id=str(data["operation_id"]), installation_id=str(data["installation_id"]),
+        manifest_generation=generation, remaining=remaining,
+        schema_version=ATTEMPT_PENDING_SCHEMA_VERSION,
+        created_utc=str(data.get("created_utc") or ""),
+        updated_utc=str(data.get("updated_utc") or ""),
+        source=SOURCE_INSTALL_ATTEMPT, attempt_id=str(data["attempt_id"]))
 
 
 _CANONICAL_UUID = re.compile(
@@ -851,7 +913,7 @@ def _digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _write_durably(path: Path, payload: bytes, *, exclusive: bool) -> None:
+def _write_durably(path: Path, payload: bytes, *, exclusive: bool, attempt=None) -> None:
     """Write through a sibling and `os.replace` onto the final name — on BOTH paths.
 
         create sibling -> write -> fsync(file) -> replace -> fsync(directory)
@@ -876,6 +938,14 @@ def _write_durably(path: Path, payload: bytes, *, exclusive: bool) -> None:
     A leftover sibling is overwritten rather than treated as authority: it is by definition the
     residue of a publish that never completed, and it is not a record.
     """
+    if attempt is not None:
+        # The protected container is created by the attempt itself, never here, and the write goes
+        # through its own judged stage-fsync-replace-readback.
+        if exclusive and attempt.read_bytes(path) is not None:
+            raise PendingRecordRefused(
+                f"a pending record already exists at {path}; a first publish never overwrites one")
+        attempt.write_bytes(path, payload)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     if exclusive and path.exists():
         raise PendingRecordRefused(
@@ -906,23 +976,51 @@ def _write_durably(path: Path, payload: bytes, *, exclusive: bool) -> None:
     _fsync_dir(path.parent)
 
 
-def read(layout) -> PendingRecord | None:
-    """The record, or None. A malformed one REFUSES rather than reading as absent."""
-    path = pending_path(layout)
+def _record_path(layout, attempt) -> Path:
+    return pending_path(layout) if attempt is None else Path(attempt.pending_path)
+
+
+def read(layout, *, attempt=None) -> PendingRecord | None:
+    """The record, or None. A malformed one REFUSES rather than reading as absent.
+
+    `attempt` (packet 1398) reads the v5 record from the protected install-attempt container, judged
+    on its open descriptor. The ordinary path never yields a v5 record, and the container never yields
+    a v4 one: each form has exactly one home.
+    """
+    path = _record_path(layout, attempt)
+    if attempt is None:
+        try:
+            payload = path.read_bytes()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise PendingRecordRefused(
+                f"the pending record at {path} could not be read: {exc}") from exc
+    else:
+        try:
+            payload = attempt.read_bytes(path)
+        except LifecycleError as exc:
+            raise PendingRecordRefused(
+                f"the install-attempt pending record at {path} is not protected: {exc}") from exc
+        if payload is None:
+            return None
     try:
-        payload = path.read_bytes()
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise PendingRecordRefused(f"the pending record at {path} could not be read: {exc}") from exc
-    try:
-        return PendingRecord.from_dict(json.loads(payload.decode("utf-8")))
+        record = PendingRecord.from_dict(json.loads(payload.decode("utf-8")))
     except (ValueError, RecordInvalid) as exc:
         raise PendingRecordRefused(
             f"the pending record at {path} is malformed and will not be adopted: {exc}") from exc
+    if attempt is None and record.source is not None:
+        raise PendingRecordRefused(
+            f"{path} holds an install-attempt record; that form lives only in the protected "
+            "attempt container")
+    if attempt is not None and (record.source != SOURCE_INSTALL_ATTEMPT
+                                or record.attempt_id != attempt.attempt_id
+                                or record.installation_id != attempt.installation_id):
+        raise PendingRecordRefused(f"{path} does not belong to install attempt {attempt.attempt_id}")
+    return record
 
 
-def publish(layout, record: PendingRecord, *, lock: object) -> PendingRecord:
+def publish(layout, record: PendingRecord, *, lock: object, attempt=None) -> PendingRecord:
     """Write the record BEFORE the first destructive action, and prove it landed.
 
     Idempotent for the SAME operation — republishing an identical record is a no-op, which is what a
@@ -941,8 +1039,12 @@ def publish(layout, record: PendingRecord, *, lock: object) -> PendingRecord:
     """
     _authority(layout, lock, "publishing the pending-uninstall record")
     record = record.validated()
-    path = pending_path(layout)
-    existing = read(layout)
+    if (attempt is None) != (record.source is None):
+        raise PendingRecordRefused(
+            "an install-attempt record is published only into the protected attempt container, "
+            "and an ordinary record never is")
+    path = _record_path(layout, attempt)
+    existing = read(layout) if attempt is None else read(layout, attempt=attempt)
     if existing is not None:
         _require_same_operation(existing, record)
         if existing.remaining != record.remaining:
@@ -951,12 +1053,12 @@ def publish(layout, record: PendingRecord, *, lock: object) -> PendingRecord:
                 "set; publish happens once, and checkpointing is how it shrinks")
         return existing
     payload = _serialize(record)
-    _write_durably(path, payload, exclusive=True)
-    return _verify_readback(layout, payload)
+    _write_durably(path, payload, exclusive=True, attempt=attempt)
+    return _verify_readback(layout, payload, attempt=attempt)
 
 
 def checkpoint(layout, *, operation_id: str, installation_id: str, resource: str,
-               lock: object) -> PendingRecord:
+               lock: object, attempt=None) -> PendingRecord:
     """Remove EXACTLY ONE completed entry and republish durably.
 
     One at a time, deliberately: a checkpoint that could clear several entries would let a partial
@@ -969,7 +1071,7 @@ def checkpoint(layout, *, operation_id: str, installation_id: str, resource: str
     tries to delete it again.
     """
     _authority(layout, lock, "checkpointing the pending-uninstall record")
-    existing = read(layout)
+    existing = read(layout) if attempt is None else read(layout, attempt=attempt)
     if existing is None:
         raise PendingRecordRefused(
             "there is no pending record to checkpoint; a checkpoint never creates one")
@@ -987,10 +1089,11 @@ def checkpoint(layout, *, operation_id: str, installation_id: str, resource: str
         operation_id=existing.operation_id, installation_id=existing.installation_id,
         manifest_generation=existing.manifest_generation, remaining=remaining,
         created_utc=existing.created_utc, updated_utc=utc_now_iso(),
+        source=existing.source, attempt_id=existing.attempt_id,
     ).validated()
     payload = _serialize(updated)
-    _write_durably(pending_path(layout), payload, exclusive=False)
-    return _verify_readback(layout, payload)
+    _write_durably(_record_path(layout, attempt), payload, exclusive=False, attempt=attempt)
+    return _verify_readback(layout, payload, attempt=attempt)
 
 
 def _require_same_operation(existing: PendingRecord, incoming: PendingRecord) -> None:
@@ -1002,6 +1105,10 @@ def _require_same_operation(existing: PendingRecord, incoming: PendingRecord) ->
         raise PendingRecordRefused(
             f"the pending record belongs to operation {existing.operation_id}, not "
             f"{incoming.operation_id}")
+    if incoming.attempt_id is not None and existing.attempt_id != incoming.attempt_id:
+        raise PendingRecordRefused(
+            f"the pending record belongs to install attempt {existing.attempt_id}, not "
+            f"{incoming.attempt_id}")
 
 
 #: `discard`'s journal verdict. Two values, because the record's answer to every other journal state
@@ -1035,16 +1142,18 @@ def _JOURNAL_FROM_LAYOUT(layout, operation_id: str, installation_id: str) -> tup
     return _JOURNAL_DISCARDABLE, "is resolved"
 
 
-def _verify_readback(layout, payload: bytes) -> PendingRecord:
+def _verify_readback(layout, payload: bytes, *, attempt=None) -> PendingRecord:
     """Read the file back and compare digests. A record that does not read back exactly is treated
     as never written — reporting a durable record that is not there is the one failure this whole
     module exists to prevent."""
-    path = pending_path(layout)
+    path = _record_path(layout, attempt)
     try:
-        landed = path.read_bytes()
-    except OSError as exc:
+        landed = path.read_bytes() if attempt is None else attempt.read_bytes(path)
+    except (OSError, LifecycleError) as exc:
         raise PendingRecordRefused(
             f"the pending record could not be read back from {path}: {exc}") from exc
+    if landed is None:
+        raise PendingRecordRefused(f"the pending record at {path} did not read back at all")
     if _digest(landed) != _digest(payload):
         raise PendingRecordRefused(
             f"the pending record at {path} did not read back as written "

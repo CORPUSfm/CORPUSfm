@@ -605,6 +605,7 @@ Flags are defined by **semantic name**; each platform spells it in its native id
 | Non-interactive | `--silent` | `-Silent` | yes | interactive |
 | Consent | `--yes` | `-Yes` | yes | prompts |
 | Verbose | `--verbose` / `-v` | `-Verbose` | yes | concise; full output always reaches the log |
+| Discard an incomplete fresh-install attempt (packet 1398) | `--discard-incomplete-attempt` | `-DiscardIncompleteAttempt` | yes | a rerun over an attempt that stopped part-way offers Inspect / Discard / Quit; `--silent` refuses without this switch; a discard always ends the invocation |
 
 *(`-h`/`--help` exists on Linux only, and that is not a parity gap: PowerShell supplies comment-based
 help and `-?` for every script intrinsically, so a Windows `-Help` parameter would be a redundant
@@ -724,8 +725,26 @@ directories are never overwritten. The ordinary bare installer may still self-cl
 Series 1 installation refuses before ordinary install work begins. The distribution exposes no
 standalone uninstaller.
 
-**Stable bootstrap handoff:** the release builder also publishes `outputs/server/bootstrap/bootstrap.sh`
-and `bootstrap.ps1` with digest sidecars, outside every installer ZIP. A bootstrap accepts either an
+**The signing seam (packet 1380-04):** a signed Windows release cannot be built in one pass, because
+the signer is an external, manually dispatched workflow and signing an earlier representation and then
+rewriting it is forbidden. `package-installer.sh` therefore pauses in the middle. With
+`--stage-signing-candidate DIR` it materializes every final member
+plus the 11-occurrence Windows signing inventory, and stops before anything is archived. With
+`--finalize-signing-candidate DIR [--signed-members DIR]` it adopts the signed byte streams and only
+then builds the nested runtime archive, payload digest file, descriptor, outer ZIP, sidecar,
+`release.json` and `latest.json`. With neither flag it runs both halves against a temporary
+candidate, which is the ordinary unsigned development build, so the local path rehearses the released
+one instead of being a second implementation of it. `installer/windows_signing.py` owns the
+inventory: 11 distributed occurrences over 10 distinct streams (the outer `_cfm_lib.ps1` and the
+nested runtime's copy are one library, signed once and placed in both positions), the completeness
+check that refuses any PowerShell in the Windows package the inventory does not name, the adoption
+check that refuses a body altered outside its signature block, and the final pass that reopens the
+finished archives and proves each occurrence carries the bytes that were signed. The Linux peer is
+built by the same run and is deliberately unsigned.
+
+**Stable bootstrap handoff:** the public release publishes no standalone bootstrap outside its ZIPs
+(decision D14); each package carries the bootstrap in its runtime archive and the installer installs
+it as the durable entry point. A bootstrap accepts either an
 exact local ZIP plus sidecar or an HTTPS distribution base, selects `latest.json` only inside the
 explicit/published compatibility series, verifies the release inventory, ZIP digest and packaged
 descriptor, then creates one protected, one-use `.bootstrap-handoff.json` in the extracted bundle.

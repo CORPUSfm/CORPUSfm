@@ -281,7 +281,7 @@ def _make_lifespan(mcp_app):
             if _update_observer is not None:
                 _update_observer.stop()
             try:
-                from corpusfm.server import availability, catalog, scheduler
+                from corpusfm.server import availability, catalog, queue_workers, scheduler
                 # The coordinator FIRST: it is the only thing that may still be contacting
                 # FileMaker, and it is stopped and JOINED wherever it is — mid-attempt, sleeping
                 # between retries, or dormant. Both of its events are set, so a dormant wait with no
@@ -289,6 +289,9 @@ def _make_lifespan(mcp_app):
                 availability.stop_coordinator()
                 catalog.stop_synchronizer()
                 scheduler.stop_scheduler()   # signal + join the web-owned scheduler clock
+                # After the scheduler (its pokes can no longer respawn anything) and before the gate
+                # resets: discovery, watchdog and idle workers are joined before the host lock goes.
+                queue_workers.stop_all()
                 availability.reset()         # clear the gate with the process
             except Exception:
                 pass
@@ -510,8 +513,8 @@ def create_app() -> FastAPI:
     # 2. **`/api` refuses with the SAME body every banner already reads** — `catalog_failed` /
     #    `unavailable` / `reason`, at 200 so an already-loaded page renders its existing freeze
     #    instead of a generic network error. `/api/status/notifications` is NOT exempt any more: it
-    #    read JOB and ALERT on a 10-second poll from every open tab, which is a database operation
-    #    on a repeating clock, and its `except` swallowed the failure into a zeroed result that
+    #    read JOB and ALERT on a repeating poll from every open tab, and its `except` swallowed the
+    #    failure into a zeroed result that
     #    looked like real news.
     # 3. **A NEW navigation gets one local waiting page** — no authentication, no USER, SETTINGS,
     #    AI, preference or any other lookup, and no application shell. Login and the OAuth

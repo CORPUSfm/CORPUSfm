@@ -535,7 +535,10 @@ def test_linux_removal_is_an_explicit_if_not_a_trailing_and_list():
     path is exactly where the test is false."""
     sh = "\n".join(l for l in INSTALL_SH.splitlines() if not l.lstrip().startswith("#"))
     assert '[[ -f "$_sched_unit_file" ]] && rm -f' not in sh
-    assert 'if [[ -f "$_sched_unit_file" ]]; then\n        rm -f "$_sched_unit_file"' in sh
+    # Packet 1398: the removal is recorded in a fresh-install attempt's ledger; the wrapper is a
+    # pass-through otherwise, and the removal it runs is still the same `rm -f` inside the same `if`.
+    assert ('if [[ -f "$_sched_unit_file" ]]; then\n'
+            '        la_do unit delete - "$_sched_unit_file" -- rm -f "$_sched_unit_file"') in sh
 
 
 def test_the_three_source_states_are_recorded_and_orphan_acls_are_not_repaired():
@@ -639,7 +642,8 @@ def test_windows_updates_the_generation_from_the_committed_value():
 def test_windows_a_failed_authority_retirement_fails_the_installer():
     """A001 must not be reported complete over a stale record."""
     body = _fn("Lc-RetireSchedulerAuthority")
-    assert "Lc-Run " in body, "the call bypasses the dying runner"
+    # Packet 1398: `La-LcRun` records the call in a fresh-install attempt and otherwise IS `Lc-Run`.
+    assert "La-LcRun " in body and "Lc-Dispatch" in _fn("La-LcRun"), "the call bypasses the dying runner"
     assert "Warn" not in body
 
 
@@ -671,7 +675,8 @@ def test_linux_authority_retirement_re_proves_physical_absence_and_dies_on_failu
     body = sh[sh.index("lc_retire_scheduler_authority() {"):sh.index("\n}", sh.index("lc_retire_scheduler_authority() {"))]
     assert 'if [[ -f "$unit_file" ]]; then' in body and "die " in body
     assert 'systemctl show -p LoadState --value' in body
-    assert 'lc_run "scheduler authority retirement"' in body
+    # Through `la_lc_run`, whose ordinary path IS `lc_run` (packet 1398): still dispatching, still fatal.
+    assert ('la_lc_run retire_scheduler_authority \'{}\' "scheduler authority retirement"' in body)
     assert 'CFM_GENERATION="$committed"' in body
     assert body.count("die ") >= 3
 

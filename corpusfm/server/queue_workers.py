@@ -14,6 +14,13 @@ outcome)``; a raised exception is caught and treated as a failure (try-once). A 
 registered handler parks the record (``set_failed``) rather than spinning.
 
 Inert until ``start_all()`` is called at app boot AND producers have registered handlers (brick 4).
+
+**Idle discovery is ONE clock, not six (packet 1388-02).** An empty worker waits on its wake signal and
+reads nothing. In-process producers (web routes, MCP, the in-process scheduler, step advancement) wake
+the exact worker through ``poke()``. Work written by a SEPARATE supported process — the CLI — cannot
+reach this process's ``poke()``, so a single discovery coordinator reads the non-failed QUEUE ``Type``
+set once per cycle and wakes only the groups that have work. Its snapshot is a wake hint, never
+authority: a woken worker still claims through ``next_for``.
 """
 
 from __future__ import annotations
@@ -131,8 +138,8 @@ _GROUPS: dict[str, list] = {
 }
 _TYPE_TO_GROUP = {t: name for name, types in _GROUPS.items() for t in types}
 
-_IDLE_WAIT = 30.0        # idle poll; poke() wakes a worker sooner
-_ERROR_BACKOFF = 20.0    # after a claim/scan error, back off before retrying (no hot loop)
+_DISCOVERY_INTERVAL = 30.0   # the ONE idle discovery clock; it begins a scan this long after the last ended
+_ERROR_BACKOFF = 20.0        # after a claim/scan error, back off before retrying (no hot loop)
 
 
 @dataclass
@@ -172,6 +179,11 @@ def _poke_type(step_type: str) -> None:
         _WORKERS[name].poke()
 
 
+def _gate_open() -> bool:
+    from corpusfm.server import availability
+    return availability.is_open()
+
+
 class _Worker:
     """One FIFO thread draining a set of step types. Serial within the worker (single-flight); the
     ephemeral ``current_id`` lets the Queue view mark the row it's on and refuse a mid-step cancel."""
@@ -179,10 +191,14 @@ class _Worker:
     def __init__(self, name: str, types: list):
         self.name = name
         self.types = types
-        self._wake = threading.Event()
+        # A wake is a PENDING flag under a condition, not an Event: `wait(); clear()` erased a poke
+        # landing between the two. Observing and consuming the flag happen under one lock.
+        self._cond = threading.Condition()
+        self._pending = False
         self._stop = threading.Event()
         self._lock = threading.RLock()
         self._running = False
+        self._thread: Optional[threading.Thread] = None
         self.current_id = ""
         self.current_step = ""
         self.current_deadline = 0.0      # monotonic; 0 = idle (packet 1003)
@@ -212,10 +228,9 @@ class _Worker:
         against a database CORPUSfm has said it cannot read — and the check is here, at the one claim
         chokepoint every worker type shares, rather than repeated per handler. Work already in flight
         is NOT rolled back: it finishes or fails naturally, and its record parks like any other.
-        Returning False idles the loop, so a paused box polls at `_IDLE_WAIT` and drains nothing.
+        Returning False idles the loop until the next wake; a paused box drains nothing.
         """
-        from corpusfm.server import availability
-        if not availability.is_open():
+        if not _gate_open():
             return False
         try:
             row = self._claim(repo)
@@ -275,55 +290,83 @@ class _Worker:
     def _loop(self) -> None:
         try:
             while not self._stop.is_set():
+                # The gate BEFORE the backend: a paused worker neither builds a backend nor reads.
+                # It waits for a wake; the reopen edge requests discovery, which re-wakes it.
+                if not _gate_open():
+                    self._idle(None)
+                    continue
                 try:
                     repo = _repo()            # backend construction can raise transiently — keep it
                     if repo is None:          # INSIDE the guard so a hiccup backs off, never kills the
-                        self._idle(_IDLE_WAIT)  # thread (a dead worker stops draining its whole type
-                        continue              # silently + its non-failed rows then never drain).
+                        self._idle(None)      # thread (a dead worker stops draining its whole type).
+                        continue
                     did = self.process_next(repo)
                 except Exception:
+                    # Bound an unprompted retry, while preserving the existing immediate-poke path:
+                    # a producer wake interrupts this backoff and is consumed atomically. This is an
+                    # error retry bound, not a private idle-discovery clock.
                     self._idle(_ERROR_BACKOFF)
                     continue
                 if not did:
-                    self._idle(_IDLE_WAIT)
+                    self._idle(None)
         finally:
             with self._lock:
                 self._running = False
 
-    def _idle(self, timeout: float) -> None:
-        self._wake.wait(timeout=timeout)
-        self._wake.clear()
+    def _idle(self, timeout: Optional[float]) -> bool:
+        """Wait for a wake (or ``timeout``) and CONSUME it. Returns whether a wake was pending."""
+        with self._cond:
+            if not self._pending and not self._stop.is_set():
+                self._cond.wait(timeout)
+            woke = self._pending
+            self._pending = False
+            return woke
 
-    def poke(self) -> None:
-        self._wake.set()
+    def _signal(self) -> None:
+        with self._cond:
+            self._pending = True
+            self._cond.notify_all()
+
+    def wake(self) -> None:
+        """Signal this worker and re-ensure its thread (discovery's wake; no coordinator re-ensure)."""
+        self._signal()
         self.ensure()
 
+    def poke(self) -> None:
+        self.wake()
+        _ensure_discovery()
+
     def ensure(self) -> None:
-        # Only a WORKER-HOST process (one that called start_all() at boot — the web process) may spawn
-        # a draining thread. The scheduler is a SEPARATE process that enqueues + pokes but must NOT
-        # drain: a second pull worker there would claim the same non-failed [pull] row the web worker
-        # is already running (there is no atomic claim), double-executing the run (dup snapshot +
-        # RunRecord). Off-host, poke() still set the wake event (harmless); the web worker drains the
-        # row on its next poll. See start_all().
+        # Only a WORKER-HOST process (one that called start_all() and won the host lock — the web
+        # process) may spawn a draining thread. A CLI process enqueues + pokes but must NOT drain: a
+        # second acquire worker there would claim the same non-failed row the web worker is already
+        # running (there is no atomic claim), double-executing the run. Off-host, poke() only sets the
+        # pending flag (harmless); the web process's discovery coordinator finds the durable row.
         if not _worker_host:
             return
         with self._lock:
-            if self._running:
+            # Re-checked under the lock stop() takes: stop_all drops the host flag before stopping,
+            # so an ensure that reaches this point after a stop cannot revive the thread.
+            if self._running or not _worker_host:
                 return
             self._running = True
-        self._stop.clear()
-        threading.Thread(target=self._loop, name=f"queue-{self.name}-worker", daemon=True).start()
+            self._stop.clear()
+            t = threading.Thread(target=self._loop, name=f"queue-{self.name}-worker", daemon=True)
+            self._thread = t
+            t.start()
 
     def stop(self) -> None:
-        self._stop.set()
-        self._wake.set()
+        with self._lock:
+            self._stop.set()
+        self._signal()
 
 
 # True only in a process that called start_all() AND won the worker-host lock (the web/uvicorn
-# process). Gates worker-thread creation so the separate scheduler process — which enqueues + pokes
-# but never calls start_all — cannot spin up a second draining worker (packet 1000 Phase 2:
-# cross-process double-drain of pull), and so a second web process (deploy overlap, restart race)
-# stands down instead of silently double-draining (packet 1001 / concept A).
+# process). Gates worker-thread creation so a CLI process — which enqueues + pokes but never calls
+# start_all — cannot spin up a second draining worker (packet 1000 Phase 2: cross-process
+# double-drain), and so a second web process (deploy overlap, restart race) stands down instead of
+# silently double-draining (packet 1001 / concept A). The scheduler is an in-process component of the
+# web process (packet 1361-01), so its pokes reach these workers directly.
 _worker_host: bool = False
 
 # Held for the whole life of the worker-host process (packet 1001): the OS advisory lock that makes
@@ -400,6 +443,138 @@ def poke(step_type: str) -> None:
     _poke_type(step_type)
 
 
+# ── the ONE idle discovery coordinator (packet 1388-02) ───────────────────────────
+class _Discovery:
+    """Reads the non-failed QUEUE ``Type`` set once per cycle and wakes only the groups with work.
+
+    It exists for durable work this process was never poked about — a CLI enqueue, rows left over
+    from a previous process — and it is deliberately a HINT: the woken worker re-reads and claims
+    through ``next_for``. A failed or partial read wakes nothing and is never taken as an empty queue.
+    A paused gate means no backend is built and nothing is read.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._requested = False
+        self._stop = threading.Event()
+        self.cycles = 0
+        self.failures = 0
+        self.last_ok_utc = ""
+        self.last_error = ""
+        self.last_woken: list = []
+        self.exited_unexpectedly = False
+
+    def request(self) -> None:
+        """Ask for one immediate discovery (the availability reopen edge)."""
+        with self._cond:
+            self._requested = True
+            self._cond.notify_all()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self.request()
+
+    def _wait(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` for a request and CONSUME it atomically. The test seam."""
+        with self._cond:
+            if not self._requested and not self._stop.is_set():
+                self._cond.wait(timeout)
+            req = self._requested
+            self._requested = False
+            return req
+
+    def run_cycle(self) -> Optional[bool]:
+        """One discovery. ``None`` = paused (no read); ``True`` = read succeeded; ``False`` = failed."""
+        if not _gate_open():
+            return None
+        from datetime import datetime, timezone
+        try:
+            repo = _repo()
+            if repo is None:
+                raise RuntimeError("no queue repository for the active backend")
+            types = repo.active_types()
+        except Exception as exc:
+            self.failures += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            log.debug("queue discovery read failed; waking nothing", exc_info=True)
+            return False
+        self.cycles += 1
+        self.last_ok_utc = datetime.now(timezone.utc).isoformat()
+        self.last_error = ""
+        woken = [name for name, group in _GROUPS.items() if any(t in types for t in group)]
+        self.last_woken = woken
+        for name in woken:
+            if self._stop.is_set():
+                break
+            _WORKERS[name].wake()
+        return True
+
+    def loop(self) -> None:
+        try:
+            while not self._stop.is_set():
+                try:
+                    res = self.run_cycle()
+                except Exception:                  # pragma: no cover - run_cycle contains its own
+                    log.debug("queue discovery cycle raised", exc_info=True)
+                    res = False
+                if self._stop.is_set():
+                    return
+                self._wait(_ERROR_BACKOFF if res is False else _DISCOVERY_INTERVAL)
+        finally:
+            if not self._stop.is_set():
+                self.exited_unexpectedly = True
+                log.error("queue discovery coordinator exited unexpectedly; the next poke(), "
+                          "start_all() or service restart restarts it")
+
+
+_discovery: Optional[_Discovery] = None
+_discovery_thread: Optional[threading.Thread] = None
+_discovery_lock = threading.RLock()
+
+
+def _ensure_discovery() -> bool:
+    """Start the discovery coordinator on a worker host if it is not alive. True on the START edge."""
+    global _discovery, _discovery_thread
+    if not _worker_host:
+        return False
+    with _discovery_lock:
+        if not _worker_host:
+            return False
+        if _discovery_thread is not None and _discovery_thread.is_alive():
+            return False
+        d = _Discovery()
+        t = threading.Thread(target=d.loop, name="queue-discovery", daemon=True)
+        _discovery, _discovery_thread = d, t
+        t.start()
+        return True
+
+
+def request_discovery() -> None:
+    with _discovery_lock:
+        d = _discovery
+    if d is not None:
+        d.request()
+
+
+def discovery_diagnostics() -> dict:
+    """Cheap in-memory facts about the discovery coordinator. No database read."""
+    with _discovery_lock:
+        d, t = _discovery, _discovery_thread
+    if d is None:
+        return {"started": False, "running": False, "interval_s": _DISCOVERY_INTERVAL}
+    return {
+        "started": True,
+        "running": bool(t is not None and t.is_alive()),
+        "exited_unexpectedly": d.exited_unexpectedly,
+        "interval_s": _DISCOVERY_INTERVAL,
+        "cycles": d.cycles,
+        "failures": d.failures,
+        "last_ok_utc": d.last_ok_utc,
+        "last_error": d.last_error,
+        "last_woken": list(d.last_woken),
+    }
+
+
 # ── upload watchdog (packet 086 — the `upload` step's server-side deadline) ───────
 # The `upload` step is PERFORMED BY THE CLIENT (browser / MCP deliverable POSTs bytes into the record's
 # SourceXML container); the server advances upload→ingest on the final bytes. This watchdog performs
@@ -414,6 +589,7 @@ _WATCHDOG_INTERVAL = 60.0
 _watchdog_stop = threading.Event()
 _watchdog_running = False
 _watchdog_lock = threading.RLock()
+_watchdog_thread: Optional[threading.Thread] = None
 
 
 def _parse_iso(s: str):
@@ -473,6 +649,9 @@ def _watchdog_loop() -> None:
     global _watchdog_running
     try:
         while not _watchdog_stop.is_set():
+            if not _gate_open():          # paused: no backend, no QUEUE read (packet 1388-02)
+                _watchdog_stop.wait(timeout=_WATCHDOG_INTERVAL)
+                continue
             try:
                 repo = _repo()            # inside the guard — a transient backend error must back off,
                 if repo is not None:      # not kill the watchdog (a dead watchdog stops reaping stale
@@ -487,21 +666,25 @@ def _watchdog_loop() -> None:
 
 
 def _ensure_watchdog() -> None:
-    global _watchdog_running
+    global _watchdog_running, _watchdog_thread
     with _watchdog_lock:
         if _watchdog_running:
             return
         _watchdog_running = True
     _watchdog_stop.clear()
-    threading.Thread(target=_watchdog_loop, name="queue-upload-watchdog", daemon=True).start()
+    t = threading.Thread(target=_watchdog_loop, name="queue-upload-watchdog", daemon=True)
+    _watchdog_thread = t
+    t.start()
 
 
 def start_all(retry_seconds: float = 20.0) -> None:
-    """Start every worker + the upload watchdog (called once at app boot, web process only). First
-    win the worker-host lock (packet 1001) — only the winner marks itself a worker host and spawns
-    draining threads; a second web process (deploy overlap / restart race) or the scheduler process
-    stands down and does NOT drain. On a clean restart the previous host releases the lock within
-    seconds, so the new process retries briefly and hands over seamlessly."""
+    """Start every worker, the discovery coordinator and the upload watchdog. Called from the
+    readiness RESUME callback on every closed→open edge, web process only. First win the worker-host
+    lock (packet 1001) — only the winner marks itself a worker host and spawns threads; a second web
+    process (deploy overlap / restart race) or a CLI process stands down and does NOT drain.
+
+    Every call REQUESTS one immediate discovery, even when every thread was already alive: a poke
+    consumed while the gate was closed must not strand its durable row until an unrelated event."""
     global _worker_host
     if not _acquire_worker_host(retry_seconds):
         log.warning("another CORPUSfm worker host is active — this process will NOT drain the QUEUE")
@@ -509,19 +692,45 @@ def start_all(retry_seconds: float = 20.0) -> None:
     _worker_host = True
     for w in _WORKERS.values():
         w.ensure()
+    started = _ensure_discovery()      # a fresh coordinator scans first thing
     _ensure_watchdog()
+    if not started:
+        request_discovery()
 
 
-def stop_all() -> None:
-    """Stop every worker (tests / shutdown) and release the worker-host lock so a later start_all in
-    this interpreter can re-acquire."""
-    global _worker_host, _host_lock
+def stop_all(timeout: float = 5.0) -> bool:
+    """Stop and JOIN the discovery coordinator, the watchdog and the workers, then release the
+    worker-host lock (web shutdown / tests). Returns True when everything was quiescent.
+
+    ``_worker_host`` drops FIRST so no poke can respawn a thread mid-shutdown. The lock is released
+    only once no thread of ours can still read: a thread that outlives the join (a worker mid-handler)
+    keeps the lock held, and the OS frees it at process exit — so no old reader overlaps a new host."""
+    global _worker_host, _host_lock, _discovery_thread
+    import time as _time
+    with _discovery_lock:
+        _worker_host = False
+        d, dt = _discovery, _discovery_thread
+    deadline = _time.monotonic() + max(0.0, timeout)
+    if d is not None:
+        d.stop()
+    if dt is not None and dt is not threading.current_thread():
+        dt.join(timeout=max(0.0, deadline - _time.monotonic()))   # before workers: it wakes them
+    _watchdog_stop.set()
     for w in _WORKERS.values():
         w.stop()
+    threads = [dt, _watchdog_thread] + [w._thread for w in _WORKERS.values()]
+    for t in threads:
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=max(0.0, deadline - _time.monotonic()))
+    alive = [t.name for t in threads if t is not None and t.is_alive()]
+    if alive:
+        log.warning("queue shutdown: %s still running after %.1fs; the worker-host lock stays held "
+                    "until process exit", ", ".join(alive), timeout)
+        return False
     if _host_lock is not None:
         _host_lock.release()
         _host_lock = None
-    _worker_host = False
+    return True
 
 
 def current_ids() -> set:

@@ -4,15 +4,18 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: >-
+          Type deploy-current-source to publish this source. This replaces the current page,
+          including any release-specific trust information.
+        required: true
+        default: build-only
 
 permissions:
   contents: read
   pages: write
   id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
 
 jobs:
   build:
@@ -37,9 +40,13 @@ jobs:
           path: dist
 
   deploy:
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy == 'deploy-current-source'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     needs: build
     steps:
