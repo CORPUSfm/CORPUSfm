@@ -308,13 +308,13 @@
     "corpusfm/lifecycle/atomic.py": "492bd437af87b9321e4d2dd8b7c8561128de3741ec5084918207726b814dbbdc",
     "corpusfm/lifecycle/bridge.py": "bca8a15cb246dc052fe69721a53442270b312a33ddb101a342b366d5cc7c226d",
     "corpusfm/lifecycle/bytecode_cleanup.py": "008bf10a5f831bc0ae7e40d39247238da4187b011a4e8d255905036a14e13a18",
-    "corpusfm/lifecycle/cli.py": "86b6cf8a7265b98d6fb8f4f453c68a02e70de3d901e2251dec24706de6b3b32c",
+    "corpusfm/lifecycle/cli.py": "f71c2674dab1991273611dcd28d5e494ecc1c2b61a79361c64fad3ddfebf519b",
     "corpusfm/lifecycle/composition.py": "252555cba0420f1662224df63f70008a563b3c88c845b662154fd66dc5a79c25",
     "corpusfm/lifecycle/consent.py": "ba8d7d1c801afa560a11ecba35c7ddaceeeba0394479e8308deb2fe9fd2a3e19",
     "corpusfm/lifecycle/corpus_identity.py": "2f9c16e4a084dbf8e355d4dacde63764296e2565cea5f35687a0e521e81e1e68",
     "corpusfm/lifecycle/errors.py": "94c383e684427175475795fca5a244c211125f83532d5797b6296ea66e693ff7",
     "corpusfm/lifecycle/fms_folders.py": "ae7877f1937b06fe214cd60bbb1ee8807cd8542984cdade67d494c4849a386b0",
-    "corpusfm/lifecycle/install_attempt.py": "7a8c6700b657daafd5b3acdcf6c15bcf6e0967b0fe4911a18562a37862e6a7fe",
+    "corpusfm/lifecycle/install_attempt.py": "2c5a4886a9205b4ec7597a0b8371bb22d9eaf2b5fa636763d1744374835e1a4c",
     "corpusfm/lifecycle/installer_disposition.py": "adeaa4cd7d26343482b88c4af04aa6dd60aecb7091a2bbf5ac41e2e173a1d838",
     "corpusfm/lifecycle/journal.py": "fdf9434cadac45f0c2c28641b5615deaf2b425a606c100cbd9aaaf5c33472fb8",
     "corpusfm/lifecycle/key_migration.py": "f1841cefe44940acd9733cda52b7df1c883d3c7bd438b2c21fb1873e9f7c8550",
@@ -359,7 +359,7 @@
     "corpusfm/lifecycle/uninstall_resume.py": "e486113d45a4a21e09cc83df3075de582adab2f9c940f6769fc4cbb3707f5ed7",
     "corpusfm/lifecycle/uninstall_runtime.py": "dafa7b2c6a7d6a32b4ed1f0fd27f02ab534a5ba52d49c101231301f04416b140",
     "corpusfm/lifecycle/uninstall_terminal.py": "f85b71cbef57d2a0e8ce39efbe199aa3612c7dc1777c673d4f2a42f06b2f7461",
-    "corpusfm/lifecycle/update_boundary.py": "847a9bf1f19a38729d3707d013b7a91cc96093349e2c2a95a78e1e529127a982",
+    "corpusfm/lifecycle/update_boundary.py": "28f2048400fbee52e0ab577c1cf17b6d7b05be61035d64cfc7ecc9b008b19824",
     "corpusfm/logging_config.py": "b1bdbd2fc97c857f3649bbd1c888ee9678c279deea11d95b49300beaf57176cc",
     "corpusfm/mcp/__init__.py": "f50a8bd59b3cdee31aaaa8984b5fe75a7f0df1c757c001a84691a46887872131",
     "corpusfm/mcp/__main__.py": "ae126d789c035a402ceba0d3ca14ab4d134ae5a261d94cc63a37274c6d822620",
@@ -454,7 +454,7 @@
     "corpusfm/server/tags_store.py": "9661f5d2fb03c0c95baf7a73d0cff095dfe092706e9655dced69504ab250c8b7",
     "corpusfm/server/update_notice.py": "c1a3af4db1c23f142a18644126baad5d67c71be184c129907fcd175874fd53fb",
     "corpusfm/server/update_observer.py": "8ffd81af24ab4a071d3fe78f49c673f63bfd9738a9a8d39542b4788c34a8f2be",
-    "corpusfm/server/update_service.py": "e9bb5d78ba29793d490ea1e3473608e9cc1237b12363ee575b35b78770bf49d6",
+    "corpusfm/server/update_service.py": "a13b7a0644e1504dfec5b1b27980e88dab9291d6f2da7cc6db323675134f3fb6",
     "corpusfm/server/win_db_ops.py": "e45e092dca905e49a9a891938c0c2708b64bb7d480c5290b5d9f8c116c0f70e1",
     "corpusfm/storage/__init__.py": "9251284ee65787074228b98b94d2a0abc7abb9c4823c4981dc792b0143d22dd8",
     "corpusfm/storage/artifact_record.py": "aa9975b9c441efd57089848cc403a3f086cc9dec45e240386023244d0abeab7d",
@@ -495,7 +495,7 @@
     "installer/linux/corpusfm-proxy.sh": "050e96a1af3d0c975274fd53f35d0c6d86f44351ab314647af840e02f639c197",
     "installer/linux/corpusfm-recovery.sh": "c213caf789d255fbc6e828f6a07b7b2d39c73ec5be0981105c83abf6fa841bad",
     "installer/linux/corpusfm-update.sh": "61ebff57ed925abad0db6bd29eb0eaead7005a4cf9d10c7d605090e70854f378",
-    "installer/linux/install.sh": "bb32b07001d0ff9407bef24836af90cc41d8641f4c60044c4cebf5be36fe998b",
+    "installer/linux/install.sh": "6cf431e509427fca18af52429d2669ae8950dfb5f3fb149c175585e36fbdb281",
     "installer/linux/uninstall.sh": "757b37dcbb5f15b418597c3f7734108f37f99249426ab4fbec795ca42a0dd022",
     "installer/package-installer.sh": "fadb8e9f75464562d31f701c8a28949e032a43a4a506b00cd7aff690947e91b5",
     "installer/requirements-server.txt": "abea698b78e22153851894197613660f8b9258081bf5e9245a963fa6d68ab86f",
@@ -505,8 +505,8 @@
     "installer/windows/cfm-verify-installer-bundle.ps1": "39ded2457d21a955d3c685fec77cb45a8e7f8c4c641cbb23f27a0e73af144cdb",
     "installer/windows/corpusfm-proxy.ps1": "d9b97664083043ec7a13b90820908e8a7cab95ee1d8e67b72f49c203bc3f4ffb",
     "installer/windows/corpusfm-recovery.ps1": "929e4aa6a885e9bc8e488e32ec52dae084aa553d7bf55f144fed4793fe585ec4",
-    "installer/windows/corpusfm-update.ps1": "061127cfd9644e340cb580e7432deaeb6c805131d6f720a39408f415adaf0739",
-    "installer/windows/install.ps1": "191d8bdbd2904be2644d000efe709e59641bcea21c75aff16a698eebf16811d0",
+    "installer/windows/corpusfm-update.ps1": "cec49a48b605ccec8b26a437358b42ec97833f6df960ca04b268ec0449d2b284",
+    "installer/windows/install.ps1": "162c61d1dd97c8f21587751a4937c01648e6810daeb499e6f68b8ff69a981b70",
     "installer/windows/uninstall.ps1": "e8eb6230613098310d3df08e63ee78052a22dbdb6129ee8719b09e68a5ae5ab5",
     "installer/windows_signing.py": "a3c968f98c7aff01d53be3ea8c9bc50283a8050dd7dab5e28f2a699ebad209dd",
     "installer/zip_deterministic.py": "e46db034dc98dce320491ff5bd6c45fc2af39c62c093fbc806a699c4db4f4079",
@@ -520,7 +520,7 @@
     "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
     "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
     "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
-    "release-build.txt": "7e9f88a94bf2dda5bade9bd0b7ce9f3edc6bf399720bbce02f1cb737f01248d4",
+    "release-build.txt": "cdecd1ee55b84b1ca486a0eef194cd750b7c032f46e4a80e192539f172e1100c",
     "requirements.txt": "acd44f337bdebcee434ede968e8a7669ed563f6cafbd7af0bbd5c3dcf1fe1a2f",
     "scripts/_release_gate_live.py": "335454a6e3e43c5e0375f7524a33a60647a862637e41dcba453cd474ab7d15b5",
     "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
@@ -551,6 +551,7 @@
     "tests/test_buildstamp.py": "6aaf7d893ce149386269db5e77bc4f9a5073779ec9fd7eb6f6ad121b492023b7",
     "tests/test_composition.py": "46f62d3c09af3d16f720ba51da1fd345a2a236dfe3827bc1a17602f8cd7944ab",
     "tests/test_deterministic_packaging.py": "d77de6c3d42302b4e186d17f0cafda4a8edb98313514dd710cd23a45ba2b2945",
+    "tests/test_fresh_install_identity_observation.py": "4512b4355c41643c431e0654618e92f68c8d2107326d18350ce3b5a92722ac34",
     "tests/test_git_credentials.py": "2a8392920ff60334adc72e05ee4b5e0d858869c0b5c47e0b484d7f8a39713e46",
     "tests/test_installer_asks_only_when_needed.py": "3749d5fb2d2530c49bfd7cc84cdfe21893acd8226a6db89f96d08f781ffe4aea",
     "tests/test_installer_bootstrap.py": "666baa480db05ce72f1962048f746aedfcfd5135d4223e4f485166bf1c98c7f7",
@@ -593,7 +594,7 @@
     "tests/test_powershell_json_shape.py": "2e6250e8b53b17491052ae3e6275c553415bc18c08e625460520907b6bbd37fb",
     "tests/test_privileged_update_artifacts.py": "0d94ab00b70c0884698a8721205fe925538476150da4d2725e7cac456861dbfb",
     "tests/test_privileged_update_build_stamp.py": "7a2f2936578c7e2f35b7db94a9b8fe209505349076ec6e6173d315f37dbde54c",
-    "tests/test_privileged_updater_behaviour.py": "bfb41016ba038782ff776113f5e744a5519bead9a8eb48b13d96682235d52a45",
+    "tests/test_privileged_updater_behaviour.py": "eccae50a27656da69760ded8e9f8d5df908ad9d6a2e88e6be9598a637d51415a",
     "tests/test_proxy_executor_contract.py": "a116bc61f4e2d69c1a186d0ea2ee23a3d3fdac72fa72a9e1d5dfcdc33faa59aa",
     "tests/test_proxy_gate.py": "6b98fc592eef2c49871372adc4419e8c015b12c1605e1f8a24e47c439309941c",
     "tests/test_proxy_walk.py": "514056120f96a11e9156cd14a68755755ba75e5a6c5558a754797b1392c33607",
@@ -607,11 +608,12 @@
     "tests/test_uninstall_launchers.py": "ecc609ee647e57f18a12e77b902d9126c53d226dc03d388b5600ca33eb3f0bb4",
     "tests/test_uninstall_one_frame_one_run.py": "00444034051df75f3f04142df4c1480d46b683805dc10bc5cd458caf6f545392",
     "tests/test_uninstall_stage_fence.py": "24f4fd164411a112666bf8a2aa3b4e57dc413a03e821b909d023026100584cfa",
-    "tests/test_update_service.py": "01fe8603258ae3afa83c9cb1a8cd45aab9d43f2d3c72cabc728a1b92b57808e7",
+    "tests/test_update_service.py": "35da8a617e97c1aca7a3a6613bcd724f96059c0d6f768bad407a6e90b2c83525",
     "tests/test_updater.py": "16d40b241405fd32b52a90506cdf787aff1e0e9a58ce4f519d07978ca71e3005",
     "tests/test_updater_task_action_binding.py": "af23e7a2f57d780279fb785cda0e7e32aa720f37b6b010d864585309336fcad4",
     "tests/test_upgrade_location_authority.py": "6089879484896b87b11021305fe30440e55d6f2c81fd0e892d205b5c88a249a9",
     "tests/test_upgrade_trust.py": "c817b3afcfa013163eea9c1cdb0966e51f66331772aaa1f8cd676997342af349",
+    "tests/test_windows_hosted_storage_bookkeeping.py": "c9fac78c66b92154d26a49991cb68a1e608012455190fc7aa9a613636b231fe4",
     "tests/test_windows_install_attempt.py": "c0a419ae3305a497042d58b26f281a44db3cd6cc62105e9be28a7fd6f1879c63",
     "tests/test_windows_installer_semantics.py": "9d3482b565f38ee2c7fc885ecfb0385f020f3b6f8a78a96d1ae39f1f981a3c0c",
     "tests/test_windows_installer_source_clone.py": "d726eab21b517ced2ab9f6fae6d13bc681e594d19899e5d3b9c80efaef72293f",
@@ -2832,6 +2834,10 @@
       "class": "exact-copy",
       "owner": "installer:tests/test_deterministic_packaging.py"
     },
+    "tests/test_fresh_install_identity_observation.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_fresh_install_identity_observation.py"
+    },
     "tests/test_git_credentials.py": {
       "class": "exact-copy",
       "owner": "application:tests/test_git_credentials.py"
@@ -3076,6 +3082,10 @@
       "class": "generated",
       "owner": "public-profile:public:application"
     },
+    "tests/test_windows_hosted_storage_bookkeeping.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_windows_hosted_storage_bookkeeping.py"
+    },
     "tests/test_windows_install_attempt.py": {
       "class": "exact-copy",
       "owner": "installer:tests/test_windows_install_attempt.py"
@@ -3120,8 +3130,8 @@
   "projection": {
     "asset_authority": "application:assets (regular tracked blobs of the application commit)",
     "contract_version": 3,
-    "installer_patch_authored_against": "9b9341f6d71891d72676a8f8190b481ce71b0b7a",
-    "installer_patch_sha256": "8aa954f6b557a6a0249bc05e11d78ca1dcbb12f86076a39d77e4b6184dcfe093",
+    "installer_patch_authored_against": "2ddc23290c7740cfc774345caf9d861af16c8457",
+    "installer_patch_sha256": "fe36f747c9134ad239869e88a4e3dcbad6bf78a8785a4468c2691ebe53f1d16b",
     "path_policy": {
       "explicit_exclusions": [
         "**/__pycache__/**",
@@ -3150,13 +3160,13 @@
       "unselected_source_paths": "excluded"
     },
     "profile": "public",
-    "profile_sha256": "4fdcaa2d50e44edb4b4f2cdafdebaf5bf5d0e88cd8401703183e6af41104e0a3",
+    "profile_sha256": "8e880c18639623e90e4f04ddb2670f37393591c99f0e82d9c934513ae4a279a6",
     "profile_version": 1
   },
-  "release_build": 2997,
+  "release_build": 3007,
   "schema_version": 2,
   "source_commits": {
-    "application": "104a63d41ab76e107059bcf446b3544c7bda53f8",
-    "installer": "ca1a7b89c75d726826ee2ac1d171c9cb89672603"
+    "application": "15a63820bc461f6dd258fec58a46235018d8f81b",
+    "installer": "2ddc23290c7740cfc774345caf9d861af16c8457"
   }
 }

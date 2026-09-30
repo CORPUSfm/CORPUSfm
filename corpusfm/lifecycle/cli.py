@@ -2685,11 +2685,20 @@ def _admin_identity(args, *, engine=None, lifecycle=None) -> int:
         # when that process ended, and a credential is never persisted to be reused.
         if verb in ("reconcile", "remove", "abort"):
             lease = ops.CredentialLease.read(str(raw["credential_input"]))
+        elif verb == "observe" and str(raw["credential_input"]) != "absent":
+            # A supplied non-interactive credential lets observe make its ONE read-only authorized
+            # GET. Without it a fresh box can only read `unknown`, which a fresh install must refuse.
+            # Observe never prompts: it is the command an administrator runs before being asked.
+            if str(raw["credential_input"]) == "prompt":
+                raise CredentialFrameRefused(
+                    "admin-identity observe never prompts; supply the credential frame on standard "
+                    "input or a descriptor, or use credential_input 'absent'")
+            lease = ops.CredentialLease.read(str(raw["credential_input"]))
         api = _ai_api() if engine is None else None
         probe = _ai_probe() if engine is None else None
         extra = {} if engine is not None else {"api": api, "probe": probe}
         if verb == "observe":
-            report = ops.observe(_ai_inputs(raw), lifecycle_layout=layout, **extra)
+            report = ops.observe(_ai_inputs(raw), lifecycle_layout=layout, credential=lease, **extra)
         elif verb == "reconcile":
             with LifecycleLock(layout) as lock:
                 report = ops.reconcile(_ai_inputs(raw), lease=lease, lifecycle_layout=layout,

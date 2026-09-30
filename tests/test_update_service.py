@@ -383,14 +383,21 @@ def test_the_request_the_service_writes_is_private_and_carries_no_secret(tmp_pat
     monkeypatch.setattr(us, "privileged_updater_state", lambda: us.PRIVILEGED_PRESENT)
     monkeypatch.setattr(us, "_OUTCOME_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(us, "_OUTCOME_POLL_SECONDS", 0.01)
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: __import__("subprocess")
-                        .CompletedProcess(a[0] if a else [], 0, "", ""))
+    seen = {}
+
+    def trigger(*a, **k):
+        # Inspected when the updater would read it: an unclaimed request is withdrawn afterwards.
+        request = ub.request_path(state)
+        seen["mode"] = _stat.S_IMODE(os.stat(request).st_mode)
+        seen["payload"] = json.loads(request.read_text())
+        return __import__("subprocess").CompletedProcess(a[0] if a else [], 0, "", "")
+
+    monkeypatch.setattr("subprocess.run", trigger)
 
     us.apply(expected_head="b" * 40, actor="tester")
 
-    request = ub.request_path(state)
-    assert _stat.S_IMODE(os.stat(request).st_mode) == 0o600
-    payload = json.loads(request.read_text())
+    assert seen["mode"] == 0o600
+    payload = seen["payload"]
     assert set(payload) == {"trigger_id", "expected_head", "actor"}
     from corpusfm.lifecycle.secret_guard import assert_no_secrets
     assert_no_secrets(payload, what="update request")

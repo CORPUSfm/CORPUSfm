@@ -4105,8 +4105,18 @@ ok "Provider prerequisites observed"
 _lc_req="$(lc_request admin_identity-reconcile "$(lc_admin_identity_request "$(lc_fms_transport)")")"
 if $CFM_ATTEMPT; then
     # Observed IMMEDIATELY before the mutation, and refuse-first on a foreign same-name identity.
-    _la_obs="$(lc_request admin_identity-observe-attempt "$(lc_admin_identity_request absent)")"
-    _la_state="$(lc_json_field "$("${CFM_LIFECYCLE[@]}" admin-identity observe --request "$_la_obs" 2>>"$CFM_LOG" || true)" state)"
+    # The observation must be AUTHORIZED: with no local identity yet, only the read-only registry
+    # GET can tell "not installed" from "someone else's key", and without it every fresh box reads
+    # `unknown`. The credential travels as the framed stdin transport, never in the request.
+    _la_transport="$(lc_fms_transport)"
+    _la_obs="$(lc_request admin_identity-observe-attempt "$(lc_admin_identity_request "$_la_transport")")"
+    if [[ "$_la_transport" == stdin ]]; then
+        _la_out="$(lc_fms_frame | "${CFM_LIFECYCLE[@]}" admin-identity observe --request "$_la_obs" 2>>"$CFM_LOG" || true)"
+    else
+        _la_out="$("${CFM_LIFECYCLE[@]}" admin-identity observe --request "$_la_obs" 2>>"$CFM_LOG" || true)"
+    fi
+    printf '%s\n' "$_la_out" >> "$CFM_LOG" 2>/dev/null || true
+    _la_state="$(lc_json_field "$_la_out" state)"
     case "$_la_state" in
         not_installed|local_only|working) ;;
         remote_only|mismatched)

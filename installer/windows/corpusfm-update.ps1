@@ -214,8 +214,10 @@ function New-ChildEnvironment {
         $e['XDG_CONFIG_HOME'] = (Join-Path $InstallDir '.no-config')
         $e['GIT_TERMINAL_PROMPT'] = '0'
         $e['GIT_CONFIG_NOSYSTEM'] = '1'
-        $e['GIT_CONFIG_GLOBAL'] = 'NUL'
-        $e['GIT_CONFIG_SYSTEM'] = 'NUL'
+        # '/dev/null', not 'NUL': Git for Windows 2.56.0.windows.1 refuses 'NUL' as a config path
+        # (measured under SYSTEM and Administrator); '/dev/null' is its own null-device spelling.
+        $e['GIT_CONFIG_GLOBAL'] = '/dev/null'
+        $e['GIT_CONFIG_SYSTEM'] = '/dev/null'
     }
     foreach ($k in $Extra.Keys) { $e[$k] = $Extra[$k] }
     return $e

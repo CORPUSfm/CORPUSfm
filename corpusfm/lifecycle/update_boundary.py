@@ -538,6 +538,33 @@ def _discard_quiet(path: Path) -> None:
         pass
 
 
+def _has_terminal_outcome(state_dir: Path | str, rec: dict) -> bool:
+    try:
+        outcome = read_outcome(state_dir)
+    except Exception:
+        return False
+    return (outcome is not None and outcome.trigger_id == rec["trigger_id"]
+            and outcome.state in TERMINAL_OUTCOME_STATES)
+
+
+def _retire_completed_pending(state_dir: Path | str) -> None:
+    """Remove a PENDING whose own trigger already has a terminal outcome.
+
+    Before packet 1380-02 the updater read the request in place and never removed it, so an
+    installation upgraded from such a predecessor (0.2823) arrives with a PENDING that has already
+    run. Left alone it refuses every new request. Trigger ids are random per publication, and this
+    protocol only publishes an outcome after claiming PENDING away, so a PENDING beside its own
+    terminal outcome can only be that retained record. Anything else is kept.
+    """
+    pending = request_path(state_dir)
+    try:
+        rec = _read_request_file(pending)
+    except (RequestMalformed, ValueError, OSError):
+        return
+    if _has_terminal_outcome(state_dir, rec):
+        _discard_quiet(pending)
+
+
 def publish_request(state_dir: Path | str, *, trigger_id: str, expected_head: str,
                     actor: str = "") -> Path:
     """The service publishes a PENDING request, ATOMICALLY and EXCLUSIVELY.
@@ -562,6 +589,7 @@ def publish_request(state_dir: Path | str, *, trigger_id: str, expected_head: st
     # publishers that both pass this check in the same instant.
     if active.exists():
         raise RequestExists("an update request is already in progress")
+    _retire_completed_pending(state_dir)
     if pending.exists():
         raise RequestExists("an update request is already pending")
     payload = json.dumps({"trigger_id": trigger_id,
@@ -606,7 +634,8 @@ def claim_request(state_dir: Path | str) -> ClaimResult:
       request. Remove ACTIVE and report ``already_completed`` (idempotent; never re-run).
     - **ACTIVE present otherwise** → resume the SAME logical request and trigger id (crash recovery).
     - **else PENDING present** → claim it with an ATOMIC same-directory rename PENDING→ACTIVE, then
-      report ``run``.
+      report ``run`` — or, if its trigger already has a TERMINAL outcome (a predecessor's retained
+      request), remove it and report ``already_completed``.
     - **else** → ``no_request`` (a manual re-run after completion lands here and does nothing).
 
     A record that will not parse is reported ``malformed`` and cleared, so a corrupt file cannot wedge
@@ -622,12 +651,7 @@ def claim_request(state_dir: Path | str) -> ClaimResult:
         except (RequestMalformed, ValueError, OSError) as exc:
             _discard_quiet(active)
             return ClaimResult("malformed", detail=f"the active request was unreadable: {exc}")
-        try:
-            outcome = read_outcome(state_dir)
-        except Exception:
-            outcome = None
-        if (outcome is not None and outcome.trigger_id == rec["trigger_id"]
-                and outcome.state in TERMINAL_OUTCOME_STATES):
+        if _has_terminal_outcome(state_dir, rec):
             _discard_quiet(active)
             return ClaimResult("already_completed", trigger_id=rec["trigger_id"])
         return ClaimResult("run", trigger_id=rec["trigger_id"],
@@ -645,6 +669,10 @@ def claim_request(state_dir: Path | str) -> ClaimResult:
         except (RequestMalformed, ValueError, OSError) as exc:
             _discard_quiet(active)
             return ClaimResult("malformed", detail=f"the claimed request was unreadable: {exc}")
+        # A predecessor's retained PENDING that already ran: never replay its consent.
+        if _has_terminal_outcome(state_dir, rec):
+            _discard_quiet(active)
+            return ClaimResult("already_completed", trigger_id=rec["trigger_id"])
         return ClaimResult("run", trigger_id=rec["trigger_id"],
                            expected_head=rec["expected_head"], resumed=False)
     return ClaimResult("no_request")
@@ -679,7 +707,12 @@ def discard_pending_if_ours(state_dir: Path | str, trigger_id: str) -> bool:
     except (FileNotFoundError, RequestMalformed, ValueError, OSError):
         return False
     if rec["trigger_id"] == (trigger_id or ""):
-        _discard_quiet(pending)
+        # True only if THIS call removed it: a worker that renamed it away first, or a refused
+        # deletion, leaves the caller uncertain rather than able to say it was withdrawn.
+        try:
+            pending.unlink()
+        except OSError:
+            return False
         return True
     return False
 

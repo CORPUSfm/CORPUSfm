@@ -707,6 +707,15 @@ def _await_outcome(trigger_id: str, *, deadline_seconds: int):
         time.sleep(_OUTCOME_POLL_SECONDS)
 
 
+# A request still PENDING after the whole wait was never claimed: the activation met a run already
+# in progress (Windows drops it under IgnoreNew; a Linux oneshot start joins the running job), and
+# no other claimant exists on either platform. It is this service's own unclaimed request, so it is
+# withdrawn exactly as for a failed start — left in place it would refuse every later request.
+_NOT_PICKED_UP = ("The privileged update operation did not pick up this request — another update "
+                  "run was probably already in progress — so this request was withdrawn and was not "
+                  "applied. Check for updates again.")
+
+
 def _trigger_privileged_update(*, expected_head: str, actor: str,
                                audit_outcome: bool = True) -> ApplyResult:
     """Write the request, start the one fixed unit, and report what root recorded.
@@ -760,6 +769,9 @@ def _trigger_privileged_update(*, expected_head: str, actor: str,
         if late is not None:
             return _outcome_result(late, request_id, actor=actor,
                                    audit_outcome=audit_outcome)
+        if update_boundary.discard_pending_if_ours(app_paths.state_dir(), request_id):
+            return ApplyResult(False, "update_execution_timeout", 504, request_id=request_id,
+                               message=_NOT_PICKED_UP)
         return ApplyResult(False, "update_execution_timeout", 504, request_id=request_id,
                            message="The privileged update operation is taking longer than "
                                    f"{_TRIGGER_TIMEOUT_SECONDS}s and has not recorded an outcome. "
@@ -800,6 +812,9 @@ def _trigger_privileged_update(*, expected_head: str, actor: str,
         # somebody else's. The first version reported `update_still_running` on seeing one, which
         # reads as reassurance and would be equally true if our operation had died immediately.
         # Both cases are the same fact: no matching outcome inside the deadline.
+        if update_boundary.discard_pending_if_ours(app_paths.state_dir(), request_id):
+            return ApplyResult(False, "no_matching_outcome", 504, request_id=request_id,
+                               message=_NOT_PICKED_UP)
         return ApplyResult(False, "no_matching_outcome", 504, request_id=request_id,
                            message="The privileged update operation recorded no outcome for this "
                                    f"request within {_OUTCOME_TIMEOUT_SECONDS}s. It may still be "

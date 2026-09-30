@@ -1127,6 +1127,159 @@ def test_an_OLDER_REACHABLE_COMMIT_refuses_and_never_reaches_GIT(consent_box):
     )
 
 
+def _retained_predecessor(state, expected_head):
+    """The 0.2823 updater read the request in place and never removed it, so an upgraded box
+    carries a PENDING that already ran beside its own terminal outcome (v0.2997 finding)."""
+    _ui.request(state, trigger_id="upd_54f52dd3a7f61d1a", expected_head=expected_head)
+    _ub.outcome_path(state).parent.mkdir(parents=True, exist_ok=True)
+    _ub.outcome_path(state).write_text(_json.dumps({
+        "operation_id": "20260926080123-50421", "trigger_id": "upd_54f52dd3a7f61d1a",
+        "state": "refused", "requested_head": expected_head, "reason_code": "needs_installer",
+        "detail": "this update changes layout", "privileged_classes": [], "rolled_back": False,
+    }, indent=2, sort_keys=True))
+    return _ub.outcome_path(state).read_bytes()
+
+
+def test_a_RETAINED_PREDECESSOR_REQUEST_is_not_replayed_even_at_the_current_tip(consent_box):
+    """Its consent names the exact tip, which `test_the_EXACT_CURRENT_TIP_proceeds...` shows would
+    pass the consent gate. Activating the task must retire it without running it."""
+    script, state = consent_box["build"]()
+    outcome_before = _retained_predecessor(state, consent_box["target"])
+    head_before = _ui.git(consent_box["src"], "rev-parse", "HEAD").stdout.strip()
+    run = _subprocess.run(["bash", str(script)], capture_output=True, text=True, timeout=120)
+
+    assert _ub.outcome_path(state).read_bytes() == outcome_before, (
+        f"the retained request was run: {_ui.outcome(state)}")
+    assert not consent_box["calls"].exists() or not consent_box["calls"].read_text().strip(), (
+        "the updater reached git for a request that had already run"
+    )
+    assert _ui.git(consent_box["src"], "rev-parse", "HEAD").stdout.strip() == head_before
+    assert sorted(p.name for p in _ub.inbox_dir(state).iterdir()) == []
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
+def test_the_WINDOWS_CLAIM_CALL_SITE_retires_a_retained_predecessor_request(tmp_path):
+    """The Windows updater cannot run off a Windows box (see `_WINDOWS_GATE`), so this executes the
+    exact claim snippet the shipped script carries, against the library it installs, and checks
+    that the script maps the answer to a clean exit before any consent is read."""
+    source = _ui.static_windows_updater()
+    code = _re.search(r"\$claimCode = @'\r?\n(.*?)\r?\n'@", source, _re.S).group(1)
+    state = tmp_path / "state"
+    outcome_before = _retained_predecessor(state, "f" * 40)
+    run = _subprocess.run([sys.executable, "-c", code, str(state)], capture_output=True, text=True,
+                          env={"PYTHONPATH": str(_ui.REPO)}, timeout=60)
+    assert run.returncode == 0, run.stderr
+    claim = _json.loads(run.stdout)
+    assert claim == {"disposition": "already_completed", "trigger_id": "upd_54f52dd3a7f61d1a",
+                     "expected_head": ""}, claim
+    assert _ub.outcome_path(state).read_bytes() == outcome_before
+    assert sorted(p.name for p in _ub.inbox_dir(state).iterdir()) == []
+    branch = _re.search(r"'already_completed'\s*\{([^}]*)\}", source).group(1)
+    assert "exit 0" in branch and "Stop-With" not in branch, branch
+
+
+# ── The Windows origin read: git's null-config spelling and a failed read ─────────────────────
+#
+# Measured on a real box (Git 2.56.0.windows.1, Windows PowerShell 5.1, SYSTEM and Administrator):
+# `GIT_CONFIG_GLOBAL=NUL` makes every git call exit 128 with "unable to access 'NUL'", and the empty
+# output then read as a foreign origin. That platform behaviour is NOT reproducible here: a POSIX git
+# treats a config path named NUL as a missing file and carries on, so nothing below claims to
+# reproduce it. What runs here is the shipped script's own child-environment builder and origin
+# block, executed under pwsh against a stub git whose exit status and output the test chooses.
+
+def _ps_block(source: str, first: str, last: str = "}") -> str:
+    lines = source.splitlines()
+    start = next(i for i, line in enumerate(lines) if _re.match(first, line))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] == last)
+    return "\n".join(lines[start:end + 1])
+
+
+def _ps_origin_block(source: str) -> str:
+    """From the origin read through the end of the canonical comparison's refusal."""
+    lines = source.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("$originResult = Invoke-Git"))
+    compare = next(i for i in range(start, len(lines)) if lines[i].startswith("if ($canon -ne "))
+    end = next(i for i in range(compare, len(lines)) if lines[i] == "}")
+    return "\n".join(lines[start:end + 1])
+
+
+def _ps_function(source: str, name: str) -> str:
+    return _ps_block(source, rf"function {_re.escape(name)}\b")
+
+
+def _windows_origin_run(tmp_path, *, exit_code: int, stdout: str):
+    source = _ui.static_windows_updater()
+    stub = tmp_path / "git-stub"
+    seen = tmp_path / "git-seen.json"
+    stub.write_text(
+        "#!/usr/bin/env python3\nimport json, os, sys\n"
+        f"json.dump({{'argv': sys.argv[1:], 'global': os.environ.get('GIT_CONFIG_GLOBAL'),"
+        f" 'system': os.environ.get('GIT_CONFIG_SYSTEM'), 'nosystem': os.environ.get('GIT_CONFIG_NOSYSTEM')}},"
+        f" open({str(seen)!r}, 'w'))\n"
+        f"sys.stdout.write({stdout!r})\nsys.exit({exit_code})\n")
+    stub.chmod(0o755)
+    install, src, logs = tmp_path / "install", tmp_path / "src", tmp_path / "logs"
+    for d in (install, src, logs / "tmp"):
+        d.mkdir(parents=True)
+    result = tmp_path / "stop.json"
+    parts = [
+        f"$SystemDirectory = '/usr/bin'; $SystemRoot = '/usr'; $ChildTemp = '{logs / 'tmp'}'",
+        f"$InstallDir = '{install}'; $Src = '{src}'; $Git = '{stub}'",
+        "function Stop-With($state, $reason, $detail, $rolledBack = $false) {\n"
+        f"    [ordered]@{{ state = $state; reason = $reason; detail = $detail }} | ConvertTo-Json -Compress"
+        f" | Set-Content -LiteralPath '{result}'\n    exit 3\n}}",
+    ]
+    for name in ("New-ChildEnvironment", "Encode-WindowsArgv", "Encode-WindowsCommandLine",
+                 "Invoke-Fixed", "Invoke-Git"):
+        parts.append(_ps_function(source, name))
+    parts += [line for line in source.splitlines()
+              if line.startswith(("$CredentialStore =", "$CredentialStoreGit =", "$CredentialHelper ="))]
+    parts += ["$GitEnv = New-ChildEnvironment -Kind git", _ps_block(source, r"\$GitCommon = @\(", ")"),
+              _ps_origin_block(source), "exit 0"]
+    script = tmp_path / "origin.ps1"
+    script.write_text("\n".join(parts) + "\n", encoding="ascii")
+    run = _subprocess.run([_PWSH, "-NoProfile", "-NonInteractive", "-File", str(script)],
+                          capture_output=True, text=True, timeout=120)
+    stop = _json.loads(result.read_text(encoding="utf-8-sig")) if result.exists() else None
+    return run, stop, _json.loads(seen.read_text())
+
+
+_needs_pwsh = _pytest.mark.skipif(_shutil.which("pwsh") is None, reason="pwsh is not installed")
+
+
+@_needs_pwsh
+def test_the_WINDOWS_git_child_environment_names_dev_null_and_never_NUL(tmp_path):
+    """Executes the shipped builder and reads the environment the stub git actually received."""
+    _, _, seen = _windows_origin_run(tmp_path, exit_code=0, stdout=_ui.CANONICAL_ORIGIN + "\n")
+    assert (seen["global"], seen["system"], seen["nosystem"]) == ("/dev/null", "/dev/null", "1"), seen
+    # Comments are excluded: the builder's own comment names the spelling it forbids.
+    code = [line for line in _ps_function(_ui.static_windows_updater(), "New-ChildEnvironment")
+            .splitlines() if not line.lstrip().startswith("#")]
+    assert not [line for line in code if "'NUL'" in line], code
+    assert seen["argv"][-3:] == ["remote", "get-url", "origin"], seen["argv"]
+
+
+@_needs_pwsh
+@_pytest.mark.parametrize("exit_code,stdout,expected", [
+    (0, _ui.CANONICAL_ORIGIN + "\n", None),
+    (0, "https://github.com/someone-else/CORPUSfm.git\n",
+     ("refused", "origin_mismatch", "the checkout origin is not the expected CORPUSfm repository")),
+], ids=["canonical", "foreign"])
+def test_the_WINDOWS_origin_read_accepts_the_canonical_origin_and_refuses_a_foreign_one(
+        tmp_path, exit_code, stdout, expected):
+    """Controls for the executed origin block: a successful canonical read proceeds, and a successful
+    read of a foreign origin keeps the existing refusal detail."""
+    run, stop, seen = _windows_origin_run(tmp_path, exit_code=exit_code, stdout=stdout)
+    assert seen["argv"][:2] == ["-c", "safe.directory=*"] and seen["argv"][-3:] == [
+        "remote", "get-url", "origin"], seen["argv"]
+    if expected is None:
+        assert run.returncode == 0 and stop is None, (run.stdout, run.stderr, stop)
+        return
+    assert run.returncode == 3, (run.stdout, run.stderr)
+    assert (stop["state"], stop["reason"], stop["detail"]) == expected, stop
+    assert "github.com" not in stop["detail"]
+
+
 # Every gate the artifact evaluates BEFORE the consent comparison, each paired independently with a
 # wrong `expected_head`. A script that compared consent first would answer `target_changed` to all
 # five; each must instead answer for itself. Round 2 extended this from two gates to five after the

@@ -1675,8 +1675,15 @@ function La-Observe([string]$Kind, [string]$Intent, [string]$Target, $Extra) {
       Die ("An unexpected object stands at " + $Target + "; the fresh-install attempt refuses before any change.")
     }
     if ($isDir) { return [ordered]@{ exists = $true; type = 'dir'; sddl = (La-Sddl $Target) } }
+    # The storage target is a database FMS hosts and holds open with a sharing mode that refuses
+    # a read; its bytes are not ownership evidence. Only that exact path is recorded undigested,
+    # and the application accepts a null digest for it alone. Every other file is still hashed.
+    $digest = $null
+    if ((La-Canon $Target) -ine (La-Canon ("" + $script:AttemptRecord.paths.storage_target))) {
+      $digest = La-Sha256 $Target
+    }
     return [ordered]@{ exists = $true; type = 'file'; size = [long]$item.Length
-                       sha256 = (La-Sha256 $Target); sddl = (La-Sddl $Target) }
+                       sha256 = $digest; sddl = (La-Sddl $Target) }
   }
   if ($Kind -eq 'service') { return (La-ServiceState $Target) }
   if ($Kind -eq 'task') { return (La-TaskState $Target) }
@@ -4500,8 +4507,19 @@ Ok "Provider prerequisites observed"
 $req = Lc-Request 'admin_identity-reconcile' (Lc-Json (Lc-AdminIdentityRequest (Lc-FmsTransport)))
 if ($script:CfmAttempt) {
   # Observed IMMEDIATELY before the mutation, and refuse-first on a foreign same-name identity.
-  $laObs = Lc-Request 'admin_identity-observe-attempt' (Lc-Json (Lc-AdminIdentityRequest 'absent'))
-  $laState = "" + (La-Field (La-Lifecycle @('admin-identity','observe','--request',$laObs)) @('state'))
+  # The observation must be AUTHORIZED: with no local identity yet, only the read-only registry GET
+  # can tell "not installed" from "someone else's key", and without it every fresh box reads
+  # `unknown`. The credential travels as the framed stdin transport, never in the request.
+  $laTransport = Lc-FmsTransport
+  $laObs = Lc-Request 'admin_identity-observe-attempt' (Lc-Json (Lc-AdminIdentityRequest $laTransport))
+  if ($laTransport -eq 'stdin') {
+    $script:LcFrameAccount = $FmAdminUser; $script:LcFramePassword = $FmAdminPass
+    $laOut = Lc-RunFramedRaw 'admin_identity observe' @('admin-identity','observe','--request',$laObs) $script:LcFrameAccount $script:LcFramePassword
+    $script:LcFrameAccount = $null; $script:LcFramePassword = $null
+  } else {
+    $laOut = La-Lifecycle @('admin-identity','observe','--request',$laObs)
+  }
+  $laState = "" + (La-Field $laOut @('state'))
   if (@('remote_only','mismatched') -contains $laState) {
     Die ("REFUSE-FIRST: FileMaker Server already trusts a same-name Admin API identity this installation" +
          " does not hold (" + $laState + "). A fresh install does not overwrite it. Remove that" +

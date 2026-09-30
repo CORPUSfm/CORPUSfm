@@ -473,7 +473,9 @@ def _filesystem_state(raw, what, platform, *, kind):
         if raw["type"] != "file":
             _fail(f"{what}.type must be 'file'")
         _int(raw["size"], f"{what}.size", minimum=0)
-        _hex64(raw["sha256"], f"{what}.sha256")
+        # A null digest is legal only for the attempt's storage target; the record binds it there.
+        if raw["sha256"] is not None:
+            _hex64(raw["sha256"], f"{what}.sha256")
     if platform == POSIX:
         _str(raw["owner"], f"{what}.owner")
         if not isinstance(raw["mode"], str) or not _MODE.match(raw["mode"]):
@@ -882,6 +884,8 @@ class AttemptRecord:
         for entry in ledger:
             if entry.kind == "provider_op" and entry.intent == "backfill_storage_projections":
                 _check_backfill_binding(entry, ledger, canonical["storage_target"])
+            if entry.kind == "file":
+                _check_undigested_binding(entry, canonical["storage_target"])
         phase = raw["phase"]
         if phase not in PHASES:
             raise RecordInvalid(f"{REFUSE_PHASE_INVALID}: phase must be one of {PHASES}, "
@@ -915,6 +919,22 @@ def _check_backfill_binding(entry: LedgerEntry, ledger: tuple, storage_target: s
             or last.prior["target_seq"] != target_seq):
         _fail(f"ledger entry {entry.seq}: the backfill route and target disagree with entry "
               f"{last.seq}")
+
+
+def _check_undigested_binding(entry: LedgerEntry, storage_target: str) -> None:
+    """Only the storage target may be observed without a content digest.
+
+    Once FileMaker Server hosts it, the database is a live file the server holds open (on Windows,
+    with a sharing mode that refuses a read), so its bytes are neither readable nor ownership
+    evidence. Nothing consumes a file entry's digest: ownership is `prior.exists`, the create intent
+    and the observed object type, and the storage executor re-proves the database through FMS.
+    """
+    for side in ("prior", "post"):
+        observed = getattr(entry, side)
+        if (observed is not None and observed.get("exists") is True
+                and observed.get("sha256") is None
+                and not same_path(entry.target, storage_target)):
+            _fail(f"ledger entry {entry.seq}: {side}.sha256 may be null only for the storage target")
 
 
 def _serialize(record: AttemptRecord) -> bytes:
