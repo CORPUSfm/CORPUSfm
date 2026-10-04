@@ -197,6 +197,15 @@ button { font: inherit; }
 .docs-article img { max-width: 100%; height: auto; }
 .docs-article > footer { display: flex; justify-content: space-between; gap: 30px; margin-top: 70px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
 .docs-article > footer a { font-weight: 700; }
+.install-guide .docs-article a.button { color: var(--paper); text-decoration: none; }
+:root[data-theme="dark"] .install-guide .docs-article a.button { color: #111416; }
+.install-guide .docs-article th[scope="row"] { font-weight: 650; }
+.install-platform { margin-top: -6px; color: var(--muted) !important; font-size: 12px !important; }
+.install-steps { padding-left: 22px; }
+.install-steps > li > h3 { margin-top: 22px; }
+.install-guide .docs-sidebar a:focus-visible, .install-guide .docs-article a:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.install-guide .docs-article table { display: block; overflow-x: auto; }
+.install-guide .docs-article :is(p, li, dd) { overflow-wrap: anywhere; }
 
 .project-section { padding: 100px 0; background: var(--slate-dark); color: #fff; }
 :root[data-theme="dark"] .project-section { background: #263640; }
@@ -264,6 +273,8 @@ button { font: inherit; }
   .docs-layout { grid-template-columns: 1fr; gap: 36px; padding-block: 38px 76px; }
   .docs-sidebar { position: static; max-height: none; padding: 0 0 28px; border-bottom: 1px solid var(--line); }
   .docs-sidebar section { display: none; }
+  .install-guide .docs-sidebar section { display: block; margin-bottom: 0; }
+  .install-guide .docs-layout { grid-template-columns: minmax(0, 1fr); }
   .docs-article h1 { font-size: 42px; }
   .docs-article > footer { flex-direction: column; }
   .site-footer { grid-template-columns: 1fr; gap: 12px; padding-block: 30px; text-align: center; }

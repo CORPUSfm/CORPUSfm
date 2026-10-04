@@ -67,6 +67,19 @@ the installed checkout has no source-pull credential.
 and interruption notice before consenting. FileMaker Server administrator credentials are entered for
 that run; do not store them in a command or support message.
 
+Updates offers the installer command only when the server has confirmed that the published installer
+moves this installation forward:
+
+- **A compatible installer is published** — the command is shown. If Updates calls it an
+  **intermediate installer update**, it moves the installation forward but another installer release
+  may still be needed before the advertised update is reached.
+- **No compatible installer has been published** — the published installer would not move this
+  installation forward. No command is shown. Keep using CORPUSfm and check again after the next
+  installer release.
+- **Installer availability could not be confirmed** — the check could not read the installer
+  channel, the result is older than a few hours, or the installation changed since it was taken.
+  Choose **Check for updates** again. If it persists, treat it as Solution 4.
+
 1. Keep the Updates result visible and copy the installer command it displays, when one is provided.
 2. Run that exact handoff on the CORPUSfm server using the elevated shell named by the installer
    package. Do not substitute a command from another server or an older package.

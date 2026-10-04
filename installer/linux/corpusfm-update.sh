@@ -282,6 +282,22 @@ if [[ "$OLD_HEAD" != "$OBSERVED" ]]; then
         >/dev/null 2>&1 || die refused not_fast_forward "origin/main is not a fast-forward of the deployed head"
 fi
 
+# INSTALLER-CHANNEL OBSERVATION (application packet 1399). Settings may offer the installer as the
+# remedy only when the configured channel holds a package that advances this installation, and only
+# root can read the channel. The judge is loaded from the administrator-owned library by the boot
+# line below (the observer's own `BOOT`, byte for byte), which puts $LIB_DIR first itself and refuses
+# unless every loaded corpusfm module came from there; `-I` keeps the environment and the current
+# directory out of sys.path. It decides with the refs fetched above and writes its own record beside
+# the outcome. It can never fail this run, and a run that does not complete REMOVES the previous
+# record, so a stale "eligible" can never outlive a failed observation. Placed BEFORE classification
+# so an update that needs the installer is still observed.
+CHANNEL_BOOT='import sys; sys.path.insert(0, sys.argv[1]); from corpusfm.lifecycle.installer_channel_observer import entry; raise SystemExit(entry(sys.argv[1], sys.argv[2:]))'
+if ! "$VENV_PY" -I -c "$CHANNEL_BOOT" "$LIB_DIR" \
+        "$STATE_DIR" "$SRC" "$GIT" "$INSTALL_DIR" "$OLD_HEAD" "$OBSERVED" >/dev/null 2>&1; then
+    rm -f -- "$STATE_DIR/update-outcome/installer_channel.json" >/dev/null 2>&1 || true
+    log "installer channel observation did not complete; availability will read as unknown"
+fi
+
 # CLASSIFY. Privileged change classes refuse the in-app path and name the elevated installer.
 CHANGED="$("$GIT" -C "$SRC" -c safe.directory='*' diff --name-only "$OLD_HEAD..$OBSERVED" 2>/dev/null)"
 if [[ -n "$CHANGED" ]]; then

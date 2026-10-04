@@ -87,7 +87,7 @@
     "corpusfm/app/web/docs/semantic-search.md": "114825d2e8f587aecc48004f752a0ef5956f8be5c724dc688f6f3dfbc8344b0f",
     "corpusfm/app/web/docs/settings.md": "d0820d9e8f2783d232fe45d0e5bddf675ec2a5a2a93030064a04f823f471c001",
     "corpusfm/app/web/docs/tags.md": "b5e93a663f194fc61c954b4b5bec67b1f14d8e27358fd2b08df773b4b6283d13",
-    "corpusfm/app/web/docs/update-not-appearing-or-applying.md": "4ccd515d720d4c6d395afa737d44e3663d59208bc6760af87a87ae33dc710b89",
+    "corpusfm/app/web/docs/update-not-appearing-or-applying.md": "d6482ce94962ac1ca74b9c475637d9c15a4e57137de0b5a0b1a380737d123576",
     "corpusfm/app/web/docs_render.py": "1092ae6cf168d2afa68de73c04db9f1b3a39c93206e4bbd1e6acfb4f8c0c8395",
     "corpusfm/app/web/external_auth.py": "a82e5341aad980ec347be112531b8c18272694ec0e8d3cfb9c6c199fae32e8e5",
     "corpusfm/app/web/landing.py": "a3d2a7d93b77b55f2bc949061ec492173e09e0c72f4b66e84bc6988af4f85c19",
@@ -122,7 +122,7 @@
     "corpusfm/app/web/routes/api/patch_ops.py": "44647c26e41b1756c3075349fe9391ea3af369921a8deb3f923eee41904c39c6",
     "corpusfm/app/web/routes/api/queue.py": "d8e3232c5a0c1d385c9804076a34fcd968cb34db4bf95f34d246f6d1a455252a",
     "corpusfm/app/web/routes/api/server.py": "35a75fbe3f8b2bd2f68770d3b9f31d381b79a7caafcaccc237bd48300d13be1a",
-    "corpusfm/app/web/routes/api/settings.py": "381ace707fd040eaf5fd9f015bd532290bbcba5cac69f8edad276cc1ebc878ba",
+    "corpusfm/app/web/routes/api/settings.py": "415895eec0ec47d149dfafb357d09fc85e170e1776aa4996c248b5a68ec0df28",
     "corpusfm/app/web/routes/api/tags.py": "762ae58b27f500f581c2915584711bfde01d93bea3512d5bf74b24a31d02fcb2",
     "corpusfm/app/web/routes/api/upload.py": "0b399c7f1a860c3695d065ab6a66840bbe6e3cbdfc89be463518d237ae2a24ae",
     "corpusfm/app/web/routes/api/users.py": "431a31aba00c41b5e707e71e9dd4e33c138f037c8501088f0ed322101a80a3dd",
@@ -169,7 +169,7 @@
     "corpusfm/app/web/templates/about.html": "c2bed1de80296ffe32aa9962f83b77f76d6fc06f5d94643f3a7df05543490e5f",
     "corpusfm/app/web/templates/account.html": "4c532095832343a65d51db244a7083b9463d2a5a586ac5aa8f8cecbf30d673ae",
     "corpusfm/app/web/templates/artifacts.html": "93a214efd311efdab981a28a273033a4b49d0d2d2f8a2ef2eab5b263429c9b01",
-    "corpusfm/app/web/templates/base.html": "87e8766483805ccc2ed27d953b96cd873f05cf46537f6f5f83d3081eb1f0db5f",
+    "corpusfm/app/web/templates/base.html": "77d35a7d96b4b2c9a98043396113d3be0a67db9877f0dc41d939d5555b6ae5a0",
     "corpusfm/app/web/templates/converting.html": "3eb6d1e2afa25b508099c13c10fbd807f691fb2793ac21aa0a9dccb0fce3fe87",
     "corpusfm/app/web/templates/docs.html": "7ed604676df505d0f2a2e00ddc5d6a9a37f28fdd6b9301d46026c0b76c8ad006",
     "corpusfm/app/web/templates/jobs.html": "09b612f0befa9d2dd1c9f409eee9e79922adcaf83535731020ff838bf3bb2e84",
@@ -184,7 +184,7 @@
     "corpusfm/app/web/templates/queue.html": "b36dd75183a2cc0592bc0f0a40ae5797fe83bf45e8c0789a88fb8cae1b34db38",
     "corpusfm/app/web/templates/reload.html": "b88b2106cf3ba573d06c096463ecef4db84d5bc9c43010451f7933e95cf066b3",
     "corpusfm/app/web/templates/runs.html": "9054d3d46f23fb185a8535487b05888a4bae6f89180dbb9310c726e820c3b130",
-    "corpusfm/app/web/templates/settings.html": "51ae556e754163d4c70221f31b136dd39404a8620bddc31997e354853973a3e2",
+    "corpusfm/app/web/templates/settings.html": "eee1b9b0f9bad55ff226e0c647ea60d05188e15c5cbf79e1fe59fca44eabf47b",
     "corpusfm/app/web/templates/tags.html": "c2566897df2ea4bc0b01f81f50b4e47e458c675ba2417739ff2c00a993e99d84",
     "corpusfm/app/web/update_prompt.py": "4cea6b76890e96a8d17b4ac67d873e5c60bec354d17fca3c79f552f481c0cdd3",
     "corpusfm/app/web/users.py": "272b188b10ea631adfbda46d22948026a10ea69f182531706dac8c11cdfe7e71",
@@ -305,7 +305,7 @@
     "corpusfm/lifecycle/admin_identity_store.py": "5426ff88fa3f01ce17a5ca8d0ad0c5faac63c47c11172a468fe0445a65d46909",
     "corpusfm/lifecycle/app_paths.py": "cef0fadf28d3978d6886d99db90f25472e1e2efee7b943a73a05ba131e7c8007",
     "corpusfm/lifecycle/artifact_ownership.py": "1364aeb654e59abadb836c7cec1de01379db02e5d0997e9df9a0b51bb6d31a6a",
-    "corpusfm/lifecycle/atomic.py": "492bd437af87b9321e4d2dd8b7c8561128de3741ec5084918207726b814dbbdc",
+    "corpusfm/lifecycle/atomic.py": "c47138750e68b315d447f444981f14e34a3ee9c92f82bb737779c5e5f411b285",
     "corpusfm/lifecycle/bridge.py": "bca8a15cb246dc052fe69721a53442270b312a33ddb101a342b366d5cc7c226d",
     "corpusfm/lifecycle/bytecode_cleanup.py": "008bf10a5f831bc0ae7e40d39247238da4187b011a4e8d255905036a14e13a18",
     "corpusfm/lifecycle/cli.py": "f71c2674dab1991273611dcd28d5e494ecc1c2b61a79361c64fad3ddfebf519b",
@@ -315,6 +315,8 @@
     "corpusfm/lifecycle/errors.py": "94c383e684427175475795fca5a244c211125f83532d5797b6296ea66e693ff7",
     "corpusfm/lifecycle/fms_folders.py": "ae7877f1937b06fe214cd60bbb1ee8807cd8542984cdade67d494c4849a386b0",
     "corpusfm/lifecycle/install_attempt.py": "2c5a4886a9205b4ec7597a0b8371bb22d9eaf2b5fa636763d1744374835e1a4c",
+    "corpusfm/lifecycle/installer_channel.py": "0171a6e69036d03902d928ccd9d89e8e9d751d4c49e621a8da03dc74da7f6101",
+    "corpusfm/lifecycle/installer_channel_observer.py": "fe10601d68312c8f5acc0f2c4f517656e70d3ad7c19d76195066078fd023bba0",
     "corpusfm/lifecycle/installer_disposition.py": "adeaa4cd7d26343482b88c4af04aa6dd60aecb7091a2bbf5ac41e2e173a1d838",
     "corpusfm/lifecycle/journal.py": "fdf9434cadac45f0c2c28641b5615deaf2b425a606c100cbd9aaaf5c33472fb8",
     "corpusfm/lifecycle/key_migration.py": "f1841cefe44940acd9733cda52b7df1c883d3c7bd438b2c21fb1873e9f7c8550",
@@ -333,7 +335,7 @@
     "corpusfm/lifecycle/proxy_policy.py": "278e42701752c68bc92ce250fe21dff80a17591c4f99aa8f23c397e8008f7d46",
     "corpusfm/lifecycle/proxy_render.py": "5a8d2e63d694153e1185014edd46796770bec01006e38a20cff0ca15d13dd552",
     "corpusfm/lifecycle/proxy_transaction.py": "3adff53626e27557742a23d9c81bfc7eb4a20d58730e06facc661920405c18d0",
-    "corpusfm/lifecycle/published.py": "97bf38882b7dcbbb36871618a3dab9906f34459e4b891d76ed2a8af0c19e811c",
+    "corpusfm/lifecycle/published.py": "69a06a1ebbb76cde769e6e6e5fe60a033c2d27d771811d800bd85df17af462a7",
     "corpusfm/lifecycle/recovery_cli.py": "d24fb0286bcf611ea13800d9ff4f49274fe992d2c1c3bef2235f7d5d0347bfc9",
     "corpusfm/lifecycle/recovery_format.py": "3753de099ff38d3c97d7bd960cd2181f3e291cfa70766abb1222f68f361b1f83",
     "corpusfm/lifecycle/recovery_ops.py": "56308b04a68e80c30c6f238fe40931da179ddfc4ca801b465feeb62b4928ecd8",
@@ -359,7 +361,7 @@
     "corpusfm/lifecycle/uninstall_resume.py": "e486113d45a4a21e09cc83df3075de582adab2f9c940f6769fc4cbb3707f5ed7",
     "corpusfm/lifecycle/uninstall_runtime.py": "dafa7b2c6a7d6a32b4ed1f0fd27f02ab534a5ba52d49c101231301f04416b140",
     "corpusfm/lifecycle/uninstall_terminal.py": "f85b71cbef57d2a0e8ce39efbe199aa3612c7dc1777c673d4f2a42f06b2f7461",
-    "corpusfm/lifecycle/update_boundary.py": "28f2048400fbee52e0ab577c1cf17b6d7b05be61035d64cfc7ecc9b008b19824",
+    "corpusfm/lifecycle/update_boundary.py": "a7cf4a573fdb1a86e35f6079a99f48fe0e398a82c64855a6d89509005a5b5b67",
     "corpusfm/logging_config.py": "b1bdbd2fc97c857f3649bbd1c888ee9678c279deea11d95b49300beaf57176cc",
     "corpusfm/mcp/__init__.py": "f50a8bd59b3cdee31aaaa8984b5fe75a7f0df1c757c001a84691a46887872131",
     "corpusfm/mcp/__main__.py": "ae126d789c035a402ceba0d3ca14ab4d134ae5a261d94cc63a37274c6d822620",
@@ -454,7 +456,7 @@
     "corpusfm/server/tags_store.py": "9661f5d2fb03c0c95baf7a73d0cff095dfe092706e9655dced69504ab250c8b7",
     "corpusfm/server/update_notice.py": "c1a3af4db1c23f142a18644126baad5d67c71be184c129907fcd175874fd53fb",
     "corpusfm/server/update_observer.py": "8ffd81af24ab4a071d3fe78f49c673f63bfd9738a9a8d39542b4788c34a8f2be",
-    "corpusfm/server/update_service.py": "a13b7a0644e1504dfec5b1b27980e88dab9291d6f2da7cc6db323675134f3fb6",
+    "corpusfm/server/update_service.py": "838d54c3cb11ec34007349f83238e878724aebc1b4fd89ed315ab9742e01b137",
     "corpusfm/server/win_db_ops.py": "e45e092dca905e49a9a891938c0c2708b64bb7d480c5290b5d9f8c116c0f70e1",
     "corpusfm/storage/__init__.py": "9251284ee65787074228b98b94d2a0abc7abb9c4823c4981dc792b0143d22dd8",
     "corpusfm/storage/artifact_record.py": "aa9975b9c441efd57089848cc403a3f086cc9dec45e240386023244d0abeab7d",
@@ -494,7 +496,7 @@
     "installer/linux/cfm-web-proxy.sh": "f8bc1e15ed9886faeb341f4a676340cb44c21ea3ad0b7b0ccbd75f76c711b06e",
     "installer/linux/corpusfm-proxy.sh": "050e96a1af3d0c975274fd53f35d0c6d86f44351ab314647af840e02f639c197",
     "installer/linux/corpusfm-recovery.sh": "c213caf789d255fbc6e828f6a07b7b2d39c73ec5be0981105c83abf6fa841bad",
-    "installer/linux/corpusfm-update.sh": "61ebff57ed925abad0db6bd29eb0eaead7005a4cf9d10c7d605090e70854f378",
+    "installer/linux/corpusfm-update.sh": "161bc4c98fa6be8d4d7c17d1aed17181b389ea1d421b8d71202a834e8245ac24",
     "installer/linux/install.sh": "6cf431e509427fca18af52429d2669ae8950dfb5f3fb149c175585e36fbdb281",
     "installer/linux/uninstall.sh": "757b37dcbb5f15b418597c3f7734108f37f99249426ab4fbec795ca42a0dd022",
     "installer/package-installer.sh": "fadb8e9f75464562d31f701c8a28949e032a43a4a506b00cd7aff690947e91b5",
@@ -505,7 +507,7 @@
     "installer/windows/cfm-verify-installer-bundle.ps1": "39ded2457d21a955d3c685fec77cb45a8e7f8c4c641cbb23f27a0e73af144cdb",
     "installer/windows/corpusfm-proxy.ps1": "d9b97664083043ec7a13b90820908e8a7cab95ee1d8e67b72f49c203bc3f4ffb",
     "installer/windows/corpusfm-recovery.ps1": "929e4aa6a885e9bc8e488e32ec52dae084aa553d7bf55f144fed4793fe585ec4",
-    "installer/windows/corpusfm-update.ps1": "cec49a48b605ccec8b26a437358b42ec97833f6df960ca04b268ec0449d2b284",
+    "installer/windows/corpusfm-update.ps1": "014b8d02eea76de856c3142f93b324e2baf314264c75426186076677aaa37cb1",
     "installer/windows/install.ps1": "162c61d1dd97c8f21587751a4937c01648e6810daeb499e6f68b8ff69a981b70",
     "installer/windows/uninstall.ps1": "e8eb6230613098310d3df08e63ee78052a22dbdb6129ee8719b09e68a5ae5ab5",
     "installer/windows_signing.py": "a3c968f98c7aff01d53be3ea8c9bc50283a8050dd7dab5e28f2a699ebad209dd",
@@ -520,18 +522,20 @@
     "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
     "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
     "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
-    "release-build.txt": "cdecd1ee55b84b1ca486a0eef194cd750b7c032f46e4a80e192539f172e1100c",
+    "release-build.txt": "74c1935a1dcbf8968609132ed00c34afcd29b713ee02aca0d0b55676f3cb8070",
     "requirements.txt": "acd44f337bdebcee434ede968e8a7669ed563f6cafbd7af0bbd5c3dcf1fe1a2f",
     "scripts/_release_gate_live.py": "335454a6e3e43c5e0375f7524a33a60647a862637e41dcba453cd474ab7d15b5",
     "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
     "scripts/installer_release_gate.py": "c96e7c90c36dd928362eb5bb701b1ce385b8c1b44c05e5e14f4b1db06d81b107",
     "scripts/release_trust_overlay.py": "66b7e9b1dd357947f0bf2a7e579f1ab1da623226270ae719f7708e52962f0030",
-    "scripts/write-doc-routes.mjs": "dc314c90797efb253ccbce0fb9bee210e7487533c409056914dea0adf408c2e7",
-    "src/app.tsx": "b24e4cedbd195e9436c059becdc6a70a3ff7d5304c8d15321672a5cecda80631",
-    "src/docs-page.tsx": "4bef75eefc5361e0aba177be5f02e1c074161863fcd6d0d551fd4b573a45277a",
-    "src/globals.css": "5a92c77194a41102e79fc05ab33d57ddecb34cb8f6222c0bfe77c58753492406",
-    "src/main.tsx": "35a4dd9b4ee54a7ab0ebeb17fca45dfac4bb5aae8fb106a2e6771693860c2cc7",
-    "src/page.tsx": "50a1398fda86e685ca17efefb4e7c5e5432fe059d2fd4829c19ae9dc9ff5bebd",
+    "scripts/write-doc-routes.mjs": "cd42bc0a767bb971ad8dd65044c837deabb31c3eeaef293729dd2f0595c4b95b",
+    "src/app.tsx": "d2c4fdd473d20bbfabb84cf284b34c7e8e8a729623f7f2b60b4f0997387347ce",
+    "src/docs-page.tsx": "dca031dc63e0802f968d531eddb9f8e30de32257342f87154216a227b7064117",
+    "src/globals.css": "2df7601c39c1506e087f4ba1968f8b46f620ac96601a67bc5959fc47eef33864",
+    "src/install-contract.ts": "4322e9b3173fae595007392e4cc95c18be3a826d90678fe112aac44c2c03547d",
+    "src/install-page.tsx": "6260d0b83c8260bdebecec03e95a88040c7c42fef35ca5e8ee3fc569a29131b5",
+    "src/main.tsx": "e81a2cde760258477ac25c943e219091b32959b7831d94edbc5d122c1c51db49",
+    "src/page.tsx": "abf1197dac85506f5787b3bb5684013ce64903225f08b3d4ad3ff4897febbc50",
     "src/release-trust.ts": "e9bd07ed9c27d2191923060c6ee9f9ce11aa3d1e0eb9f71736ab09b0db9af89c",
     "src/theme-toggle.tsx": "e94ece26297334e37dbfd09e32e9dc13cf4f20f332a3b3a46a17c3be7ca60d6e",
     "tests/__init__.py": "69e3f111cc073350abe14451f0687bcb909ad32e5600dd2abaa31ed6ea8fd84f",
@@ -541,7 +545,7 @@
     "tests/installer_sim/harness.py": "8cf90fd251befb0fc1e1ae8e4ad075e02beaafb953d2838cd5f563d4996ac64c",
     "tests/proxy_exec_materialize.py": "6d00e1bf8a09be8a69d815fce0e6edf5a936478d31e78d6ec79d13d723c9d1a2",
     "tests/ps/cfm-proxy-exec.tests.ps1": "0c1932d242c9a6498befa56b3c84fd5992cf3df057761cf38c226d0a63e392d0",
-    "tests/rendered-html.test.mjs": "a59a68bdfd08592c96eb1f9a3e568eb92a1b07cf9cde19a521bb6bfbc4a2ee1e",
+    "tests/rendered-html.test.mjs": "75be58971e4b3f447b832ee9f38a8fc6f6baf0586390d534a130b152f635c6bc",
     "tests/test_a001_authority_retirement.py": "7076cf514c2d7eddebe351a188a0be765e81aa43d5a0f2594241e5513378e253",
     "tests/test_a001_lcstate_refresh.py": "b80bf5d54774956a6e0b23e8af37464fe76ad8a01b41e7316dadc1dfba04eb32",
     "tests/test_a001_recovery_orchestration.py": "c01a02b0c64e20fc7167cbe091fcd4271c5569b1862c58ef922285ceb3fbc2e0",
@@ -555,6 +559,7 @@
     "tests/test_git_credentials.py": "2a8392920ff60334adc72e05ee4b5e0d858869c0b5c47e0b484d7f8a39713e46",
     "tests/test_installer_asks_only_when_needed.py": "3749d5fb2d2530c49bfd7cc84cdfe21893acd8226a6db89f96d08f781ffe4aea",
     "tests/test_installer_bootstrap.py": "666baa480db05ce72f1962048f746aedfcfd5135d4223e4f485166bf1c98c7f7",
+    "tests/test_installer_channel_hook.py": "a819a54323c19252ffc35983e5ceea990d15e2907d3dbe1a7361ba519e667aba",
     "tests/test_installer_conformance.py": "dbf8b43bf70c2a8773283b6c29451a73c8a5edb06bab3aa60c8037ab0a2c37e3",
     "tests/test_installer_deploy_never_overwrites.py": "9d0cfafe87a9cf5a12de1e7cec593c01965027982913404ced782ad3c2d7f0bc",
     "tests/test_installer_entrypoint_parity.py": "308528bf3c4ad11861503a8aae8d4b18384dcfe731d530204f922e7ff55682b6",
@@ -618,6 +623,7 @@
     "tests/test_windows_installer_semantics.py": "9d3482b565f38ee2c7fc885ecfb0385f020f3b6f8a78a96d1ae39f1f981a3c0c",
     "tests/test_windows_installer_source_clone.py": "d726eab21b517ced2ab9f6fae6d13bc681e594d19899e5d3b9c80efaef72293f",
     "tests/test_windows_lifecycle_recovery.py": "206115222571e4faa9f508b10dc39d5d479e51c712be5ac14c55d539234f6e5d",
+    "tests/test_windows_outcome_publication_branch.py": "65a51f2e31ac5403311eb49fa6a15dc1e8445bc744a947e9d854bda3d4c9376d",
     "tests/test_windows_signing_inventory.py": "d3fff3da91921478c4fd8aee96f9da92026d2da8be3c4be8f12d724169bcf4db",
     "tests/test_windows_system_task_trust.py": "2edcd120d7031c0e9d22db468c5a9309a71c35924c0a75a197aa218285105b28",
     "tests/test_windows_updater_paths.py": "f150a2ebbe39fdef7937e68d7943d791021b0a868deada8ed88e4c73ee36afd3",
@@ -1890,6 +1896,14 @@
       "class": "exact-copy",
       "owner": "application:corpusfm/lifecycle/install_attempt.py"
     },
+    "corpusfm/lifecycle/installer_channel.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/lifecycle/installer_channel.py"
+    },
+    "corpusfm/lifecycle/installer_channel_observer.py": {
+      "class": "generated",
+      "owner": "public-profile:public:application"
+    },
     "corpusfm/lifecycle/installer_disposition.py": {
       "class": "exact-copy",
       "owner": "application:corpusfm/lifecycle/installer_disposition.py"
@@ -2750,6 +2764,14 @@
       "class": "public-output-source",
       "owner": "application:site/src/globals.css"
     },
+    "src/install-contract.ts": {
+      "class": "public-output-source",
+      "owner": "application:site/src/install-contract.ts"
+    },
+    "src/install-page.tsx": {
+      "class": "public-output-source",
+      "owner": "application:site/src/install-page.tsx"
+    },
     "src/main.tsx": {
       "class": "public-output-source",
       "owner": "application:site/src/main.tsx"
@@ -2849,6 +2871,10 @@
     "tests/test_installer_bootstrap.py": {
       "class": "generated",
       "owner": "public-profile:public:installer-patch"
+    },
+    "tests/test_installer_channel_hook.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_installer_channel_hook.py"
     },
     "tests/test_installer_conformance.py": {
       "class": "exact-copy",
@@ -3102,6 +3128,10 @@
       "class": "exact-copy",
       "owner": "installer:tests/test_windows_lifecycle_recovery.py"
     },
+    "tests/test_windows_outcome_publication_branch.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_windows_outcome_publication_branch.py"
+    },
     "tests/test_windows_signing_inventory.py": {
       "class": "generated",
       "owner": "public-profile:public:installer-patch"
@@ -3160,13 +3190,13 @@
       "unselected_source_paths": "excluded"
     },
     "profile": "public",
-    "profile_sha256": "8e880c18639623e90e4f04ddb2670f37393591c99f0e82d9c934513ae4a279a6",
+    "profile_sha256": "06202387046b1750fb47d336abdbaf39b707e54300c04a9a63a3ad91f4e58d59",
     "profile_version": 1
   },
-  "release_build": 3007,
+  "release_build": 3028,
   "schema_version": 2,
   "source_commits": {
-    "application": "15a63820bc461f6dd258fec58a46235018d8f81b",
-    "installer": "2ddc23290c7740cfc774345caf9d861af16c8457"
+    "application": "516359dbc0b6e1f0c154db6e755164693165e36d",
+    "installer": "136a53b665fc7d0df6037bb8163ec319d61f13f6"
   }
 }

@@ -1,5 +1,5 @@
 import docs from "./generated/docs";
-import { Brand, latestReleaseUrl, repositoryUrl } from "./page";
+import { Brand, installGuideUrl, repositoryUrl } from "./page";
 import ThemeToggle from "./theme-toggle";
 
 const siteBase = import.meta.env.BASE_URL;
@@ -12,7 +12,7 @@ function Header() {
       <a className="brand" href={siteBase} aria-label="CORPUSfm home"><Brand /></a>
       <nav aria-label="Documentation navigation">
         <a href={`${siteBase}docs/`}>Documentation</a>
-        <a href={latestReleaseUrl}>Install</a>
+        <a href={installGuideUrl}>Install</a>
       </nav>
       <div className="header-actions"><ThemeToggle /><a className="nav-action" href={repositoryUrl}>GitHub <span aria-hidden="true">↗</span></a></div>
     </header>

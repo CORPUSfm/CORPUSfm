@@ -236,6 +236,10 @@ class CheckResult:
     #: raw git tails.
     source: str = "git"
     error_detail: str = ""
+    #: Additive (packet 1399): whether the configured installer channel holds a package that will
+    #: advance THIS installation, as root last observed it and bound to the current operands. Only
+    #: `installer_channel["actionable"]` licenses presenting `operator_command` as the remedy.
+    installer_channel: dict = field(default_factory=lambda: _unknown_channel("not_observed"))
 
     def to_public_dict(self) -> dict:
         """Privacy-safe view for the MCP ``update_check`` result — the classification booleans + the
@@ -264,7 +268,43 @@ class CheckResult:
             # against the previous contract is unaffected.
             "observation": self.observation,
             "diverged": self.diverged,
+            # Additive (packet 1399).
+            "installer_channel": dict(self.installer_channel),
         }
+
+
+def _unknown_channel(reason: str) -> dict:
+    from corpusfm.lifecycle.installer_channel import UNKNOWN, ChannelView
+
+    return ChannelView(UNKNOWN, reason).to_dict()
+
+
+def installer_channel_view(current_head: Optional[str], target_head: Optional[str]) -> dict:
+    """Read root's installer-channel record and bind it to the current operands (packet 1399).
+
+    The service never reads the channel itself and holds no credential for it. It reads the record
+    root published beside the update outcome, under the same authority proof, and says `unknown`
+    for anything it cannot prove.
+    """
+    from corpusfm.lifecycle import app_paths, installer_channel, update_boundary
+
+    try:
+        from corpusfm.lifecycle.published import read_published_installation
+
+        series = read_published_installation().installer_series
+        state_dir = app_paths.state_dir()
+    except Exception:  # noqa: BLE001 - no published installation, no provable operands
+        return _unknown_channel(installer_channel.R_NO_INSTALLATION)
+    try:
+        update_boundary.assert_outcome_authority(state_dir)
+    except Exception:  # noqa: BLE001 - OutcomeAuthorityUnproven and anything else
+        return _unknown_channel(installer_channel.R_AUTHORITY)
+    try:
+        record = installer_channel.read_record(state_dir)
+        return installer_channel.evaluate(record, deployed_head=current_head, target_head=target_head,
+                                          installer_series=series).to_dict()
+    except Exception:  # noqa: BLE001 - an update check must never fail on this record
+        return _unknown_channel(installer_channel.R_RECORD_INVALID)
 
 
 def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
@@ -364,6 +404,8 @@ def _assembled_check(r, repo_dir: Path) -> CheckResult:
 
     if res.schema_change or res.installer_change:
         res.operator_command = operator_command()
+    if is_git:
+        res.installer_channel = installer_channel_view(res.current_head, res.target_head)
     return res
 
 

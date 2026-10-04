@@ -462,6 +462,30 @@ if ($oldHead -ne $script:Observed) {
     if ($ff.ExitCode -ne 0) { Stop-With 'refused' 'not_fast_forward' 'origin/main is not a fast-forward of the deployed head' }
 }
 
+# INSTALLER-CHANNEL OBSERVATION (application packet 1399) - the same judge as Linux. PYTHONPATH is
+# NOT the mechanism here: this interpreter's ._pth ignores it and puts the deployed checkout on
+# sys.path. The boot line (the observer's own `BOOT`, byte for byte) puts $LibDir first itself and the
+# observer refuses unless every loaded corpusfm module came from there. It decides with the refs
+# fetched above and writes its own record beside the outcome. It can never fail this run, and a run
+# that does not complete REMOVES the previous record, so a stale "eligible" can never outlive a failed
+# observation. Placed BEFORE classification so an update that needs the installer is still observed.
+$ChannelBoot = 'import sys; sys.path.insert(0, sys.argv[1]); from corpusfm.lifecycle.installer_channel_observer import entry; raise SystemExit(entry(sys.argv[1], sys.argv[2:]))'
+# Invoke-Fixed THROWS when the process cannot be started (a missing or unlaunchable interpreter), so
+# the launch itself is inside the try: a throw is the same "did not complete" as a non-zero exit.
+$channelCompleted = $false
+try {
+    $channel = Invoke-Fixed -FilePath $Py -Environment $PyEnv -Arguments @(
+        '-I', '-c', $ChannelBoot, $LibDir,
+        $StateDir, $Src, $Git, $InstallDir, $oldHead, $script:Observed)
+    $channelCompleted = ($channel.ExitCode -eq 0)
+} catch {
+    $channelCompleted = $false
+}
+if (-not $channelCompleted) {
+    Remove-Item -LiteralPath (Join-Path $OutcomeDir 'installer_channel.json') -Force -ErrorAction SilentlyContinue
+    try { Write-Log 'installer channel observation did not complete; availability will read as unknown' } catch {}
+}
+
 # CLASSIFY. Privileged change classes refuse the in-app path and name the elevated installer.
 $changed = (Invoke-Git @('-C', $Src, 'diff', '--name-only', ($oldHead + '..' + $script:Observed))).StdOut
 if ($changed.Trim()) {

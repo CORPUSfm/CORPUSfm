@@ -131,9 +131,23 @@
               <template x-if="update.schema_change"><span>— <strong>the database schema</strong> (data migration)</span></template>
               <template x-if="update.schema_change && update.installer_change"><span>;</span></template>
               <template x-if="update.installer_change"><span>— <span x-text="update.installer_reason || 'the installer (services / proxy / helpers)'"></span></span></template>.
-              These are root steps the privileged updater will not take — it advances code only. Re-run the installer on this server; an existing install is detected automatically and upgraded in place:</p>
-            <pre class="cfm-logviewer cfm-mt-6" x-text="update.upgrade_command"></pre>
-            <p class="cfm-muted cfm-mt-6">The installer needs elevated rights (Linux: sudo; Windows: an elevated PowerShell) — plus FileMaker Server admin credentials for the steps that touch FMS. It outlines the steps and lets you decline before doing anything. You can keep using CORPUSfm until you run it.</p>
+              These are root steps the privileged updater will not take — it advances code only.</p>
+            {# Packet 1399: the installer is the remedy ONLY when root observed a channel package that
+               advances this installation. `unavailable` and `unknown` never show the command. #}
+            <template x-if="update.installer_channel.actionable">
+              <div>
+                <p class="cfm-muted cfm-mt-6" x-show="update.installer_channel.reaches_target === true">A compatible installer (<span x-text="(update.installer_channel.channel || {}).installer_version"></span>) is published and completes this update. Re-run the installer on this server; an existing install is detected automatically and upgraded in place:</p>
+                <p class="cfm-muted cfm-mt-6" x-show="update.installer_channel.reaches_target !== true" data-installer-intermediate>The published installer (<span x-text="(update.installer_channel.channel || {}).installer_version"></span>) is an <strong>intermediate installer update</strong>: it moves this installation forward, and another installer release may still be required before the advertised update is reached. Re-run the installer on this server; an existing install is detected automatically:</p>
+                <pre class="cfm-logviewer cfm-mt-6" x-text="update.upgrade_command"></pre>
+                <p class="cfm-muted cfm-mt-6">The installer needs elevated rights (Linux: sudo; Windows: an elevated PowerShell) — plus FileMaker Server admin credentials for the steps that touch FMS. It outlines the steps and lets you decline before doing anything. You can keep using CORPUSfm until you run it.</p>
+              </div>
+            </template>
+            <template x-if="update.installer_channel.state === 'unavailable'">
+              <p class="cfm-muted cfm-mt-6" data-installer-unavailable>No compatible installer has been published for this installation yet<span x-show="(update.installer_channel.channel || {}).installer_version"> — the published installer (<span x-text="(update.installer_channel.channel || {}).installer_version"></span>) would not move it forward</span>. You can keep using CORPUSfm; check again after the next installer release.</p>
+            </template>
+            <template x-if="update.installer_channel.state === 'unknown'">
+              <p class="cfm-muted cfm-mt-6" data-installer-unknown>Installer availability could not be confirmed (<span x-text="update.installer_channel.reason"></span>). Choose <strong>Check for updates</strong> to observe the installer channel again.</p>
+            </template>
           </div>
         </template>
       </div>
@@ -1655,7 +1669,7 @@ function settingsPage() {
     mcp: { server_mode: false, transport: 'http', mounted: false, endpoint: '' },
     mcpBusy: false, confirmFmsAdmin: false, confirmPatching: false, confirmCompartment: false,
 
-    update: { checking: false, done: false, available: false, checked: false, latest: '', current: '', releases: '', error: '', error_class: '', source: '', behind: 0, applying: false, schema_change: false, installer_change: false, installer_reason: '', upgrade_command: '', stamp_repair: false, current_head: '', target_head: '', head_build: '' },
+    update: { checking: false, done: false, available: false, checked: false, latest: '', current: '', releases: '', error: '', error_class: '', source: '', behind: 0, applying: false, schema_change: false, installer_change: false, installer_reason: '', upgrade_command: '', installer_channel: { state: 'unknown', reason: 'not_observed', actionable: false, advances: false, reaches_target: null, channel: null }, stamp_repair: false, current_head: '', target_head: '', head_build: '' },
     confirmUpdate: false,
 
     serverInfo: {}, confirmReload: false,
@@ -1771,6 +1785,7 @@ function settingsPage() {
           source: d.source || '', behind: d.behind || 0,
           schema_change: !!d.schema_change, installer_change: !!d.installer_change,
           installer_reason: d.installer_reason || '', upgrade_command: d.upgrade_command || '',
+          installer_channel: d.installer_channel || { state: 'unknown', reason: 'not_observed', actionable: false, advances: false, reaches_target: null, channel: null },
           stamp_repair: !!d.stamp_repair, current_head: d.current_head || '', target_head: d.target_head || '',
           head_build: d.head_build_version || '', observation: d.observation || '',
           diverged: !!d.diverged };

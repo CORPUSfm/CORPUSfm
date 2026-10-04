@@ -1371,8 +1371,11 @@
           <div>
             <p><strong>This update needs the installer.</strong> The in-app updater cannot perform it.</p>
             <p class="cfm-muted" x-show="info.installer_reason" x-text="info.installer_reason"></p>
-            <p class="cfm-muted" x-show="info.upgrade_command"
+            {# Packet 1399: the command is offered only when root observed an eligible installer. #}
+            <p class="cfm-muted" x-show="info.upgrade_command && (info.installer_channel || {}).actionable"
                style="font-family:var(--mono,monospace);font-size:12px" x-text="info.upgrade_command"></p>
+            <p class="cfm-muted" x-show="(info.installer_channel || {}).state === 'unavailable'">No compatible installer has been published for this installation yet.</p>
+            <p class="cfm-muted" x-show="!(info.installer_channel || {}).state || (info.installer_channel || {}).state === 'unknown'">Installer availability could not be confirmed. Settings → Updates can check again.</p>
           </div>
         </template>
         <p class="cfm-inline-error" x-show="error" x-text="error"></p>

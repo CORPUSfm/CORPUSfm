@@ -601,7 +601,19 @@ def _update_projection(res) -> dict:
         # diverged from origin/main — which is a refusal, not an available update.
         "observation": res.observation,
         "diverged": res.diverged,
+        # Additive (packet 1399): only `installer_channel.actionable` licenses offering
+        # `upgrade_command` as the remedy.
+        "installer_channel": _installer_channel(res),
     }
+
+
+def _installer_channel(res) -> dict:
+    """A result that carries no channel observation says `unknown`, never a confident state."""
+    channel = getattr(res, "installer_channel", None)
+    if isinstance(channel, dict) and channel.get("state"):
+        return channel
+    from corpusfm.server.update_service import _unknown_channel
+    return _unknown_channel("not_observed")
 
 
 def _upgrade_command() -> str:

@@ -116,6 +116,10 @@ class PublishedInstallation:
     # manifest that recorded no entry point), and a consumer without it falls back to the generic
     # installer handoff rather than guessing a path.
     installer_entry_point: str | None = None
+    # Added by packet 1399: the installer series is one of the four operands an installer-channel
+    # observation is bound to. A plain string on the existing frozen result, so no public name is
+    # added; `None` is a real state, and the channel reader treats it as unprovable (`unknown`).
+    installer_series: str | None = None
 
 
 def read_published_installation() -> PublishedInstallation:
@@ -239,6 +243,7 @@ def read_published_installation() -> PublishedInstallation:
         secrets_dir=(os.path.normpath(str(raw_secrets)) if raw_secrets else None),
         pki=pki,
         installer_entry_point=(getattr(manifest.installer, "entry_point", None) or None),
+        installer_series=(getattr(manifest.installer, "series", None) or None),
     )
 
 

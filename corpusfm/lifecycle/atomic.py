@@ -21,19 +21,22 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 from pathlib import Path
 
 
 def atomic_write_text(
-    target: Path, content: str, *, mode: int = 0o600, dir_mode: int | None = None
+    target: Path, content: str, *, mode: int = 0o600, dir_mode: int | None = None,
+    replace_retry: tuple[float, ...] = (),
 ) -> None:
     """Durably replace ``target`` with ``content``. Never leaves a partial file at ``target``."""
-    atomic_write_bytes(target, content.encode("utf-8"), mode=mode, dir_mode=dir_mode)
+    atomic_write_bytes(target, content.encode("utf-8"), mode=mode, dir_mode=dir_mode,
+                       replace_retry=replace_retry)
 
 
 def atomic_write_bytes(
     target: Path, payload: bytes, *, mode: int = 0o600, dir_mode: int | None = None,
-    prepare=None,
+    prepare=None, replace_retry: tuple[float, ...] = (),
 ) -> None:
     """The byte-level form. Copying a file must go through here too, not ``shutil.copy2``.
 
@@ -48,6 +51,12 @@ def atomic_write_bytes(
     afterwards is readable by whoever gets there in between, and on a shared destination that window
     is the whole problem. A ``prepare`` that raises aborts the write and leaves the destination
     untouched, which is the same guarantee as a failed write.
+
+    ``replace_retry`` is a bounded schedule of pauses before re-attempting a rename that raised
+    ``PermissionError``. On Windows that was measured while another process held the destination
+    open: a Python reader with the default share mode, and a .NET reader sharing ReadWrite|Delete.
+    Only the rename is retried; the staged temporary stays durable throughout, and when the schedule
+    is spent the last error is raised and the destination still holds the complete old content.
     """
     target = Path(target)
     parent = target.parent
@@ -72,7 +81,7 @@ def atomic_write_bytes(
             pass
         if prepare is not None:
             prepare(tmp)
-        os.replace(str(tmp), str(target))
+        _replace(tmp, target, replace_retry)
     except BaseException:
         try:
             tmp.unlink()
@@ -80,6 +89,16 @@ def atomic_write_bytes(
             pass
         raise
     _fsync_dir(parent)
+
+
+def _replace(tmp: Path, target: Path, delays: tuple[float, ...]) -> None:
+    for delay in delays:
+        try:
+            os.replace(str(tmp), str(target))
+            return
+        except PermissionError:
+            time.sleep(delay)
+    os.replace(str(tmp), str(target))
 
 
 def _fsync_file(path: Path) -> None:

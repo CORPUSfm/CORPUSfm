@@ -450,6 +450,15 @@ def assert_outcome_authority(state_dir: Path | str, *, service_uid: int | None =
         )
 
 
+#: Pauses (seconds) before re-attempting an outcome rename that raised ``PermissionError``. Measured
+#: on Windows with a Python reader and a .NET ReadWrite|Delete reader holding the file open; the
+#: service itself reads it every half second. An unpublished outcome leaves the request ACTIVE and
+#: every later check refused as ``update_in_progress`` until the task is re-run. (The 2026-09-30
+#: incident retained only the publisher's exit status, so its exact cause is unproven.) About 3.5 s
+#: in total — bounded, so a lock that does not clear still fails the publication loudly.
+OUTCOME_REPLACE_RETRY: tuple[float, ...] = (0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0)
+
+
 def write_outcome(state_dir: Path | str, outcome: UpdateOutcome) -> Path:
     """Root writes this. Goes through the lifecycle's atomic writer, world-readable by design —
     it holds no secret and the service must be able to read it as an ordinary user."""
@@ -459,7 +468,8 @@ def write_outcome(state_dir: Path | str, outcome: UpdateOutcome) -> Path:
     payload = outcome.to_dict()
     assert_no_secrets(payload, what="update outcome record")
     path = outcome_path(state_dir)
-    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True), mode=0o644)
+    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True), mode=0o644,
+                      replace_retry=OUTCOME_REPLACE_RETRY)
     return path
 
 
