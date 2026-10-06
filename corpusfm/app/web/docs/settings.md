@@ -178,7 +178,7 @@ independent, and semantic search never requires summaries. In Settings, embeddin
   not enable search on its own; when an embedder is also configured, summaries add an extra searchable
   layer on top of the raw index.
 
-Both accept keyless local presets (Ollama, LM Studio) as well as hosted keys, and each has a
+Both accept keyless local presets (Ollama, LM Studio) as well as hosted keys, and both have an Open WebUI preset — `/api` for chat, `/ollama/v1` for embeddings; each has a
 **Test** button that proves the chosen model actually responds. See
 [Semantic search & the index](semantic-search.md) for how the embedding index is used and when
 to reset it. Interactive AI work is the assistant over [MCP](mcp.md), not these providers.
@@ -186,6 +186,16 @@ to reset it. Interactive AI work is the assistant over [MCP](mcp.md), not these 
 A hosted **API key** is stored **encrypted in the storage database** (never in plain team settings,
 never shown back to the browser — the Settings page reports only whether a key is **set**). Because it
 lives with the corpus, it **travels** with the database — no need to re-enter it on a new box. Enter a new key to replace it, or use the clear control to remove it.
+
+The chat and embedding pop-overs apply the **same key rules**:
+
+- **A typed key is used straight away** by **List models** and **Test**, so you need not save first.
+- **A stored key is only sent to the endpoint it was saved with** (the same scheme, host and port). If you
+  point the form at a different host, type that host's key. **Save** refuses to move a stored key to a new
+  host unless you enter a replacement or clear it.
+- **Clear stored key** stages the removal: **Save** applies it, **Cancel** or **Undo** keeps the key.
+- **Test** marks a configuration verified only when the key it used is the one stored. After testing a newly
+  typed key, **Save**, then **Test** again to verify the saved configuration.
 
 **Enrichment is separate from import.** Importing an artifact is fast — it does not run AI. To
 enrich, go to the **Catalog**, select one or more artifacts, and choose **Index**/**Reindex**
@@ -201,6 +211,23 @@ Agents can do the same over [MCP](mcp.md): `index_artifact` for search, `summari
 optional descriptions.
 
 ### Choosing a summary (chat) model
+
+The **Summaries — chat model** pop-over takes a provider, then (for an endpoint) presets and the base URL,
+the API key, the model, and two summary-only settings:
+
+- **Presets:** **Ollama** `http://localhost:11434/v1`, **LM Studio** `http://localhost:1234/v1`, and
+  **Open WebUI**, which keeps the address you typed and sets the path to `/api` (Open WebUI's
+  OpenAI-compatible `/api/chat/completions` and `/api/models`). Open WebUI needs an API key: an
+  administrator enables API keys, and each user creates one in their account settings.
+- **Anthropic** needs only the key and, optionally, a model (default `claude-haiku-4-5-20251001`).
+- **Azure OpenAI:** the resource root (no path) and API version, then the chat **deployment** in the model
+  field. See [Azure OpenAI](#azure-openai).
+- **Content budget (characters):** `0` sends each object whole in one call. Otherwise an object larger than
+  the budget is split into chunks — a terse extract per chunk, then one synthesis — so the whole object
+  informs the summary and nothing is truncated. A calculation's gist is rarely in its first chunk.
+- **Include cross-references in the prompt:** appends each object's *Used by / Uses*, so a summary reflects
+  how the object is used, not just its body. It costs more tokens per object and is off by default.
+- **Test chat model** sends one tiny prompt to confirm the model answers, using the values in the form.
 
 Summaries are short, one-line descriptions, generated **one call per object** — so favour a
 small, fast, **non-thinking** chat model:

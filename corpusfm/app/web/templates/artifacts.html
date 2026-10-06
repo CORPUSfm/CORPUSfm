@@ -1384,7 +1384,13 @@ function libraryPage() {
       } catch (err) { this.taskError = String(err); window.cfmResolvePending(pending, null, String(err)); }
     },
     openRecentArtifact(rp) { this.recentOpen = false; this.openDetail(rp); },
-    fmtIso(ts) { try { return ts.replace('T', ' ').slice(0, 16); } catch (_) { return ts; } },
+    // Display only (packet 1400-06): stored instants are UTC, so the reshaped text says so. The Related
+    // rows carry the catalog's COMPACT ArtifactTimestamp, which the ISO slice used to garble.
+    fmtIso(ts) {
+      if (!ts) return ts;
+      if (/^\d{4}-\d\d-\d\d_\d{6}/.test(ts)) return this.fmtTs(ts);
+      try { return ts.replace('T', ' ').slice(0, 16) + ' UTC'; } catch (_) { return ts; }
+    },
     _selRows() { return this.selected.map(rp => this.selData[rp]).filter(Boolean); },
     _selSorted() {  // oldest first (older = A / baseline)
       return this._selRows().slice().sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
@@ -2310,7 +2316,7 @@ function libraryPage() {
     fmtTs(ts) {
       try {
         const [date, time] = ts.split('_');
-        return `${date} ${time.slice(0,2)}:${time.slice(2,4)}`;
+        return `${date} ${time.slice(0,2)}:${time.slice(2,4)} UTC`;
       } catch(_) { return ts; }
     },
 

@@ -1316,7 +1316,7 @@
       fmtTs(ts) {
         try {
           const [date, time] = ts.split('_');
-          return `${date} ${time.slice(0,2)}:${time.slice(2,4)}`;
+          return `${date} ${time.slice(0,2)}:${time.slice(2,4)} UTC`;
         } catch(_) { return ts || ''; }
       },
     };

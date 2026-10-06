@@ -79,12 +79,61 @@ Add the MCP address shown on the page to a compatible client. The client opens y
 your account may use — **no token is ever copied** into the client's configuration. The connection then
 acts as **you**, with your current gates.
 
+**Claude Code, step by step.** The page gives the exact command. Three things it relies on:
+
+- **Scope.** The command uses `--scope user`, so CORPUSfm is available in every project for your account
+  on that computer. Without `--scope`, Claude Code adds the server for the current folder only (`local`).
+  `--scope project` writes a shared `.mcp.json` into the repository instead.
+- **Signing in needs a person.** Run `claude mcp login <name>` in a terminal you can see, or use `/mcp` →
+  **Authenticate** inside Claude Code, then approve in the browser. An agent's background shell cannot
+  complete it.
+- **A running session does not load a newly added server by itself.** After signing in, reconnect the
+  server from `/mcp` or start a new session, and check the CORPUSfm tools are listed there. `claude mcp
+  list` showing it connected does not prove a session that was already open can use the tools.
+
 Each client you approve appears under **OAuth connections** with its name, the CORPUSfm MCP address it
 is connected to, when you connected, what you approved, and when you'd need to **sign in again**.
 **Disconnect** revokes **only that one connection**: that client stops working
 immediately, your other connections and your manual tokens are untouched, no other person's connection
 to the same client is affected, and reconnecting means signing in and approving again — nothing is left
 approved behind the scenes.
+
+**Other clients.** The page shows each client's command or configuration and its sign-in step:
+
+- **Codex** writes `[mcp_servers.<name>] url = "<address>"` to `~/.codex/config.toml`, which the Codex CLI,
+  the IDE extension and the ChatGPT desktop app share. Sign in with `codex mcp login <name>`; then restart
+  the Codex session, or choose **Restart** / **Restart extension** in the ChatGPT desktop app or the IDE
+  extension, so the tools appear. `codex mcp get <name> --json` proves only the configuration file.
+- **Cursor** reads `~/.cursor/mcp.json` or the project's `.cursor/mcp.json`. Merge the server in without
+  replacing others. Under **Cursor Settings → MCP** the server shows **Needs login**; click it and approve.
+  Reload Cursor if it has not picked up the change; the tools appear under **Available Tools**.
+- **VS Code** (its own MCP support) reads `.vscode/mcp.json` (`servers`). Start the server from the MCP
+  view and accept the trust prompt, then approve in the browser; restart the server if its configuration
+  changed after it started. The tools appear in chat under **Configure Tools**. Running *Codex* inside VS
+  Code is the Codex configuration instead.
+- **Universal** lists the protocol fields for any client that takes an HTTP MCP endpoint and supports
+  OAuth: the address, streamable HTTP, OAuth discovered from the 401, a public PKCE client registered by
+  Dynamic Client Registration, and a loopback redirect only.
+
+### Troubleshooting a connection
+
+**If sign-in cannot connect,** run this check on the computer running the client, with `<your-origin>`
+replaced by the scheme and host of the MCP address shown on the page. It is a plain, time-limited request
+for the published sign-in metadata, and it registers nothing:
+
+```
+curl -sS --connect-timeout 10 --max-time 20 -o /dev/null -w "%{http_code}\n" <your-origin>/.well-known/oauth-protected-resource/corpusfm/mcp
+```
+
+`200` means sign-in discovery is reachable from that computer. Any other status, or a curl error, means the
+request did not complete as expected; curl's error text names the DNS, connection or certificate problem.
+If CORPUSfm is only reachable on a private network, that computer must be on that network or its VPN. A
+certificate error is one your MCP client will refuse too.
+
+**If your browser shows `Client ID … not found`,** see the note under
+[Connect and verify](#connect-and-verify): clear that client's saved sign-in for this server and connect
+again. **Hosted connectors** (Claude.ai, Claude Desktop custom connectors, ChatGPT web connectors) cannot
+complete sign-in here at all — see the same section.
 
 ### How long a connection lasts
 
@@ -125,7 +174,7 @@ for the same client.
 When you mint, the pop-over gives the ready-to-paste connect details for several clients:
 
 ```
-claude mcp add --transport http corpusfm-<your-host> <your-base>/corpusfm/mcp \
+claude mcp add --scope user --transport http corpusfm-<your-host> <your-base>/corpusfm/mcp \
   --header "Authorization: Bearer <token>"
 ```
 
@@ -139,7 +188,7 @@ server. The three pieces are the same everywhere — point your MCP client at th
 
 Either way in, the connection carries exactly your own access gates, so the assistant **sees and can use
 only the tools your gates allow** — tools you can't use don't even appear in its list. After adding the
-server, restart your assistant so it picks up the tools.
+server, reconnect it in your assistant or start a new session so the tools load.
 
 There is no server-wide token and no administrator master key: **every way in belongs to a person**, so
 what an assistant can do is always exactly what its owner can do. On a brand-new server, where nobody has

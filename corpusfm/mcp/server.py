@@ -122,6 +122,7 @@ Start: python -m corpusfm.mcp
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -392,6 +393,50 @@ def point_challenge_at_canonical_resource(mcp_app) -> None:
         logging.getLogger(__name__).warning(
             "MCP 401 challenge could not be pointed at %s (no resource_metadata_url on any route) — "
             "clients that match the resource strictly will refuse.", target)
+
+
+class _ChallengeWithoutCredential:
+    """RFC 6750 §3.1 for a request that presents NO bearer credential (packet 1400-04).
+
+    The SDK answers every unauthenticated request with ``error="invalid_token"`` and FastMCP words it as
+    "the provided bearer token is invalid, expired, or no longer recognized" — for a request that sent no
+    token at all, which sends people to clear tokens that do not exist. A request with no Authorization
+    header, another scheme, or an empty Bearer value gets the bare challenge instead: still 401, still
+    pointing at the same metadata document, so OAuth discovery is unchanged. A Bearer value that is
+    present is passed through untouched and keeps ``invalid_token`` when it fails."""
+
+    def __init__(self, protected):
+        self.protected = protected
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and not _presents_bearer(scope):
+            target = getattr(self.protected, "resource_metadata_url", None)
+            challenge = "Bearer" + (f' resource_metadata="{target}"' if target else "")
+            body = json.dumps({"error_description": "Authentication required."}).encode()
+            await send({"type": "http.response.start", "status": 401, "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+                (b"www-authenticate", challenge.encode())]})
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.protected(scope, receive, send)
+
+
+def _presents_bearer(scope) -> bool:
+    for name, value in scope.get("headers") or ():
+        if name.lower() == b"authorization":
+            scheme, _, credential = value.decode("latin-1").strip().partition(" ")
+            return scheme.lower() == "bearer" and bool(credential.strip())
+    return False
+
+
+def challenge_missing_credentials(mcp_app) -> None:
+    """Wrap ONLY the bearer-protected MCP route — the one carrying ``resource_metadata_url`` — so the
+    OAuth endpoints mounted beside it (register/authorize/token) are untouched. A no-op without auth."""
+    for route in getattr(mcp_app, "routes", ()):
+        protected = getattr(route, "app", None)
+        if hasattr(protected, "resource_metadata_url") and not isinstance(protected, _ChallengeWithoutCredential):
+            route.app = _ChallengeWithoutCredential(protected)
 
 
 def _no_slash_resource_aliases(routes):
@@ -982,7 +1027,9 @@ def list_artifacts(archive_dir: str = None, type: str = None, tag: str = None,
       job_uuid:    artifacts PRODUCED BY one job (from list_jobs). Lineage is the job uuid alone —
                    a shared file name never joins two jobs' outputs, so this is not the same as
                    `file`.
-      latest_only: keep only the latest snapshot per lineage (drops superseded versions).
+      latest_only: keep only the latest snapshot per lineage (drops superseded versions). A lineage is a
+                   job: each manual upload is its own lineage, so it stays latest beside a job's
+                   snapshot of the same file. semantic_search(snapshots="latest") uses this same rule.
     sort:  "recent" (default, newest first) · "name" (A→Z) · "type" (by type, then recent).
     limit/offset: pagination (default limit 50, capped at 100 to keep the result token-safe). The output
                   discloses the total matched + how many are withheld; advance offset / narrow with a
@@ -4253,26 +4300,83 @@ def get_queue() -> str:
     return "\n".join(lines)
 
 
+_SNAPSHOT_SELECTORS = ("all", "latest")
+_MISSING_SNAPSHOTS_SHOWN = 5
+
+
+def _current_snapshots_not_indexed(index, metas, latest: dict, file_name) -> list:
+    """Notes for lineages whose CURRENT snapshot is not indexed while an OLDER one is (packet 1400-05).
+
+    Those older snapshots are excluded by ``snapshots="latest"``; saying so keeps history from being
+    mistaken for the current answer. Membership comes from the index's STRICT read: when it cannot be
+    established, no snapshot is claimed missing. A lineage is a job — job-less artifacts have no
+    older snapshot to fall back to and are never reported."""
+    from corpusfm.server.ai.vector_index import IndexMembershipUnavailable
+    lineages: dict = {}
+    for m in metas:
+        job = getattr(m, "job_uuid", "") or ""
+        # The SAME file_name scope the search applies: an older snapshot under another name could never
+        # have answered this query, so it must not cause a notice (or widen the membership read).
+        if job and m.uuid and (not file_name or m.file_name == file_name):
+            lineages.setdefault(job, []).append(m)
+    lineages = {j: ms for j, ms in lineages.items() if len(ms) > 1}
+    if not lineages:
+        return []
+    try:
+        indexed = index.raw_membership(m.uuid for ms in lineages.values() for m in ms)
+    except IndexMembershipUnavailable as exc:
+        return [f"Note: could not check whether current snapshots are indexed ({exc}); "
+                "none is reported missing."]
+    missing = []
+    for ms in lineages.values():
+        current = [m for m in ms if latest.get(m.uuid, True)]
+        older = [m for m in ms if not latest.get(m.uuid, True)]
+        if (current and older and not any(m.uuid in indexed for m in current)
+                and any(m.uuid in indexed for m in older)):
+            missing.extend(current)
+    if not missing:
+        return []
+    missing.sort(key=lambda m: (m.file_name or "", m.timestamp or ""))
+    shown = "; ".join(f"{m.file_name or '(no file)'} {m.timestamp} [{m.uuid[:8]}]"
+                      for m in missing[:_MISSING_SNAPSHOTS_SHOWN])
+    more = len(missing) - _MISSING_SNAPSHOTS_SHOWN
+    return [f"Note: {len(missing)} current snapshot(s) are not indexed, so their lineage's older indexed "
+            f"snapshots were left out rather than shown as current: {shown}"
+            + (f"; and {more} more." if more > 0 else ".")
+            + " Index them (index_artifact) to search their content."]
+
+
 @mcp.tool()
 def semantic_search(
     query: str,
     top_k: int = 5,
     file_name: str = None,
     ref: str = None,
+    snapshots: str = "all",
     archive_dir: str = None,
 ) -> str:
     """Search all indexed items (schema objects AND indexed deliverables) using a natural language query.
 
-    Returns the top matching items (scripts, CFs, tables, layouts, indexed clips, etc.) from any indexed
-    snapshot. Embeddings are generated via the configured OpenAI-compatible endpoint (Settings → Integrations).
+    Returns the top matching items (scripts, CFs, tables, layouts, indexed clips, etc.). By default every
+    indexed snapshot is searched, so one object can appear once per snapshot that contains it. Embeddings
+    are generated via the configured OpenAI-compatible endpoint (Settings → Integrations).
 
     Args:
         query:     Natural language description (e.g. "script that sends email notifications")
         top_k:     Number of results to return (default 5, max 20)
-        file_name: Limit results to a specific FM file name (optional)
+        file_name: Limit results to snapshots indexed under this FM file NAME (optional). A display-name
+                   filter, not an identity: two different files can share a name, and both stay in.
         ref:       Scope the search to ONE record — its record UUID / primary name / any resolvable
                    ref (packet 1036). Use it to confirm/inspect what a SINGLE artifact contributed to
                    the index (e.g. a stored clip whose content otherwise clusters with a schema copy).
+                   An exact ref always wins over ``snapshots``.
+        snapshots: "all" (default) searches every indexed snapshot. "latest" searches only the snapshots
+                   list_artifacts(latest_only=True) calls latest: each LINEAGE's current snapshot. A lineage
+                   is a job, and its current snapshot is the one the job promoted, which is not necessarily
+                   the newest; a missing or dangling promotion keeps the whole lineage current. Each manual
+                   upload is its own lineage and stays latest beside a job's snapshot of the same file. Selection happens before ranking, so top_k is filled from
+                   latest snapshots; a lineage whose current snapshot is not indexed is reported, never
+                   answered from its older snapshots.
 
     Returns a ranked list with file, section, item name, the evidence layer (object_raw =
     deterministic rendered text; object_summary = an optional AI-summary layer), and the indexed
@@ -4281,6 +4385,10 @@ def semantic_search(
     """
     from corpusfm.app.app_config import load_app_config
     from corpusfm.server.ai.vector_index import get_vector_index
+
+    selector = snapshots.strip().lower() if isinstance(snapshots, str) else snapshots
+    if selector not in _SNAPSHOT_SELECTORS:
+        return f"ERROR: snapshots must be 'all' or 'latest' (got {snapshots!r})."
 
     app_cfg = load_app_config()
     index = get_vector_index(app_cfg)
@@ -4305,16 +4413,32 @@ def semantic_search(
         except Exception as exc:
             return f"ERROR resolving ref: {exc}"
 
+    eligible = None
+    notes: list = []
+    if scope_uuid is not None:
+        if selector != "all":
+            notes.append(f"Note: ref selects one exact record, so snapshots={selector!r} was not applied.")
+    elif selector == "latest":
+        backend = get_backend(Path(archive_dir) if archive_dir else None)
+        metas, _tags, latest_by_uuid, view = _catalog_view(backend)
+        if metas is None:
+            return _catalog_unavailable_message(view)
+        verdict = latest_by_uuid or {}
+        eligible = {m.uuid for m in metas if m.uuid and verdict.get(m.uuid, True)}
+        notes.extend(_current_snapshots_not_indexed(index, metas, verdict, file_name or None))
+
     top_k = max(1, min(top_k, 20))
     try:
-        results = index.search(query, top_k=top_k, file_name=file_name or None, uuid=scope_uuid)
+        results = index.search(query, top_k=top_k, file_name=file_name or None, uuid=scope_uuid,
+                               uuids=eligible)
     except Exception as exc:
         return f"ERROR searching index: {exc}"
 
     if not results:
-        return "No results found."
+        return "\n".join(notes + ["No results found."])
 
-    out = [f"Top {len(results)} result(s) for: {query!r}\n"]
+    scope = " (latest snapshot per lineage)" if eligible is not None else ""
+    out = notes + [f"Top {len(results)} result(s){scope} for: {query!r}\n"]
     for i, r in enumerate(results, 1):
         dist = f"{r['distance']:.3f}" if r.get("distance") is not None else "?"
         layer = r.get("layer") or "object_raw"

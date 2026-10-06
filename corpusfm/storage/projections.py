@@ -554,7 +554,11 @@ def assert_projection(backend) -> dict:
     from corpusfm.storage import fm_registry as reg
     try:
         code_map = reg.generate_setting_calculations()          # {"Calculations": {...}}
-        stored = backend.load_fm_settings()                     # {} if no record / empty
+        # STRICT (packet 1400-01): a read that FAILS must not look like an empty table. The permissive
+        # read answered {} whenever SETTING could not be read at startup (e.g. FileMaker still opening
+        # the file after a reboot), and the branch below then merged the full default template over
+        # every live setting.
+        stored = backend.load_fm_settings(strict=True)          # {} only if no record / empty
     except Exception:
         logger.warning("projections.assert: could not read SETTING", exc_info=True)
         return {"ok": False, "reason": "read failed"}

@@ -99,9 +99,86 @@ def _resolve_embedding_target(body: dict, cfg) -> dict:
     api_version = (str(body.get("ai_embedding_api_version", "")).strip()
                    or cfg.ai_embedding_api_version)
     typed_key = str(body.get("ai_embedding_api_key", "")).strip()
-    key = typed_key or ai_env.read_ai_key("embed")
-    return {"provider": provider, "base_url": base_url, "model": model,
-            "api_version": api_version, "key": key}
+    # The SAVED key belongs to the saved endpoint (packet 1400-02): send it only to that origin. An
+    # edited or preset URL on another host gets no key unless one is typed.
+    saved_url = (cfg.ai_embedding_base_url
+                 or (cfg.ai_summary_base_url if not cfg.ai_embedding_provider else "") or "")
+    return {"provider": provider, "base_url": base_url, "model": model, "api_version": api_version,
+            **_credential(typed_key, bool(body.get("ai_embedding_api_key_clear")), "embed",
+                          _origin(base_url) == _origin(saved_url))}
+
+
+def _credential(typed_key: str, cleared: bool, which: str, same_origin: bool) -> dict:
+    """The one credential rule both model forms share (packets 1400-02, 1401-02).
+
+    A typed key wins. A staged clear means no key at all. A STORED key goes only to the origin it was
+    saved for; elsewhere it is withheld. Withheld or cleared, no environment key may stand in.
+
+    ``source`` says where the credential came from — ``typed``, ``stored``, ``cleared``, ``withheld``, or
+    ``ambient`` (nothing stored: no key, or whatever the environment supplies). Persistence decisions
+    use the SOURCE, never byte equality: a typed key that happens to equal the stored one is still a
+    typed, unsaved credential (Codex review of 1401)."""
+    from corpusfm.server import ai_env
+    if typed_key:
+        return {"key": typed_key, "source": "typed", "key_withheld": False, "cleared": False, "use_env": True}
+    if cleared:
+        return {"key": "", "source": "cleared", "key_withheld": False, "cleared": True, "use_env": False}
+    stored = ai_env.read_ai_key(which)
+    if not stored:
+        return {"key": "", "source": "ambient", "key_withheld": False, "cleared": False, "use_env": True}
+    if same_origin:
+        return {"key": stored, "source": "stored", "key_withheld": False, "cleared": False, "use_env": True}
+    return {"key": "", "source": "withheld", "key_withheld": True, "cleared": False, "use_env": False}
+
+
+def _tested_the_stored_credential(tgt: dict) -> bool:
+    """Only a credential SOURCED from storage (or none at all, when nothing is stored) lets Test persist
+    the configuration and its verification — the saved configuration then holds what was tested."""
+    return tgt["source"] in ("stored", "ambient")
+
+
+def _chat_endpoint(provider: str, base_url: str) -> str:
+    """Where a chat request actually goes: Anthropic has one fixed API host; Azure has no default."""
+    if provider == "anthropic":
+        return "https://api.anthropic.com"
+    return base_url or ""
+
+
+def _resolve_chat_target(body: dict, cfg) -> dict:
+    """The chat counterpart of ``_resolve_embedding_target`` (packet 1401-02): form value, else saved."""
+    provider = str(body.get("ai_summary_provider", "")).strip() or cfg.ai_summary_provider or ""
+    base_url = str(body.get("ai_summary_base_url", "")).strip() or cfg.ai_summary_base_url or ""
+    model = str(body.get("ai_summary_model", "")).strip() or cfg.ai_summary_model
+    api_version = str(body.get("ai_summary_api_version", "")).strip() or cfg.ai_summary_api_version
+    same = (_origin(_chat_endpoint(provider, base_url))
+            == _origin(_chat_endpoint(cfg.ai_summary_provider or "", cfg.ai_summary_base_url or "")))
+    return {"provider": provider, "base_url": base_url, "model": model, "api_version": api_version,
+            **_credential(str(body.get("ai_summary_api_key", "")).strip(),
+                          bool(body.get("ai_summary_api_key_clear")), "chat", same)}
+
+
+def _unsaved_credential_note(tgt: dict) -> str:
+    """Why a working Test was not persisted, or "" when the stored credential is what was tested."""
+    if tgt["key_withheld"]:
+        return _KEY_OTHER_ORIGIN_SAVE
+    if tgt["cleared"]:
+        return "Working without the stored key. Save to clear it, then Test again to mark it verified."
+    return ("Working, but not saved yet: Save stores this endpoint and key, then Test again to mark "
+            "it verified.")
+
+
+def _origin(url: str) -> tuple:
+    """scheme/host/port of an endpoint URL; a blank URL is the OpenAI default it resolves to."""
+    from urllib.parse import urlsplit
+    parts = urlsplit((url or "https://api.openai.com/v1").strip())
+    scheme = (parts.scheme or "").lower()
+    return scheme, (parts.hostname or "").lower(), parts.port or {"http": 80, "https": 443}.get(scheme)
+
+
+_KEY_WITHHELD_HINT = ("The saved API key is only sent to the endpoint it was saved with. "
+                      "Type the key for this URL, then try again.")
+_KEY_OTHER_ORIGIN_SAVE = ("The stored API key belongs to a different endpoint. Enter the key "
+                          "for this URL, or clear the stored key, then save.")
 
 
 @router.get("/settings/data", dependencies=_ADMIN)
@@ -1311,12 +1388,27 @@ async def save_ai_summary_config(request: Request) -> JSONResponse:
         # API keys: a newly-entered value is written to the Corpus-Key-encrypted SETTING.AiKeys container
         # (packet 1007 — never to jor/slots); an explicit clear empties that slot; a blank field leaves
         # the stored key untouched. Chat and embed are independent (packet 1151). Never round-tripped.
+        new_embed_key = str(body.get("ai_embedding_api_key", "")).strip()
+        # A stored embedding key belongs to its endpoint (packet 1400-02): moving the endpoint to another
+        # origin needs a replacement key or an explicit clear, decided BEFORE anything is written.
+        old_embed_url = _old_embed[2] or (_old_summary[2] if not _old_embed[0] else "")
+        new_embed_url = cfg.ai_embedding_base_url or (cfg.ai_summary_base_url if not embed_provider else "")
+        if (_old_embed_key and not new_embed_key and not body.get("ai_embedding_api_key_clear")
+                and _origin(old_embed_url) != _origin(new_embed_url)):
+            return JSONResponse({"ok": False, "code": "embedding_key_other_origin",
+                                 "error": _KEY_OTHER_ORIGIN_SAVE}, status_code=400)
+        # The same rule for the chat key (packet 1401-02). A disabled provider sends nothing anywhere.
+        if (provider and _old_chat_key and not str(body.get("ai_summary_api_key", "")).strip()
+                and not body.get("ai_summary_api_key_clear")
+                and _origin(_chat_endpoint(_old_summary[0], _old_summary[2]))
+                != _origin(_chat_endpoint(provider, new_summary_base))):
+            return JSONResponse({"ok": False, "code": "chat_key_other_origin",
+                                 "error": _KEY_OTHER_ORIGIN_SAVE}, status_code=400)
         new_chat_key = str(body.get("ai_summary_api_key", "")).strip()
         if body.get("ai_summary_api_key_clear"):
             ai_env.set_ai_key("", "chat")
         elif new_chat_key:
             ai_env.set_ai_key(new_chat_key, "chat")
-        new_embed_key = str(body.get("ai_embedding_api_key", "")).strip()
         if body.get("ai_embedding_api_key_clear"):
             ai_env.set_ai_key("", "embed")
         elif new_embed_key:
@@ -1361,9 +1453,15 @@ async def test_embedding(request: Request) -> JSONResponse:
         tgt = _resolve_embedding_target(body, cfg)
         # Live network round-trip — offload off the event loop (packet 078).
         result = await run_in_threadpool(
-            test_embedding_endpoint, tgt["base_url"], tgt["model"], tgt["key"], 20,
-            tgt["provider"], tgt["api_version"])
-        if result.get("ok"):
+            lambda: test_embedding_endpoint(tgt["base_url"], tgt["model"], tgt["key"], 20,
+                                            tgt["provider"], tgt["api_version"],
+                                            use_env_key=tgt["use_env"]))
+        # Persist only a configuration whose STORED credential is the one just tested: a typed key is
+        # not stored until Save, a staged clear is not applied until Save, and a withheld key would
+        # pair the new endpoint with the old secret.
+        if result.get("ok") and not _tested_the_stored_credential(tgt):
+            result = {**result, "persisted": False, "note": _unsaved_credential_note(tgt)}
+        elif result.get("ok"):
             # Persist the values ACTUALLY tested (test = verify), so stored == tested == indexer-resolved.
             # Never overwrite a proven value with a blank raw request field (packet 1396).
             cfg.ai_embedding_provider = tgt["provider"]
@@ -1379,6 +1477,8 @@ async def test_embedding(request: Request) -> JSONResponse:
             result = {**result, "resolved": {
                 "provider": tgt["provider"], "base_url": tgt["base_url"],
                 "model": tgt["model"], "api_version": tgt["api_version"]}}
+        if not result.get("ok") and tgt["key_withheld"]:
+            result = {**result, "error": f"{result.get('error') or 'Test failed.'} {_KEY_WITHHELD_HINT}"}
         return JSONResponse(result, status_code=200 if result.get("ok") else 400)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -1393,24 +1493,22 @@ async def test_summary(request: Request) -> JSONResponse:
         from corpusfm.app.app_config import save_app_config
         from corpusfm.app.web.settings_authority import load_settings_authority
         from corpusfm.server.ai import test_summary_endpoint
-        from corpusfm.server import ai_env
         # Packet 1396: require a good authoritative read before the verified-flag write.
         cfg, _unavail = load_settings_authority()
         if _unavail is not None:
             return _unavail
-        # Test the values currently in the form (may be unsaved), falling back to saved.
-        provider = str(body.get("ai_summary_provider", "")).strip() or cfg.ai_summary_provider
-        model = str(body.get("ai_summary_model", "")).strip() or cfg.ai_summary_model
-        base_url = str(body.get("ai_summary_base_url", "")).strip() or cfg.ai_summary_base_url
-        api_version = str(body.get("ai_summary_api_version", "")).strip() or cfg.ai_summary_api_version
-        # A just-typed (unsaved) key wins; else the stored chat key (env fallback in the helper).
-        typed_key = str(body.get("ai_summary_api_key", "")).strip()
-        ui_key = typed_key or ai_env.read_ai_key("chat")
-        # Live network round-trip — offload off the event loop (packet 078). Positional args match
-        # test_summary_endpoint(provider_name, model, base_url, api_key, api_version).
+        # Test the values currently in the form (may be unsaved), falling back to saved, under the same
+        # credential rule as the embedding Test (packet 1401-02).
+        tgt = _resolve_chat_target(body, cfg)
+        provider, model, base_url, api_version = (tgt["provider"], tgt["model"], tgt["base_url"],
+                                                  tgt["api_version"])
+        # Live network round-trip — offload off the event loop (packet 078).
         result = await run_in_threadpool(
-            test_summary_endpoint, provider, model, base_url, ui_key, api_version)
-        if result.get("ok"):
+            lambda: test_summary_endpoint(provider, model, base_url, tgt["key"], api_version,
+                                          use_env_key=tgt["use_env"]))
+        if result.get("ok") and not _tested_the_stored_credential(tgt):
+            result = {**result, "persisted": False, "note": _unsaved_credential_note(tgt)}
+        elif result.get("ok"):
             # Persist the proven provider/model/base/api-version + the verified flag (test = verify) —
             # mirrors test-embedding (packet 033, #13).
             cfg.ai_summary_provider = provider
@@ -1420,6 +1518,8 @@ async def test_summary(request: Request) -> JSONResponse:
             cfg.ai_summary_api_version = api_version
             cfg.ai_summary_verified = True
             save_app_config(cfg)
+        if not result.get("ok") and tgt["key_withheld"]:
+            result = {**result, "error": f"{result.get('error') or 'Test failed.'} {_KEY_WITHHELD_HINT}"}
         return JSONResponse(result, status_code=200 if result.get("ok") else 400)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -1449,18 +1549,24 @@ async def list_embedding_models(request: Request) -> JSONResponse:
         is_embed = context == "embedding" or (
             context != "chat" and ("ai_embedding_base_url" in body or "ai_embedding_provider" in body))
         if is_embed:
-            tgt = _resolve_embedding_target(body, cfg)
-            base_url = tgt["base_url"]
             # Azure lists deployments in the portal, not via /models — the helper returns a
             # not-supported result so the UI hides the button; default a blank provider for listing.
-            provider = tgt["provider"] or "openai_compat"
-            ui_key = tgt["key"]
+            tgt = _resolve_embedding_target(body, cfg)
         else:
-            base_url = str(body.get("base_url", "")).strip() or cfg.ai_summary_base_url or ""
-            provider = (str(body.get("provider", "")).strip()
-                        or cfg.ai_summary_provider or "openai_compat")
-            ui_key = ai_env.read_ai_key("chat")
-        result = list_endpoint_models(base_url, api_key=ui_key, provider=provider)
+            # The chat form sends ai_summary_* (packet 1401-02); the older base_url/provider names stay
+            # accepted so a cached page keeps working.
+            chat_body = {"ai_summary_base_url": body.get("ai_summary_base_url", body.get("base_url", "")),
+                         "ai_summary_provider": body.get("ai_summary_provider", body.get("provider", "")),
+                         "ai_summary_api_key": body.get("ai_summary_api_key", ""),
+                         "ai_summary_api_key_clear": body.get("ai_summary_api_key_clear", False)}
+            tgt = _resolve_chat_target(chat_body, cfg)
+        base_url = tgt["base_url"]
+        provider = tgt["provider"] or "openai_compat"
+        withheld = tgt["key_withheld"]
+        result = list_endpoint_models(base_url, api_key=tgt["key"], provider=provider,
+                                      use_env_key=tgt["use_env"])
+        if not result.get("ok") and withheld:
+            result = {**result, "error": f"{result.get('error') or 'Could not list models.'} {_KEY_WITHHELD_HINT}"}
         return JSONResponse(result, status_code=200 if result.get("ok") else 400)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)

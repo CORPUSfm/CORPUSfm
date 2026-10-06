@@ -234,8 +234,11 @@
           </li>
           {# Step 3 is per-client because the clients genuinely differ — Codex signs in with a second
              command rather than a prompt, and a single "approve in your browser" would be wrong for it. #}
-          <li class="cfm-mt-6"><strong>Sign in and approve.</strong>
-            <span x-text="currentOauthSnippet.approve"></span>
+          <li class="cfm-mt-6"><strong>Sign in.</strong>
+            <span x-text="currentOauthSnippet.signin"></span>
+          </li>
+          <li class="cfm-mt-6"><strong>Reconnect and verify.</strong>
+            <span x-text="currentOauthSnippet.verify"></span>
           </li>
         </ol>
       </template>
@@ -248,16 +251,11 @@
         Clients verify this box's certificate, and it does not cover <code x-text="certHost"></code>
         — it names <code x-text="certNames"></code>. Use a name it covers as the MCP address
         (Settings → MCP), or install a certificate that covers <code x-text="certHost"></code>.</p>
-      {# Hosted connectors (R1, packet 1325): Claude.ai / Claude Desktop custom connectors and ChatGPT's
-         web connectors connect FROM the vendor's cloud — to a public address, with a non-loopback
-         callback — and this server refuses that by design. Named precisely: the LOCAL ChatGPT desktop
-         app / Codex host is supported and is the Codex tab. #}
-      <p class="cfm-muted cfm-mt-6">Not supported: hosted connectors — Claude.ai and Claude Desktop
-        <em>custom connectors</em>, and ChatGPT's web connectors — which connect from the vendor's cloud
-        and cannot complete sign-in here. Use Claude Code, or the Codex CLI / ChatGPT desktop app, instead.</p>
-      {# The fact that matters for consent: an approved client acts AS YOU. #}
-      <p class="cfm-muted">Each client you approve acts as <strong>you</strong>, with your gates, and
-        <strong>no token is copied</strong> anywhere.</p>
+      {# Packet 1401-03: one identity cue and a named route to the guide. Hosted-connector support, scope
+         choices, sign-in background and connection troubleshooting live in docs/mcp.md. #}
+      <p class="cfm-muted cfm-mt-6">The client acts as <strong>you</strong>, with your access — <strong>no token is copied</strong>.
+        <a href="#" @click.prevent="$dispatch('cfm-open-docs', 'mcp#troubleshooting-a-connection')">Troubleshooting
+        a connection</a></p>
     </div>
   </div>
   </section>
@@ -546,68 +544,69 @@ function mcpAccess() {
         // `needsAddress` false = the command IS the whole config, so the separate address-copy step
         // is not shown for it (Claude Code, Codex). The JSON clients keep it.
         const p = (id) => 'o-' + id;
-        const jsonHint = 'Restart the client after adding it.';
-        const stale = `If the browser shows "Client ID … not found", the client reused a sign-in it `
-                    + `saved for this server before the server was reinstalled — clear it and sign in again.`;
+        // Packet 1401-03: the page carries the operating path only — one short line per step. Scope
+        // choices, why sign-in needs a person, client-specific background, stale-registration recovery
+        // and connection troubleshooting live in docs/mcp.md (linked from the panel).
         return [
-          { id: p('cli'), label: 'Claude Code', needsAddress: false, hint: 'Run this in your terminal.',
-            text: `claude mcp add --transport http ${name} ${base}`,
-            agent: `run the command below in a terminal, then start authentication with `
-                 + `"claude mcp login" for that server, or the /mcp panel's Authenticate action. No `
-                 + `restart is needed — confirm with "claude mcp list" or /mcp that the server reports `
-                 + `connected and shows its tools.`,
-            approve: `Run /mcp, pick ${name}, and choose Authenticate — or, in a terminal, `
-                   + `claude mcp login ${name}. Your browser opens. ${stale} `
-                   + `(Claude Code: claude mcp logout ${name}, then sign in again.)` },
+          { id: p('cli'), label: 'Claude Code', needsAddress: false,
+            hint: 'Run in your terminal. --scope user adds it for every project on this computer.',
+            text: `claude mcp add --scope user --transport http ${name} ${base}`,
+            agent: `run the command below in a terminal. Signing in needs a person: do not run `
+                 + `"claude mcp login" in a background or non-interactive shell — ask me to run it in a `
+                 + `terminal I can see, or to use /mcp and choose Authenticate, and wait while I approve. `
+                 + `"claude mcp list" showing the server connected proves the configuration and sign-in, `
+                 + `not that a session which was already running has loaded the tools: reconnect the `
+                 + `server from /mcp or start a new session, and confirm CORPUSfm's tools are available there.`,
+            signin: `In a terminal you can see, run claude mcp login ${name} — or in Claude Code: /mcp → ${name} → Authenticate. Approve in the browser.`,
+            verify: `Reconnect ${name} from /mcp, or start a new session, then check CORPUSfm's tools are listed.` },
           { id: p('codex'), label: 'Codex', needsAddress: false,
-            hint: `Run this in your terminal. It writes [mcp_servers.${name}] url = "${base}" to `
-                + `~/.codex/config.toml, which the Codex CLI, the IDE extension and the ChatGPT desktop app share.`,
+            hint: 'Run in your terminal.',
             text: `codex mcp add ${name} --url ${base}`,
             agent: `run the command below in a terminal, then run "codex mcp login" with the server `
                  + `name from that command and ask me to approve in the browser. Run "codex mcp get" `
                  + `with that same server name and "--json" to check what was saved; this proves only `
                  + `the configuration file, so restart the Codex CLI session, the IDE `
                  + `extension or the ChatGPT desktop app and confirm the tools are present there.`,
-            approve: `Run codex mcp login ${name} and approve in your browser. In the ChatGPT desktop app or `
-                   + `the IDE extension choose Restart / Restart extension so CORPUSfm's tools appear. ${stale}` },
+            signin: `Run codex mcp login ${name} and approve in the browser.`,
+            verify: 'Restart the Codex session, IDE extension or ChatGPT desktop app, then check CORPUSfm’s tools are listed.' },
           { id: p('cursor'), label: 'Cursor', needsAddress: true,
-            hint: `Add to ~/.cursor/mcp.json, or the project’s .cursor/mcp.json.`,
+            hint: 'Add to ~/.cursor/mcp.json, or the project’s .cursor/mcp.json.',
             text: j({ mcpServers: { [name]: { url: base } } }),
             agent: `merge the JSON below into the existing project or user MCP configuration without `
                  + `replacing other servers — ask me which of the two to use if that is ambiguous. `
                  + `Then complete the OAuth sign-in from Cursor's MCP settings, reload if Cursor has `
                  + `not picked up the change, and confirm the tools are listed under Available Tools.`,
-            approve: `Open Cursor Settings → MCP; the server shows Needs login — click it and approve in your browser. ${stale}` },
-          // VS Code's OWN MCP support, which is not the same thing as running Codex inside VS Code —
-          // that reads ~/.codex/config.toml and belongs on the Codex tab. Said in the hint because
-          // picking the wrong one of these two is the obvious mistake.
+            signin: 'In Cursor Settings → MCP, click Needs login on the server, then approve in the browser.',
+            verify: 'Reload Cursor if needed, then check the tools under Available Tools.' },
           { id: p('vscode'), label: 'VS Code', needsAddress: true,
-            hint: `Add to .vscode/mcp.json (servers) — VS Code's own MCP support. ${jsonHint} `
-                + 'Running Codex inside VS Code is the Codex tab instead.',
+            hint: 'Add to .vscode/mcp.json (servers).',
             text: j({ servers: { [name]: { type: 'http', url: base } } }),
             agent: `merge the JSON below into the chosen workspace or user mcp.json without replacing `
                  + `other servers. Then start the server from the MCP view and accept the trust `
                  + `prompt, complete the browser sign-in, restart the server if the configuration `
                  + `changed after it started, and confirm the tools appear in chat under Configure Tools.`,
-            approve: `Start the server in the MCP view; your browser opens for the sign-in. ${stale}` },
+            signin: 'Start the server in the MCP view, accept the trust prompt, then approve in the browser.',
+            verify: 'Restart the server if you changed its configuration, then check the tools under Configure Tools.' },
           { id: p('raw'), label: 'Universal', needsAddress: true,
-            hint: 'Any client that takes an HTTP MCP endpoint and can do OAuth — or an agent configuring itself.',
+            hint: 'Enter these fields in any client that takes an HTTP MCP endpoint and supports OAuth.',
             agent: `enter the fields below exactly in this client's MCP server configuration. If you `
                  + `cannot identify the client or its configuration surface, ask me rather than `
                  + `guessing a path. Then start its OAuth sign-in and confirm the client lists the tools.`,
             text: `URL:        ${base}\nTransport:  HTTP (streamable)\n`
                 + `Auth:       OAuth 2.1, discovered from the 401 (WWW-Authenticate → resource_metadata); configure no token\n`
-                + `Client:     public, PKCE S256, registered at ${base}register (Dynamic Client Registration)\n`
+                + `Client:     public, PKCE S256, registered at ${base.replace(/\/+$/, '')}/register (Dynamic Client Registration)\n`
                 + `Redirect:   a loopback URI only — http://127.0.0.1, [::1] or localhost, any port; no hosted callback\n`
                 + `Grants:     authorization_code + refresh_token; scopes = your CORPUSfm gates\n`
                 + `Re-connect: clear any sign-in this client saved for this server earlier, then connect again`,
-            approve: 'However your client starts an OAuth sign-in — approve it in the browser.' },
+            signin: 'Start the client’s OAuth sign-in and approve in the browser.',
+            verify: 'Check that the client lists CORPUSfm’s tools.' },
         ];
       }
       const bearer = 'Bearer ' + tok;
       return [
-        { id: q('cli'), label: 'Claude Code', hint: 'Run this in your terminal.',
-          text: `claude mcp add --transport http ${name} ${base} --header "Authorization: ${bearer}"` },
+        { id: q('cli'), label: 'Claude Code',
+          hint: 'Run this in your terminal. --scope user: every project for your account on this computer.',
+          text: `claude mcp add --scope user --transport http ${name} ${base} --header "Authorization: ${bearer}"` },
         { id: q('json'), label: 'Cursor', hint: 'Add to ~/.cursor/mcp.json, or the project’s .cursor/mcp.json (mcpServers).',
           text: j({ mcpServers: { [name]: { type: 'http', url: base, headers: { Authorization: bearer } } } }) },
         { id: q('vscode'), label: 'VS Code', hint: 'Add to .vscode/mcp.json (servers).',

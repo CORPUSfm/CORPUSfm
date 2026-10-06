@@ -100,9 +100,14 @@ def _zone_identity() -> Optional[str]:
     Linux/macOS convention. Windows has neither, and its abbreviation is NOT a substitute — mapping
     "PST" back to a zone is a guess that reads as a fact.
     """
-    tzenv = (os.environ.get("TZ") or "").strip()
-    if tzenv and "/" in tzenv:              # "America/Los_Angeles", not ":US/Pacific" or "PST8PDT"
-        return tzenv.lstrip(":")
+    tzenv = (os.environ.get("TZ") or "").strip().lstrip(":")
+    if tzenv:
+        # A set TZ governs the process clock (dateutil follows it), so /etc/localtime no longer
+        # describes it (packet 1400-06: TZ=UTC was labelled with the box's /etc/localtime zone).
+        # A zone name is the identity; anything else (a POSIX rule like "PST8PDT", or a file path
+        # such as ":/etc/localtime") has none.
+        named = ("/" in tzenv or tzenv == "UTC") and not tzenv.startswith("/")
+        return tzenv if named else None
     try:
         p = Path("/etc/localtime")
         if p.exists():

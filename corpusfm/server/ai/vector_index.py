@@ -46,7 +46,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 if TYPE_CHECKING:
     from corpusfm.app.app_config import AppConfig
@@ -68,6 +68,10 @@ _MAX_TEXT_CHARS = 1500
 # Document layers (packet 1006). Raw is the search substrate; summary is optional additive enrichment.
 LAYER_RAW = "object_raw"
 LAYER_SUMMARY = "object_summary"
+
+
+class IndexMembershipUnavailable(Exception):
+    """Which records the index holds could not be established (packet 1400-05) — never read as "none"."""
 
 
 class SummaryLayerDeferred(Exception):
@@ -676,6 +680,24 @@ class CORPUSfmVectorIndex:
             ordered.extend(sorted(group, key=lambda r: r["timestamp"], reverse=True))
         return ordered
 
+    def raw_membership(self, uuids: Iterable[str]) -> set:
+        """Which of ``uuids`` have searchable (``object_raw``) content — STRICTLY (packet 1400-05).
+
+        Unlike :meth:`list_indexed`, which answers ``[]`` for both "nothing indexed" and "could not
+        tell", this raises :class:`IndexMembershipUnavailable` when membership cannot be established
+        (a pending schema rebuild, or a failed read). An empty set is an answer: none are indexed."""
+        if self._schema_mismatch():
+            raise IndexMembershipUnavailable("a search-index schema rebuild is pending")
+        wanted = sorted({u for u in uuids if u})
+        if not wanted:
+            return set()
+        try:
+            got = self._col.get(where={"uuid": {"$in": wanted}}, include=["metadatas"])
+        except Exception as exc:
+            raise IndexMembershipUnavailable(f"the search index could not be read: {exc}") from exc
+        return {m.get("uuid") for m in (got.get("metadatas") or [])
+                if m.get("uuid") and (m.get("layer") or LAYER_RAW) == LAYER_RAW}
+
     def index_status(self, uuid: str) -> dict:
         """Per-artifact index membership (packet 1036): doc counts by layer for one record ``uuid``.
         Returns {raw, summary, total} — the RAW layer is the search substrate, SUMMARY the optional
@@ -702,6 +724,7 @@ class CORPUSfmVectorIndex:
         file_name: Optional[str] = None,
         include_summaries: bool = True,
         uuid: Optional[str] = None,
+        uuids: Optional[Iterable[str]] = None,
     ) -> list[dict]:
         """Return top_k results for query. Each result has ``uuid`` (the record it came from, so the
         caller can disambiguate same-named files), file_name, timestamp, folder_name, item_name,
@@ -712,9 +735,15 @@ class CORPUSfmVectorIndex:
         summary layer exists, both layers are queried and results are DEDUPED per object — keyed on the
         collision-free ``(uuid, folder, item)`` (packet 1010 identity), keeping the closer match — so an
         optional summary vector can win when it is the better semantic match without doubling the rows,
-        and two distinct same-named artifacts never collapse into one."""
+        and two distinct same-named artifacts never collapse into one.
+
+        ``uuids`` restricts the query to those records BEFORE ranking (packet 1400-05), so ``top_k`` is
+        filled from eligible records rather than trimmed from all of them; an empty set matches nothing."""
         count = self.count()
         if count <= 0:
+            return []
+        eligible = None if uuids is None else sorted({u for u in uuids if u})
+        if eligible is not None and not eligible:
             return []
         where = None
         clauses = []
@@ -722,6 +751,8 @@ class CORPUSfmVectorIndex:
             clauses.append({"file_name": {"$eq": file_name}})
         if uuid:
             clauses.append({"uuid": {"$eq": uuid}})          # scope to ONE record (packet 1036)
+        if eligible is not None:
+            clauses.append({"uuid": {"$in": eligible}})
         if not include_summaries:
             clauses.append({"layer": {"$eq": LAYER_RAW}})
         if len(clauses) == 1:
@@ -793,7 +824,7 @@ def embedding_ready(app_config: "AppConfig") -> bool:
 
 def test_embedding_endpoint(
     base_url: str, model: str = "", api_key: str = "", timeout: int = 20,
-    provider: str = "openai_compat", api_version: str = ""
+    provider: str = "openai_compat", api_version: str = "", *, use_env_key: bool = True
 ) -> dict:
     """Do a tiny live /embeddings round-trip. Returns {ok, dims?, model?, error?}.
 
@@ -801,6 +832,7 @@ def test_embedding_endpoint(
     passed, and falls back to the OpenAI endpoint when no base_url is given but a
     key exists — same precedence as get_vector_index(). For provider=azure_openai,
     `model` is the embedding DEPLOYMENT name and api_version routes the request.
+    ``use_env_key=False`` means NO credential is permitted beyond ``api_key`` (packet 1400-02).
     """
     import json as _json
     import requests
@@ -808,8 +840,9 @@ def test_embedding_endpoint(
     from corpusfm.server.ai._endpoints import auth_headers, endpoint_url, is_azure
     base_url = (base_url or "").rstrip("/")
     model = model or ("" if is_azure(provider) else "text-embedding-3-small")
-    api_key = api_key or os.environ.get("AI_SUMMARY_API_KEY", "") or \
-        os.environ.get("OPENAI_API_KEY", "")
+    if use_env_key:
+        api_key = api_key or os.environ.get("AI_SUMMARY_API_KEY", "") or \
+            os.environ.get("OPENAI_API_KEY", "")
     if not base_url:
         if is_azure(provider):
             return {"ok": False, "error": "Azure OpenAI needs a resource URL "
@@ -842,7 +875,7 @@ def test_embedding_endpoint(
 
 
 def list_endpoint_models(base_url: str, api_key: str = "", timeout: int = 15,
-                         provider: str = "openai_compat") -> dict:
+                         provider: str = "openai_compat", *, use_env_key: bool = True) -> dict:
     """GET {base_url}/models — what the endpoint actually serves. {ok, models?, error?}.
 
     Azure OpenAI does not enumerate deployments on the data plane like /models, so for
@@ -864,8 +897,9 @@ def list_endpoint_models(base_url: str, api_key: str = "", timeout: int = 15,
         return {"ok": False, "error": "Azure OpenAI does not list deployments here — "
                 "enter the deployment name from the Azure portal."}
     base_url = (base_url or "").rstrip("/")
-    api_key = api_key or os.environ.get("AI_SUMMARY_API_KEY", "") or \
-        os.environ.get("OPENAI_API_KEY", "")
+    if use_env_key:
+        api_key = api_key or os.environ.get("AI_SUMMARY_API_KEY", "") or \
+            os.environ.get("OPENAI_API_KEY", "")
     if not base_url:
         if not api_key:
             return {"ok": False, "error": "No embedding endpoint or API key configured."}

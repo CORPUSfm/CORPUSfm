@@ -133,14 +133,15 @@ def summary_provider_ready(app_config: "AppConfig") -> bool:
 
 def test_summary_endpoint(
     provider_name: str, model: str = "", base_url: str = "", api_key: str = "",
-    api_version: str = ""
+    api_version: str = "", *, use_env_key: bool = True
 ) -> dict:
     """Do a tiny live chat round-trip to prove the summary (chat) provider works.
 
     Mirrors test_embedding_endpoint for the embeddings side. Returns
     {ok, reply?, model?, error?}. Resolves the API key from env when not passed
     (ANTHROPIC_API_KEY / AI_SUMMARY_API_KEY), same precedence as get_provider.
-    api_version is only used for the azure_openai provider."""
+    api_version is only used for the azure_openai provider. ``use_env_key=False`` means NO credential
+    is permitted beyond ``api_key`` (packet 1401-02)."""
     from corpusfm.server.ai.providers import AnthropicProvider, OpenAICompatProvider
 
     provider_name = (provider_name or "").strip()
@@ -148,12 +149,14 @@ def test_summary_endpoint(
         return {"ok": False, "error": "No AI summary provider selected."}
     try:
         if provider_name == "anthropic":
-            api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+            if use_env_key:
+                api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
             if not api_key:
                 return {"ok": False, "error": "Anthropic selected but no API key is set."}
             provider = AnthropicProvider(model=model, api_key=api_key)
         elif provider_name in ("openai_compat", "azure_openai"):
-            api_key = api_key or os.environ.get("AI_SUMMARY_API_KEY", "")
+            if use_env_key:
+                api_key = api_key or os.environ.get("AI_SUMMARY_API_KEY", "")
             provider = OpenAICompatProvider(model=model, api_key=api_key, base_url=base_url,
                                             provider=provider_name, api_version=api_version)
         else:

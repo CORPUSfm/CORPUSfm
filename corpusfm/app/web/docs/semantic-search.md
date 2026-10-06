@@ -26,7 +26,28 @@ Semantic search is optional and needs an **embedding model**. Configure one in
 
 - Point it at a local, keyless endpoint — **Ollama** or **LM Studio** — or any
   OpenAI-compatible embeddings endpoint. A preset fills in the endpoint URL; **List models**
-  then discovers what that endpoint actually serves so you can pick one.
+  then discovers what that endpoint actually serves so you can pick one. Typical pairs:
+  **OpenAI** `https://api.openai.com/v1` with `text-embedding-3-small`; **Ollama** (local, free)
+  `http://localhost:11434/v1` with `nomic-embed-text`.
+- **The endpoint is reached from the CORPUSfm server**, not from your browser: indexing runs on that
+  box, so the URL must be reachable from there (`localhost` means the server itself).
+- **List models** shows everything the endpoint serves, chat and embedding models alike, with no
+  reliable way to tell them apart. **Test** is what proves the model you picked actually embeds.
+- **API key:** leave it blank only when the endpoint needs no key (a default local Ollama or LM Studio).
+  An authenticated endpoint such as Open WebUI needs one. The embedding key is independent of the chat key.
+- **Open WebUI** is an authenticated endpoint: use the **Open WebUI** preset (your Open WebUI
+  address followed by `/ollama/v1`) and paste an Open WebUI API key. An administrator enables API
+  keys in Open WebUI, and each user creates one in their account settings. **List models** and
+  **Test** use the key you typed, so you need not save first. A test with a newly typed key is not
+  stored, though: **Save**, then **Test** again to mark the saved configuration verified.
+- A **saved** key is only sent to the endpoint it was saved with. After changing the URL to a
+  different host, type the key again: **Save** refuses to keep the old key for a new host unless you
+  enter the new key or clear the stored one.
+- **Clear stored key** removes the stored key when you **Save**; **Cancel** (or **Undo**) keeps it.
+- **Embedding batch size** is a throughput setting only — see
+  [Embedding batch size](settings.md#embedding-batch-size). It never changes the index, so it needs no reindex.
+- **Changing the embedder changes the vector space**: after switching model or provider, reindex your
+  artifacts (see [when to reset it](#the-index-is-a-separate-store-and-when-to-reset-it) below).
 - Or pick **Azure OpenAI** and enter the resource URL, api-version, embedding **deployment**, and
   key — the embedding endpoint is fully independent of the chat model (own provider + own key). See
   [Azure OpenAI](settings.md#azure-openai) in Settings.

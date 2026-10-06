@@ -58,8 +58,10 @@ def remote_servers_list(request: Request) -> JSONResponse:
 
 
 def _fmt_ts(iso: str) -> str:
-    """ISO timestamp → 'YYYY-MM-DD HH:MM' (trim seconds/zone for the card)."""
-    return (iso or "").replace("T", " ")[:16]
+    """A stored UTC run instant → 'YYYY-MM-DD HH:MM UTC' for the card (packet 1400-06). It sits beside
+    `next_run`, which is SERVER wall-clock time with its own zone label, so it must say which clock it
+    is — the per-job row already says UTC."""
+    return (iso.replace("T", " ")[:16] + " UTC") if iso else ""
 
 
 def _server_display_name(server_ref) -> str:

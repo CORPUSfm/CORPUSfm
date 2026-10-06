@@ -1249,11 +1249,14 @@
             </div>
           </div>
         </div>
+        {# Order matches the embeddings form (packet 1401-02): endpoint, key, model, then chat-only
+           settings and Test. Explanations live in settings.md#choosing-a-summary-chat-model. #}
         <template x-if="aiSummary.provider === 'openai_compat'">
           <div>
             <div class="cfm-filterbar cfm-filterbar--tight cfm-mb-12">
               <button type="button" class="cfm-btn cfm-btn--sm" @click="aiSummary.base_url='http://localhost:11434/v1'; aiSummary.model=''; chatModels=[]">Preset: Ollama</button>
               <button type="button" class="cfm-btn cfm-btn--sm" @click="aiSummary.base_url='http://localhost:1234/v1'; aiSummary.model=''; chatModels=[]">Preset: LM Studio</button>
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="aiSummary.base_url=openWebUiUrl(aiSummary.base_url, '/api'); aiSummary.model=''; chatModels=[]">Preset: Open WebUI</button>
             </div>
             <div class="cfm-field"><label class="cfm-field-label" for="ai-base">Base URL</label>
               <input id="ai-base" type="text" class="cfm-input" x-model="aiSummary.base_url" placeholder="https://api.openai.com/v1"></div>
@@ -1262,14 +1265,27 @@
         <template x-if="aiSummary.provider === 'azure_openai'">
           <div>
             <div class="cfm-field"><label class="cfm-field-label" for="ai-az-base">Azure resource URL</label>
-              <input id="ai-az-base" type="text" class="cfm-input" x-model="aiSummary.base_url" placeholder="https://<resource>.openai.azure.com">
-              <p class="cfm-muted cfm-mt-6">Your Azure OpenAI resource root — no path. The chat <strong>deployment</strong> goes in Model below.</p></div>
+              <input id="ai-az-base" type="text" class="cfm-input" x-model="aiSummary.base_url" placeholder="https://<resource>.openai.azure.com"></div>
             <div class="cfm-field"><label class="cfm-field-label" for="ai-az-ver">API version</label>
               <input id="ai-az-ver" type="text" class="cfm-input" x-model="aiSummary.api_version" placeholder="2024-10-21"></div>
           </div>
         </template>
         <template x-if="aiSummary.provider">
           <div>
+            <div class="cfm-field">
+              <label class="cfm-field-label" for="ai-key">API key</label>
+              <input id="ai-key" type="password" class="cfm-input" x-model="aiSummary.api_key" autocomplete="off"
+                     :disabled="!!aiSummary.clear_key"
+                     :placeholder="aiSummary.clear_key ? 'Stored key clears on Save' : (aiSummary.api_key_set ? '•••••••• stored — leave blank to keep' : 'Paste the API key, if the endpoint needs one')">
+              <div class="cfm-filterbar cfm-filterbar--tight cfm-mt-6" x-show="aiSummary.api_key_set">
+                <span class="cfm-badge" x-show="!aiSummary.clear_key">Key stored</span>
+                <span class="cfm-badge cfm-badge--warn" x-show="aiSummary.clear_key">Key clears on Save</span>
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" x-show="!aiSummary.clear_key"
+                        @click="aiSummary.api_key=''; aiSummary.clear_key=true">Clear stored key</button>
+                <button type="button" class="cfm-btn cfm-btn--sm" x-show="aiSummary.clear_key"
+                        @click="aiSummary.clear_key=false">Undo</button>
+              </div>
+            </div>
             <div class="cfm-field">
               <label class="cfm-field-label" for="ai-model" x-text="aiSummary.provider === 'azure_openai' ? 'Chat deployment' : 'Model'">Model</label>
               <input id="ai-model" type="text" class="cfm-input" title="Chat model or Azure deployment" x-model="aiSummary.model"
@@ -1288,31 +1304,20 @@
                   </div>
                 </div>
               </template>
-              <p class="cfm-muted cfm-mt-6">Pick a small, fast <strong>non-thinking</strong> model (e.g. <code>llama3.1:8b</code>, <code>gpt-4o-mini</code>, <code>claude-haiku</code>). Reasoning models (<code>qwen3</code>, <code>deepseek-r1</code>, o-series) are slow per object and can run out of budget mid-reasoning and return nothing.</p>
             </div>
             <div class="cfm-field">
               <label class="cfm-field-label" for="ai-budget">Content budget (characters)</label>
-              <input id="ai-budget" type="number" min="0" step="1000" class="cfm-input" x-model.number="aiSummary.max_content_chars" placeholder="12000">
-              <p class="cfm-muted cfm-mt-6"><strong>0</strong> = send each object whole in one call. Otherwise an object larger than this is chunked (a terse extract per chunk, then one synthesis) so the totality informs the summary — never truncated. A calc's gist is rarely in the first chunk.</p>
+              <input id="ai-budget" type="number" min="0" step="1000" class="cfm-input" x-model.number="aiSummary.max_content_chars" placeholder="12000 · 0 = whole object">
             </div>
             <div class="cfm-field">
               <div class="cfm-switch" :class="aiSummary.include_xref ? 'cfm-switch--on' : ''" @click="aiSummary.include_xref = !aiSummary.include_xref">
                 <span class="cfm-switch-track"></span><span>Include cross-references in the prompt</span>
               </div>
-              <p class="cfm-muted cfm-mt-6">Append each object's <em>Used by / Uses</em> so summaries reflect how it's used, not just its body. Costs more tokens per object — off by default.</p>
-            </div>
-            <div class="cfm-field">
-              <label class="cfm-field-label" for="ai-key">API key</label>
-              <input id="ai-key" type="password" class="cfm-input" x-model="aiSummary.api_key" autocomplete="off"
-                     :placeholder="aiSummary.api_key_set ? '•••••••• stored — leave blank to keep' : 'Paste your API key (stored encrypted)'">
-              <p class="cfm-muted cfm-mt-6" x-show="aiSummary.api_key_set">A key is stored. Leave blank to keep it, type a new one to replace, or <button type="button" class="cfm-btn cfm-btn--text" @click="aiSummary.api_key=''; aiSummary.clear_key=true; commitAi()">clear it</button>.</p>
-              <p class="cfm-muted cfm-mt-6" x-show="!aiSummary.api_key_set">Leave blank for a local model (no key needed).</p>
             </div>
             <div class="cfm-filterbar cfm-filterbar--tight">
               <button type="button" class="cfm-btn cfm-btn--sm" @click="testSummary()" :disabled="!!summaryTesting">Test chat model</button>
               <span class="cfm-badge cfm-badge--ok" x-show="summaryVerified">✓ Replied</span>
             </div>
-            <p class="cfm-muted cfm-mt-6">Sends one tiny prompt to confirm the chat model answers — uses the values above (a typed key need not be saved first).</p>
           </div>
         </template>
       </div>
@@ -1333,7 +1338,7 @@
         {{ doc_help('semantic-search#turning-it-on', 'About semantic search') }}
         <button type="button" class="cfm-iconbtn" @click="closeEdit(false)" aria-label="Cancel" title="Cancel">✕</button></div>
       <div class="cfm-dialog-body">
-        <p class="cfm-muted cfm-mb-12">A separate, independent embeddings endpoint (its own provider + key). <strong>OpenAI:</strong> <code>https://api.openai.com/v1</code> · <code>text-embedding-3-small</code>. <strong>Local, free:</strong> Ollama <code>http://localhost:11434/v1</code> · <code>nomic-embed-text</code>.{% if mode == 'server' %} Indexing runs on this box, so the URL must be reachable from here.{% endif %}</p>
+        {# Explanations live in semantic-search.md#turning-it-on (packet 1401-01). #}
         <div class="cfm-field">
           <span class="cfm-field-label">Provider</span>
           <div class="cfm-dd" x-data="{ open:false }" @click.outside="open=false">
@@ -1350,6 +1355,7 @@
             <div class="cfm-filterbar cfm-filterbar--tight cfm-mb-12">
               <button type="button" class="cfm-btn cfm-btn--sm" @click="aiSummary.embedding_base_url='http://localhost:11434/v1'; aiSummary.embedding_model=''; embedModels=[]">Preset: Ollama</button>
               <button type="button" class="cfm-btn cfm-btn--sm" @click="aiSummary.embedding_base_url='http://localhost:1234/v1'; aiSummary.embedding_model=''; embedModels=[]">Preset: LM Studio</button>
+              <button type="button" class="cfm-btn cfm-btn--sm" @click="aiSummary.embedding_base_url=openWebUiUrl(aiSummary.embedding_base_url, '/ollama/v1'); aiSummary.embedding_model=''; embedModels=[]">Preset: Open WebUI</button>
             </div>
             <div class="cfm-field"><label class="cfm-field-label" for="ai-eurl">Embedding base URL</label>
               <input id="ai-eurl" type="text" class="cfm-input" x-model="aiSummary.embedding_base_url" placeholder="e.g. https://api.openai.com/v1"></div>
@@ -1358,12 +1364,25 @@
         <template x-if="aiSummary.embedding_provider === 'azure_openai'">
           <div>
             <div class="cfm-field"><label class="cfm-field-label" for="ai-eaz-base">Azure resource URL</label>
-              <input id="ai-eaz-base" type="text" class="cfm-input" x-model="aiSummary.embedding_base_url" placeholder="https://<resource>.openai.azure.com">
-              <p class="cfm-muted cfm-mt-6">The embedding <strong>deployment</strong> goes in the field below.</p></div>
+              <input id="ai-eaz-base" type="text" class="cfm-input" x-model="aiSummary.embedding_base_url" placeholder="https://<resource>.openai.azure.com"></div>
             <div class="cfm-field"><label class="cfm-field-label" for="ai-eaz-ver">API version</label>
               <input id="ai-eaz-ver" type="text" class="cfm-input" x-model="aiSummary.embedding_api_version" placeholder="2024-10-21"></div>
           </div>
         </template>
+        <div class="cfm-field">
+          <label class="cfm-field-label" for="ai-ekey">API key</label>
+          <input id="ai-ekey" type="password" class="cfm-input" x-model="aiSummary.embedding_api_key" autocomplete="off"
+                 :disabled="!!aiSummary.embedding_clear_key"
+                 :placeholder="aiSummary.embedding_clear_key ? 'Stored key clears on Save' : (aiSummary.embedding_api_key_set ? '•••••••• stored — leave blank to keep' : 'Paste the endpoint key, if it needs one')">
+          <div class="cfm-filterbar cfm-filterbar--tight cfm-mt-6" x-show="aiSummary.embedding_api_key_set">
+            <span class="cfm-badge" x-show="!aiSummary.embedding_clear_key">Key stored</span>
+            <span class="cfm-badge cfm-badge--warn" x-show="aiSummary.embedding_clear_key">Key clears on Save</span>
+            <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" x-show="!aiSummary.embedding_clear_key"
+                    @click="aiSummary.embedding_api_key=''; aiSummary.embedding_clear_key=true">Clear stored key</button>
+            <button type="button" class="cfm-btn cfm-btn--sm" x-show="aiSummary.embedding_clear_key"
+                    @click="aiSummary.embedding_clear_key=false">Undo</button>
+          </div>
+        </div>
         <div class="cfm-field">
           <label class="cfm-field-label" for="ai-emodel" x-text="aiSummary.embedding_provider === 'azure_openai' ? 'Embedding deployment' : 'Embedding model'">Embedding model</label>
           <input id="ai-emodel" type="text" class="cfm-input" title="Embedding model or Azure deployment" x-model="aiSummary.embedding_model" :placeholder="aiSummary.embedding_provider === 'azure_openai' ? 'your embedding deployment name' : 'set the URL, then List models →'">
@@ -1381,14 +1400,6 @@
               </div>
             </div>
           </template>
-          <p class="cfm-muted cfm-mt-6" x-show="aiSummary.embedding_provider !== 'azure_openai'">The endpoint lists chat + embedding models with no reliable flag — Test below proves the one you chose embeds.</p>
-        </div>
-        <div class="cfm-field">
-          <label class="cfm-field-label" for="ai-ekey">API key</label>
-          <input id="ai-ekey" type="password" class="cfm-input" x-model="aiSummary.embedding_api_key" autocomplete="off"
-                 :placeholder="aiSummary.embedding_api_key_set ? '•••••••• stored — leave blank to keep' : 'Paste the embedding endpoint key (stored encrypted)'">
-          <p class="cfm-muted cfm-mt-6" x-show="aiSummary.embedding_api_key_set">A key is stored. Leave blank to keep it, type a new one to replace, or <button type="button" class="cfm-btn cfm-btn--text" @click="aiSummary.embedding_api_key=''; aiSummary.embedding_clear_key=true; commitAi()">clear it</button>.</p>
-          <p class="cfm-muted cfm-mt-6" x-show="!aiSummary.embedding_api_key_set">Leave blank for a local endpoint (no key needed). This key is independent of the chat key.</p>
         </div>
         <div class="cfm-field">
           {# A <label for=…> cannot point at a div, so the label is associated by id instead. The stored
@@ -1412,15 +1423,11 @@
               </template>
             </div>
           </div>
-          <p class="cfm-muted cfm-mt-6">Objects sent per request. Auto = 16 for a local endpoint, 128 for a
-            remote one. Larger means far fewer round-trips on a hosted endpoint (Azure allows up to 2048);
-            it never changes the index, so no re-index is needed.</p>
         </div>
         <div class="cfm-filterbar cfm-filterbar--tight">
           <button type="button" class="cfm-btn cfm-btn--sm" @click="testEmbedding()" :disabled="!!embedTesting">Test embedding endpoint</button>
           <span class="cfm-badge cfm-badge--ok" x-show="embedVerified">✓ Verified</span>
         </div>
-        <p class="cfm-muted cfm-mt-6">Changing the embedder changes the vector space — the semantic index must be rebuilt (re-index your artifacts) after switching.</p>
       </div>
       <div class="cfm-dialog-ftr">
         <span class="cfm-spacer"></span>
@@ -2142,9 +2149,10 @@ function settingsPage() {
       if (this._settingsUnavailable()) return;
       this.embedTesting = true;
       try {
-        const r = await fetch('/api/settings/test-embedding', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_embedding_provider: this.aiSummary.embedding_provider || '', ai_embedding_model: this.aiSummary.embedding_model, ai_embedding_base_url: this.aiSummary.embedding_base_url, ai_embedding_api_version: this.aiSummary.embedding_api_version || '', ai_embedding_api_key: this.aiSummary.embedding_api_key || '' }) });
+        const r = await fetch('/api/settings/test-embedding', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_embedding_provider: this.aiSummary.embedding_provider || '', ai_embedding_model: this.aiSummary.embedding_model, ai_embedding_base_url: this.aiSummary.embedding_base_url, ai_embedding_api_version: this.aiSummary.embedding_api_version || '', ai_embedding_api_key: this.aiSummary.embedding_api_key || '', ai_embedding_api_key_clear: !!this.aiSummary.embedding_clear_key }) });
         const d = await r.json();
-        this.embedVerified = !!d.ok;
+        // Packet 1400-02: a working test that was not persisted leaves the stored state unverified.
+        if (d.persisted !== false) this.embedVerified = !!d.ok;
         // Packet 1396: reflect the RESOLVED endpoint the server tested and stored, so the form matches
         // what is persisted and a later AI Save does not post a blank field and undo the verification.
         if (d.ok && d.resolved) {
@@ -2153,14 +2161,22 @@ function settingsPage() {
           this.aiSummary.embedding_model = d.resolved.model || '';
           this.aiSummary.embedding_api_version = d.resolved.api_version || '';
         }
-        window.cfmNotify[(d.ok) ? 'success' : 'error'](d.ok ? `Working — ${d.dims}-dim vectors from ${d.model}.` : (d.error || 'Test failed.'));
+        if (d.ok && d.persisted === false) window.cfmNotify.info(`Working — ${d.dims}-dim vectors from ${d.model}. ${d.note}`);
+        else window.cfmNotify[(d.ok) ? 'success' : 'error'](d.ok ? `Working — ${d.dims}-dim vectors from ${d.model}.` : (d.error || 'Test failed.'));
       } catch(e) { this.embedVerified = false; window.cfmNotify.error(String(e)); } finally { this.embedTesting = false; }
+    },
+    // Open WebUI serves chat at `/api` (POST /api/chat/completions, GET /api/models) and OpenAI-style
+    // embeddings at `/ollama/v1`. Keep the origin the operator already entered; otherwise a localhost
+    // example they edit — never a guessed host (packets 1400-02, 1401-02).
+    openWebUiUrl(current, path) {
+      try { const u = new URL(current); if (/^https?:$/.test(u.protocol)) return u.origin + path; } catch (e) {}
+      return 'http://localhost:3000' + path;
     },
     async listEmbeddingModels() {
       if (this._settingsUnavailable()) return;
       this.embedListing = true;
       try {
-        const r = await fetch('/api/settings/list-embedding-models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: 'embedding', ai_embedding_base_url: this.aiSummary.embedding_base_url, ai_embedding_provider: this.aiSummary.embedding_provider || '' }) });
+        const r = await fetch('/api/settings/list-embedding-models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: 'embedding', ai_embedding_base_url: this.aiSummary.embedding_base_url, ai_embedding_provider: this.aiSummary.embedding_provider || '', ai_embedding_api_key: this.aiSummary.embedding_api_key || '', ai_embedding_api_key_clear: !!this.aiSummary.embedding_clear_key }) });
         const d = await r.json();
         if (d.ok) { this.embedModels = d.models || []; window.cfmNotify[(this.embedModels.length) ? 'success' : 'error'](this.embedModels.length ? `${this.embedModels.length} model(s) — pick one above.` : 'Endpoint reachable but reports no models.'); }
         else { this.embedModels = []; window.cfmNotify.error(d.error || 'Could not list models.'); }
@@ -2170,17 +2186,19 @@ function settingsPage() {
       if (this._settingsUnavailable()) return;
       this.summaryTesting = true;
       try {
-        const r = await fetch('/api/settings/test-summary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_summary_provider: this.aiSummary.provider, ai_summary_model: this.aiSummary.model, ai_summary_base_url: this.aiSummary.base_url, ai_summary_api_version: this.aiSummary.api_version || '', ai_summary_api_key: this.aiSummary.api_key || '' }) });
+        const r = await fetch('/api/settings/test-summary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ai_summary_provider: this.aiSummary.provider, ai_summary_model: this.aiSummary.model, ai_summary_base_url: this.aiSummary.base_url, ai_summary_api_version: this.aiSummary.api_version || '', ai_summary_api_key: this.aiSummary.api_key || '', ai_summary_api_key_clear: !!this.aiSummary.clear_key }) });
         const d = await r.json();
-        this.summaryVerified = !!d.ok;
-        window.cfmNotify[(d.ok) ? 'success' : 'error'](d.ok ? `Working — ${d.model} replied “${d.reply}”.` : (d.error || 'Test failed.'));
+        // A working test that was not persisted leaves the stored state unverified (packet 1401-02).
+        if (d.persisted !== false) this.summaryVerified = !!d.ok;
+        if (d.ok && d.persisted === false) window.cfmNotify.info(`Working — ${d.model} replied “${d.reply}”. ${d.note}`);
+        else window.cfmNotify[(d.ok) ? 'success' : 'error'](d.ok ? `Working — ${d.model} replied “${d.reply}”.` : (d.error || 'Test failed.'));
       } catch(e) { this.summaryVerified = false; window.cfmNotify.error(String(e)); } finally { this.summaryTesting = false; }
     },
     async listChatModels() {
       if (this._settingsUnavailable()) return;
       this.chatListing = true;
       try {
-        const r = await fetch('/api/settings/list-embedding-models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: 'chat', base_url: this.aiSummary.base_url, provider: this.aiSummary.provider }) });
+        const r = await fetch('/api/settings/list-embedding-models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: 'chat', ai_summary_base_url: this.aiSummary.base_url, ai_summary_provider: this.aiSummary.provider, ai_summary_api_key: this.aiSummary.api_key || '', ai_summary_api_key_clear: !!this.aiSummary.clear_key }) });
         const d = await r.json();
         if (d.ok) { this.chatModels = d.models || []; window.cfmNotify[(this.chatModels.length) ? 'success' : 'error'](this.chatModels.length ? `${this.chatModels.length} model(s) — pick one above.` : 'Endpoint reachable but reports no models.'); }
         else { this.chatModels = []; window.cfmNotify.error(d.error || 'Could not list models.'); }

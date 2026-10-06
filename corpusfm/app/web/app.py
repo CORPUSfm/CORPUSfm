@@ -81,8 +81,9 @@ def _build_mcp_app():
         max_age=600,
     )
     app = _mcp.http_app(path="/", stateless_http=True, json_response=True, middleware=[cors])
-    from corpusfm.mcp.server import point_challenge_at_canonical_resource
+    from corpusfm.mcp.server import challenge_missing_credentials, point_challenge_at_canonical_resource
     point_challenge_at_canonical_resource(app)
+    challenge_missing_credentials(app)
     mcp_status.record_mounted(_mcp)
     return app
 
