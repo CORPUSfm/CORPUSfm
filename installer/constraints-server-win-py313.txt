@@ -1,9 +1,14 @@
 # CORPUSfm server dependency lock — BOX-VALIDATED constraints — WINDOWS, PYTHON 3.13 (EMBEDDABLE).
 #
+# RUNTIME PIN ADVANCED to CPython 3.13.16 (packet 1405, 2026-10-10). The pins below are UNCHANGED and
+# were box-validated on CPython 3.13.14 (see "generated from" below). Revalidation of this lock under
+# 3.13.16 on the authorized private installer pair is OWED; until it is recorded this file is not
+# validated on the pinned runtime.
+#
 # PLATFORM + PER-PYTHON FILE: the Windows installer (install.ps1) applies
 # `constraints-server-win-py<MAJ><MIN>.txt` matching its bundled interpreter (this file =>
 # Windows + CPython 3.13, the python.org embeddable amd64 build install.ps1 ships + SHA256-pins).
-# Windows is now ALIGNED to the same CPython 3.13.14 the Linux installer bundles (one validated
+# Windows is now ALIGNED to the same CPython 3.13.16 the Linux installer bundles (one validated
 # interpreter version across both platforms; a future bump is one re-pin per OS).
 #
 # It is a SEPARATE file from the Linux `constraints-server-py3XX.txt` locks ON PURPOSE — the

@@ -1,8 +1,13 @@
 # CORPUSfm server dependency lock — BOX-VALIDATED constraints — PYTHON 3.13 (BUNDLED).
 #
+# RUNTIME PIN ADVANCED to CPython 3.13.16 (packet 1405, 2026-10-10). The pins below are UNCHANGED and
+# were box-validated on CPython 3.13.14 (see "generated from" below). Revalidation of this lock under
+# 3.13.16 on the authorized private installer pair is OWED; until it is recorded this file is not
+# validated on the pinned runtime.
+#
 # PER-PYTHON FILE: the installer applies `constraints-server-py<MAJ><MIN>.txt` matching the venv's
 # Python (this file => CPython 3.13). The Linux installer now SHIPS ITS OWN CPython
-# (python-build-standalone, pinned 3.13.14, extracted under /opt/CORPUSfm/python/<ver>/) and builds
+# (python-build-standalone, pinned 3.13.16, extracted under /opt/CORPUSfm/python/<ver>/) and builds
 # the venv from it — so this is the single live Linux lock. The distro's Python is irrelevant; the
 # old py310 (Ubuntu 22.04) / py312 locks are obsolete on a bundled-Python box. If no lock matches
 # the box's Python, the installer resolves UNPINNED (the pre-lock behavior), never a mismatched lock.

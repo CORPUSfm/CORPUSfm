@@ -108,7 +108,7 @@ def test_verified_package_recovers_a_journal_without_rebuilding_the_install_root
     assert 'uninstall resume --request' in LINUX
 
     windows_runtime = WINDOWS[WINDOWS.index("function Initialize-PackagedRecoveryRuntime"):
-                              WINDOWS.index("function Get-Json")]
+                              WINDOWS.index("# HTTP status without following redirects")]
     assert "Join-Path $RuntimeTemp 'lifecycle-recovery-runtime'" in windows_runtime
     assert "installer\\requirements-server.txt" in windows_runtime
     assert "installer\\constraints-server-win-py313.txt" in windows_runtime

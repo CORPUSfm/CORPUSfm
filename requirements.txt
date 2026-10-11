@@ -27,3 +27,11 @@ defusedxml
 
 # In-app documentation rendering (Documentation page)
 markdown-it-py>=3.0,<5
+
+# Installer runtime contract (packet 1411). This application release is validated only on the installer
+# runtime identified below: the bundled CPython, the pinned bootstrap inputs and the platform dependency
+# locks. A change to that contract reaches an installed box only through the elevated installer, and an
+# installed box's own update classifier rates any change to THIS file as dependency_runtime -- which is
+# exactly that route. The release tooling (tools/runtime_contract.py) recomputes the digest from the
+# paired installer source and refuses a mismatch, so this line cannot go stale.
+# corpusfm-installer-runtime-contract: cpython=3.13.16 contract_sha256=774cb49e666a000e4fb7e56e6d7f9a79ec1950d1c4b65bc1eec303a295a3af0e

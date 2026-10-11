@@ -111,7 +111,7 @@
     "corpusfm/app/web/routes/api/diff_history.py": "ec7eb7dbb4258696397ce221dc403f0adf76bd347a918c80d839cfb9b8008f98",
     "corpusfm/app/web/routes/api/explore_history.py": "13885ed00e4f9f13fe916f68c1ccdb7bc95caa2550f4b77ad3c5865e8cec2dac",
     "corpusfm/app/web/routes/api/files.py": "902567664c294f1623cbfe237cac2a68345f6e25682a54c0fd115d04ebd37398",
-    "corpusfm/app/web/routes/api/generate.py": "6f6a10f602fb82c7638e753fe8baf3a8148833e1145fab5199ea92cf35a6070c",
+    "corpusfm/app/web/routes/api/generate.py": "3cccf7cf122e918ba7072fc887ff9f13c2e460403bc51ea2c82f3876e8b0eb89",
     "corpusfm/app/web/routes/api/import_queue.py": "8d518ac405a672e22df989b85a15dfb5a47437e7f0e38343d5ad47d8d7d6329a",
     "corpusfm/app/web/routes/api/indexed.py": "0a72c5398b2fb140d9ad2af304739a2f38276b26a261ac8d08fb467da8df7a80",
     "corpusfm/app/web/routes/api/jobs.py": "68f2507c9adf183e55bd384c7fb59058ecd790b60a7050e8428b1f2450bc9189",
@@ -482,12 +482,12 @@
     "corpusfm/updater.py": "9672964775d4b9badaa4b39c16927e1356319483388785d08ab30fb22f03e89e",
     "eslint.config.mjs": "306c98cfe14e33421b924a041584afd062309c040cbce90cb429311b0eb2aa03",
     "index.html": "f12bbbf2f30f19eaf5cd77d6771334e42bafd57c00bc5a0bcf3267c44f158966",
-    "installer/SPEC.md": "5ff3903b932ba42eb51906b24fbd1045bb160364a6855749e42ac420abe34a90",
+    "installer/SPEC.md": "619aa3d942a47d10ecb1e48ac9e535df9042b57eacfe7562deabe5d0dfa2cd96",
     "installer/bootstrap/linux/bootstrap.sh": "e170318989e91936ba49491cf5b51dfbe1434aef7fe0684525621692efc74bea",
     "installer/bootstrap/windows/bootstrap.ps1": "18a47739538604796e2e4b5217a35d2dff854af75d0e38ba7d25ad96552c1344",
     "installer/build-asset-payload.py": "e9bb9f3ae91f90ff609fb5a79d03aa786a8f9a26256127df0a5aad094803abfd",
-    "installer/constraints-server-py313.txt": "2beaec5824e19792badf311bfa566665ee201d3431095c274828e309caa60474",
-    "installer/constraints-server-win-py313.txt": "972558cd450950c694906b7e04496f7625b3d0f29b109ccb0d4b229c10a284c8",
+    "installer/constraints-server-py313.txt": "b3a595e05d5faf45b981871629e875bc82018dd035f4a5f198defe7ccc92b104",
+    "installer/constraints-server-win-py313.txt": "0fc5280e0afbc6fd2aab21bb13e4cbb53336c2f7259871be6376069bcf68012c",
     "installer/linux/_cfm_lib.sh": "315f00c0514cb4cc7ad9832ecee653e8327100ae3d0138832a1e749d1f0486bb",
     "installer/linux/cfm-db-helper.sh": "20c05f7dfd029376da58227d4f703ddbf63f6d2f11aae813b3a6880ff09d829a",
     "installer/linux/cfm-proxy-exec.sh": "45c91e6da06b060c116fb5c6aee180aa6d041970f718f1618ef89dcd9c300346",
@@ -497,7 +497,7 @@
     "installer/linux/corpusfm-proxy.sh": "050e96a1af3d0c975274fd53f35d0c6d86f44351ab314647af840e02f639c197",
     "installer/linux/corpusfm-recovery.sh": "c213caf789d255fbc6e828f6a07b7b2d39c73ec5be0981105c83abf6fa841bad",
     "installer/linux/corpusfm-update.sh": "161bc4c98fa6be8d4d7c17d1aed17181b389ea1d421b8d71202a834e8245ac24",
-    "installer/linux/install.sh": "6cf431e509427fca18af52429d2669ae8950dfb5f3fb149c175585e36fbdb281",
+    "installer/linux/install.sh": "7345608370070cbc1f9130059b196394d860c2e976c476ca72ca735b592afc58",
     "installer/linux/uninstall.sh": "757b37dcbb5f15b418597c3f7734108f37f99249426ab4fbec795ca42a0dd022",
     "installer/package-installer.sh": "fadb8e9f75464562d31f701c8a28949e032a43a4a506b00cd7aff690947e91b5",
     "installer/requirements-server.txt": "abea698b78e22153851894197613660f8b9258081bf5e9245a963fa6d68ab86f",
@@ -508,7 +508,7 @@
     "installer/windows/corpusfm-proxy.ps1": "d9b97664083043ec7a13b90820908e8a7cab95ee1d8e67b72f49c203bc3f4ffb",
     "installer/windows/corpusfm-recovery.ps1": "929e4aa6a885e9bc8e488e32ec52dae084aa553d7bf55f144fed4793fe585ec4",
     "installer/windows/corpusfm-update.ps1": "014b8d02eea76de856c3142f93b324e2baf314264c75426186076677aaa37cb1",
-    "installer/windows/install.ps1": "162c61d1dd97c8f21587751a4937c01648e6810daeb499e6f68b8ff69a981b70",
+    "installer/windows/install.ps1": "c72dc38aacfd4986bacbef1aecd0c26abe2aec20b4a2d4d28cb74a48f614ee9d",
     "installer/windows/uninstall.ps1": "e8eb6230613098310d3df08e63ee78052a22dbdb6129ee8719b09e68a5ae5ab5",
     "installer/windows_signing.py": "a3c968f98c7aff01d53be3ea8c9bc50283a8050dd7dab5e28f2a699ebad209dd",
     "installer/zip_deterministic.py": "e46db034dc98dce320491ff5bd6c45fc2af39c62c093fbc806a699c4db4f4079",
@@ -522,8 +522,8 @@
     "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
     "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
     "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
-    "release-build.txt": "f253e0165d05b0e86b03d375f22d194afdd9059a1cffd4b6aba4b10c6af04cdd",
-    "requirements.txt": "acd44f337bdebcee434ede968e8a7669ed563f6cafbd7af0bbd5c3dcf1fe1a2f",
+    "release-build.txt": "f7d6b4d4cb978048732be94935eb726e90c882f4efa25b3331c3616e910eb3dc",
+    "requirements.txt": "de35ad4921dbea3081d2ecf6a9b214bf801806c4103c9c9b6dd0fb6fdea1c08b",
     "scripts/_release_gate_live.py": "335454a6e3e43c5e0375f7524a33a60647a862637e41dcba453cd474ab7d15b5",
     "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
     "scripts/installer_release_gate.py": "c96e7c90c36dd928362eb5bb701b1ce385b8c1b44c05e5e14f4b1db06d81b107",
@@ -553,6 +553,8 @@
     "tests/test_apply_update.py": "c38d03cd383b14fb2a3b9035c88880e7c86a75c64db150af71dbe9d3661ce3a4",
     "tests/test_asset_payload_authority.py": "107d389948b3b0362e2f498ad2b8b604104a7e57975ca9019fd25ebe075af543",
     "tests/test_buildstamp.py": "6aaf7d893ce149386269db5e77bc4f9a5073779ec9fd7eb6f6ad121b492023b7",
+    "tests/test_bundled_python_health_1407.py": "51769535888f8ff7a6ec9bb240f0992777ca0a0cc35e22f410f419d92616e1d1",
+    "tests/test_bundled_runtime_1405.py": "c2a7c0beb6bea66ea7bb53cb56ad9e4411fe78cc02d5d6fe664d2dc663e729f3",
     "tests/test_composition.py": "46f62d3c09af3d16f720ba51da1fd345a2a236dfe3827bc1a17602f8cd7944ab",
     "tests/test_deterministic_packaging.py": "d77de6c3d42302b4e186d17f0cafda4a8edb98313514dd710cd23a45ba2b2945",
     "tests/test_fresh_install_identity_observation.py": "4512b4355c41643c431e0654618e92f68c8d2107326d18350ce3b5a92722ac34",
@@ -567,14 +569,14 @@
     "tests/test_installer_first_admin.py": "932a107d88b14235dbd36e5043c344d79cf4a3b0b0e39294b44716dc964398b6",
     "tests/test_installer_fms_admin_user.py": "eeccee08bce2cfce1c6f79452417e66fb7de7e395cf915d5d13e53c70baf4807",
     "tests/test_installer_fmsadmin_group.py": "7965b061e8607103c38e24ae5e46f7f74fc6d4229cc18a7b8a1081e92db89066",
-    "tests/test_installer_hardening.py": "b00d65422de1e6a0249a753739a9bb0d1c9e0a2787090d64aff210324950d723",
+    "tests/test_installer_hardening.py": "c0a90e8ae55cea90d51bc01acc4c6044e1a1e566996a75ab109efeff980229f3",
     "tests/test_installer_layout_and_identity.py": "93ce4ad02140f9d8d1498efc710782aae7d9ed87d83995027c257292dabb0f2a",
     "tests/test_installer_lifecycle_pythonpath.py": "35c2e1d189e1eb690a4f2a015fadc577c90a8f5dd96fa0ba6127797e4d80ef9e",
     "tests/test_installer_logging.py": "e26459a1496cc42f0c455b7e3b2505f3ffaa16acf76fff8555848b8aa2cf00a1",
     "tests/test_installer_loopback_tls_quiet.py": "b431c79d5dfbbff35ad0b348f965437a7b056612766af37a0abb777c4269a884",
     "tests/test_installer_odata_preflight.py": "9fae9fbc696686beb692d45efeb46e77eeddf5eaf600e038a4459aea92c3119f",
     "tests/test_installer_package_forward_only.py": "1c3dafa59d6c1cef28ff0657e6153e2082eb691fe60e7a36f3ab5b2bf2e07812",
-    "tests/test_installer_parity.py": "8c4a203b800f45c6c65bf939828d402577f5f691689a307fc97a0ed0668e5634",
+    "tests/test_installer_parity.py": "c97bdc0160d2b7fa0a933eb64923b3fbe22519a213a3fb6699f7ca9bad39ffc5",
     "tests/test_installer_path_robustness.py": "8e4f621c433924909dac3a534576e4e3059dba0baa134dfcfa80beb7347c87a2",
     "tests/test_installer_places_proxy_executor.py": "36f7469baaa9cb9e1dcb63ca019b915e921d3550355beb3f8192d22992a9f63b",
     "tests/test_installer_provider_order.py": "bc5189c39536982ec2319a35124615df8efeddd70ff8f4bd54ee7ae1f2d0eda4",
@@ -605,7 +607,7 @@
     "tests/test_proxy_walk.py": "514056120f96a11e9156cd14a68755755ba75e5a6c5558a754797b1392c33607",
     "tests/test_scheduler_retirement_adapter.py": "d2d477fe3d5292e4346ddf4f717027613baf7630c06aa5932d85dcb62ff77285",
     "tests/test_script_conformance.py": "cd2b8a87bdb64cbda9a353e1a3aac285a312a8f337ff47c96a35b3c7a75232a7",
-    "tests/test_series2_package_boundary.py": "98046ddb8b3ec2266b0f13383b46fbc31cd9ec409bfd8357d65270d90ea71d6b",
+    "tests/test_series2_package_boundary.py": "8ff5a47b1e3039becef57e15df2ed043d935485a8e5088fb66cb1bb67c79e731",
     "tests/test_storage_observe_layout_regression.py": "7459e49d9ad43f81df3fc7e2a6cefbb95c3e815877c2ba744f06b4f728e34b55",
     "tests/test_uninstall_close_verdict.py": "c809be2e93fa4587b054f2ca20ef4f4da823a26344a11397d381fb68674da467",
     "tests/test_uninstall_credential_stdin.py": "21e55f085203979e7e50fa388a2355af6916f0f0637567ebef308a8b1d79f6a4",
@@ -627,6 +629,7 @@
     "tests/test_windows_signing_inventory.py": "d3fff3da91921478c4fd8aee96f9da92026d2da8be3c4be8f12d724169bcf4db",
     "tests/test_windows_system_task_trust.py": "2edcd120d7031c0e9d22db468c5a9309a71c35924c0a75a197aa218285105b28",
     "tests/test_windows_updater_paths.py": "f150a2ebbe39fdef7937e68d7943d791021b0a868deada8ed88e4c73ee36afd3",
+    "tests/test_windows_verified_inputs_1406.py": "f98cba91c9fa72191ffbe04c88e2f98c2928e1b0a53cf3a9c0c6a63135a46c60",
     "tests/updater_installation.py": "8cd31484bbbb12aa3e4455ca31ae5bd8ad5597e3feb5470f505de50439bc9cc7",
     "tsconfig.json": "6f0117be506500be13abc84e9f8279ee1c09775711221477c993a814e3173a17",
     "vite.config.ts": "b8e39d6ac6a6affff11f2414d96b24bf8c22e8be17131db4863c74743e34eed7"
@@ -2848,6 +2851,14 @@
       "class": "exact-copy",
       "owner": "application:tests/test_buildstamp.py"
     },
+    "tests/test_bundled_python_health_1407.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_bundled_python_health_1407.py"
+    },
+    "tests/test_bundled_runtime_1405.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_bundled_runtime_1405.py"
+    },
     "tests/test_composition.py": {
       "class": "exact-copy",
       "owner": "application:tests/test_composition.py"
@@ -3144,6 +3155,10 @@
       "class": "exact-copy",
       "owner": "installer:tests/test_windows_updater_paths.py"
     },
+    "tests/test_windows_verified_inputs_1406.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_windows_verified_inputs_1406.py"
+    },
     "tests/updater_installation.py": {
       "class": "generated",
       "owner": "public-profile:public:installer-patch"
@@ -3193,10 +3208,10 @@
     "profile_sha256": "06202387046b1750fb47d336abdbaf39b707e54300c04a9a63a3ad91f4e58d59",
     "profile_version": 1
   },
-  "release_build": 3046,
+  "release_build": 3052,
   "schema_version": 2,
   "source_commits": {
-    "application": "0c18f3c36bb4fe5bc773178f7c9a40b4a76c2b31",
-    "installer": "f017c37e671789dce69db74d0baeaa91ac6db476"
+    "application": "2d4c84a9e4c1a02006c05ce96b7cb89c191f8df5",
+    "installer": "e7f538dfa1eb027fefbca6b5eb6e676a31c16b24"
   }
 }

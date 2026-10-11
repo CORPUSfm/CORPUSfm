@@ -41,9 +41,14 @@ def test_does_not_auto_install_iis_components():
 # ── 2. stage-before-wipe for the bundled interpreter ────────────────────────────
 
 def test_checksum_mismatch_dies_before_extract():
-    mismatch = _T.index("checksum mismatch")
+    # RE-EXPRESSED (packet 1406): the check moved from an inline hash compare into the shared
+    # verified-download primitive. The rule is the same: a mismatch Dies before any extract, and the
+    # extract only ever consumes the file the primitive returned.
+    prim = _T[_T.index("function Get-VerifiedInput"):_T.index("# <<< verified-input primitive")]
+    assert prim.index("Die (") < prim.index("Move-Item"), "a mismatch must refuse before the file is promoted"
+    fetched = _T.index("$zip = Get-VerifiedInput $script:PythonEmbedRecord", _T.index("function Ensure-BundledPython"))
     extract = _T.index("Expand-Archive -Path $zip -DestinationPath $PyDir")
-    assert mismatch < extract, "a checksum mismatch must Die before any extract"
+    assert fetched < extract, "the runtime archive must be verified before it is extracted"
 
 
 # ── 3. MCP fail-closed self-test (parity with install.sh) ───────────────────────

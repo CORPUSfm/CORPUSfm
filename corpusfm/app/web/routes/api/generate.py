@@ -11,6 +11,7 @@ Server mode: returns a /api/preview/{task_id} URL for the client to open in a ne
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import multiprocessing
 import os
 import threading
@@ -149,21 +150,38 @@ _pool: "concurrent.futures.ProcessPoolExecutor | None" = None
 _pool_lock = threading.Lock()
 
 
-def _max_generation_workers() -> int:
-    """Concurrent generation processes, scaled to the box: reserve 2 cores of headroom for the
-    co-located FileMaker Server + the web process, and cap so a big/idle box can't spawn a pile
-    of heavy (~minutes-of-CPU, hundreds-of-MB) renders at once. 8 cores → 4; 4 → 2; 2 → 1."""
-    cores = os.cpu_count() or 4
-    return max(1, min(4, cores - 2))
+_SERVER_MAX_WORKERS = 2
+# Exactly 1: a worker exits after each render, returning its heap. Any value above 1 can hang queued
+# work on CPython before 3.13.15 (gh-115634), and the shipped runtimes are 3.13.14.
+_MAX_TASKS_PER_CHILD = 1
+
+
+def _max_generation_workers(cores: int | None = None, server: bool | None = None) -> int:
+    """Concurrent generation jobs, scaled to the box: reserve 2 cores of headroom for the
+    co-located FileMaker Server + the web process. Local: 8 cores → 4; 4 → 2; 2 → 1. A server
+    box shares RAM with FileMaker, so it is capped at two. This is capacity, not a memory budget."""
+    if cores is None:
+        cores = os.cpu_count() or 4
+    if server is None:
+        server = build_context().is_server
+    cap = _SERVER_MAX_WORKERS if server else 4
+    return max(1, min(cap, cores - 2))
 
 
 def _get_pool() -> "concurrent.futures.ProcessPoolExecutor":
     global _pool
     with _pool_lock:
         if _pool is None:
+            server = build_context().is_server
+            cores = os.cpu_count() or 4
+            workers = _max_generation_workers(cores, server)
             _pool = concurrent.futures.ProcessPoolExecutor(
-                max_workers=_max_generation_workers(),
-                mp_context=multiprocessing.get_context("spawn"))
+                max_workers=workers,
+                mp_context=multiprocessing.get_context("spawn"),
+                max_tasks_per_child=_MAX_TASKS_PER_CHILD)
+            logging.getLogger("corpusfm.generate").info(
+                "generation pool: workers=%d (mode=%s, cores=%d), max_tasks_per_child=%d",
+                workers, "server" if server else "local", cores, _MAX_TASKS_PER_CHILD)
     return _pool
 
 

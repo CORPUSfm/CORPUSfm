@@ -229,15 +229,15 @@ FM_DATABASE="CORPUSfm_DB"
 # relocatable + manylinux-compatible. Everything is PINNED (exact version + release tag + SHA256);
 # "latest" is never fetched. A future version bump = re-pin these three + regenerate the Linux lock.
 # NOT free-threaded/no-GIL, NOT the experimental JIT — the standard optimized build.
-PY_FULL="3.13.14"            # pinned CPython
-PY_PBS_TAG="20260623"        # pinned python-build-standalone release
+PY_FULL="3.13.16"            # pinned CPython
+PY_PBS_TAG="20261001"        # pinned python-build-standalone release
 PY_BASE="$INSTALL_DIR/python"
 PY_HOME="$PY_BASE/$PY_FULL"  # VERSIONED dir → a built venv references a STABLE path across bumps
 PY_BUNDLED="$PY_HOME/bin/python3"
 # Arch-specific pinned asset + SHA256 (FMS 2024 Linux matrix = AMD64/ARM64).
 case "$(uname -m)" in
-    x86_64|amd64)  PY_ARCH="x86_64";  PY_SHA256="7fd02919461b368adafea3896ad082f5c4f759816d69681dcc6559bfbcd892af" ;;
-    aarch64|arm64) PY_ARCH="aarch64"; PY_SHA256="1199b22c83725a339ebaef36d39476d037fb7267187513090b6cc83bb4579477" ;;
+    x86_64|amd64)  PY_ARCH="x86_64";  PY_SHA256="b55f90dfb060e998a47e4a811dae46aaa27b923244044bbcf88de5e57a5fa4c7" ;;
+    aarch64|arm64) PY_ARCH="aarch64"; PY_SHA256="e662f77a0c908d8f9555af85fb7fe636a7c34b0c86adc141f0f7b571bbaea6fd" ;;
     *)             PY_ARCH="";        PY_SHA256="" ;;
 esac
 PY_ASSET="cpython-${PY_FULL}+${PY_PBS_TAG}-${PY_ARCH}-unknown-linux-gnu-install_only.tar.gz"

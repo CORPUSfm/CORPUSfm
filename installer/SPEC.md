@@ -391,10 +391,21 @@ scope on purpose (see the tier table above).
 
 ## Conventions (locked)
 
-- **Dependency pinning** — pin the **interpreter** (CPython **3.13.14**, both platforms — Linux
+- **Dependency pinning** — pin the **interpreter** (CPython **3.13.16**, both platforms — Linux
   bundles python-build-standalone, Windows the python.org embeddable, both SHA256-pinned) for
-  reproducibility; let the single-purpose tools (MinGit, WinSW) **float to GitHub-latest** (stable,
-  low-churn), with a pin-override available if a release ever regresses.
+  reproducibility. **Every executable input the Windows installer downloads and then extracts or
+  executes — the embeddable Python, `get-pip.py`, MinGit and WinSW — is an exact record of URL,
+  byte size and SHA-256 stored in `install.ps1`.** There is no `releases/latest` lookup, no fallback
+  to another asset or URL, and the stored SHA-256 (not URL shape or an API digest) is the trust
+  decision. Each input is acquired into installer-owned temporary state and verified **before the
+  first service stop or installed-state mutation** (the pre-stop staging step), and re-hashed at the
+  moment of use; a mismatch deletes the download and refuses. The packaged recovery runtime and the
+  installed runtime share one `get-pip.py` record. An already-installed MinGit or WinSW is not
+  replaced merely because a newer release is now pinned.
+  **Bump procedure:** independently download the candidate; record its exact URL, size and SHA-256
+  (and publisher metadata, e.g. a release digest or immutable-release flag, when it exists); change
+  URL, size and digest of that record together in one reviewed change; rerun the identity tests and
+  their mutation controls (`tests/test_windows_verified_inputs_1406.py`).
 - **Golden reference** — "do it like we know it" means the proven **`fms-server` Linux deployment**
   is the canonical correct behavior; every platform's outcome is measured against it.
 - **Logging** — the console **is** the interaction flow (§1 Hello -> ... -> §10 farewell); a full

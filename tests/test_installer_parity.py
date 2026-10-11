@@ -520,15 +520,25 @@ def test_A5_the_dispatcher_names_every_result_word_it_must(facts):
 #
 # Restored here as the surviving half only. The retired half is NOT reintroduced.
 
+def _a6_code(platform):
+    raw = (SH.read_text(encoding="utf-8") if platform == "linux"
+           else PS1.read_text(encoding="ascii"))
+    if platform == "windows":
+        a = raw.index("function Ensure-BundledPython {")
+        raw = raw[a:raw.index("\n}\nEnsure-BundledPython", a)]
+    return "\n".join(l for l in raw.splitlines() if not l.lstrip().startswith("#"))
+
+
 @pytest.mark.parametrize("platform,verify,wipe", [
     ("linux", "sha256sum -c -", 'rm -rf "$PY_HOME"'),
-    ("windows", "Get-FileHash -Path $zip -Algorithm SHA256", "Remove-Item $PyDir -Recurse -Force"),
+    ("windows", "Get-VerifiedInput $script:PythonEmbedRecord", "Remove-Item $PyDir -Recurse -Force"),
 ])
 def test_A6_the_replacement_runtime_is_VERIFIED_BEFORE_THE_OLD_ONE_IS_DESTROYED(platform, verify,
                                                                                 wipe):
-    raw = (SH.read_text(encoding="utf-8") if platform == "linux"
-           else PS1.read_text(encoding="ascii"))
-    code = "\n".join(l for l in raw.splitlines() if not l.lstrip().startswith("#"))
+    # RE-EXPRESSED (packet 1406): Windows no longer spells the check inline; the replacement archive
+    # comes from `Get-VerifiedInput`, which refuses (Die) on a size/digest mismatch before it will
+    # hand back a file. The rule is unchanged - verify before the wipe, and refuse rather than warn.
+    code = _a6_code(platform)
     assert verify in code, f"{platform}: the download is never checksum-verified"
     assert wipe in code, f"{platform}: the prior runtime is never replaced"
     assert code.index(verify) < code.index(wipe), (
@@ -536,6 +546,11 @@ def test_A6_the_replacement_runtime_is_VERIFIED_BEFORE_THE_OLD_ONE_IS_DESTROYED(
         "a failed or tampered download strands the box with no interpreter"
     )
     # …and the verification REFUSES rather than warning.
+    if platform == "windows":
+        raw = PS1.read_text(encoding="ascii")
+        prim = raw[raw.index("function Get-VerifiedInput"):raw.index("# <<< verified-input primitive")]
+        assert prim.index("Die (") < prim.index("Move-Item"), "a mismatch must refuse before promotion"
+        return
     window = code[code.index(verify):code.index(wipe)]
     assert re.search(r"\b(die|Die) ", window), (
         f"{platform}: a checksum mismatch does not refuse before the wipe"
@@ -544,13 +559,11 @@ def test_A6_the_replacement_runtime_is_VERIFIED_BEFORE_THE_OLD_ONE_IS_DESTROYED(
 
 @pytest.mark.parametrize("platform,verify,wipe", [
     ("linux", "sha256sum -c -", 'rm -rf "$PY_HOME"'),
-    ("windows", "Get-FileHash -Path $zip -Algorithm SHA256", "Remove-Item $PyDir -Recurse -Force"),
+    ("windows", "Get-VerifiedInput $script:PythonEmbedRecord", "Remove-Item $PyDir -Recurse -Force"),
 ])
 def test_A6_REORDERING_VERIFY_AFTER_WIPE_IS_CAUGHT(platform, verify, wipe):
     """The control: the ordering assertion must actually depend on the order."""
-    raw = (SH.read_text(encoding="utf-8") if platform == "linux"
-           else PS1.read_text(encoding="ascii"))
-    code = "\n".join(l for l in raw.splitlines() if not l.lstrip().startswith("#"))
+    code = _a6_code(platform)
     i_v, i_w = code.index(verify), code.index(wipe)
     assert i_v < i_w
     swapped = code[:i_v] + wipe + code[i_v + len(verify):]

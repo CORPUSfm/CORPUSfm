@@ -342,8 +342,44 @@ $CfmProxyTypes = @('iis', 'claris-nginx')
 $PyDir    = Join-Path $InstallDir 'python'
 $Py       = Join-Path $PyDir 'python.exe'
 $script:RecoveryRuntimeKind = 'installed'
-$script:PythonRuntimeVersion = '3.13.14'
-$script:PythonRuntimeSha256 = '90b4e5b9898b72d744650524bff92377c367f44bd5fbd09e3148656c080ad907'
+$script:PythonRuntimeVersion = '3.13.16'
+$script:PythonRuntimeSha256 = '97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297'
+$script:PythonRuntimeSize = 11439094
+# EXECUTABLE-INPUT IDENTITY (packet 1406). One record per input the installer downloads and then
+# extracts or executes: exact URL, exact byte size and SHA-256. The stored SHA-256 is the trust
+# decision - never URL shape, an API digest, or a "latest" lookup. A bump changes URL, size and
+# digest TOGETHER, from an independent download, never from a live lookup (installer/SPEC.md).
+$script:PythonEmbedRecord = @{
+  File = ('python-' + $script:PythonRuntimeVersion + '-embed-amd64.zip')
+  Name = ('CPython ' + $script:PythonRuntimeVersion + ' embeddable (amd64)')
+  Url = ('https://www.python.org/ftp/python/' + $script:PythonRuntimeVersion + '/python-' +
+         $script:PythonRuntimeVersion + '-embed-amd64.zip')
+  Size = $script:PythonRuntimeSize
+  Sha256 = $script:PythonRuntimeSha256 }
+# ONE get-pip identity, used by the installed runtime AND the packaged recovery runtime. The URL is
+# a pypa/get-pip COMMIT, so the bytes cannot move under it (pip 26.2.1).
+$script:GetPipRecord = @{
+  File = 'get-pip.py'
+  Name = 'get-pip.py (pypa/get-pip af54dfe793b2, pip 26.2.1)'
+  Url = 'https://raw.githubusercontent.com/pypa/get-pip/af54dfe793b24685f8dc4ebba0630d9f2d77653c/public/get-pip.py'
+  Size = 2230488
+  Sha256 = 'fb24e693bab954209a063d90953621412ccad4a500905a726286e038f508ddf6' }
+$script:MinGitRecord = @{
+  File = 'MinGit-2.56.0.2-64-bit.zip'
+  Name = 'MinGit 2.56.0.windows.2 (64-bit)'
+  Url = 'https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/MinGit-2.56.0.2-64-bit.zip'
+  Size = 39806486
+  Sha256 = 'da35e72aa21c005a5a0d298cfbae110bc1609a815730ea0dde84b01a1b3cd3be' }
+$script:WinSwRecord = @{
+  File = 'WinSW.NET461.exe'
+  Name = 'WinSW v2.12.0 (NET461)'
+  Url = 'https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET461.exe'
+  Size = 655872
+  Sha256 = 'b5066b7bbdfba1293e5d15cda3caaea88fbeab35bd5b38c41c913d492aadfc4f' }
+# Installer-owned temporary state for downloaded executable inputs. Package runs reuse the already
+# protected private runtime directory; it is never part of the installed tree.
+$InputsDir = if ($RuntimeTemp) { Join-Path $RuntimeTemp 'verified-inputs' }
+             else { Join-Path ([IO.Path]::GetTempPath()) ('corpusfm-installer-inputs.' + [guid]::NewGuid().ToString('N')) }
 # The bundled MinGit, by ABSOLUTE path. It used to also be added to the SERVICE PATH through the
 # hand-written definition's <env name="PATH">, and that entry is gone: the canonical renderer allows
 # a short, exact environment allowlist and PATH is not on it. Nothing regressed - the running app
@@ -618,6 +654,70 @@ function Get-File($url, $out) {
   }
 }
 
+# >>> verified-input primitive (packet 1406)
+# Why a staged file is NOT acceptable, or $null when it is. Empty, wrong size and wrong digest are all
+# refusals; the expected and observed identity are named, never a credential.
+function Get-InputMismatch($Record, [string]$Path) {
+  $len = (Get-Item -LiteralPath $Path).Length
+  if ($len -eq 0) { return "the download is empty" }
+  if ($Record.Size -and $len -ne $Record.Size) { return ("size " + $len + " bytes, expected " + $Record.Size) }
+  $got = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($got -ne $Record.Sha256) { return ("SHA-256 " + $got + ", expected " + $Record.Sha256) }
+  return $null
+}
+# The ONLY way an executable input enters the installer. Returns the path of a file whose bytes have
+# JUST been verified against the record (a previously staged copy is re-hashed, never trusted).
+# Downloads to '<name>.part' and renames only after verification, so no unverified file ever has a
+# consumable name; a mismatch deletes the download and refuses. There is no fallback to another URL,
+# asset or "latest".
+function Get-VerifiedInput($Record, [string]$Directory) {
+  $dest = Join-Path $Directory $Record.File
+  if (Test-Path -LiteralPath $dest -PathType Leaf) {
+    if (-not (Get-InputMismatch $Record $dest)) { return $dest }
+    Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+  }
+  New-Item -ItemType Directory -Force -Path $Directory | Out-Null
+  $part = $dest + '.part'
+  Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
+  Get-File $Record.Url $part
+  $why = Get-InputMismatch $Record $part
+  if ($why) {
+    Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
+    Die ("Refusing " + $Record.Name + " from " + $Record.Url + ": " + $why + ". Nothing was extracted, executed or installed from it.")
+  }
+  Move-Item -LiteralPath $part -Destination $dest -Force
+  return $dest
+}
+# <<< verified-input primitive
+# Runtime state: version, ssl and a working pip. Read-only, so the pre-stop staging step can ask it too.
+# A NON-THROWING predicate (packet 1407): a missing, partial or broken interpreter, ssl or pip reads as
+# unhealthy. Windows PowerShell 5.1 turns a native command's stderr into a terminating NativeCommandError
+# under this script's global 'Stop', so the probes alone run under a scoped 'Continue', each exit code is
+# captured on the next line, and the caller's preference is restored in 'finally'.
+function Get-BundledPythonState {
+  $state = @{ Ok = $false; Version = '' }
+  if (-not (Test-Path -LiteralPath $Py -PathType Leaf)) { return $state }
+  $eapProbe = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $cur = & $Py -c "import platform;print(platform.python_version())" 2>$null
+    $rc = $LASTEXITCODE
+    if ($rc -ne 0) { return $state }
+    $state.Version = "$cur".Trim()
+    & $Py -c "import encodings, ssl" 2>$null | Out-Null
+    $rc = $LASTEXITCODE
+    if ($rc -ne 0 -or $state.Version -ne $script:PythonRuntimeVersion) { return $state }
+    & $Py -m pip --version 2>$null | Out-Null
+    $rc = $LASTEXITCODE
+    $state.Ok = ($rc -eq 0)
+  } catch {
+    $state.Ok = $false
+  } finally {
+    $ErrorActionPreference = $eapProbe
+  }
+  return $state
+}
+
 function Initialize-PackagedRecoveryRuntime {
   if ($script:RecoveryRuntimeKind -eq 'package') { return }
   if (-not $InstallerSeries -or -not $RuntimeTemp) {
@@ -626,7 +726,6 @@ function Initialize-PackagedRecoveryRuntime {
   $root = Join-Path $RuntimeTemp 'lifecycle-recovery-runtime'
   $source = Join-Path $root 'source'
   $sourceArchive = Join-Path $RuntimeRoot 'corpusfm-recovery-source.zip'
-  $zip = Join-Path $RuntimeTemp ('python-' + $script:PythonRuntimeVersion + '-embed-amd64.zip')
   $py = Join-Path $root 'python.exe'
   Info "Preparing a temporary verified-package lifecycle recovery runtime"
   if (-not (Test-Path -LiteralPath $sourceArchive -PathType Leaf)) {
@@ -637,13 +736,8 @@ function Initialize-PackagedRecoveryRuntime {
   if (-not (Test-Path -LiteralPath (Join-Path $source 'corpusfm\lifecycle\__main__.py') -PathType Leaf)) {
     Die "The lifecycle recovery source archive has an unexpected layout."
   }
-  Get-File ('https://www.python.org/ftp/python/' + $script:PythonRuntimeVersion + '/python-' +
-            $script:PythonRuntimeVersion + '-embed-amd64.zip') $zip
-  $got = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower()
-  if ($got -ne $script:PythonRuntimeSha256) {
-    Die ("Recovery Python checksum mismatch (expected " + $script:PythonRuntimeSha256 +
-         ", got " + $got + "). The lifecycle journal remains untouched.")
-  }
+  $zip = Get-VerifiedInput $script:PythonEmbedRecord $InputsDir
+  $getpip = Get-VerifiedInput $script:GetPipRecord $InputsDir
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   Expand-Archive -LiteralPath $zip -DestinationPath $root -Force
   if (-not (Test-Path -LiteralPath $py -PathType Leaf)) {
@@ -654,8 +748,6 @@ function Initialize-PackagedRecoveryRuntime {
   @("python$($script:PythonRuntimeVersion.Split('.')[0])$($script:PythonRuntimeVersion.Split('.')[1]).zip",
     ".", "Lib\site-packages", $source, "import site") |
     Set-Content -LiteralPath $pth.FullName -Encoding ascii
-  $getpip = Join-Path $RuntimeTemp 'recovery-get-pip.py'
-  Get-File 'https://bootstrap.pypa.io/get-pip.py' $getpip
   & $py $getpip --no-warn-script-location >> $script:CfmLog 2>&1
   if ($LASTEXITCODE -ne 0) { Die "Recovery pip bootstrap failed; the journal remains untouched." }
   $req = Join-Path $RuntimeRoot 'installer\requirements-server.txt'
@@ -669,19 +761,6 @@ function Initialize-PackagedRecoveryRuntime {
   $script:RecoverySource = $source
   $script:RecoveryRuntimeKind = 'package'
   Ok "Verified package recovery runtime ready; the installed root is still untouched"
-}
-function Get-Json($url) {
-  for ($i=1; $i -le 5; $i++) {
-    try {
-      if ($script:CurlExe) {
-        $raw = & $script:CurlExe -L -sS --fail --connect-timeout 30 --max-time 120 -H "User-Agent: corpusfm-installer" $url 2>&1
-        if ($LASTEXITCODE -eq 0 -and $raw) { return (($raw | Out-String) | ConvertFrom-Json) }
-        throw ("curl exit " + $LASTEXITCODE + " " + ($raw -join ' '))
-      } else {
-        return Invoke-RestMethod -UseBasicParsing -Uri $url -Headers @{ 'User-Agent'='corpusfm-installer' } -TimeoutSec 60
-      }
-    } catch { if ($i -eq 5) { Die ("API request failed after 5 tries: " + $url + "`n      " + $_.Exception.Message) } ; Start-Sleep -Seconds (5*$i) }
-  }
 }
 # HTTP status without following redirects (PS 5.1's Invoke-WebRequest -MaximumRedirection 0 throws on
 # a 302 and loses the status). Used by the storage phase (OData polling) and by phase 21's readiness.
@@ -3305,6 +3384,24 @@ if ($NeedFmsCreds) { Info ("  FMS administrator:    " + $FmAdminUser + " (authen
 if (-not $IsUpgrade) { Info ("  First CORPUSfm admin: " + $AdminUser + " (input validated)") }
 Cfm-Confirm -Prompt 'Proceed?'
 
+# Acquire and VERIFY every executable input this plan will newly need, into installer-owned temporary
+# state, BEFORE the first service stop or installed-state mutation (packet 1406). A refusal here has
+# changed nothing. Phases 10 and 15B consume these files only through Get-VerifiedInput, which
+# re-hashes them at the moment of use. Inputs the installed tree already has are not re-fetched; an
+# installed MinGit or WinSW is not replaced merely because a different release is now pinned.
+function Stage-VerifiedInputs {
+  $need = @()
+  $runtime = Get-BundledPythonState
+  if ($ReplaceAside -or -not $runtime.Ok) { $need += @($script:PythonEmbedRecord, $script:GetPipRecord) }
+  if ($ReplaceAside -or -not (Test-Path $Git)) { $need += $script:MinGitRecord }
+  if ($ReplaceAside -or -not (Test-Path (Join-Path $SvcDir 'WinSW.exe'))) { $need += $script:WinSwRecord }
+  foreach ($r in $need) {
+    Info ("Acquiring and verifying " + $r.Name)
+    [void](Get-VerifiedInput $r $InputsDir)
+  }
+}
+Stage-VerifiedInputs
+
 
 # === PHASE 7 - Report credential disposition ====================================================
 Section "Permissions"
@@ -3422,34 +3519,29 @@ if ($egress) { Ok "Internet egress OK" } else { Die "No internet egress (need ht
 # installer leaves global state that a file-delete can't undo (a stuck registration makes a
 # same-version reinstall no-op to an empty dir). Extract-and-delete is always clean.
 #
-# ALIGNED to the same CPython the Linux installer bundles (python-build-standalone 3.13.14) - so one
+# ALIGNED to the same CPython the Linux installer bundles (python-build-standalone 3.13.16) - so one
 # validated interpreter version runs on both platforms and a bump is one re-pin per OS. The download
 # is SHA256-PINNED: a mismatch Dies before extract, so a tampered/wrong artifact can never become the
-# runtime. To bump: change $pyVer + $pySha256 together (SHA256 of the python.org embeddable zip),
-# then regenerate constraints-server-win-py<MAJ><MIN>.txt on a Windows box.
+# runtime. To bump: change the version, size and SHA256 together (python.org embeddable zip, from an
+# independent download - installer/SPEC.md), then regenerate constraints-server-win-py<MAJ><MIN>.txt on a Windows box.
 $pyVer = $script:PythonRuntimeVersion
-$pySha256 = $script:PythonRuntimeSha256  # python-3.13.14-embed-amd64.zip
-# Reinstall when Python is absent/broken OR a DIFFERENT version than $pyVer (a version bump must take
-# effect - a working older interpreter is NOT left in place). Wiping $PyDir also clears the old
-# site-packages, so the deps stage rebuilds the graph against the new interpreter's ABI.
-$pyOk = $false
-$cur = ''
-if (Test-Path $Py) {
-  $cur = (& $Py -c "import platform;print(platform.python_version())" 2>$null)
-  if ($LASTEXITCODE -eq 0) { & $Py -c "import encodings, ssl" 2>$null; $pyOk = ($LASTEXITCODE -eq 0) -and ("$cur".Trim() -eq $pyVer) }
-}
-if (-not $pyOk) {
-  # DOWNLOAD AND VERIFY BEFORE WIPING. The services are already stopped (phase 9), so the wipe is
-  # safe; verifying first means a failed or garbage download Dies with the old runtime still on
-  # disk, never stranding the box with no interpreter at all.
-  $zip = Join-Path $Dl "python-$pyVer-embed-amd64.zip"
-  Info "Downloading embeddable Python $pyVer ..."
-  Get-File "https://www.python.org/ftp/python/$pyVer/python-$pyVer-embed-amd64.zip" $zip
-  $got = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
-  if ($got -ne $pySha256) { Die "Embeddable Python checksum mismatch (expected $pySha256, got $got) - refusing to extract a tampered/wrong artifact." }
+# Runtime HEALTH = the exact pinned version, a working ssl, AND a pip that runs. A matching interpreter
+# with no working pip is NOT healthy: a rerun after a failed pip bootstrap must replace it, never skip
+# the bootstrap and die later at `pip upgrade`. Any unhealthy runtime is replaced whole (a working older
+# interpreter is NOT left in place; wiping $PyDir also clears the old site-packages so the deps stage
+# rebuilds the graph against the new interpreter's ABI).
+function Ensure-BundledPython {
+  $state = Get-BundledPythonState
+  if ($state.Ok) { return }
+  # EVERYTHING THE REPLACEMENT NEEDS IS ACQUIRED AND VERIFIED BEFORE THE WIPE (normally already staged
+  # before the first service stop; a staged file is re-hashed here, not trusted). A failed or garbage
+  # download Dies with the old runtime still on disk, never stranding the box with no interpreter.
+  Info "Acquiring embeddable Python $pyVer ..."
+  $zip = Get-VerifiedInput $script:PythonEmbedRecord $InputsDir
   Ok "Embeddable Python SHA256 verified"
+  $getpip = Get-VerifiedInput $script:GetPipRecord $InputsDir
   if (Test-Path $PyDir) {
-    if ($cur -and "$cur".Trim() -ne $pyVer) { Info ("Replacing bundled Python " + "$cur".Trim() + " -> $pyVer (aligned to the Linux CPython).") }
+    if ($state.Version -and $state.Version -ne $pyVer) { Info ("Replacing bundled Python " + $state.Version + " -> $pyVer (aligned to the Linux CPython).") }
     else { Warn "Existing Python is broken/partial - reinstalling." }
     Remove-Item $PyDir -Recurse -Force -ErrorAction SilentlyContinue
   }
@@ -3462,14 +3554,12 @@ if (-not $pyOk) {
   $pth = Get-ChildItem $PyDir -Filter 'python*._pth' | Select-Object -First 1
   @("python$($pyVer.Split('.')[0])$($pyVer.Split('.')[1]).zip", ".", "Lib\site-packages", $Src, "import site") |
     Set-Content -Path $pth.FullName -Encoding ascii
-  # Bootstrap pip (embeddable omits ensurepip) via get-pip.py.
+  # Bootstrap pip (embeddable omits ensurepip) from the verified get-pip.py acquired above.
   Info "Bootstrapping pip ..."
-  $getpip = Join-Path $Dl 'get-pip.py'
-  Get-File 'https://bootstrap.pypa.io/get-pip.py' $getpip
   Cfm-Run "pip bootstrap" $Py $getpip --no-warn-script-location
-  & $Py -m pip --version 2>$null | Out-Null
-  if ($LASTEXITCODE -ne 0) { Die "pip bootstrap failed in embeddable Python." }
+  if (-not (Get-BundledPythonState).Ok) { Die "pip bootstrap failed in embeddable Python." }
 }
+Ensure-BundledPython
 Ok ("Python: " + (& $Py --version) + " (embeddable)")
 
 # The environment every INSTALLER-RUN Python child inherits. It is not, and must not be confused
@@ -3480,15 +3570,13 @@ $env:HOME = $ConfigHome
 $env:PYTHONPATH = $Src
 $env:CORPUSFM_MODE = 'server'
 
-if (-not (Test-Path $Git)) {
-  Info "Resolving + downloading MinGit ..."
-  $rel = Get-Json 'https://api.github.com/repos/git-for-windows/git/releases/latest'
-  $asset = $rel.assets | Where-Object { $_.name -like 'MinGit-*-64-bit.zip' -and $_.name -notlike '*busybox*' } | Select-Object -First 1
-  if (-not $asset) { Die "No MinGit asset found in the latest git-for-windows release." }
-  $zip = Join-Path $Dl $asset.name
-  Get-File $asset.browser_download_url $zip
+function Install-MinGit {
+  if (Test-Path $Git) { return }
+  Info "Installing MinGit ..."
+  $zip = Get-VerifiedInput $script:MinGitRecord $InputsDir
   Expand-Archive -Path $zip -DestinationPath (Join-Path $InstallDir 'git') -Force
 }
+Install-MinGit
 if (-not (Test-Path $Git)) { Die "git.exe missing after MinGit extract ($Git)." }
 Ok ("git: " + (& $Git --version))
 
@@ -4567,13 +4655,12 @@ if ($LcCompose) {
 Section "Service identities"
 Info "Final service definitions"
 $Winsw = Join-Path $SvcDir 'WinSW.exe'
-if (-not (Test-Path $Winsw)) {
-  $rel = Get-Json 'https://api.github.com/repos/winsw/winsw/releases/latest'
-  $a = $rel.assets | Where-Object { $_.name -eq 'WinSW.NET461.exe' } | Select-Object -First 1
-  if (-not $a) { $a = $rel.assets | Where-Object { $_.name -like 'WinSW-x64.exe' } | Select-Object -First 1 }
-  if (-not $a) { Die "No WinSW asset found in the latest release." }
-  Get-File $a.browser_download_url $Winsw
+function Install-WinSw {
+  if (Test-Path $Winsw) { return }
+  $src = Get-VerifiedInput $script:WinSwRecord $InputsDir
+  Copy-Item -LiteralPath $src -Destination $Winsw -Force
 }
+Install-WinSw
 
 # MCP access is user-account-centric. The endpoint mounts by deployment mode and every credential
 # resolves through storage, so neither a fresh install nor an update provisions a file-backed token.
