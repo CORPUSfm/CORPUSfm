@@ -23,7 +23,7 @@
     <template x-if="meta.exists">
       <div class="cfm-log-meta">
         <code x-text="meta.path"></code>
-        <span class="cfm-muted" x-text="`${meta.size_kb} KB · last modified ${meta.modified ? new Date(meta.modified).toLocaleString() : ''}`"></span>
+        <span class="cfm-muted"><span x-text="`${meta.size_kb} KB · last modified `"></span><time x-cfm-time="meta.modified || ''"></time></span>
       </div>
     </template>
 

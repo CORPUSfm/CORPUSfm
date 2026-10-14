@@ -31,6 +31,7 @@ from .diff_history import router as diff_history_router
 from .explore_history import router as explore_history_router
 from .indexed import router as indexed_router
 from .queue import router as queue_router
+from .stats import router as stats_router
 from .import_queue import router as import_queue_router
 from .files import router as files_router
 from .users import router as users_router
@@ -60,6 +61,7 @@ router.include_router(diff_history_router, dependencies=_gate("library_mcp"))
 router.include_router(explore_history_router, dependencies=_gate("library_mcp"))
 router.include_router(indexed_router)                                       # already require_any_gate(library_mcp, settings)
 router.include_router(queue_router)                                         # view = any authed user; mutate = owner-or-admin (in-file)
+router.include_router(stats_router)                                         # System Stats: view = any authed user, read-only (packet 1409)
 router.include_router(import_queue_router, dependencies=_gate("library_mcp"))  # durable import: source/poke/cancel
 router.include_router(files_router, dependencies=_gate("automation"))
 router.include_router(users_router)                                         # already router/route-level settings

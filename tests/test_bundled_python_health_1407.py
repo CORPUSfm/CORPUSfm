@@ -117,8 +117,10 @@ def _predicate(tmp_path, mode="healthy", version="3.13.16", *, executable=True, 
     d.mkdir(exist_ok=True)
     py = d / "python.exe"
     if present:
-        py.write_text(FAKE)
-        py.chmod(0o755 if executable else 0o644)
+        # "Cannot start" is a missing shebang interpreter, never a non-executable file: pwsh on macOS hands a
+        # non-executable path to /usr/bin/open, which launches whatever app owns `.exe` on the developer's Mac.
+        py.write_text(FAKE if executable else FAKE.replace("#!/bin/bash", "#!/nonexistent/corpusfm-test-interpreter", 1))
+        py.chmod(0o755)
         (d / "mode").write_text(mode)
         (d / "version").write_text(version)
     script = tmp_path / "h.ps1"

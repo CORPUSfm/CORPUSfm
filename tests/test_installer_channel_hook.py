@@ -29,6 +29,9 @@ from application_checkout import APPLICATION_ROOT
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULE = "corpusfm.lifecycle.installer_channel_observer"
+#: The observer INVOCATION: the boot line's own import of `entry`. The Windows judges (packet 1419)
+#: import `loaded_from` from the same module, which is not an observation.
+INVOCATION = f"from {MODULE} import entry"
 RECORD = "installer_channel.json"
 
 LINUX = ROOT / "installer/linux/corpusfm-update.sh"
@@ -58,9 +61,9 @@ def _application_boot() -> str:
 
 
 def _placed_correctly(code: str, fetched: str, fast_forward: str, classify: str) -> bool:
-    if code.count(MODULE) != 1:
+    if code.count(INVOCATION) != 1:
         return False
-    at = code.index(MODULE)
+    at = code.index(INVOCATION)
     return code.index(fetched) < code.index(fast_forward) < at < code.index(classify)
 
 
@@ -79,7 +82,7 @@ def test_the_observation_sits_between_the_fast_forward_proof_and_classification(
 def test_the_placement_rule_rejects_a_hook_moved_after_classification(path, fetched, fast_forward, classify):
     """Control: the same rule, applied to a copy with the boot line moved after classification, fails."""
     code = _code(path)
-    line = next(l for l in code.splitlines() if MODULE in l)
+    line = next(l for l in code.splitlines() if INVOCATION in l)
     moved = code.replace(line, "")
     tail = moved.index(classify)
     after = moved.index("\n\n", tail)

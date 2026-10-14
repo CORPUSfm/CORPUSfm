@@ -40,7 +40,13 @@ filters, the counts beside each facet reflect what's available.
 - **Tags** and **system tags** (type, FileMaker version, indexed/unindexed) filter the set.
   See [Tags & filtering](/docs/tags).
 - **Latest-only** collapses each file to its most recent version.
+- **From / To dates** are your browser's calendar days: From starts at your local midnight and To runs
+  through the end of that local day — including days that are 23 or 25 hours long at a daylight-saving
+  change.
 - Active filters appear as removable chips inside the bar.
+
+Artifact times on cards, lists and the detail pop-over are shown in your browser's time zone, with the
+zone named; hover one to see the full local date and the exact UTC time it was recorded.
 
 For large catalogs the page is **paginated on the server** — it fetches one page at a time
 rather than loading everything, so a big corpus stays responsive.

@@ -61,7 +61,10 @@ def test_windows_runtime_identity_is_exact_and_matches_linux():
 def test_lock_headers_name_the_pinned_runtime_and_do_not_overclaim(path):
     head = (ROOT / path).read_text().split("\n\n")[0]
     assert PY_VERSION in head
-    assert "OWED" in head, "a lock not yet revalidated under the pinned runtime must say so"
+    # RE-EXPRESSED (0.3051 records): the rule is "the header must not claim more than was validated".
+    # Revalidation under the pinned runtime is now recorded, so the header must say so, and say how.
+    assert "OWED" not in head
+    assert "REVALIDATED under 3.13.16" in head and "137 = 137" in head
 
 
 # -- Windows runtime health + ordering (static) ---------------------------------------------------

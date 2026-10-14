@@ -827,7 +827,7 @@ def summarize_handler(repo, row) -> W.StepResult:
         return False
     enrichment.summarize_one(be, uuid, on_progress=lambda *a, **k: W.note_progress(),
                              should_cancel=_should_cancel)
-    enrichment.bust_indexed_badge_cache()
+    # Summaries never change raw index membership, and the `summarized` badge is per-record.
     if stopped_early["v"]:
         return W.fail("Interrupted by user.")   # partial summaries kept; no summary-layer index chained
     _maybe_index_summary_layer(be, row)
@@ -878,9 +878,10 @@ def index_handler(repo, row) -> W.StepResult:
             # stays visible + Restartable. (A cancel that raced in after the final batch does NOT reach
             # here — the index completed and is kept.)
             enrichment.deindex_artifact_one(uuid)
-            enrichment.bust_indexed_badge_cache()
             return W.fail("Interrupted by user.")
-    enrichment.bust_indexed_badge_cache()
+    # No in-process badge-cache bust (packet 1415): the vector index publishes its membership
+    # generation, which the next Artifacts request observes; a trailing bust here could discard a
+    # result a concurrent request had already refreshed for that generation.
     return W.ok()
 
 
@@ -919,7 +920,6 @@ def reingest_handler(repo, row) -> W.StepResult:
         enqueue_enrichment_steps(be, uuid, [_INDEX], owner=owner)
     if p.get("was_summarized") and enrichment.provider_ready():
         enqueue_enrichment_steps(be, uuid, [_SUMMARIZE], owner=owner)
-    enrichment.bust_indexed_badge_cache()
     return W.ok()
 
 
@@ -940,13 +940,22 @@ def _maybe_index_summary_layer(be, row) -> None:
 # ── Queue-page views ──────────────────────────────────────────────────────────────
 
 def _target_name(backend, uuid: str) -> str:
+    """A queued target's DISPLAY label, from the memory-only catalog projection (packet 1410).
+
+    Never a STORAGE read: a decorative label polled every few seconds must not add FileMaker pressure, so
+    an unservable catalog or a missing projection is honestly labelled with the record UUID instead.
+    ``enrichment.index_key`` stays the authority for the summarize/index operations themselves."""
     if not uuid:
         return ""
     try:
-        _fn, _ts, name = enrichment.index_key(backend, uuid)
-        return name or uuid
+        from corpusfm.server import catalog
+        view = catalog.peek(backend)
+        proj = view.projection(uuid) if view.servable else None
     except Exception:
         return uuid
+    if not proj:
+        return uuid
+    return proj.get("name") or proj.get("file_name") or uuid
 
 
 def _kinds_and_target(backend, jor) -> "tuple[list[str], str]":

@@ -11,6 +11,7 @@ from __future__ import annotations
 import difflib
 import json
 import tempfile
+from corpusfm.core.instants import browser_time_js, parse_compact_utc
 from corpusfm.core import safe_xml as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -118,6 +119,13 @@ def _flags_html(item: dict) -> str:
         for f in item.get("flags", []))
 
 
+def _compact_utc_iso(ts: str) -> str:
+    try:
+        return parse_compact_utc(ts).isoformat()
+    except ValueError:
+        return ""
+
+
 def _fmt_ts(ts: str) -> str:
     try:
         d, t = ts.split("_", 1)
@@ -187,6 +195,7 @@ def _build_data_from_artifacts(inp: "ArtifactDiffInput") -> dict:
 
     ts_a = _fmt_ts(inp.meta_a.timestamp)
     ts_b = _fmt_ts(inp.meta_b.timestamp)
+    generated = datetime.now(timezone.utc)   # ONE instant for both generated_at fields (packet 1418)
 
     metadata = {
         "label_a": cr.label_a,
@@ -195,7 +204,12 @@ def _build_data_from_artifacts(inp: "ArtifactDiffInput") -> dict:
         "timestamp_b": ts_b,
         "fm_key": inp.meta_b.file_name,
         "total": cr.total_real,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "generated_at": generated.strftime("%Y-%m-%d %H:%M UTC"),
+        # Raw instants for the report's browser-local display (packet 1418); the strings above stay
+        # as the no-script fallback.
+        "timestamp_a_utc": _compact_utc_iso(inp.meta_a.timestamp),
+        "timestamp_b_utc": _compact_utc_iso(inp.meta_b.timestamp),
+        "generated_at_utc": generated.isoformat(timespec="seconds"),
         "app_version": corpusfm.__version__,
         # Ingest build of each side — the version that baked its rendered_text (the
         # Diff fingerprint). If they differ, a "change" could be a render-version skew.
@@ -529,9 +543,9 @@ _HTML = """\
   </div>
 </div>
 <div id="total-bar">
-  <strong>{total}</strong> difference{total_s} &nbsp;·&nbsp; {ts_a} vs {ts_b}
+  <strong>{total}</strong> difference{total_s} &nbsp;·&nbsp; <time data-cfm-instant="{ts_a_utc}">{ts_a} UTC</time> vs <time data-cfm-instant="{ts_b_utc}">{ts_b} UTC</time>
   &nbsp;·&nbsp; ingested A {build_a} / B {build_b}
-  &nbsp;·&nbsp; Generated {generated_at} &nbsp;·&nbsp; CorpusFM {app_version}
+  &nbsp;·&nbsp; Generated <time data-cfm-instant="{generated_at_utc}">{generated_at}</time> &nbsp;·&nbsp; CorpusFM {app_version}
 </div>
 <div id="summary">
 {summary_cards}
@@ -679,6 +693,7 @@ document.querySelectorAll('.sum-card[data-sec]').forEach(card => {{
   }});
 }})();
 </script>
+<script>{time_js}</script>
 </body>
 </html>
 """
@@ -889,7 +904,11 @@ def _render_html(data: dict, filename: str = "diff.html", syntax_palettes: objec
         total_s="" if total == 1 else "s",
         ts_a=_esc(meta["timestamp_a"]),
         ts_b=_esc(meta["timestamp_b"]),
+        ts_a_utc=_esc(meta.get("timestamp_a_utc", "")),
+        ts_b_utc=_esc(meta.get("timestamp_b_utc", "")),
         generated_at=_esc(meta["generated_at"]),
+        generated_at_utc=_esc(meta.get("generated_at_utc", "")),
+        time_js=browser_time_js(),
         app_version=_esc(meta["app_version"]),
         build_a=_esc(meta.get("build_a", "?")),
         build_b=_esc(meta.get("build_b", "?")),

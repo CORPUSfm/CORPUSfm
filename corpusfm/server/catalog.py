@@ -296,6 +296,17 @@ class PassStats:
                 "error": self.error}
 
 
+def _observe_pass(stats: "PassStats") -> None:
+    """One System Stats observation per completed pass, from the PassStats just published — counts and
+    sizes only, never the error string. Fail-open; called outside the model lock."""
+    try:
+        from corpusfm.server import metrics
+        metrics.catalog_pass(stats.ok, stats.duration_s, stats.added + stats.replaced + stats.reaped,
+                             sum(int(v) for v in stats.raw_bytes.values()))
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
 class _Index:
     """Every derived view of the persistent model, maintained INCREMENTALLY.
 
@@ -1017,6 +1028,7 @@ class _Catalog:
                 added=added, replaced=replaced, reaped=reaped, missing_candidates=missing,
                 at_utc=datetime.now(timezone.utc).isoformat())
             stats = self._stats
+        _observe_pass(stats)
         logger.debug("catalog validation pass ok in %.3fs: %s (%s raw bytes), %d added, "
                      "%d replaced, %d reaped", stats.duration_s, dict(counts), dict(raw_bytes),
                      added, replaced, reaped)
@@ -1105,6 +1117,8 @@ class _Catalog:
                 added=added, replaced=replaced, reaped=reaped,
                 at_utc=datetime.now(timezone.utc).isoformat(), error=error)
             out = self._stats.as_dict()
+            failed_stats = self._stats
+        _observe_pass(failed_stats)
         from corpusfm.server import availability
         availability.close("storage", error)
         out["write_during_pass"] = False

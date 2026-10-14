@@ -75,7 +75,7 @@
                   <span class="cfm-badge" x-text="t"></span>
                 </template>
               </div>
-              <div class="cfm-card-sub" x-text="fmtTs(s.timestamp)"></div>
+              <time class="cfm-card-sub" x-cfm-time="s.timestamp"></time>
             </div>
           </template>
         </div>
@@ -329,7 +329,7 @@
                 <span class="cfm-badge" x-text="t"></span>
               </template>
             </div>
-            <div class="cfm-card-sub" x-text="fmtTs(s.timestamp)"></div>
+            <time class="cfm-card-sub" x-cfm-time="s.timestamp"></time>
             {# One-click Explorer (packet 1287; text form per developer 2026-08-19) — hidden, not
                disabled, when the artifact has no Explorer lens (server-authored capability; same
                gate as the toolbar Explore). #}
@@ -372,7 +372,7 @@
             <template x-for="(e, i) in recent.explores" :key="i">
               <tr>
                 <td x-text="(e.labels && e.labels.length) ? e.labels.join('  +  ') : (e.artifacts || []).join(', ')"></td>
-                <td class="cfm-muted" x-text="fmtIso(e.ts)"></td>
+                <td class="cfm-muted"><time x-cfm-time="e.ts"></time></td>
                 <td><button type="button" class="cfm-btn cfm-btn--sm" @click="reExplore(e)">Re-run</button></td>
               </tr>
             </template>
@@ -384,7 +384,7 @@
             <template x-for="(d, i) in recent.diffs" :key="i">
               <tr :class="{ 'cfm-muted': !d.exists }">
                 <td x-text="d.label_a + '  ↔  ' + d.label_b"></td>
-                <td class="cfm-muted" x-text="d.ts_display"></td>
+                <td class="cfm-muted"><time x-cfm-time="d.ts || d.ts_display"></time></td>
                 <td><button type="button" class="cfm-btn cfm-btn--sm" :disabled="!d.exists" @click="reDiff(d)">Re-run</button></td>
               </tr>
             </template>
@@ -396,7 +396,7 @@
             <template x-for="s in recent.merges" :key="s.uuid">
               <tr>
                 <td x-text="s.fm_file"></td>
-                <td class="cfm-muted" x-text="fmtTs(s.timestamp)"></td>
+                <td class="cfm-muted"><time x-cfm-time="s.timestamp"></time></td>
                 <td><button type="button" class="cfm-btn cfm-btn--sm" @click="openRecentArtifact(s.uuid)">Open</button></td>
               </tr>
             </template>
@@ -408,7 +408,7 @@
             <template x-for="s in recent.patches" :key="s.uuid">
               <tr>
                 <td x-text="s.fm_file"></td>
-                <td class="cfm-muted" x-text="fmtTs(s.timestamp)"></td>
+                <td class="cfm-muted"><time x-cfm-time="s.timestamp"></time></td>
                 <td><button type="button" class="cfm-btn cfm-btn--sm" @click="openRecentArtifact(s.uuid)">Open</button></td>
               </tr>
             </template>
@@ -493,12 +493,12 @@
                 <template x-if="detail.type !== 'MergedXML'">
                   <span class="cfm-meta-v" x-text="detail.identity.file_name"></span></template>
                 <span class="cfm-meta-k">FM version</span> <span class="cfm-meta-v" x-text="detail.identity.fm_version || '—'"></span>
-                <span class="cfm-meta-k">Timestamp</span>  <span class="cfm-meta-v" x-text="fmtTs(detail.identity.timestamp)"></span>
+                <span class="cfm-meta-k">Timestamp</span>  <time class="cfm-meta-v" x-cfm-time="detail.identity.timestamp"></time>
                 <span class="cfm-meta-k">Root UUID</span>  <span class="cfm-meta-v cfm-meta-v--uuid" x-text="detail.identity.root_uuid || '—'"></span>
                 <template x-if="detail.provenance.created_at">
                   <span class="cfm-meta-k">Created</span></template>
                 <template x-if="detail.provenance.created_at">
-                  <span class="cfm-meta-v" x-text="detail.provenance.created_at"></span></template>
+                  <time class="cfm-meta-v" x-cfm-time="detail.provenance.created_at"></time></template>
                 <template x-if="detail.provenance.corpusfm_build">
                   <span class="cfm-meta-k">Build</span></template>
                 <template x-if="detail.provenance.corpusfm_build">
@@ -511,9 +511,12 @@
                   <span class="cfm-meta-k">Summarizable</span></template>
                 <template x-if="detail.content.summarizable_count">
                   <span class="cfm-meta-v"><span x-text="detail.content.summarizable_count"></span> objects<span x-show="detailSummarized" class="cfm-badge cfm-badge--ok" style="margin-left:.5em;">summarized</span></span></template>
-                <template x-if="detailIndexConfigured">
+                {# Packet 1416: an unknown status is never shown as "Not indexed". #}
+                <template x-if="detailIndexConfigured || detailIndexError">
                   <span class="cfm-meta-k">Search index</span></template>
-                <template x-if="detailIndexConfigured">
+                <template x-if="detailIndexError">
+                  <span class="cfm-meta-v"><span class="cfm-badge cfm-badge--idle" data-index-status="unavailable">Index status unavailable</span></span></template>
+                <template x-if="detailIndexConfigured && detailIndexKnown && !detailIndexError">
                   <span class="cfm-meta-v"><span class="cfm-badge" :class="detailIndexed ? 'cfm-badge--ok' : 'cfm-badge--idle'" x-text="detailIndexed ? 'Indexed' : 'Not indexed'"></span></span></template>
                 {# Packet 059: retained source XML + the delete election (User). #}
                 <template x-if="detail.content.xml_bytes">
@@ -636,7 +639,7 @@
                     <tbody>
                       <template x-for="(e, i) in detailHistory" :key="i">
                         <tr>
-                          <td class="cfm-muted" x-text="fmtIso(e.ts)"></td>
+                          <td class="cfm-muted"><time x-cfm-time="e.ts"></time></td>
                           <td x-text="e.action"></td>
                           <td class="cfm-muted" x-text="e.tool"></td>
                         </tr>
@@ -676,7 +679,7 @@
                               <tr>
                                 <td x-text="c.name || c.file_name"></td>
                                 <td class="cfm-muted" x-text="c.file_name"></td>
-                                <td class="cfm-muted" x-text="fmtIso(c.timestamp)"></td>
+                                <td class="cfm-muted"><time x-cfm-time="c.timestamp"></time></td>
                                 <td class="cfm-muted" x-text="c.type"></td>
                                 <td><button type="button" class="cfm-btn" @click="openDetail(c.uuid)">Open</button></td>
                               </tr>
@@ -698,7 +701,7 @@
                             <template x-for="c in detailRelated.built_from_this" :key="c.uuid">
                               <tr>
                                 <td x-text="c.name"></td>
-                                <td class="cfm-muted" x-text="fmtIso(c.timestamp)"></td>
+                                <td class="cfm-muted"><time x-cfm-time="c.timestamp"></time></td>
                                 <td class="cfm-muted" x-text="c.type"></td>
                                 <td><button type="button" class="cfm-btn" x-show="c.exists" @click="openDetail(c.uuid)">Open</button><span class="cfm-muted" x-show="!c.exists">removed</span></td>
                               </tr>
@@ -800,7 +803,7 @@
             <a class="cfm-btn cfm-btn--sm" x-show="!isDetailSelected && canDownloadRaw"
                :href="dlUrl('raw')" :title="'Download the raw .' + rawExt + ' (zipped)'" x-text="'.' + rawExt"></a>
             <button type="button" class="cfm-btn cfm-btn--sm"
-                    x-show="!isDetailSelected && detailIndexConfigured && detail.content.indexable"
+                    x-show="!isDetailSelected && detailIndexConfigured && detailIndexKnown && detail.content.indexable"
                     :disabled="!!detailIndexBusy"
                     :title="detailIndexed ? 'Refresh this artifact in the search index' : 'Add this artifact to the search index (enables semantic search — no summaries needed)'"
                     @click="detailIndex()" x-text="detailIndexed ? 'Reindex' : 'Index'"></button>
@@ -808,13 +811,13 @@
                packet 1010); for a DELIVERABLE (fmClip/fmScript/fmCalc, packet 1042) it's per-record —
                either way the deindex_artifact route is per-uuid. Confirm-gated (destructive), shown only
                when the record actually has an index to remove. #}
-            <template x-if="!isDetailSelected && detailIndexConfigured && detail.content.indexable && detailIndexed && !detailConfirmDeindex">
+            <template x-if="!isDetailSelected && detailIndexConfigured && detailIndexKnown && detail.content.indexable && detailIndexed && !detailConfirmDeindex">
               <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger"
                       :disabled="!!detailIndexBusy"
                       title="Remove this artifact from the search index (immediate)"
                       @click="detailConfirmDeindex = true">De-index</button>
             </template>
-            <template x-if="!isDetailSelected && detailIndexConfigured && detail.content.indexable && detailIndexed && detailConfirmDeindex">
+            <template x-if="!isDetailSelected && detailIndexConfigured && detailIndexKnown && detail.content.indexable && detailIndexed && detailConfirmDeindex">
               <span class="cfm-confirm">
                 <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger"
                         :disabled="!!detailDeindexBusy" @click="detailDeindex()">Confirm?</button>
@@ -1205,6 +1208,10 @@ function libraryPage() {
     deletingSource:        false,
     detailSummarized:      false,
     detailIndexConfigured: false,
+    // Packet 1416: the index status is KNOWN only after a successful /api/indexed/check. An error is
+    // its own state — never inferred from indexed:false — and gates every index mutation action.
+    detailIndexKnown:      false,
+    detailIndexError:      false,
     detailIndexBusy:       false,
     detailReingestBusy:    false,
     detailConfirmDel:      false,
@@ -1384,13 +1391,6 @@ function libraryPage() {
       } catch (err) { this.taskError = String(err); window.cfmResolvePending(pending, null, String(err)); }
     },
     openRecentArtifact(rp) { this.recentOpen = false; this.openDetail(rp); },
-    // Display only (packet 1400-06): stored instants are UTC, so the reshaped text says so. The Related
-    // rows carry the catalog's COMPACT ArtifactTimestamp, which the ISO slice used to garble.
-    fmtIso(ts) {
-      if (!ts) return ts;
-      if (/^\d{4}-\d\d-\d\d_\d{6}/.test(ts)) return this.fmtTs(ts);
-      try { return ts.replace('T', ' ').slice(0, 16) + ' UTC'; } catch (_) { return ts; }
-    },
     _selRows() { return this.selected.map(rp => this.selData[rp]).filter(Boolean); },
     _selSorted() {  // oldest first (older = A / baseline)
       return this._selRows().slice().sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
@@ -1508,6 +1508,7 @@ function libraryPage() {
       const params = new URLSearchParams({
         artifact_a: r[0].uuid, artifact_b: r[1].uuid,
         label_a: lbl(r[0]), label_b: lbl(r[1]),
+        ts_a: r[0].timestamp || '', ts_b: r[1].timestamp || '',
         root_uuid: r[0].root_uuid || '',
       });
       cfmGo('/isv?' + params.toString());
@@ -1773,6 +1774,8 @@ function libraryPage() {
       this.relatedFailed = false;
       this.detailConfirmDel = false;
       this.detailConfirmDeindex = false;
+      this.detailIndexKnown = false;
+      this.detailIndexError = false;
       try { window.location.hash = 'detail=' + encodeURIComponent(uuid); } catch (_) {}
       try {
         // The five endpoints are independent — fetch them in PARALLEL (audit #1); the pop-over
@@ -1781,7 +1784,9 @@ function libraryPage() {
         const j = (p) => fetch(p).then(r => r.json()).catch(() => null);
         const [d, id, gd, td] = await Promise.all([
           fetch('/api/library/artifacts/' + enc).then(r => r.json()),
-          j('/api/indexed/check?uuid=' + enc),
+          fetch('/api/indexed/check?uuid=' + enc)
+            .then(async r => ({ ok: r.ok, body: await r.json().catch(() => null) }))
+            .catch(() => ({ ok: false, body: null })),
           j('/api/library/git-registrations'),
           j('/api/library/artifacts/' + enc + '/git-target'),
         ]);
@@ -1798,8 +1803,16 @@ function libraryPage() {
         // Summarized state (packet 051) — reliable has_summaries from the row → contextual button label.
         this.detailSummarized = !!(row && row.has_summaries) || !!(d.content && d.content.has_summaries);
         // Search-index status for this artifact (drives the index buttons below).
-        this.detailIndexConfigured = !!(id && id.configured);
-        this.detailIndexed = !!(id && id.indexed);
+        const idBody = id && id.body;
+        if (id && id.ok && idBody && !idBody.error) {
+          this.detailIndexConfigured = !!idBody.configured;
+          this.detailIndexed = !!idBody.indexed;
+          this.detailIndexKnown = true;
+        } else {
+          this.detailIndexConfigured = !!(idBody && idBody.configured);
+          this.detailIndexed = false;
+          this.detailIndexError = true;
+        }
         // History + Related are LAZY (packet 085 U3d) — loaded on first tab open, not here.
         // Git destinations for the Export tab + this artifact's OWN stored target.
         this.detailRegs = (gd && gd.registrations) || [];
@@ -2157,8 +2170,11 @@ function libraryPage() {
         tag_mode:    this.tagMode,
         untagged:    this.untagged ? 'true' : 'false',
         sys_tags:    this.selSys.join(','),
-        from_date:   this.fromDate,
-        to_date:     this.toDate,
+        // Browser-local calendar days → explicit UTC instant bounds (packet 1418): local midnight of
+        // the From day (inclusive) and local midnight AFTER the To day (exclusive), each built
+        // independently so 23/25-hour DST days are exact. Never the legacy UTC-date family here.
+        from_utc:    window.cfmTime.localDayStartUtc(this.fromDate),
+        before_utc:  window.cfmTime.localDayStartUtc(this.toDate, 1),
         latest_only: this.latestOnly ? 'true' : 'false',
         job_uuid:    this.jobUuid,
         page:        this.page,
@@ -2313,12 +2329,6 @@ function libraryPage() {
       } catch (e) { this.taskError = String(e); window.cfmResolvePending(pending, null, String(e)); }
     },
 
-    fmtTs(ts) {
-      try {
-        const [date, time] = ts.split('_');
-        return `${date} ${time.slice(0,2)}:${time.slice(2,4)} UTC`;
-      } catch(_) { return ts; }
-    },
 
   };
 }

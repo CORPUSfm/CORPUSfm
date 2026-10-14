@@ -35,6 +35,8 @@ Public API:
     CORPUSfmVectorIndex.index_summaries(uuid, file_name, timestamp, artifact, summaries)  # object_summary
     CORPUSfmVectorIndex.delete_artifact(uuid) -> int          # per-artifact de-index (all layers)
     CORPUSfmVectorIndex.delete_file(file_name) -> int         # whole-file convenience (all matching artifacts)
+    CORPUSfmVectorIndex.raw_member_uuids() -> frozenset       # Artifacts-list membership (ids-only, strict)
+    CORPUSfmVectorIndex.index_status(uuid) -> dict            # one UUID's counts by layer (ids-only, strict)
     CORPUSfmVectorIndex.search(query, top_k, file_name, include_summaries) -> list[dict]
     CORPUSfmVectorIndex.count() -> int
 """
@@ -44,7 +46,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import tempfile
 import threading
+import uuid as uuidlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
@@ -69,9 +74,51 @@ _MAX_TEXT_CHARS = 1500
 LAYER_RAW = "object_raw"
 LAYER_SUMMARY = "object_summary"
 
+_MEMBERSHIP_GENERATION_FILE = "membership_generation.txt"
+_MEMBERSHIP_GENERATION_LOCK = "membership_generation.lock"
+_MEMBERSHIP_GENERATION_RE = re.compile(r"^[0-9a-f]{32}:[0-9]+$")
+
 
 class IndexMembershipUnavailable(Exception):
     """Which records the index holds could not be established (packet 1400-05) — never read as "none"."""
+
+
+# ── Layered document ids: the ONE builder and the ONE parser (packet 1416) ────────────────────────
+# Membership is read from document ids alone. Chroma 1.5.9 fails any get() that returns metadatas or
+# documents for 32,767+ rows ("too many SQL variables"); an ids-only get() does not, and is ~10x cheaper.
+# The parse is valid only for schema versions whose every id is `{layer}/{uuid}/{folder}/{item}[#n]`:
+# v1 ids had no layer prefix and v2 keyed by file_name, and a marker mismatch resets the store before
+# any write, so a reader that sees a matching marker sees only layered ids.
+_LAYERED_ID_SCHEMA_VERSIONS = frozenset({"3"})
+_DOC_LAYERS = (LAYER_RAW, LAYER_SUMMARY)
+
+
+def _doc_id(layer: str, uuid: str, folder_name: str, item_name: str, n: int = 0) -> str:
+    base = f"{layer}/{uuid}/{folder_name}/{item_name}"
+    return base if n == 0 else f"{base}#{n}"
+
+
+# The administrative inventory fetches display metadata for ONE representative raw document id per
+# artifact (packet 1417), in batches of at most this many ids — under Chroma 1.5.9's 32,767-row
+# metadata failure. An exact-id read returns at most the ids it asked for, so growth cannot inflate it.
+_INVENTORY_ID_BATCH = 30_000
+
+
+def _id_batches(ids: list, size: int = None) -> list:
+    size = _INVENTORY_ID_BATCH if size is None else size
+    return [ids[i:i + size] for i in range(0, len(ids), size)]
+
+
+def _parse_doc_id(doc_id) -> tuple:
+    """``(layer, uuid)`` of a layered document id. The layer and the record UUID precede any
+    user-derived text, and a UUID never contains ``/``, so a two-split is unambiguous even when a folder
+    or item name contains ``/``. Anything else fails closed — an unparseable id is never skipped, because
+    skipping it would certify a membership answer that is missing a document. The message carries no
+    part of the id (ids embed object names)."""
+    parts = doc_id.split("/", 2) if isinstance(doc_id, str) else ()
+    if len(parts) != 3 or parts[0] not in _DOC_LAYERS or not parts[1] or parts[1].strip() != parts[1]:
+        raise IndexMembershipUnavailable("a search-index document id is not in the layered form")
+    return parts[0], parts[1]
 
 
 class SummaryLayerDeferred(Exception):
@@ -79,6 +126,77 @@ class SummaryLayerDeferred(Exception):
     reindex first (packet 1008/C). It is NOT a data error — raw is left fully intact — but it must be
     a VISIBLE non-success so the queued job parks (Restartable) instead of being silently dropped.
     The message is operator-facing (it becomes the QUEUE Outcome)."""
+
+
+def _read_membership_generation_dir(index_dir: Path) -> Optional[str]:
+    """Read the cheap cross-process raw-membership generation, or ``None`` when it cannot be
+    trusted. Readers never lock: writers publish a complete small file with ``os.replace``."""
+    try:
+        value = (Path(index_dir) / _MEMBERSHIP_GENERATION_FILE).read_text(
+            encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return None
+    return value if _MEMBERSHIP_GENERATION_RE.fullmatch(value) else None
+
+
+def read_membership_generation(app_config: "AppConfig") -> Optional[str]:
+    """Read the generation for the configured store without constructing Chroma or reading a key."""
+    try:
+        return _read_membership_generation_dir(resolve_index_dir(app_config))
+    except Exception:
+        return None
+
+
+def _write_membership_generation(index_dir: Path, value: str) -> None:
+    index_dir = Path(index_dir)
+    index_dir.mkdir(parents=True, exist_ok=True)
+    fd, raw_path = tempfile.mkstemp(prefix=".membership-generation-", dir=str(index_dir))
+    tmp = Path(raw_path)
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as fh:
+            fh.write(value + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, index_dir / _MEMBERSHIP_GENERATION_FILE)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _advance_membership_generation(index_dir: Path, *, initialize: bool = False) -> str:
+    """Create or advance the persistent generation under a cross-platform process lock.
+
+    The random store identity makes delete/recreate distinguishable from the old store even when both
+    counters are zero. The counter is monotonic within that identity. A writer that cannot publish the
+    new value removes the readable signal where possible, making readers refresh conservatively rather
+    than certify the old cache generation.
+    """
+    from filelock import FileLock
+
+    index_dir = Path(index_dir)
+    index_dir.mkdir(parents=True, exist_ok=True)
+    generation_path = index_dir / _MEMBERSHIP_GENERATION_FILE
+    try:
+        with FileLock(str(index_dir / _MEMBERSHIP_GENERATION_LOCK), timeout=30):
+            current = _read_membership_generation_dir(index_dir)
+            if current is not None:
+                if initialize:
+                    return current
+                identity, raw_counter = current.split(":", 1)
+                value = f"{identity}:{int(raw_counter) + 1}"
+            else:
+                value = f"{uuidlib.uuid4().hex}:{0 if initialize else 1}"
+            _write_membership_generation(index_dir, value)
+            return value
+    except Exception:
+        try:
+            generation_path.unlink()
+        except OSError:
+            pass
+        raise
 
 # Bumped whenever the document id/metadata shape changes. A stored index stamped with an older schema
 # is structurally incompatible (v1 ids had no layer prefix / no `layer` metadata; v2 keyed docs by the
@@ -281,6 +399,18 @@ class CORPUSfmVectorIndex:
             embedding_function=embedding_fn,
             metadata={"hnsw:space": "cosine"},
         )
+        _advance_membership_generation(self._index_dir, initialize=True)
+
+    def membership_generation(self) -> str:
+        """Return a valid generation, repairing a missing/malformed sidecar conservatively."""
+        return _advance_membership_generation(self._index_dir, initialize=True)
+
+    def _membership_changed(self) -> None:
+        """Publish one raw-membership change. If publication fails, leave no trusted old signal."""
+        try:
+            _advance_membership_generation(self._index_dir)
+        except Exception:
+            logger.warning("vector_index: could not publish membership generation", exc_info=True)
 
     @property
     def _model_marker(self) -> Path:
@@ -330,6 +460,36 @@ class CORPUSfmVectorIndex:
         except Exception:
             stored = ""
         return stored != _INDEX_SCHEMA_VERSION
+
+    def _ids_are_layered(self) -> bool:
+        """True when the stored ids can be parsed: the marker matches this code AND this code's schema
+        writes layered ids. False means a reset is pending (or the code's id shape is unknown)."""
+        return not self._schema_mismatch() and _INDEX_SCHEMA_VERSION in _LAYERED_ID_SCHEMA_VERSIONS
+
+    def _get_ids(self, where: Optional[dict] = None) -> list:
+        """Document ids only — never metadatas or documents (packet 1416). Read failures are strict."""
+        try:
+            got = self._col.get(where=where, include=[]) if where else self._col.get(include=[])
+        except Exception as exc:
+            raise IndexMembershipUnavailable(f"the search index could not be read: {exc}") from exc
+        return list(got.get("ids") or [])
+
+    def _parsed_ids(self, ids: list, *, uuids: Optional[set] = None, layer: Optional[str] = None) -> list:
+        """Parse every id; when the read was filtered by uuid/layer, every id must agree with it."""
+        parsed = [_parse_doc_id(i) for i in ids]
+        for lay, uid in parsed:
+            if (uuids is not None and uid not in uuids) or (layer is not None and lay != layer):
+                raise IndexMembershipUnavailable(
+                    "a search-index document id disagrees with its stored metadata")
+        return parsed
+
+    def raw_member_uuids(self) -> frozenset:
+        """Every record UUID with searchable (``object_raw``) content, from ONE ids-only read — the
+        Artifacts list's membership. STRICT: an unreadable index or an unparseable id raises
+        :class:`IndexMembershipUnavailable`. A pending schema rebuild is a known empty membership."""
+        if not self._ids_are_layered():
+            return frozenset()
+        return frozenset(u for lay, u in self._parsed_ids(self._get_ids()) if lay == LAYER_RAW)
 
     def _model_mismatch(self) -> bool:
         """True when the stored model marker names a DIFFERENT embedding model (a reset is pending).
@@ -382,6 +542,10 @@ class CORPUSfmVectorIndex:
         prior model and unsearchable against new queries anyway, so discarding them is correct."""
         with _WRITE_LOCK:
             try:
+                had_content = self._col.count() > 0
+            except Exception:
+                had_content = True
+            try:
                 self._client.delete_collection(_COLLECTION_NAME)
             except Exception:
                 pass
@@ -391,6 +555,8 @@ class CORPUSfmVectorIndex:
                 embedding_function=self._embedding_fn,
                 metadata={"hnsw:space": "cosine"},
             )
+            if had_content:
+                self._membership_changed()
 
     def _vector_dim(self) -> int:
         """Embedding dimensionality (queried once from a stored vector)."""
@@ -520,100 +686,101 @@ class CORPUSfmVectorIndex:
         process-wide (see _WRITE_LOCK) because reset()/dimension-retry can recreate the shared collection
         mid-flight."""
         with _WRITE_LOCK:
-            # INVARIANT: the additive summary layer must NEVER be the op that wipes the raw substrate
-            # (packet 1006). A model/schema change forces a whole-collection rebuild that only the RAW
-            # path can repair — so if a summary write arrives with a reset pending AND there is existing
-            # content to lose, DEFER it (return 0, leaving raw intact) rather than reset-then-write a
-            # misleading summaries-only index. On an empty collection there is no raw to protect, so a
-            # summary write falls through and simply stamps the markers.
-            if layer == LAYER_SUMMARY and (self._schema_mismatch() or self._model_mismatch()):
-                try:
-                    has_content = self._col.count() > 0
-                except Exception:
-                    has_content = False
-                if has_content:
-                    logger.info("vector_index: deferring the summary-layer write — a model/schema "
-                                "change needs a raw reindex first (not wiping raw for a summary write)")
-                    # A VISIBLE non-success (packet 1008/C): raise so the queued job parks Restartable
-                    # rather than being deleted as a silent success. Raw is untouched.
-                    raise SummaryLayerDeferred(
-                        "Summary-layer indexing deferred: the search index needs a raw reindex first "
-                        "(its embedding model or schema changed). Reindex this file, then Restart.")
-            # Reset on an embedding-model change (Chroma checks only dimension) or a document-schema
-            # bump (v1 un-layered docs) — either silently corrupts search otherwise.
-            self._ensure_schema()
-            self._ensure_model()
-            ids: list[str] = []
-            texts: list[str] = []
-            metas: list[dict] = []
-            # Chroma requires ids unique within an upsert. Item names are NOT unique (addon-heavy files
-            # collapse many items to the same folder/name, and empty names collide) — disambiguate
-            # collisions deterministically so the same artifact re-indexes to stable ids.
-            seen: dict[str, int] = {}
-            for folder_name, item_name, text in rows:
-                base_id = f"{layer}/{uuid}/{folder_name}/{item_name}"
-                n = seen.get(base_id, 0)
-                seen[base_id] = n + 1
-                doc_id = base_id if n == 0 else f"{base_id}#{n}"
-                ids.append(doc_id)
-                texts.append(text or item_name or doc_id)
-                metas.append({
-                    "layer": layer,
-                    "uuid": uuid,
-                    "file_name": file_name,      # display metadata only — NOT the key (mutable, non-unique)
-                    "timestamp": timestamp,      # display metadata only
-                    "folder_name": folder_name,
-                    "item_name": item_name,
-                })
+            membership_changed = False
+            try:
+                # INVARIANT: the additive summary layer must NEVER be the op that wipes the raw substrate
+                # (packet 1006). A model/schema change forces a whole-collection rebuild that only the RAW
+                # path can repair — so if a summary write arrives with a reset pending AND there is existing
+                # content to lose, DEFER it rather than reset-then-write a summaries-only index.
+                if layer == LAYER_SUMMARY and (self._schema_mismatch() or self._model_mismatch()):
+                    try:
+                        has_content = self._col.count() > 0
+                    except Exception:
+                        has_content = False
+                    if has_content:
+                        logger.info("vector_index: deferring the summary-layer write — a model/schema "
+                                    "change needs a raw reindex first (not wiping raw for a summary write)")
+                        raise SummaryLayerDeferred(
+                            "Summary-layer indexing deferred: the search index needs a raw reindex first "
+                            "(its embedding model or schema changed). Reindex this file, then Restart.")
 
-            # One index per ARTIFACT (record UUID), independent: drop THIS artifact's prior slice of this
-            # layer so a reindex is a true refresh — indexing another version (a different uuid) never
-            # touches this one. Layer-scoped — a RAW reindex never touches the additive SUMMARY layer (the
-            # 1006 invariant above), and vice versa.
-            self._delete_artifact_layer(layer, uuid)
-            if not ids:
-                return 0
+                # Reset on an embedding-model change or document-schema bump.
+                self._ensure_schema()
+                self._ensure_model()
+                ids: list[str] = []
+                texts: list[str] = []
+                metas: list[dict] = []
+                seen: dict[str, int] = {}
+                for folder_name, item_name, text in rows:
+                    base_id = _doc_id(layer, uuid, folder_name, item_name)
+                    n = seen.get(base_id, 0)
+                    seen[base_id] = n + 1
+                    doc_id = _doc_id(layer, uuid, folder_name, item_name, n)
+                    ids.append(doc_id)
+                    texts.append(text or item_name or doc_id)
+                    metas.append({
+                        "layer": layer,
+                        "uuid": uuid,
+                        "file_name": file_name,
+                        "timestamp": timestamp,
+                        "folder_name": folder_name,
+                        "item_name": item_name,
+                    })
 
-            # Upsert in batches to avoid oversized embedding requests. A dimension mismatch (model
-            # swap) on the first batch → reset the incompatible collection once and retry from the top.
-            did_reset = False
-            i = 0
-            while i < len(ids):
-                if should_cancel is not None and should_cancel():
-                    return min(i, len(ids))
-                batch_ids   = ids[i:i + self._batch_size]
-                batch_texts = texts[i:i + self._batch_size]
-                batch_metas = metas[i:i + self._batch_size]
-                try:
-                    self._col.upsert(ids=batch_ids, documents=batch_texts, metadatas=batch_metas)
-                    i += self._batch_size
-                except Exception as exc:
-                    # Only the RAW path may reset-and-retry on a dimension mismatch — resetting for a
-                    # SUMMARY write would wipe the raw substrate to build summaries-only (the same
-                    # invariant as above). For the summary layer, re-raise → the record parks (visible)
-                    # and raw is left intact.
-                    if (layer == LAYER_RAW and not did_reset
-                            and "dimension" in str(exc).lower()):
-                        self.reset()
-                        did_reset = True
-                        i = 0  # the reset emptied the collection — re-upsert from the top
-                        continue
-                    raise
+                # Replace this artifact's one layer. A raw delete can change the visible membership even
+                # when the replacement has no rows or later fails, so remember it for the finally block.
+                deleted = self._delete_artifact_layer(layer, uuid)
+                membership_changed = layer == LAYER_RAW and deleted > 0
+                if not ids:
+                    return 0
 
-            return len(ids)
+                # Upsert in batches. A raw dimension mismatch resets once and retries from the top.
+                did_reset = False
+                i = 0
+                while i < len(ids):
+                    if should_cancel is not None and should_cancel():
+                        return min(i, len(ids))
+                    batch_ids   = ids[i:i + self._batch_size]
+                    batch_texts = texts[i:i + self._batch_size]
+                    batch_metas = metas[i:i + self._batch_size]
+                    try:
+                        self._col.upsert(ids=batch_ids, documents=batch_texts, metadatas=batch_metas)
+                        membership_changed = membership_changed or layer == LAYER_RAW
+                        i += self._batch_size
+                    except Exception as exc:
+                        if (layer == LAYER_RAW and not did_reset
+                                and "dimension" in str(exc).lower()):
+                            self.reset()
+                            did_reset = True
+                            i = 0  # the reset emptied the collection — re-upsert from the top
+                            continue
+                        raise
 
-    def _delete_artifact_layer(self, layer: str, uuid: str) -> None:
+                return len(ids)
+            finally:
+                if membership_changed:
+                    self._membership_changed()
+
+    def _delete_artifact_layer(self, layer: str, uuid: str) -> int:
         """Delete every doc for one (layer, artifact) — the replace-per-artifact primitive. Layer-scoped
         so a RAW reindex leaves the SUMMARY layer intact. A fresh collection returns no ids; inability
         to establish or delete the old slice is different and must stop the replacement before upsert,
         otherwise removed objects remain searchable beside the new ones."""
-        existing = self._col.get(where={"$and": [
-            {"layer": {"$eq": layer}},
-            {"uuid": {"$eq": uuid}},
-        ]})
-        ids = existing.get("ids") or []
+        ids = self._get_ids({"$and": [{"layer": {"$eq": layer}}, {"uuid": {"$eq": uuid}}]})
+        self._parsed_ids(ids, uuids={uuid}, layer=layer)
         if ids:
             self._col.delete(ids=ids)
+        return len(ids)
+
+    def _raw_in(self, ids: list, *, uuids: Optional[set] = None) -> bool:
+        """Whether deleting ``ids`` changes raw membership — decided from the ids, before any delete.
+        With a reset pending the ids may predate the layered form: deletion still proceeds and the
+        change is assumed (the conservative direction — readers refresh)."""
+        if not ids:
+            return False
+        if not self._ids_are_layered():
+            return True
+        return any(lay == LAYER_RAW for lay, _u in self._parsed_ids(ids, uuids=uuids))
 
     def delete_artifact(self, uuid: str) -> int:
         """De-index ONE artifact — every layer for its record ``uuid`` — leaving sibling versions (and any
@@ -622,10 +789,12 @@ class CORPUSfmVectorIndex:
         if not uuid:
             return 0
         with _WRITE_LOCK:
-            existing = self._col.get(where={"uuid": uuid})
-            ids = existing.get("ids") or []
+            ids = self._get_ids({"uuid": uuid})
+            raw_changed = self._raw_in(ids, uuids={uuid})
             if ids:
                 self._col.delete(ids=ids)
+            if raw_changed:
+                self._membership_changed()
             return len(ids)
 
     def delete_file(self, file_name: str) -> int:
@@ -633,45 +802,85 @@ class CORPUSfmVectorIndex:
         convenience (drops all versions/records of that name at once). Per-artifact de-index is
         delete_artifact(uuid). Returns count deleted."""
         with _WRITE_LOCK:
-            existing = self._col.get(where={"file_name": file_name})
-            ids = existing.get("ids") or []
+            ids = self._get_ids({"file_name": file_name})
+            raw_changed = self._raw_in(ids)
             if ids:
                 self._col.delete(ids=ids)
+            if raw_changed:
+                self._membership_changed()
             return len(ids)
+
+    def rebuild_pending(self) -> bool:
+        """True while a schema reset is pending over EXISTING content: membership is then a known
+        empty, not an unreadable one. A fresh, never-written store is simply empty (it is stamped on
+        its first write). Raises :class:`IndexMembershipUnavailable` if the store cannot be counted."""
+        if self._ids_are_layered():
+            return False
+        try:
+            return self._col.count() > 0
+        except Exception as exc:
+            raise IndexMembershipUnavailable(f"the search index could not be read: {exc}") from exc
+
+    def _inventory_display(self, reps: dict) -> Optional[dict]:
+        """{uuid: metadata} for each artifact's representative raw id ``reps`` {uuid: doc_id}, fetched
+        by exact id in batches. Strict: a returned id that was not requested, is not raw, belongs to
+        another artifact, or repeats raises. ``None`` when a representative is missing (deleted since the
+        snapshot) — the caller retries."""
+        wanted = {doc_id: uuid for uuid, doc_id in reps.items()}
+        out: dict = {}
+        for batch in _id_batches(sorted(wanted)):
+            requested = set(batch)
+            try:
+                got = self._col.get(ids=batch, include=["metadatas"])
+            except Exception as exc:
+                raise IndexMembershipUnavailable(f"the search index could not be read: {exc}") from exc
+            for doc_id, meta in zip(got.get("ids") or [], got.get("metadatas") or []):
+                if doc_id not in requested:
+                    raise IndexMembershipUnavailable("the search index returned an unrequested document")
+                layer, uuid = _parse_doc_id(doc_id)
+                if layer != LAYER_RAW or uuid != wanted[doc_id] or uuid in out:
+                    raise IndexMembershipUnavailable(
+                        "the search index returned an invalid representative document id")
+                out[uuid] = meta or {}
+        return out if out.keys() == reps.keys() else None
 
     def list_indexed(self) -> list[dict]:
         """Return grouped summary of indexed content — the ``object_raw`` substrate (packet 1006), so
         the count reflects searchable objects, not doubled by an optional summary layer.
 
-        One row PER ARTIFACT (record uuid): keys uuid, file_name, timestamp, count. `file_name`/`timestamp`
-        are display fields; `uuid` is the identity (drives the per-artifact `indexed` badge). Sorted by
-        file_name then timestamp (newest first). Empty when a schema rebuild is pending (an older-keyed
-        index is incompatible — it must be reindexed; reporting it would mislabel membership)."""
-        if self._schema_mismatch():
-            return []
-        try:
-            result = self._col.get(include=["metadatas"])
-            metas = result.get("metadatas") or []
-        except Exception:
-            return []
+        One row PER ARTIFACT (record uuid): keys uuid, file_name, timestamp, count, est_bytes.
+        `file_name`/`timestamp` are display fields; `uuid` is the identity. Sorted by file_name, newest
+        timestamp first within a file. Empty when a schema rebuild is pending (see `rebuild_pending`).
 
-        groups: dict[str, dict] = {}
-        for m in metas:
-            # Old v1 docs carry no `layer`; treat them as raw so a pre-1006 index still reports.
-            if (m.get("layer") or LAYER_RAW) != LAYER_RAW:
-                continue
-            uuid = m.get("uuid", "")
-            g = groups.get(uuid)
-            if g is None:
-                groups[uuid] = {"uuid": uuid, "file_name": m.get("file_name", ""),
-                                "timestamp": m.get("timestamp", ""), "count": 1}
-            else:
-                g["count"] += 1
+        STRICT and bounded at any index size (packet 1417): counts and one representative raw id per
+        artifact come from ONE ids-only snapshot; display fields from exact-id metadata reads — one row
+        per artifact, in batches below Chroma's metadata-row limit. The membership generation is read
+        before and after; a moved generation or a missing representative (deleted in between) retries
+        the whole inventory once, then raises :class:`IndexMembershipUnavailable` — never an empty
+        answer for an unknown one."""
+        if not self._ids_are_layered():
+            return []
+        for _attempt in range(2):
+            before = self.membership_generation()
+            counts: dict = {}
+            reps: dict = {}
+            ids = self._get_ids()
+            for doc_id, (lay, uuid) in zip(ids, self._parsed_ids(ids)):
+                if lay == LAYER_RAW:
+                    counts[uuid] = counts.get(uuid, 0) + 1
+                    if doc_id < reps.get(uuid, "\uffff"):
+                        reps[uuid] = doc_id
+            display = self._inventory_display(reps)
+            after = _read_membership_generation_dir(self._index_dir)
+            if after is not None and after == before and display is not None:
+                return self._inventory_rows(counts, display)
+        raise IndexMembershipUnavailable("the search index changed during the inventory — retry")
 
+    def _inventory_rows(self, counts: dict, display: dict) -> list[dict]:
         per_item = self._est_bytes_per_item()
-        rows = list(groups.values())
-        for r in rows:
-            r["est_bytes"] = r["count"] * per_item
+        rows = [{"uuid": u, "file_name": display[u].get("file_name", ""),
+                 "timestamp": display[u].get("timestamp", ""), "count": n, "est_bytes": n * per_item}
+                for u, n in counts.items()]
         rows.sort(key=lambda r: (r["file_name"], r["timestamp"]), reverse=False)
         # Newest timestamp first within each file
         from itertools import groupby
@@ -686,35 +895,26 @@ class CORPUSfmVectorIndex:
         Unlike :meth:`list_indexed`, which answers ``[]`` for both "nothing indexed" and "could not
         tell", this raises :class:`IndexMembershipUnavailable` when membership cannot be established
         (a pending schema rebuild, or a failed read). An empty set is an answer: none are indexed."""
-        if self._schema_mismatch():
+        if not self._ids_are_layered():
             raise IndexMembershipUnavailable("a search-index schema rebuild is pending")
         wanted = sorted({u for u in uuids if u})
         if not wanted:
             return set()
-        try:
-            got = self._col.get(where={"uuid": {"$in": wanted}}, include=["metadatas"])
-        except Exception as exc:
-            raise IndexMembershipUnavailable(f"the search index could not be read: {exc}") from exc
-        return {m.get("uuid") for m in (got.get("metadatas") or [])
-                if m.get("uuid") and (m.get("layer") or LAYER_RAW) == LAYER_RAW}
+        ids = self._get_ids({"uuid": {"$in": wanted}})
+        return {u for lay, u in self._parsed_ids(ids, uuids=set(wanted)) if lay == LAYER_RAW}
 
     def index_status(self, uuid: str) -> dict:
-        """Per-artifact index membership (packet 1036): doc counts by layer for one record ``uuid``.
-        Returns {raw, summary, total} — the RAW layer is the search substrate, SUMMARY the optional
-        AI-summary layer. All zero when the record is not indexed (or a schema rebuild is pending)."""
+        """Per-artifact index membership (packet 1036): doc counts by layer for one record ``uuid``,
+        counted on demand from its ids alone (packet 1416). Returns {raw, summary, total} — the RAW
+        layer is the search substrate, SUMMARY the optional AI-summary layer. All zero when the record
+        is not indexed or a schema rebuild is pending. STRICT: an unreadable index or an unparseable id
+        raises :class:`IndexMembershipUnavailable` rather than reporting zero."""
         out = {"raw": 0, "summary": 0, "total": 0}
-        if not uuid or self._schema_mismatch():
+        if not uuid or not self._ids_are_layered():
             return out
-        try:
-            got = self._col.get(where={"uuid": uuid}, include=["metadatas"])
-            for m in (got.get("metadatas") or []):
-                if (m.get("layer") or LAYER_RAW) == LAYER_SUMMARY:
-                    out["summary"] += 1
-                else:
-                    out["raw"] += 1
-            out["total"] = out["raw"] + out["summary"]
-        except Exception:
-            pass
+        for lay, _u in self._parsed_ids(self._get_ids({"uuid": uuid}), uuids={uuid}):
+            out["raw" if lay == LAYER_RAW else "summary"] += 1
+        out["total"] = out["raw"] + out["summary"]
         return out
 
     def search(

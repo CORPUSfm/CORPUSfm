@@ -1166,8 +1166,8 @@ def test_the_WINDOWS_CLAIM_CALL_SITE_retires_a_retained_predecessor_request(tmp_
     code = _re.search(r"\$claimCode = @'\r?\n(.*?)\r?\n'@", source, _re.S).group(1)
     state = tmp_path / "state"
     outcome_before = _retained_predecessor(state, "f" * 40)
-    run = _subprocess.run([sys.executable, "-c", code, str(state)], capture_output=True, text=True,
-                          env={"PYTHONPATH": str(_ui.REPO)}, timeout=60)
+    run = _subprocess.run([sys.executable, "-I", "-c", code, str(_ui.REPO), str(state)],
+                          capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, run.stderr
     claim = _json.loads(run.stdout)
     assert claim == {"disposition": "already_completed", "trigger_id": "upd_54f52dd3a7f61d1a",

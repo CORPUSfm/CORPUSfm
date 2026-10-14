@@ -51,7 +51,7 @@
   <div x-show="runs.length > 0">
     <template x-for="r in runs" :key="r.run_id || (r.job_uuid + r.ts)">
       <div class="cfm-listcard cfm-listcard--ok cfm-listcard--acts">
-        <span class="cfm-lc-when" x-text="r.ts_display"></span>
+        <time class="cfm-lc-when" x-cfm-time="r.ts || r.ts_display"></time>
         <span class="cfm-lc-ident">
           <span class="cfm-lc-name" x-text="r.job_name" :title="r.job_name"></span>
           <span class="cfm-lc-sub" x-show="r.file_name" x-text="r.file_name" :title="r.file_name"></span>

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -82,46 +83,108 @@ def _inject_fm(system_tags, fm_version: str) -> list[str]:
     return [*base, ft] if ft else base
 
 
-# Short TTL cache for index membership. list_indexed() scans ALL vector-index metadata
-# (thousands of item rows) to derive a few dozen (file_name, timestamp) keys — ~1.2s on a
-# real index — and it ran on EVERY Artifacts list request. Membership is mutable but only
-# via explicit index/unindex, so a brief TTL (plus an explicit bust on those ops) keeps the
-# `indexed` badge fresh while taking the cost off the hot path.
-_INDEXED_TTL_S = 60.0
-_indexed_cache: dict = {"rows": None, "at": 0.0}
+# The Artifacts list needs only WHICH record UUIDs have raw indexed content. That set comes from one
+# ids-only vector-index read (packet 1416 — no metadata, no counts), and is cached under the vector
+# store's persistent membership generation, which every raw-membership mutation advances (packet 1415).
+# Valid across processes; never expires merely because an Artifacts page remains open.
+_indexed_cache: dict = {"uuids": None, "generation": None}
+# A failed refresh is never trusted, but retrying it on every poll would turn a broken index into the
+# per-request pressure this cache removes. Retry at most once per window for an unchanged generation —
+# the same failure cadence the retired 60 s TTL gave.
+_INDEXED_FAILURE_RETRY_S = 60.0
+_indexed_failure: dict = {"at": None, "generation": None}
+# Single-flight: one request per process scans for a generation; requests that miss meanwhile wait and
+# reuse its result (packet 1415 live gate: overlapping misses each ran a full scan).
+_indexed_refresh_lock = threading.Lock()
 
 
 def invalidate_indexed_cache() -> None:
-    """Drop the cached index membership — call after any index/unindex so the `indexed`
-    badge + per-artifact status reflect the change on the next read without waiting the TTL."""
-    _indexed_cache["rows"] = None
-    _indexed_cache["at"] = 0.0
+    """Forget the cached membership. A test and process-reset helper only: product mutations never
+    call it, because the persistent generation already invalidates — and a trailing in-process clear
+    could discard a result a concurrent request had just stamped with the new generation."""
+    _indexed_cache["uuids"] = None
+    _indexed_cache["generation"] = None
+    _indexed_failure["at"] = None
+    _indexed_failure["generation"] = None
+    from corpusfm.server import metrics
+    metrics.icache_invalidated()
 
 
-def _indexed_rows(cfg) -> list:
-    """TTL-cached list_indexed() rows ({file_name, timestamp, count}), or [] when no embedder
-    is configured / the index is unavailable. ONE expensive metadata scan serves the whole
-    process for the TTL — the `indexed` badge (every list) AND per-artifact status (every
-    detail open) read from here instead of re-scanning. Membership is mutable only via
-    index/unindex, which bust the cache (see invalidate_indexed_cache).
+def _indexed_served_without_scan(generation, now: float):
+    """The cached UUID set when it is stamped with ``generation``; an empty set inside a failed
+    refresh's retry window for that generation; ``None`` when a read is owed."""
+    from corpusfm.server import metrics
+    uuids = _indexed_cache["uuids"]
+    if uuids is not None and generation is not None and generation == _indexed_cache["generation"]:
+        metrics.icache_hit()
+        return uuids
+    failed_at = _indexed_failure["at"]
+    if (failed_at is not None and generation == _indexed_failure["generation"]
+            and now - failed_at < _INDEXED_FAILURE_RETRY_S):
+        return frozenset()
+    return None
 
-    `cfg` is the caller's already-loaded `AppConfig` (packet 1361-01). Loading one here made a TTL
+
+def _indexed_uuids(cfg) -> frozenset:
+    """Generation-cached raw-indexed record UUIDs (packet 1416: membership only, no counts).
+
+    ONE ids-only read serves the process until a raw-membership mutation advances the persistent
+    generation, and at most one request reads at a time: the others wait, re-check, and reuse its
+    result. A stable generation is checked before and after a refresh, so a writer racing the read can
+    never make a stale set trusted under its newer generation.
+
+    `cfg` is the caller's already-loaded `AppConfig` (packet 1361-01). Loading one here made a cache
     MISS cost a second settings read on top of the two the request already owed — the cache existed
     to make the miss rare, not to make it expensive."""
     import time
-    now = time.monotonic()
-    rows = _indexed_cache["rows"]
-    if rows is not None and (now - _indexed_cache["at"]) < _INDEXED_TTL_S:
-        return rows
-    try:
-        from corpusfm.server.ai.vector_index import get_vector_index
-        idx = get_vector_index(cfg)
-        rows = [] if idx is None else list(idx.list_indexed())
-    except Exception:
-        rows = []
-    _indexed_cache["rows"] = rows
-    _indexed_cache["at"] = now
-    return rows
+    from corpusfm.server import metrics
+    from corpusfm.server.ai.vector_index import (
+        get_vector_index, has_embedding_configured, read_membership_generation,
+    )
+
+    if not has_embedding_configured(cfg):
+        return frozenset()
+
+    served = _indexed_served_without_scan(read_membership_generation(cfg), time.monotonic())
+    if served is not None:
+        return served
+
+    with _indexed_refresh_lock:
+        # The scan this request waited on may already serve it — re-read before scanning again.
+        started = time.monotonic()
+        generation = read_membership_generation(cfg)
+        served = _indexed_served_without_scan(generation, started)
+        if served is not None:
+            return served
+
+        refreshed_ok = False
+        last_uuids: frozenset = frozenset()
+        try:
+            idx = get_vector_index(cfg)
+            if idx is None:
+                raise RuntimeError("vector index unavailable")
+
+            # A legacy/missing/malformed sidecar is repaired before the scan. Two attempts are enough
+            # to turn an ordinary one-writer race into a stable snapshot; continuous writers leave the
+            # result untrusted so the next request tries again rather than certifying stale membership.
+            if generation is None:
+                generation = idx.membership_generation()
+            for _attempt in range(2):
+                before = generation
+                last_uuids = frozenset(idx.raw_member_uuids())
+                after = read_membership_generation(cfg)
+                if before is not None and after == before:
+                    _indexed_cache["uuids"] = last_uuids
+                    _indexed_cache["generation"] = after
+                    refreshed_ok = True
+                    break
+                generation = after if after is not None else idx.membership_generation()
+        except Exception:
+            last_uuids = frozenset()
+            _indexed_failure["at"] = started
+            _indexed_failure["generation"] = read_membership_generation(cfg)
+        metrics.icache_refreshed(time.monotonic() - started, refreshed_ok)
+        return last_uuids
 
 
 def _indexed_keys(cfg) -> frozenset:
@@ -129,19 +192,20 @@ def _indexed_keys(cfg) -> frozenset:
     (keyed by the FM record UUID; each artifact is indexed independently), so only the actually-indexed
     snapshot reads indexed, not every version sharing a name. Never materialized into TAGASSIGN;
     membership is mutable. Reads the cache."""
-    return frozenset(r.get("uuid", "") for r in _indexed_rows(cfg))
+    return _indexed_uuids(cfg)
 
 
 def indexed_status(uuid: str, cfg) -> tuple:
-    """(indexed: bool, count: int) for ONE artifact — per-artifact (matched on the record uuid). Count is
-    that artifact's indexed-object count. Used by /indexed/check (the detail pop-over)."""
-    total = 0
-    hit = False
-    for r in _indexed_rows(cfg):
-        if r.get("uuid") == uuid:
-            hit = True
-            total += int(r.get("count", 0))
-    return (True, total) if hit else (False, 0)
+    """(indexed: bool, count: int) for ONE artifact, counted on demand from that UUID's raw ids
+    (packet 1416) — used by /indexed/check (the detail pop-over). Never served from the list cache, so
+    the list never needs counts. Raises IndexMembershipUnavailable when the count cannot be established
+    (never reported as "not indexed")."""
+    from corpusfm.server.ai.vector_index import IndexMembershipUnavailable, get_vector_index
+    idx = get_vector_index(cfg)
+    if idx is None:
+        raise IndexMembershipUnavailable("the search index is unavailable")
+    count = int(idx.index_status(uuid)["raw"])
+    return (count > 0, count)
 
 
 def _embedder_on(cfg) -> bool:
@@ -249,6 +313,8 @@ def apply_facets_and_page(
     sys_tags: list[str] | None = None,
     from_date: str = "",
     to_date: str = "",
+    from_utc=None,
+    before_utc=None,
     latest_only: bool = False,
     latest_tracked: bool = False,
     sort: str = "timestamp",
@@ -277,6 +343,19 @@ def apply_facets_and_page(
     search_l = (search or "").strip().lower()
 
     def _in_date(r) -> bool:
+        if from_utc is not None or before_utc is not None:
+            # Instant bounds (packet 1418): [from_utc, before_utc) against the strictly parsed compact
+            # UTC timestamp — the browser sends its LOCAL calendar days as these instants.
+            from corpusfm.core.instants import parse_compact_utc
+            try:
+                ts = parse_compact_utc(str(r.get("timestamp", "")))
+            except ValueError:
+                return True  # undated/malformed rows are never excluded (unchanged behaviour)
+            if from_utc is not None and ts < from_utc:
+                return False
+            if before_utc is not None and ts >= before_utc:
+                return False
+            return True
         if not (from_date or to_date):
             return True
         try:
@@ -549,6 +628,8 @@ def list_artifacts(
     sys_tags: str = "",
     from_date: str = "",
     to_date: str = "",
+    from_utc: str = "",
+    before_utc: str = "",
     latest_only: bool = False,
     job_uuid: str = "",
     page: int = 1,
@@ -562,6 +643,14 @@ def list_artifacts(
     # under the hood, so behaviour is unchanged and a test can override get_ctx to point elsewhere.
     # Guarded: a backend/archive-dir/installation-authority failure degrades to the approved
     # `unavailable` response, never an HTTP 500 (independent review N1).
+    # Date filter (packet 1418): from_date/to_date stay inclusive UTC calendar dates for API callers;
+    # the browser sends its local calendar days as instant bounds from_utc (inclusive) / before_utc
+    # (exclusive). Mixing the families, or a malformed value, is refused — never silently intersected.
+    from corpusfm.core.instants import date_filter_bounds
+    try:
+        _fd, _td, lo_utc, hi_utc = date_filter_bounds(from_date, to_date, from_utc, before_utc)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     backend, view = read_catalog(ctx.storage)
     if view.failed:
         return JSONResponse(_catalog_failure_response(page, per_page))
@@ -574,6 +663,7 @@ def list_artifacts(
         return _list_artifacts_result(
             backend, view, cfg=cfg, search=(q or search).strip(), file=file, tags=tags, tag_mode=tag_mode,
             untagged=untagged, sys_tags=sys_tags, from_date=from_date, to_date=to_date,
+            from_utc=lo_utc, before_utc=hi_utc,
             latest_only=latest_only, job_uuid=job_uuid, page=page, per_page=per_page,
             sort=sort, dir=dir, facets=facets)
     except Exception:
@@ -640,7 +730,7 @@ def _catalog_failure_response(page: int, per_page: int) -> dict:
 
 def _list_artifacts_result(
     backend, view, *, cfg, search, file, tags, tag_mode, untagged, sys_tags, from_date, to_date,
-    latest_only, page, per_page, sort, dir, facets, job_uuid="",
+    latest_only, page, per_page, sort, dir, facets, job_uuid="", from_utc=None, before_utc=None,
 ) -> JSONResponse:
     """The catalog list, built ENTIRELY from the ONE persistent catalog (packet 1361-01).
 
@@ -658,7 +748,7 @@ def _list_artifacts_result(
     ``view`` is not under the failure latch by construction — the route returns the failure response
     before reaching here — so an empty result here means the catalog genuinely holds nothing
     matching."""
-    # All three read `cfg` — the request's single settings read. A TTL miss inside _indexed_keys
+    # All three read `cfg` — the request's single settings read. A cache miss inside _indexed_keys
     # costs a vector-index scan, never another settings read.
     indexed_keys = _indexed_keys(cfg)   # {uuid} in the vector index → per-artifact `indexed` system tag
     embedder_on = _embedder_on(cfg)     # when configured, the complement gets `unindexed` (filterable)
@@ -689,6 +779,8 @@ def _list_artifacts_result(
         sys_tags=_csv(sys_tags),
         from_date=from_date,
         to_date=to_date,
+        from_utc=from_utc,
+        before_utc=before_utc,
         latest_only=latest_only,
         latest_tracked=view.has_records,
         sort=sort,

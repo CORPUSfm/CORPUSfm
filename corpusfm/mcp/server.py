@@ -4472,8 +4472,12 @@ def get_index_status(ref: str, archive_dir: str = None) -> str:
     index = get_vector_index(load_app_config())
     if index is None:
         return "Vector index is not configured (Settings → Integrations)."
-    st = index.index_status(uuid)
+    from corpusfm.server.ai.vector_index import IndexMembershipUnavailable
     name = getattr(meta, "name", "") or getattr(meta, "file_name", "") or uuid
+    try:
+        st = index.index_status(uuid)
+    except IndexMembershipUnavailable as exc:
+        return f"{name} — index status could not be established ({exc}).\n  uuid: {uuid}"
     atype = getattr(meta, "artifact_type", "")
     indexable = getattr(meta, "is_schema", False) or atype in ("fmClip", "fmScript", "fmCalc")
     if st["total"] == 0:

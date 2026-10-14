@@ -43,14 +43,6 @@ def _summary_provider_configured() -> bool:
     return summary_provider_ready(load_app_config())
 
 
-def _bust_indexed_badge_cache() -> None:
-    try:
-        from corpusfm.app.web.routes.api.library import invalidate_indexed_cache
-        invalidate_indexed_cache()
-    except Exception:
-        pass
-
-
 def _owner(request: Request) -> str:
     u = current_user(request)
     return getattr(u, "username", None) or "local"
@@ -64,7 +56,17 @@ def list_indexed() -> JSONResponse:
     index = _get_index()
     if index is None:
         return JSONResponse({"ok": True, "configured": False, "rows": [], "total": 0})
-    rows = index.list_indexed()
+    from corpusfm.server.ai.vector_index import IndexMembershipUnavailable
+    try:
+        if index.rebuild_pending():
+            # A known empty, labelled — never confused with "nothing is indexed".
+            return JSONResponse({"ok": True, "configured": True, "rows": [], "total": 0,
+                                 "est_total_bytes": 0, "disk_bytes": index.disk_usage_bytes(),
+                                 "rebuild_pending": True})
+        rows = index.list_indexed()
+    except IndexMembershipUnavailable as exc:
+        # Unknown is not "0 vectors" (packet 1417).
+        return JSONResponse({"ok": False, "configured": True, "error": str(exc)}, status_code=503)
     total = sum(r["count"] for r in rows)
     est_total = sum(r.get("est_bytes", 0) for r in rows)
     disk_bytes = index.disk_usage_bytes()
@@ -83,7 +85,6 @@ def reset_index() -> JSONResponse:
     try:
         cleared = index.count()
         index.reset()
-        _bust_indexed_badge_cache()
         return JSONResponse({"ok": True, "cleared": cleared})
     except Exception as exc:
         log.warning("index reset failed", exc_info=True)
@@ -101,7 +102,6 @@ def deindex_artifact(uuid: str) -> JSONResponse:
     if not uuid:
         return JSONResponse({"ok": False, "error": "Artifact not found."}, status_code=404)
     deleted = index.delete_artifact(uuid)
-    _bust_indexed_badge_cache()
     return JSONResponse({"ok": True, "deleted": deleted, "uuid": uuid})
 
 
@@ -113,7 +113,6 @@ def delete_indexed(file_name: str) -> JSONResponse:
     if index is None:
         return JSONResponse({"ok": False, "error": "Vector index not configured."}, status_code=400)
     deleted = index.delete_file(file_name)
-    _bust_indexed_badge_cache()
     return JSONResponse({"ok": True, "deleted": deleted, "file_name": file_name})
 
 
@@ -130,7 +129,13 @@ def check_indexed(uuid: str = "", ctx: AppContext = Depends(get_ctx)) -> JSONRes
         return JSONResponse({"configured": False, "indexed": False, "count": 0})
     if not uuid:
         return JSONResponse({"configured": True, "indexed": False, "count": 0})
-    indexed, count = indexed_status(uuid, cfg)
+    from corpusfm.server.ai.vector_index import IndexMembershipUnavailable
+    try:
+        indexed, count = indexed_status(uuid, cfg)
+    except IndexMembershipUnavailable as exc:
+        # Unknown is not "not indexed" — say so (the detail view keeps its neutral default).
+        return JSONResponse({"configured": True, "indexed": False, "count": 0, "error": str(exc)},
+                            status_code=503)
     return JSONResponse({"configured": True, "indexed": indexed, "count": count})
 
 

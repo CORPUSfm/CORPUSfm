@@ -10,6 +10,9 @@
   {# Bespoke component kit (replaced Shoelace). #}
   <link rel="stylesheet" href="{{ url_prefix }}/static/kit.css?v={{ css_v }}">
   <script defer src="{{ url_prefix }}/static/kit.js?v={{ css_v }}"></script>
+  {# The ONE browser formatter for UTC instants (packet 1418) — not deferred, so its x-cfm-time
+     directive is registered before Alpine initializes. #}
+  <script src="{{ url_prefix }}/static/cfm_time.js?v={{ css_v }}"></script>
   <script>
     // Set BEFORE Alpine/page scripts run. CFM_PREFIX is the reverse-proxy sub-path
     // ("" at root). The fetch wrapper prepends it to same-origin absolute URLs so the
@@ -249,6 +252,10 @@
           <span class="cfm-nav-badge" x-show="$store.queue && $store.queue.inFlightCount" x-cloak x-text="$store.queue.inFlightCount"></span>
           {# packet 086: a RED badge for parked failures (import/enrichment/job-run) awaiting Restart/Delete #}
           <span class="cfm-nav-badge cfm-nav-badge--fail" x-show="$store.queue && $store.queue.failedCount" x-cloak x-text="$store.queue.failedCount"></span>
+        </a>
+        {# Stats (packet 1409) — any authenticated user: bounded history of CORPUSfm's own performance. #}
+        <a title="Stats" href="{{ url_prefix }}/stats" class="nav-link {% if route_path == '/stats' %}active{% endif %}">
+          <span class="nav-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 16.5h14"/><path d="M4.5 13l3.5-4 3 2.5 4.5-6"/></svg></span> Stats
         </a>
         {% if g_admin %}
         <a title="Logs" href="{{ url_prefix }}/logs" class="nav-link {% if route_path == '/logs' %}active{% endif %}">
@@ -1156,7 +1163,7 @@
               <span class="ap-row-label" x-text="row.name"></span>
               <span class="ap-row-meta">
                 <span class="ap-row-type" x-text="typeBadge(row.artifact_type)"></span>
-                <span class="ap-row-ts" x-text="fmtTs(row.timestamp)"></span>
+                <time class="ap-row-ts" x-cfm-time="row.timestamp"></time>
                 <span class="ap-row-sol" x-show="row.tags && row.tags.length" x-text="(row.tags || []).join(', ')"></span>
               </span>
             </div>
@@ -1313,12 +1320,6 @@
         return o ? o.label : t;
       },
 
-      fmtTs(ts) {
-        try {
-          const [date, time] = ts.split('_');
-          return `${date} ${time.slice(0,2)}:${time.slice(2,4)} UTC`;
-        } catch(_) { return ts || ''; }
-      },
     };
   }
   </script>

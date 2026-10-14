@@ -45,6 +45,7 @@
   </div>
   <div id="search-wrap">
     <input type="text" placeholder="Search all sections…"
+           :placeholder="searchScopeLabel" :aria-label="searchScopeLabel"
            x-model="searchQuery" @input="doSearch()" @keydown.escape="clearSearch()"
            x-ref="searchInput">
     <button id="search-btn" x-show="searchQuery" @click="clearSearch()">✕ Clear</button>
@@ -147,9 +148,17 @@
       <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.5rem"
            x-text="searchResults.length + ' result' + (searchResults.length!==1?'s':'')"></div>
       <template x-for="(hit, i) in searchResults" :key="i">
-        <div class="sr-item" @click="navigateTo(hit.section, hit.item)">
-          <div class="sr-sec" x-text="sectionLabel(hit.section)"></div>
+        <!-- Every result names its owning file and section (packet 1408) so a hit from another
+             loaded file is never mistaken for an object in the selected one. -->
+        <div class="sr-item" @click="navigateExact(hit.fileIdx, hit.section, hit.item)"
+             :data-file-key="hit.file_key" :data-section="hit.section" :data-item="hit.item">
+          <div class="sr-sec"><span class="sr-file" x-text="hit.file_key"></span> · <span x-text="sectionLabelIn(hit.fileIdx, hit.section)"></span></div>
           <div class="sr-name" x-text="hit.display_name || hit.item"></div>
+          <template x-for="(m, mi) in (hit.reasons || [])" :key="mi">
+            <div class="sr-why" x-show="m.kind === 'external_script_reference'"
+                 x-text="'External script reference → ' + m.file + ' › ' + (m.script || m.uuid)
+                         + (m.status && m.status !== 'resolved' ? ' (' + crossCallStatusLabel(m.status) + ')' : '')"></div>
+          </template>
           <div class="sr-snip" x-show="hit.snippet" x-text="hit.snippet"></div>
         </div>
       </template>
@@ -194,12 +203,18 @@
             </div>
           </div>
         </template>
-        <template x-if="currentXRef.called_by?.length">
+        <template x-if="currentXRef.called_by?.length || currentXRef.cross_called_by?.length">
           <div class="xref-group">
             <h4 @click="toggleXRef('called_by')" x-text="(isXRefCollapsed('called_by')?'▶ ':'▼ ')+'Called by'"></h4>
             <div x-show="!isXRefCollapsed('called_by')">
-              <template x-for="s in currentXRef.called_by" :key="xrefKey(s)">
+              <template x-for="s in (currentXRef.called_by || [])" :key="xrefKey(s)">
                 <a class="xref-link" href="#" @click.prevent="navigateXRef('ScriptCatalog',s)" x-text="xrefName(s)"></a>
+              </template>
+              <!-- Reciprocal rows from other LOADED files (packet 1408): exact file + section + item id. -->
+              <template x-for="c in (currentXRef.cross_called_by || [])" :key="'xc-' + c.file_idx + '-' + c.item_id">
+                <a class="xref-link xref-cross" href="#" data-cross-called-by
+                   @click.prevent="navigateExact(c.file_idx, c.section, c.item_id)"
+                   x-text="c.file + ' › ' + c.name"></a>
               </template>
             </div>
           </div>
@@ -370,9 +385,19 @@
             <h4 @click="toggleXRef('cross_calls')" x-text="(isXRefCollapsed('cross_calls')?'▶ ':'▼ ')+'External calls'"></h4>
             <div x-show="!isXRefCollapsed('cross_calls')">
               <template x-for="(c, ci) in currentXRef.cross_calls" :key="ci">
-                <a class="xref-link" href="#"
-                   @click.prevent="navigateTo('ScriptCatalog', c.script, c.file)"
-                   x-text="c.file + ' › ' + c.script"></a>
+                <div>
+                  <!-- Combined view (packet 1408): resolved rows navigate by exact file + item id;
+                       unresolved rows stay visible and inert. Standalone rows carry no status. -->
+                  <a class="xref-link" href="#" x-show="c.status === 'resolved'" data-cross-call="resolved"
+                     @click.prevent="navigateExact(c.file_idx, c.section, c.item_id)"
+                     x-text="c.file + ' › ' + c.script"></a>
+                  <span class="xref-none" x-show="c.status && c.status !== 'resolved'" :data-cross-call="c.status"
+                        :title="c.detail || ''"
+                        x-text="c.file + ' › ' + (c.script || c.uuid) + ' (' + crossCallStatusLabel(c.status) + ')'"></span>
+                  <a class="xref-link" href="#" x-show="!c.status"
+                     @click.prevent="navigateTo('ScriptCatalog', c.script, c.file)"
+                     x-text="c.file + ' › ' + c.script"></a>
+                </div>
               </template>
             </div>
           </div>
@@ -493,8 +518,12 @@
                       <template x-if="!step.has_long_values && !step.oversize">
                         <div class="step-line">
                           <span class="step-txt" x-html="fmStepHighlight((step.disabled?'// ':'')+(isStepExpanded(si)?step.full_text:step.one_line))"></span>
-                          <button x-show="step.one_line!==step.full_text" class="step-exp-btn"
-                                  @click="toggleStep(si)" x-text="isStepExpanded(si)?'▴':'▾'"></button>
+                          <button type="button" x-show="step.one_line!==step.full_text" class="step-exp-btn"
+                                  @click="toggleStep(si)"
+                                  :aria-expanded="isStepExpanded(si) ? 'true' : 'false'"
+                                  :aria-label="isStepExpanded(si) ? 'Collapse wrapped step' : 'Expand wrapped step'"
+                                  :title="isStepExpanded(si) ? 'Collapse wrapped step' : 'Expand wrapped step'"
+                                  x-text="isStepExpanded(si)?'▲':'▼'"></button>
                         </div>
                       </template>
                       <!-- Unstructured renderer fallbacks retain the safety marker and use the same
@@ -687,7 +716,7 @@
           </div>
           <div class="about-row">
             <span class="about-lbl">Ingested</span>
-            <span x-text="currentFileObj.metadata?.timestamp_display || currentFileObj.metadata?.generated_at || '—'"></span>
+            <time x-cfm-time="currentFileObj.metadata?.ingested_at_utc || currentFileObj.metadata?.timestamp_display || currentFileObj.metadata?.generated_at || '—'"></time>
           </div>
           <div class="about-row">
             <span class="about-lbl">Ingested by build</span>
@@ -695,7 +724,7 @@
           </div>
           <div class="about-row">
             <span class="about-lbl">Explorer built by</span>
-            <span x-text="(currentFileObj.metadata?.app_version || '—') + ' · ' + (currentFileObj.metadata?.generated_at || '')"></span>
+            <span><span x-text="(currentFileObj.metadata?.app_version || '—') + ' · '"></span><time x-cfm-time="currentFileObj.metadata?.generated_at_utc || currentFileObj.metadata?.generated_at || ''"></time></span>
           </div>
           <div class="about-sep"></div>
           <div class="about-section" x-show="(currentFileObj.about.sections_present||[]).length">
@@ -972,7 +1001,7 @@ document.addEventListener('alpine:init', () => {
       const m = this.currentFileObj.metadata || {};
       const parts = [m.fm_key || ''];
       if (this.currentFileObj.artifact_type) parts.push(this.currentFileObj.artifact_type);
-      if (m.timestamp_display) parts.push(m.timestamp_display);
+      if (m.ingested_at_utc || m.timestamp_display) parts.push(window.cfmTime.text(m.ingested_at_utc || m.timestamp_display));
       if (m.fm_version) parts.push(m.fm_version);
       if (m.schema_version) parts.push('schema ' + m.schema_version);
       return parts.join(' · ');
@@ -1494,6 +1523,27 @@ document.addEventListener('alpine:init', () => {
       return found ? found[1] : key;
     },
 
+    sectionLabelIn(fileIdx, key) {
+      const order = ((appData.files[fileIdx] || {}).section_order) || [];
+      const found = order.find(p => p[0] === key);
+      return found ? found[1] : key;
+    },
+
+    get searchScopeLabel() {
+      return appData.files.length > 1 ? 'Search all sections in all ' + appData.files.length + ' loaded files…'
+                                      : 'Search all sections…';
+    },
+
+    crossCallStatusLabel(status) {
+      return ({
+        reference_unresolved: 'data source not uniquely resolvable',
+        file_not_loaded: 'file not loaded',
+        file_ambiguous: 'more than one loaded file matches',
+        target_missing: 'script not found in loaded file',
+        target_ambiguous: 'script name not unique in loaded file',
+      })[status] || 'unresolved';
+    },
+
     isFolderCollapsed(name) {
       const secState = this._collapsedFolders[this.currentSection] || {};
       if (name in secState) return secState[name];
@@ -1772,6 +1822,20 @@ document.addEventListener('alpine:init', () => {
       this._navigateNoHistory(fIdx, section, item);
     },
 
+    // Exact cross-file navigation (packet 1408): file INDEX + section + item id, through the same
+    // history path, so the destination renders immediately and Back returns to the exact origin.
+    navigateExact(fileIdx, section, item) {
+      if (!(fileIdx >= 0 && fileIdx < appData.files.length)) return;
+      const data = (((appData.files[fileIdx].sections || {})[section]) || {}).item_data || {};
+      if (!Object.prototype.hasOwnProperty.call(data, item)) return;
+      this.graphFullscreen = false;
+      this.isSearching = false;
+      this.searchQuery = '';
+      this.searchResults = [];
+      this._pushHistory();
+      this._navigateNoHistory(fileIdx, section, item);
+    },
+
     resolveFileKey(fileName) {
       const norm = s => s.replace(/_addon$/, '').replace(/\\.fmp12$/i, '').toLowerCase();
       const t = norm(fileName);
@@ -1795,27 +1859,49 @@ document.addEventListener('alpine:init', () => {
       this._navigateNoHistory(fIdx, section, firstItem);
     },
 
+    // "Search all sections" covers EVERY section of EVERY file loaded into this Explorer, whatever file
+    // tab is selected (packet 1408). Fuzzy hits come from each file's index; a caller also matches,
+    // exactly, on the name or UUID of an external script it references (ext_refs), labelled as such.
     doSearch() {
       this.isSearching = this.searchQuery.length > 0;
       if (this.searchQuery.length < 2) { this.searchResults = []; return; }
-      const fuse = this._fuseMap[this.currentFileIdx];
-      if (!fuse) { this.searchResults = []; return; }
-      const raw = fuse.search(this.searchQuery, {limit: 100});
-      this.searchResults = raw.map(r => {
-        const entry = r.item;
-        let snippet = '';
-        const q = this.searchQuery.toLowerCase();
+      const q = this.searchQuery.toLowerCase();
+      const qt = q.trim();
+      const snippetOf = (entry) => {
         for (const line of (entry.text || '').split('\\n')) {
           if (line.toLowerCase().includes(q)) {
             const pos = line.toLowerCase().indexOf(q);
             const start = Math.max(0, pos - 20);
-            snippet = (start ? '…' : '') + line.slice(start, start + 80);
-            if (start + 80 < line.length) snippet += '…';
-            break;
+            let s = (start ? '…' : '') + line.slice(start, start + 80);
+            if (start + 80 < line.length) s += '…';
+            return s;
           }
         }
-        return {...entry, snippet};
-      });
+        return '';
+      };
+      const hits = new Map();
+      for (let fi = 0; fi < appData.files.length; fi++) {
+        const file = appData.files[fi];
+        const fuse = this._fuseMap[fi];
+        for (const r of (fuse ? fuse.search(this.searchQuery, {limit: 100}) : [])) {
+          const key = fi + '\\u0000' + r.item.section + '\\u0000' + r.item.item;
+          hits.set(key, {...r.item, fileIdx: fi, file_key: file.file_key, score: r.score, reasons: [], snippet: snippetOf(r.item)});
+        }
+        for (const entry of (file.search_index || [])) {
+          const ext = (entry.ext_refs || []).filter(x => qt && (
+            (x.script || '').toLowerCase().includes(qt) || (x.uuid || '').toLowerCase() === qt
+            || ((x.uuid || '').length && qt.length >= 8 && (x.uuid || '').toLowerCase().includes(qt))));
+          if (!ext.length) continue;
+          const key = fi + '\\u0000' + entry.section + '\\u0000' + entry.item;
+          const prev = hits.get(key) || {...entry, fileIdx: fi, file_key: file.file_key, score: 0, reasons: [], snippet: snippetOf(entry)};
+          prev.score = Math.min(prev.score, 0);
+          prev.reasons = ext.map(x => ({kind: 'external_script_reference', file: x.file, script: x.script, uuid: x.uuid, status: x.status}));
+          hits.set(key, prev);
+        }
+      }
+      this.searchResults = [...hits.values()]
+        .sort((a, b) => (a.score - b.score) || (a.fileIdx - b.fileIdx))
+        .slice(0, 200);
     },
 
     clearSearch() {
@@ -1908,6 +1994,7 @@ document.addEventListener('alpine:init', () => {
   }));
 });
 </script>
+<script>__CORPUSFM_TIME_JS__</script>
 <script>__CORPUSFM_ALPINE_JS__</script>
 <script>
 (function(){

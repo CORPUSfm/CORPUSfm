@@ -501,6 +501,12 @@ async def queue(request: Request):
     return templates.TemplateResponse(request, "queue.html", _ctx(request))
 
 
+@router.get("/stats", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+async def stats(request: Request):
+    # System → Stats (packet 1409): any authenticated user; read-only, no controls or configuration.
+    return templates.TemplateResponse(request, "stats.html", _ctx(request))
+
+
 # Job editing now lives in each file's pop-over on the Jobs page (no deep-link).
 @router.get("/jobs/edit", dependencies=[Depends(require_auth), Depends(require_gate("automation"))])
 async def jobs_edit_redirect(request: Request, name: str | None = None):

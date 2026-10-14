@@ -14,6 +14,7 @@ import hashlib
 import json
 import tempfile
 from collections import defaultdict
+from corpusfm.core.instants import browser_time_js, utc_iso
 from corpusfm.core import safe_xml as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -201,6 +202,148 @@ def _find_cross_file_calls(step_xml_str: str, this_fm_key: str) -> list:
     except Exception:
         pass
     return calls
+
+
+# ── Combined-view cross-file script overlay (packet 1408) ──────────────────────
+#
+# Runs once, after EVERY loaded artifact's Explorer dictionary exists, and only when more than one
+# artifact is loaded. File identity is resolved before script identity: the caller's DataSourceReference
+# goes through core.crossfile's id+name authority, its derived file must match exactly one loaded file,
+# and only then is the target script matched — by UUID, or by an exact name that is unique in that file
+# when the reference carries no UUID. Anything else stays visibly unresolved. Nothing here touches the
+# artifacts, their baked xref/dead_end, sidecars or catalog data: it edits the serialized view only.
+
+XCALL_RESOLVED = "resolved"
+XCALL_REFERENCE_UNRESOLVED = "reference_unresolved"   # data-source id/name not uniquely resolvable
+XCALL_FILE_NOT_LOADED = "file_not_loaded"
+XCALL_FILE_AMBIGUOUS = "file_ambiguous"               # >1 loaded artifact carries the derived file name
+XCALL_TARGET_MISSING = "target_missing"
+XCALL_TARGET_AMBIGUOUS = "target_ambiguous"
+
+
+def _script_step_source(item, section_key: str = "ScriptCatalog"):
+    src = next((s for s in item.xml_sources if s.catalog != section_key), None)
+    if src is None and item.xml_sources:
+        src = item.xml_sources[0]
+    return src
+
+
+def _external_script_references(step_xml_str: str) -> list[dict]:
+    """Every (DataSourceReference, ScriptReference) pair in a script's steps, with the ids and UUID the
+    export carries. Extraction only — resolution is the crossfile authority's job."""
+    out: list[dict] = []
+    if not step_xml_str:
+        return out
+    try:
+        root = ET.fromstring(step_xml_str)
+    except ET.ParseError:
+        return out
+    for step in root.iter("Step"):
+        ds_ref = step.find(".//DataSourceReference")
+        if ds_ref is None:
+            continue
+        for sr in step.findall(".//ScriptReference"):
+            out.append({"ds_id": ds_ref.get("id", ""), "ds_name": ds_ref.get("name", ""),
+                        "script_id": sr.get("id", ""), "script": sr.get("name", ""),
+                        "uuid": (sr.get("UUID", "") or "").strip()})
+    return out
+
+
+def _apply_combined_cross_file_overlay(files: list[dict], artifacts: list) -> None:  # noqa: C901
+    if len(files) < 2:
+        return
+    from corpusfm.core.crossfile import build_external_data_source_index
+    from corpusfm.core.crossfile._reconstruct import _norm_file
+
+    loaded: dict[str, list[int]] = defaultdict(list)
+    for idx, art in enumerate(artifacts):
+        loaded[_norm_file(art.identity.file_name)].append(idx)
+
+    scripts_by_file: list[list] = [
+        [i for i in art.items.values() if i.section == "ScriptCatalog" and not i.is_folder
+         and not getattr(i, "is_separator", False)]
+        for art in artifacts
+    ]
+    callers: dict[tuple[int, str], list[dict]] = defaultdict(list)
+
+    for si, art in enumerate(artifacts):
+        sc = files[si]["sections"].get("ScriptCatalog")
+        if not sc:
+            continue
+        own = _norm_file(art.identity.file_name)
+        ds_index = build_external_data_source_index(art)
+        search_by_item = {e["item"]: e for e in files[si]["search_index"] if e.get("section") == "ScriptCatalog"}
+        for item in scripts_by_file[si]:
+            entry = sc["item_data"].get(item.item_id)
+            src = _script_step_source(item)
+            if entry is None or src is None:
+                continue
+            rows: list[dict] = []
+            seen: set = set()
+            for ref in _external_script_references(src.xml):
+                if ref["ds_id"] == "0" or not ref["script"] and not ref["uuid"]:
+                    continue
+                res = ds_index.resolve(ref["ds_id"], ref["ds_name"])
+                row = {"file": ensure_fmp12(ref["ds_name"]) if ref["ds_name"] else "", "script": ref["script"],
+                       "uuid": ref["uuid"], "data_source": ref["ds_name"], "status": XCALL_REFERENCE_UNRESOLVED}
+                if not res.resolved:
+                    row["detail"] = res.detail
+                else:
+                    target_norm = _norm_file(res.derived_target_file)
+                    row["file"] = ensure_fmp12(res.derived_target_file)
+                    if target_norm == own:
+                        continue
+                    cands = [j for j in loaded.get(target_norm, []) if j != si]
+                    if not cands:
+                        row["status"] = XCALL_FILE_NOT_LOADED
+                    elif len(cands) > 1:
+                        row["status"] = XCALL_FILE_AMBIGUOUS
+                    else:
+                        ti = cands[0]
+                        if ref["uuid"]:
+                            hits = [t for t in scripts_by_file[ti] if (t.fm_uuid or "").upper() == ref["uuid"].upper()]
+                            how = "uuid"
+                        else:
+                            hits = [t for t in scripts_by_file[ti] if t.name == ref["script"]]
+                            how = "unique_name"
+                        if not hits:
+                            row["status"] = XCALL_TARGET_MISSING
+                        elif len(hits) > 1:
+                            row["status"] = XCALL_TARGET_AMBIGUOUS
+                        else:
+                            tgt = hits[0]
+                            row.update(status=XCALL_RESOLVED, matched_by=how, file_idx=ti,
+                                       file_key=files[ti]["file_key"], section="ScriptCatalog",
+                                       item_id=tgt.item_id, script=tgt.name)
+                key = (row["status"], row.get("file_idx"), row.get("item_id"), row["file"], row["script"], row["uuid"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(row)
+                if row["status"] == XCALL_RESOLVED:
+                    callers[(row["file_idx"], row["item_id"])].append(
+                        {"file_idx": si, "file_key": files[si]["file_key"], "file": files[si]["file_key"],
+                         "section": "ScriptCatalog", "item_id": item.item_id, "name": item.name})
+            if not rows:
+                entry["xref"].pop("cross_calls", None)   # a legacy name-keyed row has no place here
+            else:
+                entry["xref"]["cross_calls"] = rows
+                doc = search_by_item.get(item.item_id)
+                if doc is not None:
+                    doc["ext_refs"] = [{"file": r["file"], "script": r["script"], "uuid": r["uuid"],
+                                        "status": r["status"]} for r in rows]
+
+    for (ti, item_id), rows in callers.items():
+        sc = files[ti]["sections"]["ScriptCatalog"]
+        entry = sc["item_data"][item_id]
+        uniq = {(r["file_idx"], r["item_id"]): r for r in rows}
+        entry["xref"]["cross_called_by"] = sorted(uniq.values(), key=lambda r: (r["file_key"], r["name"], r["item_id"]))
+        if entry.get("dead_end"):
+            entry["dead_end"] = False
+            entry["dead_end_file_local"] = True
+            for so in files[ti]["section_order"]:
+                if so[0] == "ScriptCatalog" and so[3] > 0:
+                    so[3] -= 1
 
 
 import re as _re
@@ -1083,6 +1226,7 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
     _schema_ver: str = provenance.catalog_version
 
     ingested_at = provenance.ingested_at or ""
+    generated = datetime.now(timezone.utc)   # ONE instant for both generated_at fields (packet 1418)
     ts_display = ingested_at[:16].replace("T", " ") if ingested_at else ""
     ts_str = ingested_at.replace("-", "").replace(":", "").replace("T", "_")[:15]
 
@@ -1090,10 +1234,14 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
         "fm_key":            identity.file_name,
         "timestamp":         ts_str,
         "timestamp_display": ts_display,
+        # Raw instants for the report's browser-local display (packet 1418); the *_display/generated_at
+        # strings stay for compatibility and as the no-script fallback.
+        "ingested_at_utc":   utc_iso(ingested_at),
+        "generated_at_utc":  generated.isoformat(timespec="seconds"),
         "label":             identity.file_name,
         "schema_version":    provenance.catalog_version,
         "fm_version":        identity.fm_version,
-        "generated_at":      datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "generated_at":      generated.strftime("%Y-%m-%d %H:%M UTC"),
         "app_version":       corpusfm.__version__,
         # Ingest build = the version that BAKED this artifact's xref + rendered_text
         # (neither fully self-heals — xref not at all). If it lags the app version,
@@ -1646,6 +1794,7 @@ def generate_explorer_html(inputs: "list[Artifact]", syntax_palettes: object = N
     if not inputs or not all(isinstance(a, _ArtifactCls) for a in inputs):
         raise TypeError("generate_explorer_html requires a non-empty list of Artifact objects")
     files = [_build_sections_from_artifact(art) for art in inputs]
+    _apply_combined_cross_file_overlay(files, list(inputs))
     data = {"files": files, "multi_file": len(files) > 1}
     first_meta = data["files"][0]["metadata"]
 
@@ -1679,6 +1828,7 @@ def generate_explorer_html(inputs: "list[Artifact]", syntax_palettes: object = N
         filename=_js_str(out_name),
         fmhl_js=_fmhl_js,
         graph_js=_graph_js,
+        time_js=browser_time_js(),
         node_icon=_load_asset("corpusfm-wordmark-darkmode.svg"),
         hdr_wm_light=_load_asset("corpusfm-wordmark-lightmode.svg"),
         wordmark=_load_asset("wordmark.svg"),

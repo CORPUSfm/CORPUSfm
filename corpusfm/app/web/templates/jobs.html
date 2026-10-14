@@ -97,7 +97,8 @@
             <div class="cfm-card-sub" x-text="(f.missing || f.closed) ? 'Missing' : 'Not automated'"></div>
           </template>
           <div class="cfm-card-sub" x-show="f.job_count && (f.last_run || f.next_run)">
-            <span x-show="f.last_run" x-text="'last ' + f.last_run + (f.last_status ? (f.last_status === 'ok' ? ' ✓' : ' ✗') : '')"></span>
+            {# Last run is a UTC instant shown browser-local (packet 1418); next run stays SERVER wall clock. #}
+            <span x-show="f.last_run">last <time x-cfm-time="f.last_run_utc || f.last_run"></time><span x-text="f.last_status ? (f.last_status === 'ok' ? ' ✓' : ' ✗') : ''"></span></span>
             <span x-show="f.next_run" x-text="(f.last_run ? ' · ' : '') + 'next ' + f.next_run"></span>
           </div>
           <div class="cfm-card-foot">
@@ -178,7 +179,7 @@
                       <template x-if="j.running"><span class="cfm-badge cfm-badge--ok">● Running</span></template>
                       <template x-if="!j.running && j.last_run">
                         <span class="cfm-badge" :class="j.last_status === 'error' ? 'cfm-badge--broken' : 'cfm-badge--ok'"
-                              x-text="(j.last_status || '') + ' · ' + j.last_run"></span>
+                              ><span x-text="(j.last_status || '') + ' · '"></span><time x-cfm-time="j.last_run_utc || j.last_run"></time></span>
                       </template>
                     </span>
                   </span>

@@ -187,12 +187,17 @@ def _get_pool() -> "concurrent.futures.ProcessPoolExecutor":
 
 def _submit(tid: str, job_fn, *args) -> None:
     """Submit a generation job to the process pool; record its result into _tasks when done."""
+    import time
+    from corpusfm.server import metrics          # System Stats (packet 1409), fail-open
+    started = time.monotonic()
+
     def _done(fut) -> None:
         try:
             res = fut.result()
             path, error = res.get("path"), res.get("error")
         except Exception as exc:
             path, error = None, str(exc)
+        metrics.generation_finished(bool(path), time.monotonic() - started)
         _finish_task(tid, Path(path) if path else None, error)
         if path and not build_context().is_server:   # standalone: open locally (no-op in server mode)
             try:
@@ -200,9 +205,11 @@ def _submit(tid: str, job_fn, *args) -> None:
                 webbrowser.open(Path(path).as_uri())
             except Exception:
                 pass
+    metrics.generation_submitted()
     try:
         _get_pool().submit(job_fn, *args).add_done_callback(_done)
     except Exception as exc:
+        metrics.generation_finished(False, time.monotonic() - started)
         _finish_task(tid, None, f"Could not start generation: {exc}")
 
 

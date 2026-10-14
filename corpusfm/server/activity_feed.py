@@ -161,9 +161,12 @@ def build_feed(backend, *, now_monotonic: "float | None" = None) -> dict:
     empty successful snapshot, and never false-finishes, drops, or mutates the other. A client retains
     last-known state for a source whose ``ok`` is False, and reconciles a disappearance (durable or
     ephemeral) ONLY against a source it actually observed (``ok`` True)."""
+    import time as _time
+    from corpusfm.server import metrics as _metrics      # System Stats (packet 1409), fail-open
     records: list = []
     durable_rows: list = []
     durable_ok = False
+    _m_started = _time.monotonic()
     try:
         from corpusfm.server import queue_handlers
         # Read ONCE. The raw rows are also returned (``durable_rows``) so the /api/queue route reuses this
@@ -179,6 +182,7 @@ def build_feed(backend, *, now_monotonic: "float | None" = None) -> dict:
         durable_rows = []
         log.debug("activity feed: durable source read failed — retain last-known (sources.durable.ok=False)",
                   exc_info=True)
+    _metrics.queue_view(_time.monotonic() - _m_started, len(durable_rows), durable_ok)
     ephemeral_ok = False
     try:
         from corpusfm.app.web.routes.api import generate as _gen

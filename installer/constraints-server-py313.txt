@@ -1,9 +1,10 @@
 # CORPUSfm server dependency lock — BOX-VALIDATED constraints — PYTHON 3.13 (BUNDLED).
 #
-# RUNTIME PIN ADVANCED to CPython 3.13.16 (packet 1405, 2026-10-10). The pins below are UNCHANGED and
-# were box-validated on CPython 3.13.14 (see "generated from" below). Revalidation of this lock under
-# 3.13.16 on the authorized private installer pair is OWED; until it is recorded this file is not
-# validated on the pinned runtime.
+# RUNTIME PIN ADVANCED to CPython 3.13.16 (packet 1405, 2026-10-10). The pins below are UNCHANGED from the
+# 3.13.14 generation (see "generated from" below) and were REVALIDATED under 3.13.16 by private release
+# 0.3051 (2026-10-10): a fresh install on the private Ubuntu 24.04 x86_64 + FMS 2026 VM froze exactly these
+# pins (137 = 137, no difference) and numpy, onnxruntime, chromadb and cryptography imported. Upgrade
+# evidence from 0.3046 matched as well. aarch64 was not exercised live.
 #
 # PER-PYTHON FILE: the installer applies `constraints-server-py<MAJ><MIN>.txt` matching the venv's
 # Python (this file => CPython 3.13). The Linux installer now SHIPS ITS OWN CPython

@@ -77,7 +77,7 @@
               <template x-for="m in memberDraft" :key="m.uuid">
                 <div class="cfm-member-row">
                   <span class="cfm-member-name" x-text="m.display" :title="m.uuid"></span>
-                  <span class="cfm-muted" x-show="m.timestamp" x-text="fmtTs(m.timestamp)" style="font-size:11px"></span>
+                  <time class="cfm-muted" x-show="m.timestamp" x-cfm-time="m.timestamp" style="font-size:11px"></time>
                   <span class="cfm-badge cfm-badge--muted" x-show="m.type" x-text="m.type"></span>
                   <button type="button" class="cfm-iconbtn cfm-iconbtn--sm"
                           @click="removeMember(m.uuid)" aria-label="Remove" title="Remove">✕</button>
@@ -147,12 +147,6 @@ function tagsPage() {
 
     jump(name) { window.location = '{{ url_prefix }}/artifacts?tags=' + encodeURIComponent(name); },
 
-    fmtTs(ts) {
-      try {
-        const [date, time] = ts.split('_');
-        return `${date} ${time.slice(0,2)}:${time.slice(2,4)} UTC`;
-      } catch(_) { return ts || ''; }
-    },
 
     // Buffered editor: opening loads current members into the draft; Add/Remove/rename mutate
     // ONLY the draft; nothing hits the backend until Save. Cancel/Esc/click-out discards.

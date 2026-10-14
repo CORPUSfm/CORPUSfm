@@ -357,11 +357,16 @@ function Write-Outcome($state, $reason, $detail, $rolledBack) {
     if ($script:TriggerId) {
         $finCode = @'
 import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
 from corpusfm.lifecycle import update_boundary as ub
-ub.finalize_request(sys.argv[1], sys.argv[2])
+from corpusfm.lifecycle.installer_channel_observer import loaded_from
+if not loaded_from(Path(sys.argv[1])):
+    raise SystemExit(3)
+ub.finalize_request(sys.argv[2], sys.argv[3])
 '@
-        [void](Invoke-Fixed -FilePath $Py -Arguments @('-c', $finCode, $StateDir, $script:TriggerId) `
-            -Environment (New-ChildEnvironment -Kind python -Extra @{ 'PYTHONPATH' = $LibDir }))
+        [void](Invoke-Fixed -FilePath $Py -Arguments @('-I', '-c', $finCode, $LibDir, $StateDir, $script:TriggerId) `
+            -Environment $PyEnv)
     }
 }
 
@@ -386,14 +391,22 @@ function Stop-With($state, $reason, $detail, $rolledBack = $false) {
 # rename to update_request.active.json. A manual Start-ScheduledTask after a completed run finds
 # neither slot and does nothing here - the stale-trigger replay is gone. The claim loads from the
 # administrator-owned library ($LibDir), not the checkout, for the same R7b reason as the classifier.
+# PYTHONPATH cannot carry that here: the interpreter's ._pth ignores it and binds $Src. So each judge
+# (claim, classifier, finalize) prepends $LibDir itself, as the channel observer does, and exits 3
+# unless the observer's `loaded_from` finds every corpusfm module under it. $Src stays on the
+# configured path; this fixes which corpusfm is imported, not what runs at interpreter startup.
 $claimCode = @'
 import json, sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
 from corpusfm.lifecycle import update_boundary as ub
-r = ub.claim_request(sys.argv[1])
+from corpusfm.lifecycle.installer_channel_observer import loaded_from
+if not loaded_from(Path(sys.argv[1])):
+    raise SystemExit(3)
+r = ub.claim_request(sys.argv[2])
 sys.stdout.write(json.dumps({"disposition": r.disposition, "trigger_id": r.trigger_id, "expected_head": r.expected_head}))
 '@
-$claimEnv = New-ChildEnvironment -Kind python -Extra @{ 'PYTHONPATH' = $LibDir }
-$claimResult = Invoke-Fixed -FilePath $Py -Arguments @('-c', $claimCode, $StateDir) -Environment $claimEnv
+$claimResult = Invoke-Fixed -FilePath $Py -Arguments @('-I', '-c', $claimCode, $LibDir, $StateDir) -Environment $PyEnv
 if ($claimResult.ExitCode -ne 0) { Write-Log 'the claim helper failed'; exit 1 }
 try {
     $claim = $claimResult.StdOut | ConvertFrom-Json
@@ -491,15 +504,19 @@ $changed = (Invoke-Git @('-C', $Src, 'diff', '--name-only', ($oldHead + '..' + $
 if ($changed.Trim()) {
     $classifier = @'
 import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
 from corpusfm.lifecycle import update_boundary as ub
+from corpusfm.lifecycle.installer_channel_observer import loaded_from
+if not loaded_from(Path(sys.argv[1])):
+    raise SystemExit(3)
 paths = [p.strip() for p in sys.stdin if p.strip()]
 result = ub.classify(paths)
 if result.requires_installer:
     sys.stdout.write(result.reason())
     raise SystemExit(1)
 '@
-    $classifyEnv = New-ChildEnvironment -Kind python -Extra @{ 'PYTHONPATH' = $LibDir }
-    $verdict = Invoke-Fixed -FilePath $Py -Arguments @('-c', $classifier) -Environment $classifyEnv -StdIn $changed
+    $verdict = Invoke-Fixed -FilePath $Py -Arguments @('-I', '-c', $classifier, $LibDir) -Environment $PyEnv -StdIn $changed
     if ($verdict.ExitCode -ne 0) { Stop-With 'refused' 'needs_installer' ([string]$verdict.StdOut) }
 }
 

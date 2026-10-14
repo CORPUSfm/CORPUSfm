@@ -56,6 +56,11 @@ def _ps(value) -> str:
 def box(tmp_path):
     install = tmp_path / "install"
     _ui.install_administrator_files(install)
+    # A COPIED library, as the installer's Copy-Item leaves it. The shared helper symlinks it, and the
+    # finalize judge's `loaded_from` resolves a symlink to where it points, outside `lib` (packet 1419).
+    library = install / ub.LIBRARY_DIRNAME / "corpusfm"
+    library.unlink()
+    shutil.copytree(_ui.REPO / "corpusfm", library, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     state = tmp_path / "state"
     (state / "update-inbox").mkdir(parents=True)
     (state / "update-outcome").mkdir(parents=True)

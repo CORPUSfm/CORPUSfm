@@ -48,7 +48,7 @@
                   <a :href="'{{ url_prefix }}/artifacts#detail=' + encodeURIComponent(p.uuid)"
                      x-text="p.name || p.fm_file || p.uuid"></a>
                 </td>
-                <td class="cfm-muted" x-text="(p.timestamp || '').slice(0,10)"></td>
+                <td class="cfm-muted"><time x-cfm-time="p.timestamp"></time></td>
               </tr>
             </template>
           </tbody>
@@ -63,7 +63,9 @@
     {# A — Baseline (locked) #}
     <div class="pw-artifact">
       <div class="pw-artifact-role">A — Baseline</div>
-      <div class="pw-artifact-name" x-text="labelA"></div>
+      {# The label is an identifier sent with the patch (it embeds a UTC date); the visible date is the
+         artifact's instant shown browser-local when the caller supplied it (packet 1418). #}
+      <div class="pw-artifact-name"><span x-text="labelName(labelA, tsA)"></span> <time class="cfm-muted" x-show="tsA" x-cfm-time="tsA"></time></div>
       <a href="{{ url_prefix }}/artifacts" class="pw-change-a caption">← Select from Artifacts</a>
     </div>
 
@@ -77,7 +79,7 @@
       </template>
       <template x-if="artifactB">
         <div>
-          <div class="pw-artifact-name" x-text="labelB"></div>
+          <div class="pw-artifact-name"><span x-text="labelName(labelB, tsB)"></span> <time class="cfm-muted" x-show="tsB" x-cfm-time="tsB"></time></div>
           <button type="button" class="cfm-btn cfm-btn--sm cfm-mt-6" @click="openBPicker()">Change B</button>
         </div>
       </template>
@@ -461,6 +463,8 @@ function patchWorkspace() {
     artifactB: '',
     labelA:    '',
     labelB:    '',
+    tsA:       '',
+    tsB:       '',
     rootUuid:  '',
 
     // Stage: 1 = A selected awaiting B, 2 = preflight/intelligence, 3 = generated
@@ -529,6 +533,10 @@ function patchWorkspace() {
 
     // ── Session persistence ──────────────────────────────────────────────────
 
+    // The visible name: the label without its trailing UTC date when the instant itself is shown beside it.
+    labelName(label, ts) {
+      return ts ? String(label || '').replace(/\s+\d{4}-\d{2}-\d{2}$/, '') : (label || '');
+    },
     saveSession() {
       try {
         sessionStorage.setItem('corpusfm_patch_workspace', JSON.stringify({
@@ -537,6 +545,8 @@ function patchWorkspace() {
           artifactB:       this.artifactB,
           labelA:          this.labelA,
           labelB:          this.labelB,
+          tsA:             this.tsA,
+          tsB:             this.tsB,
           rootUuid:        this.rootUuid,
           stage:           this.stage,
           preflightDone:      this.preflightDone,
@@ -580,6 +590,8 @@ function patchWorkspace() {
         this.artifactB = params.get('artifact_b') || '';
         this.labelA    = params.get('label_a')    || paramA;
         this.labelB    = params.get('label_b')    || this.artifactB;
+        this.tsA       = params.get('ts_a')       || '';
+        this.tsB       = params.get('ts_b')       || '';
         this.rootUuid  = params.get('root_uuid')  || '';
         this.clearSession();
         if (this.artifactA && this.artifactB) {
@@ -594,6 +606,8 @@ function patchWorkspace() {
           this.artifactB = saved.artifactB   || '';
           this.labelA    = saved.labelA      || saved.artifactA;
           this.labelB    = saved.labelB      || saved.artifactB || '';
+          this.tsA       = saved.tsA         || '';
+          this.tsB       = saved.tsB         || '';
           this.rootUuid  = saved.rootUuid    || '';
           this.stage     = saved.stage       || 1;
           this.patchUuid = saved.patchUuid || null;
@@ -649,9 +663,11 @@ function patchWorkspace() {
           const row = rows[0];
           this.artifactB = row.uuid;
           this.labelB    = (row.label || row.fm_file || row.uuid) + '  ' + (row.timestamp || '').slice(0, 10);
+          this.tsB       = row.timestamp || '';
           const url = new URL(window.location);
           url.searchParams.set('artifact_b', this.artifactB);
           url.searchParams.set('label_b',    this.labelB);
+          url.searchParams.set('ts_b',       this.tsB);
           history.replaceState({}, '', url);
           this.preflightDone  = false;
           this.preflightError = '';

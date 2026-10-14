@@ -217,6 +217,8 @@ button:focus-visible,a:focus-visible,input:focus-visible{
 .sr-item:hover{background:var(--surface-hover);border-color:var(--primary)}
 .sr-sec{font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em}
 .sr-name{font-size:.88rem;font-weight:600;margin:.1rem 0}
+.sr-file{text-transform:none;letter-spacing:0;color:var(--text-2)}
+.sr-why{font-size:.75rem;color:var(--link);margin:.05rem 0 .1rem}
 .sr-snip{font-size:.75rem;color:var(--text-dim);font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #empty{padding:2rem;color:var(--text-muted);font-size:.9rem}
 .field-calcs{margin-top:.8rem;display:flex;flex-direction:column;gap:.6rem}
@@ -247,18 +249,26 @@ button:focus-visible,a:focus-visible,input:focus-visible{
 .step-num{flex-shrink:0;width:2.75em;text-align:right;padding-right:.7rem;
   color:var(--text-dim);-webkit-user-select:none;user-select:none}
 .step-ind{display:inline-block;flex-shrink:0}
-.step-fold-btn,.step-fold-ph{flex-shrink:0;min-width:1.2rem}
-.step-fold-btn{background:none;border:none;color:var(--text-muted);cursor:pointer;
-  padding:0 .1rem;font-size:.7rem;line-height:1.6}
+.steps-list{--step-ctl:1.2rem}
+.step-fold-btn,.step-fold-ph{flex-shrink:0;min-width:var(--step-ctl)}
+/* One standard square for both script disclosure chevrons (packet 1412): the block fold on the left and
+   the wrapped-step toggle on the right. The long-value Show/Hide text buttons share .step-exp-btn but not this. */
+.step-fold-btn,.step-exp-btn:not(.step-reveal-btn){display:inline-flex;align-items:center;justify-content:center;
+  flex-shrink:0;box-sizing:border-box;width:var(--step-ctl);height:var(--step-ctl);min-width:var(--step-ctl);
+  padding:0;margin:.04rem 0 0;border:none;border-radius:3px;background:none;color:var(--text-muted);
+  cursor:pointer;font-size:.7rem;line-height:1}
 .step-fold-btn:hover{color:var(--primary)}
+.step-exp-btn:not(.step-reveal-btn){margin-left:.25rem}
+.step-exp-btn:not(.step-reveal-btn):hover,.step-exp-btn:not(.step-reveal-btn):focus-visible{
+  color:var(--primary);background:var(--primary-tint)}
 .step-fold-ph{display:inline-block}
 .step-content{display:flex;flex:1;min-width:0;flex-direction:column}
 .step-line{display:flex;align-items:flex-start;min-width:0}
 .step-txt{color:var(--script-plain);white-space:pre-wrap;word-break:break-word;flex:1;min-width:0}
 .step-disabled .step-txt{color:var(--text-muted)}
-.step-exp-btn{background:none;border:none;color:var(--text-muted);cursor:pointer;
+.step-reveal-btn.step-exp-btn{background:none;border:none;color:var(--text-muted);cursor:pointer;
   padding:0 .2rem;font-size:.75rem;line-height:1.6;flex-shrink:0}
-.step-exp-btn:hover{color:var(--primary)}
+.step-reveal-btn.step-exp-btn:hover{color:var(--primary)}
 .step-oversize-badge{color:var(--text-muted);border:1px solid var(--border);border-radius:3px;
   padding:0 .35rem;margin-left:.5rem;font-size:.72rem;white-space:nowrap}
 .step-reveal-btn{text-decoration:underline;margin-left:.35rem}

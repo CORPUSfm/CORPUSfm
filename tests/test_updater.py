@@ -95,6 +95,61 @@ def test_git_up_to_date(tmp_path):
     assert r.checked is True
 
 
+# ── offered version: the target commit's declared release build (packet 1402) ──
+
+def _target_declaring(repo, show):
+    """A checkout 12 commits deep at origin/main (a public tree's short history), 3 behind, whose
+    ``git show origin/main:release-build.txt`` answers with ``show``."""
+    from corpusfm import updater
+
+    def fake(_repo, *args, **kw):
+        if args[:3] == ("remote", "get-url", "origin"):
+            return _completed(f"https://github.com/{updater.REPO}.git\n")
+        if args[0] == "fetch":
+            return _completed()
+        if args[:2] == ("rev-list", "--count") and args[2] == "HEAD..origin/main":
+            return _completed("3\n")
+        if args[:2] == ("rev-list", "--count") and args[2] == "origin/main":
+            return _completed("12\n")
+        if args == ("show", "origin/main:release-build.txt"):
+            return show
+        return _completed()
+
+    with patch("corpusfm.updater._run_git", side_effect=fake):
+        return check_for_update(repo_dir=repo)
+
+
+@patch("corpusfm.__version__", "0.3028")
+def test_offered_version_is_the_targets_declaration_not_the_installed_one(tmp_path):
+    repo = _git_dir(tmp_path)
+    (repo / "release-build.txt").write_text("3028\n", encoding="utf-8")
+    r = _target_declaring(repo, _completed("3046\n"))
+    assert r.latest_version == "0.3046"
+    assert r.current_version == "0.3028"
+    assert r.update_available is True
+    assert r.behind == 3
+    assert r.checked is True
+
+
+@patch("corpusfm.__version__", "0.9")
+def test_target_without_declaration_keeps_commit_count(tmp_path):
+    r = _target_declaring(_git_dir(tmp_path), _completed(
+        returncode=128, stderr="fatal: path 'release-build.txt' does not exist in 'origin/main'\n"))
+    assert r.latest_version == "0.12"
+    assert r.update_available is True
+    assert r.behind == 3
+    assert r.checked is True and r.error is None
+
+
+@patch("corpusfm.__version__", "0.9")
+def test_invalid_target_declaration_keeps_commit_count(tmp_path):
+    r = _target_declaring(_git_dir(tmp_path), _completed("not-a-build\n"))
+    assert r.latest_version == "0.12"
+    assert r.update_available is True
+    assert r.behind == 3
+    assert r.checked is True and r.error is None
+
+
 def _fetch_fails_with(tmp_path, stderr):
     """check_for_update against a git checkout whose `fetch` fails with the given stderr."""
     repo = _git_dir(tmp_path)

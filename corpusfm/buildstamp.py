@@ -24,12 +24,21 @@ STAMP_PATH = Path(__file__).resolve().parent / "_build.txt"
 RELEASE_BUILD_NAME = "release-build.txt"
 
 
+def valid_declared_build(text: Optional[str]) -> Optional[str]:
+    """``text`` as a release build number when it is one (a positive decimal integer), else ``None``.
+    The one validity rule for a ``release-build.txt`` declaration, wherever it is read from."""
+    try:
+        value = (text or "").strip()
+        return value if value.isdigit() and int(value) > 0 else None
+    except Exception:
+        return None
+
+
 def declared_build_number(repo_dir: Optional[Path] = None) -> Optional[str]:
     """The public tree's explicit stable release identity, or ``None`` when absent/invalid."""
     repo = Path(repo_dir) if repo_dir else Path(__file__).resolve().parent.parent
     try:
-        value = (repo / RELEASE_BUILD_NAME).read_text(encoding="utf-8").strip()
-        return value if value.isdigit() and int(value) > 0 else None
+        return valid_declared_build((repo / RELEASE_BUILD_NAME).read_text(encoding="utf-8"))
     except Exception:
         return None
 

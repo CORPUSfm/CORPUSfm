@@ -863,7 +863,14 @@
       </template>
       <template x-if="indexInfo.configured">
         <div class="cfm-mt-14">
-          <div><strong x-text="indexInfo.total"></strong> <span class="cfm-muted">vectors indexed across <span x-text="indexInfo.files"></span> file(s).</span></div>
+          {# Packet 1417: an unknown inventory is never shown as "0 vectors across 0 files". #}
+          <template x-if="indexInfo.unavailable">
+            <div><span class="cfm-badge cfm-badge--idle" data-index-inventory="unavailable">Index inventory unavailable</span></div>
+          </template>
+          <template x-if="!indexInfo.unavailable">
+            <div><strong x-text="indexInfo.total"></strong> <span class="cfm-muted">vectors indexed across <span x-text="indexInfo.files"></span> file(s).</span>
+              <span class="cfm-muted" x-show="indexInfo.rebuildPending"> A schema rebuild is pending — reindex artifacts to restore search.</span></div>
+          </template>
           <p class="cfm-muted cfm-mt-6">Reset rebuilds from scratch (after a data wipe, an embedder change, or orphaned entries). Add/refresh an artifact with <strong>Index</strong>/<strong>Reindex</strong>, or remove one with <strong>De-index</strong>, from its detail on the Artifacts page.</p>
           <div class="cfm-filterbar cfm-filterbar--tight cfm-mt-14">
             <span class="cfm-spacer"></span>
@@ -1640,7 +1647,7 @@ function settingsPage() {
     _trapSrv: null,   // focus-trap handle for the server-form dialog (was referenced undeclared → ReferenceError)
     externalAddress: { value: '', source: 'none', error: '', warning: '', env_managed: false, persisted: '', serving: '', pending: false, detected: '' },   // packet 1180 / 1219
     externalAddressMsg: '', savingExternalAddress: false, confirmAddrChange: false,
-    indexInfo: { configured: false, total: 0, files: 0, loaded: false }, confirmIndexReset: false, indexResetting: false,
+    indexInfo: { configured: false, total: 0, files: 0, loaded: false, unavailable: false, rebuildPending: false }, confirmIndexReset: false, indexResetting: false,
     regMsg: '', regErr: false, regEditing: false, regTestMsg: '', regGenBusy: false,
     newReg: { name: '', cred_type: 'pat', repo: '', username: '', token: '', ssh_key: '', ssh_pubkey: '', branch: 'main', modes: ['structured', 'rendered'], show_hidden: true, group: '', secret_set: false },
 
@@ -1687,7 +1694,7 @@ function settingsPage() {
     providerLabel(v) { return ({ '': 'Disabled', anthropic: 'Anthropic (Claude)', openai_compat: 'OpenAI-compatible / local', azure_openai: 'Azure OpenAI' })[v] || 'Disabled'; },
     embedProviderLabel(v) { return ({ '': 'OpenAI-compatible / local', openai_compat: 'OpenAI-compatible / local', azure_openai: 'Azure OpenAI' })[v] || 'OpenAI-compatible / local'; },
 
-    setTab(name) { name = _TAB_ALIAS[name] || name; this.tab = name; location.hash = name; if (name === 'health' && !this.health.loaded) this.loadHealth(false); if (name === 'integrations' && !this.indexInfo.loaded) this.loadIndexInfo(); },
+    setTab(name) { name = _TAB_ALIAS[name] || name; this.tab = name; location.hash = name; if (name === 'health' && !this.health.loaded) this.loadHealth(false); if (name === 'storage' && !this.indexInfo.loaded) this.loadIndexInfo(); },
 
     // The shared update prompt's ONE request (packet 1378). It offers "Open Settings" from a page
     // that may already be Settings, and the Updates section lives on the CORPUSfm (`general`) tab —
@@ -1747,13 +1754,14 @@ function settingsPage() {
     },
 
     async init() {
-      // loadIndexInfo() is deliberately NOT in this eager set: it triggers a full Chroma scan +
-      // disk walk (~1.2s on a large corpus) and is only shown on the Integrations tab — so it is
-      // lazy-loaded when that tab first opens (mirrors the Health-tab lazy-load). packet 013 fix #6.
+      // loadIndexInfo() is deliberately NOT in this eager set: the inventory reads every index id plus
+      // one metadata row per artifact, and walks the index directory. Its panel (Semantic index) is on
+      // the Storage tab, so it is lazy-loaded when Storage first opens — including a direct #storage
+      // load (mirrors the Health-tab lazy-load; packet 013 fix #6, trigger corrected by packet 1417).
       await Promise.all([this.loadData(), this.loadArchiveInfo(), this.loadServerInfo(), this.loadAdminIdentity(), this.loadMcpInfo()]);
       this.checkUpdate();
       if (this.tab === 'health') this.loadHealth(false);
-      if (this.tab === 'integrations') this.loadIndexInfo();
+      if (this.tab === 'storage') this.loadIndexInfo();
     },
 
     async loadMcpInfo() {
@@ -1901,11 +1909,18 @@ function settingsPage() {
     async loadIndexInfo() {
       // Count-only surface (packet 1010): the per-file De-index list was removed — de-index is a
       // per-artifact action on the Artifacts detail. Settings keeps the count + Reset + Refresh.
-      try { const r = await fetch('/api/indexed/list'); const d = await r.json();
+      // Packet 1417: a non-success or failed inventory is its own state — never 0 vectors / 0 files.
+      const unavailable = { configured: true, total: 0, files: 0, loaded: true, unavailable: true, rebuildPending: false };
+      try { const r = await fetch('/api/indexed/list'); const d = await r.json().catch(() => null);
+        if (!r.ok || !d || d.ok === false) {
+          this.indexInfo = (d && d.configured === false) ? { ...unavailable, configured: false, unavailable: false } : unavailable;
+          return;
+        }
         const rows = d.rows || [];
         const files = new Set(rows.map(x => x.file_name).filter(Boolean)).size;
-        this.indexInfo = { configured: !!d.configured, total: d.total || 0, files, loaded: true };
-      } catch(_) { this.indexInfo = { configured: false, total: 0, files: 0, loaded: true }; }
+        this.indexInfo = { configured: !!d.configured, total: d.total || 0, files, loaded: true,
+                           unavailable: false, rebuildPending: !!d.rebuild_pending };
+      } catch(_) { this.indexInfo = unavailable; }
     },
     async resetIndex() {
       this.indexResetting = true;

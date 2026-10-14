@@ -254,6 +254,10 @@ class _Worker:
         self.current_deadline = time.monotonic() + _timeout_for(step)   # packet 1003
         self.current_id = qid
         _tls.worker = self
+        from corpusfm.server import metrics as _metrics      # System Stats (packet 1409), fail-open
+        _m_started = time.monotonic()
+        _m_completed = False
+        _metrics.lane_started(self.name, row.jor.get("created_at", ""))
         try:
             if handler is None:
                 repo.set_failed(qid, f"no handler registered for step '{step}'")
@@ -276,11 +280,13 @@ class _Worker:
                                 self.name, step, qid, exc, exc_info=True)
                     repo.set_failed(qid, f"{step} advance failed: {exc}")
                     return
+                _m_completed = True
                 if nxt:
                     _poke_type(nxt)     # hand the record to the worker that owns the next step
             else:
                 repo.set_failed(qid, result.outcome or f"{step} failed")
         finally:
+            _metrics.lane_finished(self.name, _m_completed, time.monotonic() - _m_started)
             self.current_id = ""
             self.current_step = ""
             self.current_deadline = 0.0

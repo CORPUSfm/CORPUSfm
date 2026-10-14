@@ -196,12 +196,21 @@ class _TimeoutSession(requests.Session):
 
     def request(self, method, url, **kwargs):  # type: ignore[override]
         kwargs.setdefault("timeout", _FM_HTTP_TIMEOUT)
+        # System Stats (packet 1409): timing around the existing call, retries included. The hooks are
+        # fail-open and only ever see the method, URL (reduced to a coarse class) and status code.
+        from corpusfm.server import metrics as _metrics
+        _mtok = _metrics.odata_begin()
         try:
             resp = super().request(method, url, **kwargs)
         except requests.RequestException as exc:
+            _metrics.odata_end(_mtok, method, url, None)
             _note_channel_outcome(url, ok=False, detail=type(exc).__name__)
             _note_availability(type(exc).__name__)
             raise
+        except BaseException:
+            _metrics.odata_end(_mtok, method, url, None)
+            raise
+        _metrics.odata_end(_mtok, method, url, resp.status_code)
         if resp.status_code in _CHANNEL_DOWN_STATUSES:
             _note_channel_outcome(url, ok=False, detail=f"HTTP {resp.status_code}")
         elif resp.status_code < _RECOVERY_BELOW:

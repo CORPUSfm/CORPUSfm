@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from corpusfm.core.instants import utc_iso
 from corpusfm.app.web.auth import require_auth
 
 router = APIRouter()
@@ -24,6 +25,10 @@ async def monitor_status() -> JSONResponse:
         firing = check_conditions(backend.archive_dir, config)
 
         scheduler_status = ""
+        # Raw state + heartbeat instant for the browser's local display (packet 1418);
+        # `scheduler_status` keeps its composed UTC text for API compatibility.
+        scheduler_state = ""
+        scheduler_heartbeat_utc = ""
         if build_context().is_server:   # via the runtime layer (S9)
             try:
                 from corpusfm.server.scheduler import scheduler_is_running, read_scheduler_status
@@ -31,6 +36,8 @@ async def monitor_status() -> JSONResponse:
                     info = read_scheduler_status()
                     ts = (info.get("ts", "") or "")[:19].replace("T", " ")
                     state = (info.get("status") or "")
+                    scheduler_state = "paused" if state == "paused" else "running"
+                    scheduler_heartbeat_utc = utc_iso(info.get("ts", ""), naive_is_utc=True)
                     if state == "paused":
                         # Alive, and firing nothing: CORPUSfm cannot read the database, so the
                         # clock evaluates nothing at all (packet 1361-01). Its own word, not
@@ -40,6 +47,7 @@ async def monitor_status() -> JSONResponse:
                         scheduler_status = f"Scheduler running — {ts} UTC"
                 else:
                     scheduler_status = "Scheduler not running"
+                    scheduler_state = "not_running"
             except Exception:
                 pass
 
@@ -60,6 +68,8 @@ async def monitor_status() -> JSONResponse:
                 for a in firing
             ],
             "scheduler_status": scheduler_status,
+            "scheduler_state": scheduler_state,
+            "scheduler_heartbeat_utc": scheduler_heartbeat_utc,
         })
     except Exception as exc:
         return JSONResponse({"alert_count": 0, "active_alerts": [], "scheduler_status": "",
@@ -75,6 +85,7 @@ async def alert_history() -> JSONResponse:
             "alerts": [
                 {
                     "ts":        e.ts.replace("T", " ")[:19] + " UTC",
+                    "ts_utc":    utc_iso(e.ts, naive_is_utc=True),   # raw instant (packet 1418)
                     "severity":  e.severity,
                     "condition": e.condition,
                     "job_name":  e.job_name or "—",
@@ -104,6 +115,7 @@ async def job_health() -> JSONResponse:
                     "source_type": r.source_type,
                     "schedule":    r.schedule or "—",
                     "last_run":    r.last_run_ts.replace("T", " ")[:19] + " UTC" if r.last_run_ts else "—",
+                    "last_run_utc": utc_iso(r.last_run_ts, naive_is_utc=True),   # raw (packet 1418)
                     "status":      (r.last_status or "—") + (" ⚠ overdue" if r.overdue else ""),
                 }
                 for r in rows
@@ -222,6 +234,7 @@ async def overview() -> JSONResponse:
                 "artifact_a": e.artifact_a, "artifact_b": e.artifact_b,
                 "label_a": e.label_a, "label_b": e.label_b,
                 "ts_display": e.ts.replace("T", " ")[:16] + " UTC",
+                "ts": utc_iso(e.ts, naive_is_utc=True),   # raw instant (packet 1418)
                 "exists": entry_artifacts_exist(e, backend, existing),
             }
             for e in entries

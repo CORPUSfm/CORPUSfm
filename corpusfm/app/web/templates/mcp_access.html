@@ -112,12 +112,12 @@
               <td :title="'client id ' + c.client_id_prefix + '…'" x-text="clientLabel(c)"></td>
               <td style="overflow-wrap:anywhere"><code class="cfm-mono cfm-muted" x-text="c.resource"></code></td>
               <td class="cfm-muted" x-text="gateLabels(c.scopes)"></td>
-              <td class="cfm-muted" x-text="fmtDate(c.granted_at)"></td>
+              <td class="cfm-muted" x-cfm-time="c.granted_at"></td>
               {# The date this connection needs OAuth sign-in again. Derived from the family's last
                  successful issuance (authorization or silent renewal) plus the inactivity limit, capped by
                  the absolute maximum — each successful renewal pushes it out. There is no per-request usage
                  record behind it. Blank when there is no active refresh family; never a guessed date. #}
-              <td class="cfm-muted" x-text="c.reauthorization_due_at ? fmtDate(c.reauthorization_due_at) : '—'"></td>
+              <td class="cfm-muted" x-cfm-time="c.reauthorization_due_at || '—'"></td>
               <td><button class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="disconnect(c)">Disconnect</button></td>
             </tr>
           </template>
@@ -145,7 +145,7 @@
               <tr>
                 <td x-text="t.name"></td>
                 <td><code class="cfm-mono cfm-muted" x-text="t.token_id_prefix + '…'"></code></td>
-                <td class="cfm-muted" x-text="fmtDate(t.created_at)"></td>
+                <td class="cfm-muted" x-cfm-time="t.created_at"></td>
                 <td><button class="cfm-btn cfm-btn--sm cfm-btn--danger" @click="del(t)">Delete</button></td>
               </tr>
             </template>
@@ -668,12 +668,6 @@ function mcpAccess() {
     async copyText(s) {
       try { await navigator.clipboard.writeText(s.text); this.copiedId = s.id;
         setTimeout(() => { if (this.copiedId === s.id) this.copiedId = ''; }, 1500); } catch (e) {}
-    },
-    // Minute precision: these are grant dates and deadlines read in a narrow column, and seconds only
-    // cost width (the screenshot that prompted it wrapped "PM" onto a line of its own).
-    fmtDate(iso) {
-      try { return iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : ''; }
-      catch (e) { return iso || ''; }
     },
   };
 }

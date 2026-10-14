@@ -79,17 +79,6 @@ def record_enrichment_event(be, uuid: str, kind: str) -> None:
         pass
 
 
-def bust_indexed_badge_cache() -> None:
-    """Bust the indexed membership cache so the catalog badge reflects a just-finished step on the
-    next list. Best-effort. (The `summarized` badge is per-record — HasSummaries on the record —
-    so it needs no cache bust; it is fresh on the next list as soon as store_summaries commits.)"""
-    try:
-        from corpusfm.app.web.routes.api.library import invalidate_indexed_cache
-        invalidate_indexed_cache()
-    except Exception:
-        pass
-
-
 # ── the ops (one target each; RAISE on failure) ──────────────────────────────────
 
 def summarize_one(be, uuid: str, *, on_progress=None, should_cancel=None) -> None:
@@ -219,12 +208,13 @@ def deindex_artifact_one(uuid: str) -> None:
 
 
 def indexed_uuids() -> frozenset:
-    """Record UUIDs currently present in the vector index. Empty when no embedder is configured or the
-    index is unreadable (fail-open — nothing to preserve)."""
+    """Record UUIDs with raw indexed content, from one ids-only read (packet 1416). Empty when no
+    embedder is configured or membership cannot be established (fail-open — nothing to preserve; the
+    caller only decides whether to re-enqueue an index)."""
     try:
         idx = vector_index()
         if idx is None:
             return frozenset()
-        return frozenset(r.get("uuid", "") for r in idx.list_indexed() if r.get("uuid"))
+        return idx.raw_member_uuids()
     except Exception:
         return frozenset()

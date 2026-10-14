@@ -4,8 +4,8 @@
 git-clone-only), so we compare HEAD against origin/main. A direct check may fetch using the
 administrator-installed read-only PAT; on Windows the unprivileged service instead classifies refs
 fetched by the fixed privileged updater and never receives that credential. No GitHub API token is
-involved. The version scheme is ``0.{git-rev-count}``, so "behind by N commits" is exactly the next
-versions.
+involved. The offered version is ``0.{build}``: the target commit's declared ``release-build.txt``
+when it carries one (a published tree), else its git commit count (private development).
 (The former GitHub-Releases-API fallback for packaged no-``.git`` standalone builds was retired in
 packet 1009 — standalone is archived and no shipped install lacks a checkout.)
 
@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import corpusfm
+from corpusfm.buildstamp import RELEASE_BUILD_NAME, valid_declared_build
 
 REPO = "CORPUSfm/CORPUSfm"
 RELEASES_PAGE_URL = f"https://github.com/{REPO}/releases"
@@ -220,7 +221,11 @@ def _git_update(repo_dir: Path, *, fetch_remote: bool = True) -> Optional[Update
             return UpdateResult(False, current_version=current, source="git",
                                 error=f"Could not compare with {_REMOTE_BRANCH}.")
         n_behind = int((behind.stdout or "0").strip() or "0")
-        latest = f"0.{(remote.stdout or '').strip()}"
+        # The offered target's own declared release build; a tree that declares none (private
+        # development) or an invalid one keeps the commit count, as buildstamp does for HEAD.
+        target_decl = _run_git(repo_dir, "show", f"{_REMOTE_BRANCH}:{RELEASE_BUILD_NAME}")
+        declared = valid_declared_build(target_decl.stdout) if target_decl.returncode == 0 else None
+        latest = f"0.{declared or (remote.stdout or '').strip()}"
         cls = classify_incoming_changes(repo_dir) if n_behind > 0 else ChangeClassification()
         return UpdateResult(
             update_available=n_behind > 0,

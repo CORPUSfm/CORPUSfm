@@ -84,6 +84,11 @@ without working anything out, and every scheduled time CORPUSfm shows you is lab
 it is in. If the server cannot tell CORPUSfm what its time zone is, schedules fall back to UTC and
 say so rather than quietly pretending to be local.
 
+Times that record something that already happened — a job's last run, the run history, monitoring
+alerts — are different: they are moments, so CORPUSfm shows them in **your browser's** time zone, with
+the zone named. Hover one to see its full local date and the exact UTC time. Schedules and the
+server's current time stay on the server's clock, as above.
+
 Four things follow from that, and they are worth knowing before you rely on a schedule:
 
 - **Saving a schedule does not run the job.** It waits for its next matching time — and the very

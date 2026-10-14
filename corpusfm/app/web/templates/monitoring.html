@@ -18,8 +18,10 @@
 
   {# ── Scheduler status (packet 1019) ──────────────────────────────────────── #}
   <p class="cfm-mb-12" x-show="schedulerStatus" x-cloak>
-    <span class="cfm-badge" :class="schedulerStatus.includes('not running') ? 'cfm-badge--warn' : 'cfm-badge--ok'"
-          x-text="schedulerStatus"></span>
+    {# The heartbeat is a UTC instant shown browser-local (packet 1418); an older server without the raw
+       fields keeps its composed text. #}
+    <span class="cfm-badge" :class="(schedulerState === 'not_running' || schedulerStatus.includes('not running')) ? 'cfm-badge--warn' : 'cfm-badge--ok'"
+          ><span x-text="schedulerLabel()"></span><time x-show="schedulerState && schedulerState !== 'not_running' && schedulerHeartbeat" x-cfm-time="schedulerHeartbeat"></time></span>
   </p>
 
   {# ── Current Alerts ──────────────────────────────────────────────────────── #}
@@ -57,7 +59,7 @@
               <td x-text="r.name"></td>
               <td x-text="r.source_type"></td>
               <td x-text="r.schedule"></td>
-              <td x-text="r.last_run"></td>
+              <td><time x-cfm-time="r.last_run_utc || r.last_run"></time></td>
               <td><span class="cfm-badge"
                         :class="r.status.includes('overdue') ? 'cfm-badge--warn' : (r.status.includes('ok') ? 'cfm-badge--ok' : 'cfm-badge--muted')"
                         x-text="r.status"></span></td>
@@ -80,7 +82,7 @@
         <tbody>
           <template x-for="(a, i) in alertHistory" :key="i">
             <tr>
-              <td x-text="a.ts"></td>
+              <td><time x-cfm-time="a.ts_utc || a.ts"></time></td>
               <td><span class="cfm-badge" :class="a.severity === 'error' ? 'cfm-badge--broken' : 'cfm-badge--warn'" x-text="a.severity"></span></td>
               <td x-text="a.condition"></td>
               <td x-text="a.job_name"></td>
@@ -99,9 +101,15 @@
 <script>
 function monitorPage() {
   return {
-    activeAlerts: [], jobHealth: [], alertHistory: [], suppressHours: 24, schedulerStatus: '',
+    activeAlerts: [], jobHealth: [], alertHistory: [], suppressHours: 24, schedulerStatus: '', schedulerState: '', schedulerHeartbeat: '',
     async init() { await Promise.all([this.loadStatus(), this.loadHealth(), this.loadHistory()]); },
-    async loadStatus()  { try { const r = await fetch('/api/monitor/status');     const d = await r.json(); this.activeAlerts = d.active_alerts || []; this.schedulerStatus = d.scheduler_status || ''; } catch (_) {} },
+    async loadStatus()  { try { const r = await fetch('/api/monitor/status');     const d = await r.json(); this.activeAlerts = d.active_alerts || []; this.schedulerStatus = d.scheduler_status || ''; this.schedulerState = d.scheduler_state || ''; this.schedulerHeartbeat = d.scheduler_heartbeat_utc || ''; } catch (_) {} },
+    schedulerLabel() {
+      if (this.schedulerState === 'paused') return 'Scheduler paused — storage unreachable — ';
+      if (this.schedulerState === 'running') return 'Scheduler running — ';
+      if (this.schedulerState === 'not_running') return 'Scheduler not running';
+      return this.schedulerStatus;
+    },
     async loadHealth()  { try { const r = await fetch('/api/monitor/job-health'); const d = await r.json(); this.jobHealth    = d.rows || []; } catch (_) {} },
     async loadHistory() { try { const r = await fetch('/api/monitor/alerts');     const d = await r.json(); this.alertHistory = d.alerts || []; } catch (_) {} },
     async suppress(alert) {

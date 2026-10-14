@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from corpusfm.core.instants import utc_iso
 from corpusfm.app.web.auth import require_auth
 from corpusfm.core import servertime
 
@@ -421,9 +422,14 @@ def _attach_jobs(rows: list[dict], server_ref: str = "local",
         if runs:
             latest = max(runs, key=lambda j: j["last_run_ts"])
             r["last_run"] = _fmt_ts(latest["last_run_ts"])
+            # Raw instant for the browser's local display (packet 1418); `last_run` stays as-is for
+            # API compatibility. The job runner has stamped run times as aware UTC since before the
+            # 085 store existed, so a naive legacy value is a truncated UTC value, never local.
+            r["last_run_utc"] = utc_iso(latest["last_run_ts"], naive_is_utc=True)
             r["last_status"] = latest["last_status"]
         else:
             r["last_run"] = ""
+            r["last_run_utc"] = ""
             r["last_status"] = ""
         # Soonest upcoming scheduled run across the file's jobs.
         nexts = [n for n in (_next_run(_trigger_of(j)) for j in jobs
@@ -660,6 +666,7 @@ async def file_jobs_list(name: str, request: Request) -> JSONResponse:
                 "verified": cred["verified"],
                 "verify_reason": cred["verify_reason"],
                 "last_run": (st.last_run_ts.replace("T", " ")[:19] + " UTC") if st.last_run_ts else "",
+                "last_run_utc": utc_iso(st.last_run_ts, naive_is_utc=True),   # packet 1418 (see _attach_jobs)
                 "last_status": st.last_status or "",
                 "last_error": st.last_error or "",
                 "running": (cfg.id or "") in running_uuids,

@@ -268,6 +268,9 @@ def _make_lifespan(mcp_app):
             _update_observer = start_if_published()
         except Exception:
             logging.getLogger(__name__).debug("scheduled update observation skipped", exc_info=True)
+        # System Stats (packet 1409): the one per-process collector. Never fails startup.
+        from corpusfm.server import metrics as _metrics
+        _metrics.start()
         # The mounted MCP app runs its OWN lifespan (the streamable-HTTP session manager); enter
         # it within ours, or its task group is never initialized ("Task group is not initialized").
         try:
@@ -281,6 +284,7 @@ def _make_lifespan(mcp_app):
             # the privileged one-shot (packet 1281 route step 6).
             if _update_observer is not None:
                 _update_observer.stop()
+            _metrics.stop()          # completed minutes only; never delays stop
             try:
                 from corpusfm.server import availability, catalog, queue_workers, scheduler
                 # The coordinator FIRST: it is the only thing that may still be contacting
