@@ -950,7 +950,8 @@ def artifact_download(ref: str, form: str = None, container: str = None):
     `form` (session/bearer only) selects the packaged shape:
       • form="artifact"  → the portable envelope, downloaded as a plain **.zip** (`meta.json`
         sidecar + payload). Re-import recognises it by content, not by name.
-      • form="raw"       → the simple text file (deliverable raw XML, or a schema's retained source).
+      • form="raw"       → the simple file (deliverable XML, or a schema's retained source), zipped
+        like every download (packet 1226). The Raw tab reads clip text from `/clip-xml`, not here.
       • default (no form / no container) → back-compat: raw for a deliverable, envelope for a schema.
 
     ``ref`` is the record UUID (or a human alias, resolved here — packet 085 U3f); the served
@@ -1018,8 +1019,8 @@ def artifact_download(ref: str, form: str = None, container: str = None):
         if xml is None:
             raise HTTPException(status_code=404, detail="No source XML stored for this artifact")
         # Zipped, always (packet 1226): a retained SaveAsXML export runs to tens or hundreds of MB and
-        # compresses enormously. Deliverable raw above is NOT zipped — it is small, and it is the
-        # paste-ready file, so wrapping a clip the user is about to paste would be hostile.
+        # compresses enormously. Deliverable raw above is zipped too (developer ruling, 2026-07-31:
+        # no exceptions to the compression rule).
         return _zipped(f"{base}.xml", xml)
 
     # form == "artifact": the portable .artifact envelope (zip = meta.json sidecar + one payload).
@@ -1444,6 +1445,33 @@ def _evidence_artifact(ref: str):
         return backend.load_artifact(uuid), uuid, None
     except Exception as exc:  # noqa: BLE001
         return None, "", JSONResponse({"ok": False, "error": f"Could not load artifact: {exc}"}, status_code=500)
+
+
+@router.get("/library/artifacts/{ref:path}/clip-xml", dependencies=[Depends(require_auth)])
+def artifact_clip_xml(ref: str) -> JSONResponse:
+    """The stored fmClip XML as JSON text, for the Raw tab's view and Copy XML (packet 1420).
+
+    Separate from `/artifact-download` on purpose: every download is a ZIP (packet 1226), and the Raw
+    tab once read that response with `r.text()`, putting decoded ZIP bytes on the clipboard."""
+    from corpusfm.app.web.artifact_ref import resolve_ref
+    from corpusfm.storage import get_backend
+    backend = get_backend()
+    uuid, err = resolve_ref(backend, ref)
+    if err is not None:
+        raise HTTPException(status_code=err.status_code, detail="Not found")
+    meta = backend.get_artifact_meta(uuid)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    if getattr(meta, "artifact_type", "") != ArtifactType.CLIPBOARD_XML.value:
+        raise HTTPException(status_code=400, detail="Not an fmClip artifact")
+    xml = backend.load_deliverable_xml(uuid)
+    if xml is None:
+        raise HTTPException(status_code=404, detail="No clip XML stored for this artifact")
+    try:
+        text = xml.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=422, detail="Stored clip XML is not valid UTF-8")
+    return JSONResponse({"ok": True, "uuid": uuid, "xml": text})
 
 
 @router.get("/library/artifacts/{ref:path}/objects", dependencies=[Depends(require_auth)])

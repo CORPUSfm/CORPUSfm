@@ -764,7 +764,7 @@
                 clipboard flavor with MBS or FmClipTools and paste into FileMaker. The browser can't write
                 the native flavor directly, so a clipboard tool bridges that last step.</p>
               <div class="cfm-filterbar cfm-filterbar--tight">
-                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" :disabled="!!rawLoading"
+                <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" :disabled="!!(rawLoading || rawError || !rawXml)"
                         aria-label="Copy clip XML" @click="copyRaw()" x-text="rawCopied ? 'Copied ✓' : 'Copy XML'"></button>
                 <span class="cfm-muted cfm-ml-8" x-show="rawClass">FM class: <code x-text="rawClass"></code></span>
               </div>
@@ -1876,18 +1876,25 @@ function libraryPage() {
                 CustomFunction:'XMFN', ValueList:'XMVL', Layout:'XMLO', Object:'XMLO' }[first]) || 'XMSS';
     },
     async loadRaw() {
-      if (this._rawFor === this.detailUuid && this.rawXml) return;   // cached for this artifact
-      this._rawFor = this.detailUuid;
+      const uuid = this.detailUuid;
+      if (this._rawFor === uuid && this.rawXml) return;   // cached for this artifact
+      this._rawFor = uuid;
       this.rawLoading = true; this.rawError = ''; this.rawCopied = false; this.rawXml = ''; this.rawClass = '';
+      // JSON text, never /artifact-download: every download is a ZIP (packet 1420).
+      let xml = '', error = '';
       try {
-        const r = await fetch('/api/artifact-download/' + encodeURIComponent(this.detailUuid));
-        if (!r.ok) throw new Error('load');
-        this.rawXml = await r.text();
-        this.rawClass = this._sniffFmClass(this.rawXml);
-      } catch (_) { this.rawError = 'Could not load the clip XML.'; }
-      finally { this.rawLoading = false; }
+        const r = await fetch('/api/library/artifacts/' + encodeURIComponent(uuid) + '/clip-xml');
+        const d = r.ok ? await r.json() : null;
+        if (!d || typeof d.xml !== 'string') throw new Error('load');
+        xml = d.xml;
+      } catch (_) { error = 'Could not load the clip XML.'; }
+      if (this._rawFor !== uuid || this.detailUuid !== uuid) return;   // a later artifact owns the tab
+      this.rawXml = xml; this.rawError = error;
+      this.rawClass = xml ? this._sniffFmClass(xml) : '';
+      this.rawLoading = false;
     },
     async copyRaw() {
+      if (!this.rawXml || this.rawError || this.rawLoading) return;
       try {
         await navigator.clipboard.writeText(this.rawXml);
         this.rawCopied = true; setTimeout(() => { this.rawCopied = false; }, 1500);
