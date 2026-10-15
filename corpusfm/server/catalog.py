@@ -1009,9 +1009,18 @@ class _Catalog:
                 counts[table] = n
                 raw_bytes[table] = nbytes
         except Exception as exc:                                    # noqa: BLE001
-            logger.warning("catalog validation pass failed on a database read (%s); the persistent "
-                           "records are kept and validation restarts from the beginning",
-                           type(exc).__name__, exc_info=True)
+            # One traceback per failure episode (packet 1421). The latch already spans exactly that
+            # episode — set by the first failed pass, cleared only by a COMPLETE success — so a retry
+            # every few seconds through an outage must not repeat it at WARNING.
+            with self.lock:
+                already_failing = self._failed
+            if already_failing:
+                logger.debug("catalog validation pass failed again on a database read (%s)",
+                             type(exc).__name__, exc_info=True)
+            else:
+                logger.warning("catalog validation pass failed on a database read (%s); the "
+                               "persistent records are kept and validation restarts from the "
+                               "beginning", type(exc).__name__, exc_info=True)
             return self._fail_pass(started, counts, raw_bytes, added, replaced, reaped,
                                    f"{type(exc).__name__}: {exc}")
         # ── 3. success: NO closing sweep. The reap is the next pass's opening traversal. ──────────

@@ -27,6 +27,11 @@ _QUIET = ("watchdog", "httpx", "httpcore", "asyncio", "git")
 # still reaches the log.
 _QUIET_ERROR = ("urllib3",)
 
+# The MCP SDK logs every dispatched request and every stateless session teardown at INFO — measured
+# on fms-dev as 97% of the operational log's records (packet 1422). WARNING and above still reach the
+# log; an explicit DEBUG setup restores their INFO diagnostics, which the plain `_QUIET` floor would not.
+_QUIET_UNLESS_DEBUG = ("mcp.server.lowlevel.server", "mcp.server.streamable_http")
+
 _configured = False
 
 
@@ -82,6 +87,9 @@ def setup_logging(level: int = logging.INFO, _log_file: Path = None) -> Path:
         logging.getLogger(name).setLevel(logging.WARNING)
     for name in _QUIET_ERROR:
         logging.getLogger(name).setLevel(logging.ERROR)
+    sdk_level = logging.NOTSET if level <= logging.DEBUG else logging.WARNING
+    for name in _QUIET_UNLESS_DEBUG:
+        logging.getLogger(name).setLevel(sdk_level)
 
     return path
 
