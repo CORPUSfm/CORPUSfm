@@ -19,6 +19,7 @@ from pathlib import Path
 import corpusfm
 from corpusfm.app.sections import SECTION_ORDER
 from corpusfm.core.git_formatter._renderer import DEFAULT_LARGE_THRESHOLD, large_marker
+from corpusfm.core.comparator import item_kind
 
 _VENDOR_DIR = Path(__file__).parent / "vendor"
 _ASSETS_DIR = Path(__file__).parent / "assets"
@@ -136,31 +137,6 @@ def _fmt_ts(ts: str) -> str:
 
 # ── Artifact helpers ───────────────────────────────────────────────────────────
 
-def _make_section_index(art) -> "dict[str, dict]":
-    """Build {section: {name: ArtifactItem}} from an Artifact."""
-    idx: dict = {}
-    for item in art.items.values():
-        idx.setdefault(item.section, {})[item.name] = item
-    return idx
-
-
-def _fields_items_by_table(art) -> "dict[str, dict]":
-    """Build {table: {field_name: ArtifactItem}} for FieldsForTables non-folder items."""
-    tables: dict = {}
-    for item in art.items.values():
-        if item.section != "FieldsForTables" or item.is_folder:
-            continue
-        name = item.name
-        if "::" in name:
-            table, field = name.split("::", 1)
-        elif item.folder_path:
-            table, field = item.folder_path[0], name
-        else:
-            continue
-        tables.setdefault(table, {})[field] = item
-    return tables
-
-
 def _layout_behavior_lines(item) -> list:
     """A deterministic list of a layout's object behavior calcs (hide-when +
     conditional-formatting conditions), for the Diff's own layout comparison.
@@ -182,28 +158,164 @@ def _layout_behavior_lines(item) -> list:
     return sorted(out)
 
 
+def _section_label(key: str) -> str:
+    return _SECTION_LABELS.get(key, key)
+
+
+def _ordered_sections(present: "set[str]") -> "list[str]":
+    """SECTION_ORDER first, then every other section the snapshots actually carry (e.g.
+    LibraryCatalog) — a section the ordering omits must still render, or its items vanish."""
+    known = [k for k, _ in SECTION_ORDER]
+    return [k for k in known if k in present] + sorted(present - set(known))
+
+
+def _addr(item) -> str:
+    return item.item_id if item is not None else ""
+
+
+def _body_of(item) -> str:
+    if item is None:
+        return ""
+    kind = item_kind(item)
+    if kind == "marker":
+        return "(folder end marker)"
+    if kind == "separator":
+        return "(separator)"
+    if item.is_folder:
+        return "(folder)"
+    return item.rendered_text or ""
+
+
+def _base_entry(e, item) -> dict:
+    """Display facts shared by every entry: the item's own address(es), name, serial id and context."""
+    from corpusfm.core.comparator import field_context, item_serial_id
+    out = {"name": item.name or "(no name)", "kind": item_kind(item),
+           "is_folder": bool(item.is_folder),
+           "addr_a": _addr(e.a), "addr_b": _addr(e.b),
+           "id_a": item_serial_id(e.a)[0] if e.a is not None else "",
+           "id_b": item_serial_id(e.b)[0] if e.b is not None else ""}
+    if item.section == "FieldsForTables":
+        out["table"] = field_context(item)[0]
+        out["name"] = field_context(item)[1] or out["name"]
+    elif item.folder_path:
+        out["context"] = " / ".join(item.folder_path)
+    return out
+
+
+def _paired_entry(e, mode: str) -> "dict | None":
+    """The changed-entry for a pair, or None when nothing differs (an unchanged pair is omitted)."""
+    from corpusfm.core.comparator import ALIGN_ID
+    ia, ib = e.a, e.b
+    entry = _base_entry(e, ib)
+    name_differs = mode == ALIGN_ID and (ia.name or "") != (ib.name or "")
+    if name_differs:
+        entry["renamed"] = True
+        na = _base_entry(e, ia)["name"]
+        entry["name_a"] = na
+        entry["name"] = f"{na} → {entry['name']}"
+        if ib.section == "FieldsForTables":
+            ta = _base_entry(e, ia).get("table", "")
+            if ta != entry.get("table"):
+                entry["table_a"] = ta
+    ra, rb = _body_of(ia), _body_of(ib)
+    lines_a, lines_b = ra.splitlines(), rb.splitlines()
+    if ra != rb:
+        entry["diff_lines"] = _step_diff_lines(lines_a, lines_b)
+        flags = _high_stakes_flags(ib.section, entry["diff_lines"])
+        if flags:
+            entry["flags"] = flags
+    if ib.section == "LayoutCatalog" and not ia.is_folder and not ib.is_folder:
+        # Layout-object behavior calcs (hide / conditional formatting) are NOT in rendered_text
+        # (see render_layout), so the Diff compares them itself.
+        ba, bb = _layout_behavior_lines(ia), _layout_behavior_lines(ib)
+        if ba != bb:
+            bdiff = [l for l in _step_diff_lines(ba, bb) if l[:1] in ("+", "-")]
+            if bdiff:
+                entry["behavior_lines"] = bdiff
+    if not (name_differs or "diff_lines" in entry or "behavior_lines" in entry):
+        return None
+    if ib.section == "ScriptCatalog":
+        entry["count_a"] = len(lines_a)
+        entry["count_b"] = len(lines_b)
+    return entry
+
+
 def _build_data_from_artifacts(inp: "ArtifactDiffInput") -> dict:
-    """Build diff data dict from two Artifact objects — no XML re-parse."""
-    from corpusfm.core.comparator import compare_artifacts
+    """Build diff data dict from two Artifact objects — no XML re-parse.
+
+    Pairing comes from ONE authority (`align_artifacts`, packet 1425) and every source item lands
+    in exactly one entry: changed, added (B only), removed (A only), or not aligned. Unchanged pairs
+    are the only omitted entries. The headline counts derive from these entries."""
+    from corpusfm.core.comparator import (
+        ALIGN_ID, AMBIGUOUS, ONLY_A, ONLY_B, PAIRED, align_artifacts)
 
     art_a = inp.artifact_a
     art_b = inp.artifact_b
-    cr = compare_artifacts(art_a, art_b)
-
-    idx_a = _make_section_index(art_a)
-    idx_b = _make_section_index(art_b)
+    mode = getattr(inp, "alignment", ALIGN_ID) or ALIGN_ID
+    entries = align_artifacts(art_a, art_b, mode)
 
     ts_a = _fmt_ts(inp.meta_a.timestamp)
     ts_b = _fmt_ts(inp.meta_b.timestamp)
     generated = datetime.now(timezone.utc)   # ONE instant for both generated_at fields (packet 1418)
 
+    by_section: dict = {}
+    for e in entries:
+        by_section.setdefault(e.section, []).append(e)
+
+    sections: list[dict] = []
+    n_changed = n_added = n_removed = n_unaligned = n_paired = 0
+    for section_key in _ordered_sections(set(by_section)):
+        sec_data: dict = {"key": section_key, "label": _section_label(section_key),
+                          "added": [], "removed": [], "changed": [], "unaligned": []}
+        is_fields = section_key == "FieldsForTables"
+        tables: dict = {}
+
+        def _bucket(entry: dict, which: str) -> None:
+            if is_fields and not entry["is_folder"]:
+                t = entry.get("table", "")
+                if entry.get("table_a"):
+                    t = f"{entry['table_a']} → {t}"
+                tbl = tables.setdefault(t, {"name": t, "added": [], "removed": [], "changed": []})
+                tbl[which].append(entry)
+            else:
+                sec_data[which].append(entry)
+
+        for e in by_section[section_key]:
+            if e.status == PAIRED:
+                n_paired += 1
+                entry = _paired_entry(e, mode)
+                if entry is not None:
+                    _bucket(entry, "changed")
+                    n_changed += 1
+            elif e.status in (ONLY_A, ONLY_B):
+                entry = _base_entry(e, e.item)
+                entry["body"] = _body_of(e.item)
+                _bucket(entry, "added" if e.status == ONLY_B else "removed")
+                if e.status == ONLY_B:
+                    n_added += 1
+                else:
+                    n_removed += 1
+            else:
+                entry = _base_entry(e, e.item)
+                entry.update({"side": "A" if e.a is not None else "B", "reason": e.reason,
+                              "ambiguous": e.status == AMBIGUOUS, "body": _body_of(e.item)})
+                sec_data["unaligned"].append(entry)
+                n_unaligned += 1
+        if tables:
+            sec_data["tables"] = [tables[k] for k in sorted(tables, key=str.lower)]
+        if any(sec_data.get(k) for k in ("added", "removed", "changed", "unaligned", "tables")):
+            sections.append(sec_data)
+
     metadata = {
-        "label_a": cr.label_a,
-        "label_b": cr.label_b,
+        "label_a": art_a.identity.file_name or "",
+        "label_b": art_b.identity.file_name or "",
         "timestamp_a": ts_a,
         "timestamp_b": ts_b,
         "fm_key": inp.meta_b.file_name,
-        "total": cr.total_real,
+        "alignment": mode,
+        "total": n_changed + n_added + n_removed,
+        "unaligned": n_unaligned,
+        "paired": n_paired,
         "generated_at": generated.strftime("%Y-%m-%d %H:%M UTC"),
         # Raw instants for the report's browser-local display (packet 1418); the strings above stay
         # as the no-script fallback.
@@ -216,125 +328,6 @@ def _build_data_from_artifacts(inp: "ArtifactDiffInput") -> dict:
         "build_a": art_a.provenance.corpusfm_build or "?",
         "build_b": art_b.provenance.corpusfm_build or "?",
     }
-
-    sections: list[dict] = []
-
-    for section_key, section_label in SECTION_ORDER:
-        sec_data: dict = {"key": section_key, "label": section_label,
-                          "added": [], "removed": [], "changed": []}
-        has_any = False
-
-        if section_key == "FieldsForTables":
-            if cr.fields:
-                flds_a = _fields_items_by_table(art_a)
-                flds_b = _fields_items_by_table(art_b)
-                tables: list[dict] = []
-                for table, sr in cr.fields.items():
-                    tbl: dict = {"name": table, "added": list(sr.added),
-                                 "removed": list(sr.removed), "changed": []}
-                    for fn in sr.changed:
-                        item_a = flds_a.get(table, {}).get(fn)
-                        item_b = flds_b.get(table, {}).get(fn)
-                        b_a = (item_a.rendered_text or "").splitlines() if item_a else []
-                        b_b = (item_b.rendered_text or "").splitlines() if item_b else []
-                        fdiff = _step_diff_lines(b_a, b_b)
-                        fentry = {"name": fn, "diff_lines": fdiff}
-                        flags = _high_stakes_flags("FieldsForTables", fdiff)
-                        if flags:
-                            fentry["flags"] = flags
-                        tbl["changed"].append(fentry)
-                    tables.append(tbl)
-                sec_data["tables"] = tables
-                has_any = True
-
-        elif section_key == "LayoutCatalog":
-            # Layout-object behavior calcs (hide / conditional formatting) are NOT in
-            # rendered_text (see render_layout), so the Diff compares them itself — and
-            # flags a layout as changed on a behavior-calc change even when its
-            # rendered_text is identical. Kept separate from the shared rendered layer.
-            sr = cr.sections.get(section_key)
-            items_a = idx_a.get(section_key, {})
-            items_b = idx_b.get(section_key, {})
-            if sr:
-                for n in sr.added:
-                    item = items_b.get(n)
-                    is_fldr = item.is_folder if item else False
-                    sec_data["added"].append({"name": n, "is_folder": is_fldr,
-                        "body": "(folder)" if is_fldr else ((item.rendered_text or "") if item else "")})
-                    has_any = True
-                for n in sr.removed:
-                    item = items_a.get(n)
-                    is_fldr = item.is_folder if item else False
-                    sec_data["removed"].append({"name": n, "is_folder": is_fldr,
-                        "body": "(folder)" if is_fldr else ((item.rendered_text or "") if item else "")})
-                    has_any = True
-            rt_changed = set(sr.changed) if sr else set()
-            for n in items_a:
-                ib = items_b.get(n)
-                ia = items_a[n]
-                if ib is None or ia.is_folder or ib.is_folder:
-                    continue
-                entry = {"name": n}
-                if n in rt_changed:
-                    entry["diff_lines"] = _step_diff_lines(
-                        (ia.rendered_text or "").splitlines(), (ib.rendered_text or "").splitlines())
-                ba, bb = _layout_behavior_lines(ia), _layout_behavior_lines(ib)
-                if ba != bb:
-                    bdiff = [l for l in _step_diff_lines(ba, bb) if l[:1] in ("+", "-")]
-                    if bdiff:
-                        entry["behavior_lines"] = bdiff
-                if "diff_lines" in entry or "behavior_lines" in entry:
-                    sec_data["changed"].append(entry)
-                    has_any = True
-            sec_data["changed"].sort(key=lambda e: e["name"].lower())
-
-        else:
-            sr = cr.sections.get(section_key)
-            if not sr or not sr.has_diff:
-                continue
-            items_a = idx_a.get(section_key, {})
-            items_b = idx_b.get(section_key, {})
-
-            for n in sr.added:
-                item = items_b.get(n)
-                is_fldr = item.is_folder if item else False
-                body = "(folder)" if is_fldr else ((item.rendered_text or "") if item else "")
-                entry: dict = {"name": n, "body": body}
-                if section_key == "ScriptCatalog":
-                    entry["is_folder"] = is_fldr
-                sec_data["added"].append(entry)
-                has_any = True
-
-            for n in sr.removed:
-                item = items_a.get(n)
-                is_fldr = item.is_folder if item else False
-                body = "(folder)" if is_fldr else ((item.rendered_text or "") if item else "")
-                entry = {"name": n, "body": body}
-                if section_key == "ScriptCatalog":
-                    entry["is_folder"] = is_fldr
-                sec_data["removed"].append(entry)
-                has_any = True
-
-            for n in sr.changed:
-                item_a = items_a.get(n)
-                item_b = items_b.get(n)
-                is_fldr = (item_b.is_folder if item_b else False) or (item_a.is_folder if item_a else False)
-                lines_a = (item_a.rendered_text or "").splitlines() if item_a else []
-                lines_b = (item_b.rendered_text or "").splitlines() if item_b else []
-                diff = _step_diff_lines(lines_a, lines_b)
-                entry = {"name": n, "diff_lines": diff}
-                flags = _high_stakes_flags(section_key, diff)
-                if flags:
-                    entry["flags"] = flags
-                if section_key == "ScriptCatalog":
-                    entry["is_folder"] = is_fldr
-                    entry["count_a"] = len(lines_a)
-                    entry["count_b"] = len(lines_b)
-                sec_data["changed"].append(entry)
-                has_any = True
-
-        if has_any:
-            sections.append(sec_data)
 
     # The behavioral workflow-delta SUMMARY is no longer emitted into the Diff (inbox
     # packet 002, Batch 2): Diff is the human lens over concrete changed artifact content.
@@ -504,6 +497,16 @@ button:focus-visible,a:focus-visible{
 .field-row{font-size:.78rem;padding:.15rem .6rem;border-radius:4px;margin:.1rem 0}
 .field-add{background:var(--diff-add-bg);color:var(--diff-add)}
 .field-rem{background:var(--diff-rem-bg);color:var(--diff-rem)}
+#align-bar{padding:.4rem 1.5rem;font-size:.78rem;color:var(--text-dim);border-bottom:1px solid var(--border)}
+#align-bar strong{color:var(--text)}
+.una{color:var(--warning)}
+.tag-una{background:var(--surface-2);border:1px dashed var(--border-2);color:var(--text-2)}
+.una-lbl{font-size:.72rem;font-weight:700;color:var(--warning);text-transform:uppercase;
+  letter-spacing:.04em;margin:.7rem 0 .2rem}
+.item-meta{flex-shrink:1;min-width:0;font-size:.7rem;font-weight:400;color:var(--text-dim);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45%}
+.item-note{font-size:.76rem;color:var(--text-dim);padding:.4rem .75rem}
+.hs-renamed{background:var(--diff-chg-bg);color:var(--diff-chg);border:1px solid var(--diff-chg-bd)}
 #back-top{position:fixed;bottom:1.5rem;right:1.5rem;background:var(--surface);
   border:none;color:var(--text-dim);border-radius:6px;
   padding:.35rem .85rem;font-size:.8rem;cursor:pointer;z-index:200;
@@ -543,10 +546,11 @@ _HTML = """\
   </div>
 </div>
 <div id="total-bar">
-  <strong>{total}</strong> difference{total_s} &nbsp;·&nbsp; <time data-cfm-instant="{ts_a_utc}">{ts_a} UTC</time> vs <time data-cfm-instant="{ts_b_utc}">{ts_b} UTC</time>
+  <strong>{total}</strong> difference{total_s}{unaligned_html} &nbsp;·&nbsp; <time data-cfm-instant="{ts_a_utc}">{ts_a} UTC</time> vs <time data-cfm-instant="{ts_b_utc}">{ts_b} UTC</time>
   &nbsp;·&nbsp; ingested A {build_a} / B {build_b}
   &nbsp;·&nbsp; Generated <time data-cfm-instant="{generated_at_utc}">{generated_at}</time> &nbsp;·&nbsp; CorpusFM {app_version}
 </div>
+<div id="align-bar"><strong>Aligned {align_label}.</strong> {align_text} A matching key does not establish that two objects share a lineage, and no rename is inferred.</div>
 <div id="summary">
 {summary_cards}
 </div>
@@ -723,6 +727,61 @@ def _diff_pre(lines: list[str]) -> str:
     return "".join(parts)
 
 
+_CARET = ('<span class="item-caret"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" '
+          'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+          'stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>')
+
+_ALIGN_TEXT = {
+    "id": ("By ID", "Objects are paired when each snapshot holds exactly one object with the same "
+                    "FileMaker serial ID in the same scope (fields: within their table's ID)."),
+    "name": ("By Name", "Objects are paired when each snapshot holds exactly one object with the same "
+                        "exact, case-sensitive name in the same scope (fields: within their table's name)."),
+}
+
+
+def _sec_counts(sec: dict) -> "tuple[int, int, int, int]":
+    tables = sec.get("tables") or []
+    return tuple(len(sec.get(k, [])) + sum(len(t.get(k, [])) for t in tables)
+                 for k in ("added", "removed", "changed")) + (len(sec.get("unaligned", [])),)
+
+
+def _item_meta(entry: dict) -> str:
+    """Side, serial id(s) and context — what tells two same-named entries apart."""
+    bits = []
+    if entry.get("side"):
+        bits.append(f"{entry['side']} only")
+    ia, ib = entry.get("id_a", ""), entry.get("id_b", "")
+    if ia and ib:
+        bits.append(f"ID {ia}" if ia == ib else f"ID {ia} ↔ {ib}")
+    elif ia or ib:
+        bits.append(f"ID {ia or ib}")
+    if entry.get("table") and entry.get("side"):
+        bits.append(f"table {entry['table']}")
+    if entry.get("context"):
+        bits.append(entry["context"])
+    if entry.get("kind") == "marker":
+        bits.append("folder end marker")
+    elif entry.get("kind") == "separator":
+        bits.append("separator")
+    if entry.get("reason"):
+        bits.append(entry["reason"])
+    return f'<span class="item-meta">{_esc(" · ".join(bits))}</span>' if bits else ""
+
+
+def _item_block(cls: str, icon: str, entry: dict, body_html: str) -> str:
+    """One entry. Addressed by its items' own ids (data-a / data-b), never by a display name,
+    which two objects may share."""
+    renamed = ('<span class="hs-badge hs-renamed">Same ID, different name</span>'
+               if entry.get("renamed") else "")
+    return (f'<div class="item-block" data-a="{_esc(entry.get("addr_a", ""))}" '
+            f'data-b="{_esc(entry.get("addr_b", ""))}">'
+            f'<div class="item-hdr {cls}"><span class="icon">{icon}</span>'
+            f'<span class="item-name">{_esc(entry["name"])}</span>{renamed}{_flags_html(entry)}'
+            f'{_item_meta(entry)}{_CARET}</div>'
+            f'<div class="item-body">{body_html}</div>'
+            f'</div>')
+
+
 def _render_html(data: dict, filename: str = "diff.html", syntax_palettes: object = None) -> str:
     from corpusfm.extensions.export.syntax_palettes import palette_css, resolve_selection
     selected = resolve_selection(syntax_palettes)
@@ -734,18 +793,12 @@ def _render_html(data: dict, filename: str = "diff.html", syntax_palettes: objec
     for sec in sections:
         key = sec["key"]
         label = sec["label"]
-        added   = len(sec.get("added", []))
-        removed = len(sec.get("removed", []))
-        changed = len(sec.get("changed", []))
-        if sec.get("tables"):
-            for t in sec["tables"]:
-                added   += len(t.get("added", []))
-                removed += len(t.get("removed", []))
-                changed += len(t.get("changed", []))
+        added, removed, changed, unaligned = _sec_counts(sec)
         parts = []
         if added:   parts.append(f'<span class="add">+{added}</span>')
         if removed: parts.append(f'<span class="rem">-{removed}</span>')
         if changed: parts.append(f'<span class="chg">~{changed}</span>')
+        if unaligned: parts.append(f'<span class="una" title="Not aligned — review">?{unaligned}</span>')
         counts = "&nbsp;".join(parts) if parts else "—"
         cards.append(
             f'<div class="sum-card" data-sec="{_esc(key)}">'
@@ -761,122 +814,71 @@ def _render_html(data: dict, filename: str = "diff.html", syntax_palettes: objec
     for sec in sections:
         key = sec["key"]
         label = sec["label"]
-        added   = sec.get("added", [])
-        removed = sec.get("removed", [])
-        changed = sec.get("changed", [])
         tables  = sec.get("tables")
-
-        a_count = len(added) + (sum(len(t.get("added",[])) for t in (tables or [])) if tables else 0)
-        r_count = len(removed) + (sum(len(t.get("removed",[])) for t in (tables or [])) if tables else 0)
-        c_count = len(changed) + (sum(len(t.get("changed",[])) for t in (tables or [])) if tables else 0)
+        a_count, r_count, c_count, u_count = _sec_counts(sec)
         count_parts = []
         if a_count: count_parts.append(f'<span class="add">+{a_count} added</span>')
         if r_count: count_parts.append(f'<span class="rem">-{r_count} removed</span>')
         if c_count: count_parts.append(f'<span class="chg">~{c_count} changed</span>')
+        if u_count: count_parts.append(f'<span class="una">?{u_count} not aligned</span>')
         counts_str = " &nbsp; ".join(count_parts)
-
-        inner = []
 
         is_script = (key == "ScriptCatalog")
         is_cf = (key == "CustomFunctionsCatalog")
 
-        # Added
-        for item in added:
-            name = item["name"]
-            is_fldr = item.get("is_folder")
-            tag = "📁" if is_fldr else "✅"
-            raw_body = _bound_body(item.get("body", ""))
+        def _hl(entry, diff=False):
+            if entry.get("is_folder"):
+                return ""
+            if is_cf or (diff and key == "FieldsForTables"):
+                return ' data-hl="calc"' + (' data-diff="1"' if diff else "")
+            if is_script:
+                return ' data-hl="step"' + (' data-diff="1"' if diff else "")
+            return ""
+
+        def _whole(entry, cls):
             # ONE highlighter (packet 1295): bodies ship ESCAPED; the page's load-time pass
             # highlights them via the trusted data-hl classification. Folders stay plain.
-            body = _esc(raw_body)
-            if is_script and not is_fldr:
-                pre_attrs = ' data-hl="step"'
-            elif is_cf and not is_fldr:
-                pre_attrs = ' data-hl="calc"'
-            else:
-                pre_attrs = ""
-            inner.append(
-                f'<div class="item-block">'
-                f'<div class="item-hdr tag-add"><span class="icon">{tag}</span>'
-                f'<span class="item-name">{_esc(name)}</span>'
-                f'<span class="item-caret"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></div>'
-                f'<div class="item-body"><pre{pre_attrs}>{body}</pre></div>'
-                f'</div>'
-            )
+            icon = "📁" if entry.get("is_folder") else ("✅" if cls == "tag-add" else ("❌" if cls == "tag-rem" else "❔"))
+            body = _esc(_bound_body(entry.get("body", "")))
+            return _item_block(cls, icon, entry, f'<pre{_hl(entry)}>{body}</pre>')
 
-        # Removed
-        for item in removed:
-            name = item["name"]
-            is_fldr = item.get("is_folder")
-            tag = "📁" if is_fldr else "❌"
-            raw_body = _bound_body(item.get("body", ""))
-            # ONE highlighter (packet 1295): bodies ship ESCAPED; the page's load-time pass
-            # highlights them via the trusted data-hl classification. Folders stay plain.
-            body = _esc(raw_body)
-            if is_script and not is_fldr:
-                pre_attrs = ' data-hl="step"'
-            elif is_cf and not is_fldr:
-                pre_attrs = ' data-hl="calc"'
-            else:
-                pre_attrs = ""
-            inner.append(
-                f'<div class="item-block">'
-                f'<div class="item-hdr tag-rem"><span class="icon">{tag}</span>'
-                f'<span class="item-name">{_esc(name)}</span>'
-                f'<span class="item-caret"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></div>'
-                f'<div class="item-body"><pre{pre_attrs}>{body}</pre></div>'
-                f'</div>'
-            )
-
-        # Changed
-        for item in changed:
-            name = item["name"]
-            tag = "📁" if item.get("is_folder") else "🔄"
-            diff_lines = item.get("diff_lines", [])
+        def _changed(entry):
+            tag = "📁" if entry.get("is_folder") else "🔄"
             body_parts = []
+            diff_lines = entry.get("diff_lines", [])
             if diff_lines:
-                diff_html = _diff_pre(diff_lines)
-                if is_cf:
-                    pre_attrs = ' data-hl="calc" data-diff="1"'
-                elif is_script:
-                    pre_attrs = ' data-hl="step" data-diff="1"'
-                else:
-                    pre_attrs = ""
-                body_parts.append(f"<pre{pre_attrs}>{diff_html}</pre>")
+                body_parts.append(f"<pre{_hl(entry, diff=True)}>{_diff_pre(diff_lines)}</pre>")
+            elif entry.get("renamed") and not entry.get("behavior_lines"):
+                body_parts.append('<p class="item-note">Content identical — only the name differs.</p>')
             # Layout-object behavior delta (Diff-specific — separate from rendered_text).
-            behav = item.get("behavior_lines", [])
+            behav = entry.get("behavior_lines", [])
             if behav:
                 body_parts.append(
                     '<div class="behav-lbl">⚡ Layout behavior — hide / conditional formatting</div>'
                     f'<pre>{_diff_pre(behav)}</pre>')
-            inner.append(
-                f'<div class="item-block">'
-                f'<div class="item-hdr tag-chg"><span class="icon">{tag}</span>'
-                f'<span class="item-name">{_esc(name)}</span>{_flags_html(item)}'
-                f'<span class="item-caret"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></div>'
-                f'<div class="item-body">{"".join(body_parts)}</div>'
-                f'</div>'
-            )
+            return _item_block("tag-chg", tag, entry, "".join(body_parts))
+
+        inner = []
+        inner.extend(_whole(e, "tag-add") for e in sec.get("added", []))
+        inner.extend(_whole(e, "tag-rem") for e in sec.get("removed", []))
+        inner.extend(_changed(e) for e in sec.get("changed", []))
 
         # Fields (special table grouping)
-        if tables:
-            for tbl in tables:
-                tname = tbl["name"]
-                inner.append(f'<div class="tbl-name">{_esc(tname)}</div>')
-                for fn in tbl.get("added", []):
-                    inner.append(f'<div class="field-row field-add">✅ {_esc(fn)}</div>')
-                for fn in tbl.get("removed", []):
-                    inner.append(f'<div class="field-row field-rem">❌ {_esc(fn)}</div>')
-                for fc in tbl.get("changed", []):
-                    diff_html = _diff_pre(fc.get("diff_lines", []))
-                    inner.append(
-                        f'<div class="item-block">'
-                        f'<div class="item-hdr tag-chg"><span class="icon">🔄</span>'
-                        f'<span class="item-name">{_esc(fc["name"])}</span>{_flags_html(fc)}'
-                        f'<span class="item-caret"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></div>'
-                        f'<div class="item-body"><pre data-hl="calc" data-diff="1">{diff_html}</pre></div>'
-                        f'</div>'
-                    )
+        for tbl in (tables or []):
+            inner.append(f'<div class="tbl-name">{_esc(tbl["name"] or "(no table)")}</div>')
+            inner.extend(_whole(e, "tag-add") for e in tbl.get("added", []))
+            inner.extend(_whole(e, "tag-rem") for e in tbl.get("removed", []))
+            inner.extend(_changed(e) for e in tbl.get("changed", []))
+
+        # Not aligned — every item the chosen key could not pair, shown on its own side.
+        unaligned = sec.get("unaligned", [])
+        for ambiguous, title in ((True, "Not aligned — ambiguous name/ID"),
+                                 (False, "Not aligned — missing matching key")):
+            group = [e for e in unaligned if bool(e.get("ambiguous")) == ambiguous]
+            if not group:
+                continue
+            inner.append(f'<div class="una-lbl">{_esc(title)}</div>')
+            inner.extend(_whole(e, "tag-una") for e in group)
 
         sec_blocks.append(
             f'<div class="sec-block" id="sec-{_esc(key)}" data-sec="{_esc(key)}">'
@@ -890,7 +892,13 @@ def _render_html(data: dict, filename: str = "diff.html", syntax_palettes: objec
         )
 
     total = meta["total"]
+    unaligned = meta.get("unaligned", 0)
+    align_label, align_text = _ALIGN_TEXT.get(meta.get("alignment", "id"), _ALIGN_TEXT["id"])
     return _HTML.format(
+        unaligned_html=(f' &nbsp;·&nbsp; <strong class="una">{unaligned}</strong> not aligned — review below'
+                        if unaligned else ""),
+        align_label=_esc(align_label),
+        align_text=_esc(align_text),
         title=f"CorpusFM Diff — {_esc(meta['label_a'])} ↔ {_esc(meta['label_b'])}",
         css=_CSS + "\n" + palette_css(selected),
         calculation_palette=selected.calculation,
@@ -936,7 +944,7 @@ def generate_diff_html(inp: "ArtifactDiffInput", syntax_palettes: object = None)
     meta = data["metadata"]
     ts_a = inp.meta_a.timestamp
     ts_b = inp.meta_b.timestamp
-    out_name = f"{meta['fm_key']}_{ts_a}_vs_{ts_b}_diff.html"
+    out_name = f"{meta['fm_key']}_{ts_a}_vs_{ts_b}_by{meta['alignment']}_diff.html"
     html = _render_html(data, filename=out_name, syntax_palettes=syntax_palettes)
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="corpusfm_diff_"))

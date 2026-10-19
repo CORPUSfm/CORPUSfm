@@ -103,10 +103,14 @@ def record_arrival(backend, storage_ref: str, *, filename: str = "", origin: str
                              "byte_size": byte_size, "name": name})
 
 
-def record_diff(backend, ref_a: str, ref_b: str, *, label_a: str = "", label_b: str = "") -> None:
-    """One Diff row spanning both artifacts (each side surfaces it — UUIDStorage/UUIDRelatedStorage)."""
-    record_history(backend, DIFF, storage_ref=ref_a, related_ref=ref_b,
-                   snapshot={"label_a": label_a, "label_b": label_b})
+def record_diff(backend, ref_a: str, ref_b: str, *, label_a: str = "", label_b: str = "",
+                alignment: str = "") -> None:
+    """One Diff row spanning both artifacts (each side surfaces it — UUIDStorage/UUIDRelatedStorage).
+    ``alignment`` is the pairing mode the Diff used (packet 1425); a row without it predates modes."""
+    snap = {"label_a": label_a, "label_b": label_b}
+    if alignment:
+        snap["alignment"] = alignment
+    record_history(backend, DIFF, storage_ref=ref_a, related_ref=ref_b, snapshot=snap)
 
 
 def record_explorer(backend, storage_ref: str, *, label: str = "") -> None:

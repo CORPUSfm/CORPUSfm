@@ -92,6 +92,13 @@
                   :title="canExplore ? 'Open the selected in Explorer' : 'Select schema artifacts (a clip / patch / script / calc has no Explorer lens)'" @click="selExplore()">Explore</button>
           <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!canDiff"
                   :title="canDiff ? 'Compare the two' : 'Select exactly 2 diffable schema artifacts'" @click="selDiff()">Diff</button>
+          {# How Diff pairs objects (packet 1425): two independent modes, never a blend. #}
+          <span class="cfm-seg" role="group" aria-label="Align Diff by" title="Align Diff by serial ID or by exact name">
+            <button type="button" class="cfm-seg-btn" :class="diffAlign === 'id' ? 'cfm-seg-btn--on' : ''"
+                    :aria-pressed="diffAlign === 'id' ? 'true' : 'false'" @click="diffAlign = 'id'">By ID</button>
+            <button type="button" class="cfm-seg-btn" :class="diffAlign === 'name' ? 'cfm-seg-btn--on' : ''"
+                    :aria-pressed="diffAlign === 'name' ? 'true' : 'false'" @click="diffAlign = 'name'">By Name</button>
+          </span>
           <span class="cfm-tool-sep"></span>
           <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!canPatch"
                   :title="canPatch ? 'Generate an ISV patch (older = baseline)' : 'Select 2 SaveAsXML versions of the same file'" @click="selPatch()">ISV</button>
@@ -385,7 +392,17 @@
               <tr :class="{ 'cfm-muted': !d.exists }">
                 <td x-text="d.label_a + '  ↔  ' + d.label_b"></td>
                 <td class="cfm-muted"><time x-cfm-time="d.ts || d.ts_display"></time></td>
-                <td><button type="button" class="cfm-btn cfm-btn--sm" :disabled="!d.exists" @click="reDiff(d)">Re-run</button></td>
+                <td class="cfm-muted" x-text="alignLabel(d)"></td>
+                <td>
+                  {# Re-run regenerates from this row's exact pair; the selector picks the mode (packet 1425). #}
+                  <span class="cfm-seg" role="group" aria-label="Re-run aligned by">
+                    <button type="button" class="cfm-seg-btn" :class="d.rerunAlign === 'id' ? 'cfm-seg-btn--on' : ''"
+                            :aria-pressed="d.rerunAlign === 'id' ? 'true' : 'false'" @click="d.rerunAlign = 'id'">ID</button>
+                    <button type="button" class="cfm-seg-btn" :class="d.rerunAlign === 'name' ? 'cfm-seg-btn--on' : ''"
+                            :aria-pressed="d.rerunAlign === 'name' ? 'true' : 'false'" @click="d.rerunAlign = 'name'">Name</button>
+                  </span>
+                  <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!d.exists" @click="reDiff(d)">Re-run</button>
+                </td>
               </tr>
             </template>
           </table>
@@ -1165,6 +1182,7 @@ function libraryPage() {
     recentOpen: false,
     recentTab:  'Explorer',
     recent:     { explores: [], diffs: [], merges: [], patches: [] },
+    diffAlign:  'id',   // a NEW Diff pairs by serial ID unless the user picks Name (packet 1425)
 
     tagNames:    [],
 
@@ -1360,7 +1378,8 @@ function libraryPage() {
         const r = await fetch('/api/overview');
         const d = await r.json();
         this.recent = {
-          explores: d.explores || [], diffs: d.diffs || [],
+          explores: d.explores || [],
+          diffs: (d.diffs || []).map(x => Object.assign({}, x, { rerunAlign: x.alignment || 'name' })),
           merges:   d.merges   || [], patches: d.patches || [],
         };
       } catch (_) {}
@@ -1383,12 +1402,18 @@ function libraryPage() {
       try {
         const r = await fetch('/api/generate/diff', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ artifact_a: d.artifact_a, artifact_b: d.artifact_b, record_history: false }),
+          body: JSON.stringify({ artifact_a: d.artifact_a, artifact_b: d.artifact_b, record_history: false,
+                                 alignment: d.rerunAlign || d.alignment || 'name' }),
         });
         const data = await r.json();
         if (data.error) { this.taskError = data.error; window.cfmResolvePending(pending, null, data.error); return; }
         window.cfmTrackInTab(pending, data.task_id);
       } catch (err) { this.taskError = String(err); window.cfmResolvePending(pending, null, String(err)); }
+    },
+    // A record from before modes existed paired by name; it says so rather than passing as new.
+    alignLabel(d) {
+      if (d.alignment_legacy) return 'By Name (legacy)';
+      return d.alignment === 'id' ? 'By ID' : 'By Name';
     },
     openRecentArtifact(rp) { this.recentOpen = false; this.openDetail(rp); },
     _selRows() { return this.selected.map(rp => this.selData[rp]).filter(Boolean); },
@@ -1492,7 +1517,7 @@ function libraryPage() {
       try {
         const resp = await fetch('/api/generate/diff', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ artifact_a: r[0].uuid, artifact_b: r[1].uuid }),
+          body: JSON.stringify({ artifact_a: r[0].uuid, artifact_b: r[1].uuid, alignment: this.diffAlign }),
         });
         const d = await resp.json();
         if (d.error) { this.taskError = d.error; window.cfmResolvePending(pending, null, d.error); return; }

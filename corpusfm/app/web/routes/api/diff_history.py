@@ -21,7 +21,8 @@ async def list_history() -> JSONResponse:
     from corpusfm.app.diff_history import groom_diff_history
     result = groom_diff_history()
     return JSONResponse({
-        "entries": [e.to_dict() for e in result["entries"]],
+        "entries": [{**e.to_dict(), "alignment": e.effective_alignment,
+                     "alignment_legacy": e.alignment_legacy} for e in result["entries"]],
         "removed": result["removed"],
     })
 

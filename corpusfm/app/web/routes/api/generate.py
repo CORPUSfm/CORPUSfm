@@ -1,7 +1,7 @@
 """Background HTML generation tasks — Explorer and Diff.
 
 POST /api/generate/explorer  { artifact_path: str }
-POST /api/generate/diff      { artifact_a: str, artifact_b: str }
+POST /api/generate/diff      { artifact_a: str, artifact_b: str, alignment?: "id"|"name" }
 GET  /api/generate/status/{task_id}
 
 Standalone: opens the generated file in the system browser server-side (same machine).
@@ -287,6 +287,12 @@ async def start_diff(request: Request) -> JSONResponse:
     snap_a = body.get("artifact_a") or body.get("snap_a", "")
     snap_b = body.get("artifact_b") or body.get("snap_b", "")
     record_history = body.get("record_history", True)
+    # How the human Diff pairs objects (packet 1425). Absent means the default, By ID; anything
+    # other than the two modes is refused rather than read as one of them.
+    from corpusfm.core.comparator import ALIGN_ID, ALIGNMENTS
+    alignment = body.get("alignment", ALIGN_ID)
+    if alignment not in ALIGNMENTS:
+        return JSONResponse({"error": "alignment must be 'id' or 'name'"}, status_code=400)
     if not snap_a or not snap_b:
         return JSONResponse({"error": "artifact_a and artifact_b required"}, status_code=400)
     (uuids, err) = _resolve_refs([snap_a, snap_b])
@@ -294,7 +300,8 @@ async def start_diff(request: Request) -> JSONResponse:
         return err
     snap_a, snap_b = uuids
     tid = _new_task(kind="generate", target="Diff")
-    _submit(tid, diff_job, snap_a, snap_b, record_history, _syntax_palette_selection(request))
+    _submit(tid, diff_job, snap_a, snap_b, record_history, _syntax_palette_selection(request),
+            alignment)
     return JSONResponse({"task_id": tid})
 
 

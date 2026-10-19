@@ -20,3 +20,5 @@ class ArtifactDiffInput:
     artifact_b: "Artifact"
     meta_a: "ArtifactMeta"
     meta_b: "ArtifactMeta"
+    # How the human Diff pairs objects (packet 1425): "id" (serial ID) or "name". Never a blend.
+    alignment: str = "id"

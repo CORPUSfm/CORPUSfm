@@ -31,6 +31,46 @@ It surfaces, per section:
   otherwise identical.
 - **Relationships, value lists, custom functions, security**, and the rest of the catalog.
 
+## Aligning objects: By ID or By Name
+
+Before it can compare two objects, the Diff has to decide which object in A corresponds to which
+in B. You choose how, with **Align by** beside the Catalog's Diff button:
+
+- **By ID** (the default) pairs objects whose FileMaker internal serial ID is the same, within the
+  same section and kind (a field is scoped by its own table's ID). Two objects with the same ID but
+  different names are shown as **Same ID, different name** — the Diff never claims a rename.
+- **By Name** pairs objects whose name is exactly the same, case-sensitively (a field by its table
+  and field name). This suits two files built separately whose objects have the same names but
+  different internal IDs.
+
+The two modes are independent — neither falls back to the other, and a matching ID or name does not
+prove two objects share a history. Whatever cannot be paired stays visible under **Not aligned**:
+
+- **ambiguous** — more than one object on a side shares the key (for example several `--`
+  folder-end markers by name), so none of them is guessed;
+- **missing matching key** — the object carries no ID (library items, for instance) or no name
+  (relationships and file-access authorizations have none, so By Name never pairs them), or a
+  field's table cannot be resolved to one table with its own unique ID.
+
+Folders, folder-end markers, separators and ordinary objects are kept apart: one never pairs with
+another, even when they share an ID or a name.
+
+The header counts differences and not-aligned items separately, so a report with nothing changed
+still tells you when something needs review.
+
+**Changing the alignment later.** In **Recent activity → Diff**, each comparison shows the mode it
+used; pick the other mode beside **Re-run** to regenerate from the same two stored artifacts — no
+new capture from FileMaker. A comparison made before alignment modes existed shows
+**By Name (legacy)**; re-running it uses today's Name mode, which shows the duplicates the old
+report could hide. A report already open or saved is not changed.
+
+**Content still compares as rendered.** Alignment only decides the pairs. References inside a
+script or calculation are compared as they read, so two objects can still differ where they name
+other objects differently.
+
+The ISV workflow's **View Diff (by name)** always aligns by name, matching how the patch beside it
+pairs objects.
+
 ## Cross-file objects
 
 When an artifact references objects in another file (external table-occurrences and value

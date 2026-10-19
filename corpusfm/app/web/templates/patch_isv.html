@@ -219,7 +219,7 @@
                     Include CORPUSfm export script
                   </label>
                 </template>
-                <button type="button" class="cfm-btn" @click="openDiff()">View Diff</button>
+                <button type="button" class="cfm-btn" @click="openDiff()" title="Pairs objects by exact name, as patch generation does">View Diff (by name)</button>
               </div>
             </div>
           </template>
@@ -241,7 +241,7 @@
                   :href="(window.CFM_PREFIX||'') + '/api/artifact-download/' + encodeURIComponent(patchUuid)">Download .patch</a>
           <a class="cfm-btn"
                   :href="'{{ url_prefix }}/artifacts#detail=' + encodeURIComponent(patchUuid)">View in Artifacts</a>
-          <button type="button" class="cfm-btn" @click="openDiff()">View Diff</button>
+          <button type="button" class="cfm-btn" @click="openDiff()" title="Pairs objects by exact name, as patch generation does">View Diff (by name)</button>
         </div>
         <template x-if="diffError">
           <div class="alert alert-error pw-stage3-err" x-text="diffError"></div>
@@ -842,7 +842,9 @@ function patchWorkspace() {
         const r = await fetch('/api/generate/diff', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ artifact_a: this.artifactA, artifact_b: this.artifactB }),
+          // By NAME, explicitly (packet 1425): patch generation pairs by name, and this view must keep
+          // corresponding to the patch it sits beside rather than inherit the Diff's By-ID default.
+          body:    JSON.stringify({ artifact_a: this.artifactA, artifact_b: this.artifactB, alignment: 'name' }),
         });
         const d = await r.json();
         if (d.error) { this.diffError = d.error; window.cfmResolvePending(pending, null, d.error); return; }

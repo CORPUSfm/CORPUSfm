@@ -48,6 +48,17 @@ class DiffHistoryEntry:
     label_a: str
     label_b: str
     history_id: str = ""
+    # The pairing mode the Diff was generated with (packet 1425). "" = recorded before modes
+    # existed, when every Diff paired by name — read as Name, labelled legacy, never rewritten.
+    alignment: str = ""
+
+    @property
+    def effective_alignment(self) -> str:
+        return self.alignment or "name"
+
+    @property
+    def alignment_legacy(self) -> bool:
+        return not self.alignment
 
     def __post_init__(self) -> None:
         if not self.history_id:
@@ -72,6 +83,7 @@ class DiffHistoryEntry:
             "artifact_b": self.artifact_b,
             "label_a": self.label_a,
             "label_b": self.label_b,
+            "alignment": self.alignment,
         }
 
     @classmethod
@@ -83,6 +95,7 @@ class DiffHistoryEntry:
             label_a=d.get("label_a", "A"),
             label_b=d.get("label_b", "B"),
             history_id=d.get("history_id", "") or d.get("ts", ""),
+            alignment=d.get("alignment", "") or "",
         )
         return entry
 
@@ -160,6 +173,7 @@ def record_diff(
     label_a: str,
     label_b: str,
     path: Optional[Path] = None,
+    alignment: str = "id",
 ) -> None:
     entry = DiffHistoryEntry(
         ts=datetime.now(timezone.utc).isoformat(),
@@ -167,6 +181,7 @@ def record_diff(
         artifact_b=artifact_b,
         label_a=label_a,
         label_b=label_b,
+        alignment=alignment,
     )
     append_diff_history(entry, limit=MAX_DIFF_HISTORY, path=path)
 

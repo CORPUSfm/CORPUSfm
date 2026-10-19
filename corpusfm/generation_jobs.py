@@ -46,7 +46,7 @@ def explorer_job(snap_paths: list, syntax_palettes: object = None) -> dict:
 
 
 def diff_job(snap_a: str, snap_b: str, record_history: bool = True,
-             syntax_palettes: object = None) -> dict:
+             syntax_palettes: object = None, alignment: str = "id") -> dict:
     try:
         from corpusfm.app.web._temp_cleanup import sweep_preview_temp, PREVIEW_TTL_SECONDS
         sweep_preview_temp(PREVIEW_TTL_SECONDS)
@@ -62,7 +62,8 @@ def diff_job(snap_a: str, snap_b: str, record_history: bool = True,
             return {"path": None, "error": "Both artifacts must be ingested before generating a diff. Re-import to generate an artifact."}
         art_a = backend.load_artifact(snap_a)
         art_b = backend.load_artifact(snap_b)
-        inp = ArtifactDiffInput(artifact_a=art_a, artifact_b=art_b, meta_a=meta_a, meta_b=meta_b)
+        inp = ArtifactDiffInput(artifact_a=art_a, artifact_b=art_b, meta_a=meta_a, meta_b=meta_b,
+                                alignment=alignment)
         html_path = generate_diff_html(inp, syntax_palettes=syntax_palettes)
 
         if record_history:
@@ -72,12 +73,14 @@ def diff_job(snap_a: str, snap_b: str, record_history: bool = True,
                        if (hasattr(meta_b, "fm_file") and meta_b.fm_file) else snap_b)
             try:
                 from corpusfm.app.diff_history import record_diff
-                record_diff(artifact_a=snap_a, artifact_b=snap_b, label_a=label_a, label_b=label_b)
+                record_diff(artifact_a=snap_a, artifact_b=snap_b, label_a=label_a, label_b=label_b,
+                            alignment=alignment)
             except Exception:
                 pass
             try:
                 from corpusfm.server.history import record_diff as _record_diff_event
-                _record_diff_event(backend, snap_a, snap_b, label_a=label_a, label_b=label_b)
+                _record_diff_event(backend, snap_a, snap_b, label_a=label_a, label_b=label_b,
+                                   alignment=alignment)
             except Exception:
                 pass
         return {"path": str(html_path), "error": None}

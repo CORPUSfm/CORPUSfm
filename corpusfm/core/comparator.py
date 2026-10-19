@@ -13,6 +13,7 @@ Public API:
 from __future__ import annotations
 
 import difflib
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -222,3 +223,218 @@ def compare_all(result_a: ParseResult, result_b: ParseResult) -> CompareResult:
         calcs=calcs,
         options=options,
     )
+
+
+# ── Report alignment (packet 1425) ────────────────────────────────────────────
+#
+# The human HTML Diff pairs objects through ONE authority per mode, and every source item survives
+# into exactly one entry. `compare_artifacts` above is deliberately left name-keyed: patch build /
+# verification and the MCP compare tools depend on its legacy name-list contract.
+
+ALIGN_ID = "id"
+ALIGN_NAME = "name"
+ALIGNMENTS = (ALIGN_ID, ALIGN_NAME)
+
+PAIRED = "paired"
+ONLY_A = "only_a"
+ONLY_B = "only_b"
+AMBIGUOUS = "ambiguous"
+MISSING_KEY = "missing_key"
+
+_FIELDS_SECTION = "FieldsForTables"
+_TABLE_SECTION = "BaseTableCatalog"
+
+
+@dataclass(frozen=True)
+class AlignedEntry:
+    """One report entry. PAIRED holds one item per side; every other status holds exactly one item,
+    on the side named by ``side``. ``key`` is the matching key the item asserted (None when it has
+    none); ``reason`` says why an item is not aligned."""
+    section: str
+    status: str
+    a: Optional[object] = None
+    b: Optional[object] = None
+    key: Optional[tuple] = None
+    reason: str = ""
+
+    @property
+    def side(self) -> str:
+        return "a" if self.a is not None and self.b is None else ("b" if self.b is not None and self.a is None else "")
+
+    @property
+    def item(self):
+        return self.b if self.b is not None else self.a
+
+
+def _primary_el(item):
+    from corpusfm.core import safe_xml as ET
+    xml = item.xml_sources[0].xml if getattr(item, "xml_sources", None) else ""
+    if not xml:
+        return None
+    try:
+        return ET.fromstring(xml)
+    except ET.ParseError:
+        return None
+
+
+def _asserted(item, el, attr: str) -> str:
+    return (el.get(attr) if el is not None else None) or (item.attributes or {}).get(attr) or ""
+
+
+def item_kind(item) -> str:
+    """The structural kind the source ASSERTS, in ingestion's order (`pipeline._folder_type`):
+    `isFolder` "True" is a folder and "Marker" its `--` end marker; otherwise `isSeparatorItem`
+    "True" is a separator. Any other asserted `isFolder` value is kept distinct, never guessed."""
+    el = _primary_el(item)
+    v = _asserted(item, el, "isFolder")
+    if v == "True":
+        return "folder"
+    if v == "Marker":
+        return "marker"
+    if _asserted(item, el, "isSeparatorItem") == "True":
+        return "separator"
+    if v and v != "False":
+        return f"isFolder={v}"
+    return "folder" if item.is_folder else "object"
+
+
+def item_serial_id(item) -> "tuple[str, str]":
+    """(serial id, reason). The id comes from the stored root attributes and the primary XML's
+    owner identity (ID kind only — never the UUID, item_id or name). Disagreeing evidence is
+    unresolved, not guessed."""
+    from corpusfm.core.identity import ID_KIND, owner_identities
+    found = set()
+    attr = str((item.attributes or {}).get("id") or "").strip()
+    if attr:
+        found.add(attr)
+    el = _primary_el(item)
+    if el is not None:
+        found.update(i.value for i in owner_identities(item.section, el) if i.kind == ID_KIND)
+    if not found:
+        return "", "no serial ID in the stored item"
+    if len(found) > 1:
+        return "", "conflicting serial IDs (" + ", ".join(sorted(found)) + ")"
+    return next(iter(found)), ""
+
+
+def field_context(item) -> "tuple[str, str]":
+    """(table name, field name) from the stored field item, or ("", name) without table context."""
+    name = item.name or ""
+    if "::" in name:
+        t, f = name.split("::", 1)
+        return t, f
+    if item.folder_path:
+        return item.folder_path[0], name
+    return "", name
+
+
+def _table_ids(art) -> dict:
+    """{table name: (serial id, reason)} for ONE snapshot. The parent scope must be owned uniquely
+    both ways: exactly one BaseTable with that name, carrying an id no other BaseTable carries.
+    Anything else yields an empty id and the reason the field cannot be scoped."""
+    tables = [it for it in art.items.values()
+              if it.section == _TABLE_SECTION and item_kind(it) == "object"]
+    ids = [(it.name, *item_serial_id(it)) for it in tables]
+    id_count = Counter(i for _, i, _ in ids if i)
+    by_name: dict = {}
+    for name, sid, _why in ids:
+        by_name.setdefault(name, []).append(sid)
+    out: dict = {}
+    for name, sids in by_name.items():
+        if len(sids) > 1:
+            out[name] = ("", f"parent table '{name}' is ambiguous in this snapshot")
+        elif not sids[0]:
+            why = next(w for n, _i, w in ids if n == name)
+            detail = f" ({why})" if why.startswith("conflicting") else ""
+            out[name] = ("", f"parent table '{name}' has no serial ID{detail}")
+        elif id_count[sids[0]] > 1:
+            out[name] = ("", f"parent table '{name}' ID {sids[0]} is shared by another table in this snapshot")
+        else:
+            out[name] = (sids[0], "")
+    return out
+
+
+def _id_named_sections(art) -> frozenset:
+    """Catalogs whose stored display label IS the serial id (`name_attr: id` in the artifact's own
+    schema mapping — relationships and file-access authorizations carry no name). Such a label is not
+    a name, so By Name must not match on it."""
+    from corpusfm.core.schemas.registry import load_mapping_config
+    cfg, _warn = load_mapping_config(getattr(art.provenance, "catalog_version", "") or "")
+    return frozenset(c["key"] for c in cfg.get("catalogs", []) if c.get("name_attr") == "id")
+
+
+def _alignment_key(item, mode: str, table_ids: dict,
+                   unnamed: frozenset = frozenset()) -> "tuple[Optional[tuple], str]":
+    kind = item_kind(item)
+    sec = item.section
+    if sec == _FIELDS_SECTION and kind == "object":
+        table, fname = field_context(item)
+        if mode == ALIGN_NAME:
+            if not table:
+                return None, "missing table context"
+            if not fname:
+                return None, "missing name"
+            return (sec, kind, table, fname), ""
+        fid, why = item_serial_id(item)
+        if not fid:
+            return None, why
+        if not table:
+            return None, "missing table context"
+        if table not in table_ids:
+            return None, f"parent table '{table}' not found in this snapshot"
+        parent, why = table_ids[table]
+        if not parent:
+            return None, why
+        return (sec, kind, parent, fid), ""
+    if mode == ALIGN_NAME:
+        if sec in unnamed:
+            return None, "no object name (this catalog's label is its serial ID)"
+        if not item.name:
+            return None, "missing name"
+        return (sec, kind, item.name), ""
+    sid, why = item_serial_id(item)
+    if not sid:
+        return None, why
+    return (sec, kind, sid), ""
+
+
+def align_artifacts(art_a, art_b, mode: str = ALIGN_ID) -> "list[AlignedEntry]":
+    """Pair the items of two artifacts by exactly one authority (`mode`), losslessly.
+
+    A key pairs only when exactly one item on each side asserts it. A key asserted on one side only
+    is ONLY_A / ONLY_B. Several candidates on either side pair nothing: each candidate becomes its
+    own AMBIGUOUS entry. An item asserting no key is MISSING_KEY. No fallback between modes, no
+    case-folding, no tie-breaking."""
+    if mode not in ALIGNMENTS:
+        raise ValueError(f"unknown alignment {mode!r}")
+    buckets: dict = {}
+    entries: list[AlignedEntry] = []
+    for side, art in (("a", art_a), ("b", art_b)):
+        tids = _table_ids(art)
+        unnamed = _id_named_sections(art) if mode == ALIGN_NAME else frozenset()
+        for item in art.items.values():
+            key, why = _alignment_key(item, mode, tids, unnamed)
+            if key is None:
+                entries.append(AlignedEntry(item.section, MISSING_KEY,
+                                            a=item if side == "a" else None,
+                                            b=item if side == "b" else None, reason=why))
+                continue
+            buckets.setdefault(key, ([], []))[0 if side == "a" else 1].append(item)
+    for key, (la, lb) in buckets.items():
+        sec = key[0]
+        if len(la) == 1 and len(lb) == 1:
+            entries.append(AlignedEntry(sec, PAIRED, a=la[0], b=lb[0], key=key))
+        elif len(la) <= 1 and len(lb) <= 1:
+            if la:
+                entries.append(AlignedEntry(sec, ONLY_A, a=la[0], key=key))
+            else:
+                entries.append(AlignedEntry(sec, ONLY_B, b=lb[0], key=key))
+        else:
+            why = (f"{len(la)} in A and {len(lb)} in B share this "
+                   + ("name" if mode == ALIGN_NAME else "ID"))
+            entries.extend(AlignedEntry(sec, AMBIGUOUS, a=i, key=key, reason=why) for i in la)
+            entries.extend(AlignedEntry(sec, AMBIGUOUS, b=i, key=key, reason=why) for i in lb)
+    entries.sort(key=lambda e: (e.section, (e.item.name or "").lower(), e.item.name or "",
+                                e.a.item_id if e.a is not None else "",
+                                e.b.item_id if e.b is not None else ""))
+    return entries

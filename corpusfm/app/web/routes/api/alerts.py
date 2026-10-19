@@ -236,6 +236,9 @@ async def overview() -> JSONResponse:
                 "ts_display": e.ts.replace("T", " ")[:16] + " UTC",
                 "ts": utc_iso(e.ts, naive_is_utc=True),   # raw instant (packet 1418)
                 "exists": entry_artifacts_exist(e, backend, existing),
+                # The mode it was generated with (packet 1425); a pre-mode record paired by name.
+                "alignment": e.effective_alignment,
+                "alignment_legacy": e.alignment_legacy,
             }
             for e in entries
         ]
