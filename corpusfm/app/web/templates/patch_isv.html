@@ -219,7 +219,7 @@
                     Include CORPUSfm export script
                   </label>
                 </template>
-                <button type="button" class="cfm-btn" @click="openDiff()" title="Pairs objects by exact name, as patch generation does">View Diff (by name)</button>
+                <button type="button" class="cfm-btn" @click="openDiff()" title="Opens aligned By Name, as patch generation pairs objects; the report can switch to By ID">View Diff (by name)</button>
               </div>
             </div>
           </template>
@@ -241,7 +241,7 @@
                   :href="(window.CFM_PREFIX||'') + '/api/artifact-download/' + encodeURIComponent(patchUuid)">Download .patch</a>
           <a class="cfm-btn"
                   :href="'{{ url_prefix }}/artifacts#detail=' + encodeURIComponent(patchUuid)">View in Artifacts</a>
-          <button type="button" class="cfm-btn" @click="openDiff()" title="Pairs objects by exact name, as patch generation does">View Diff (by name)</button>
+          <button type="button" class="cfm-btn" @click="openDiff()" title="Opens aligned By Name, as patch generation pairs objects; the report can switch to By ID">View Diff (by name)</button>
         </div>
         <template x-if="diffError">
           <div class="alert alert-error pw-stage3-err" x-text="diffError"></div>

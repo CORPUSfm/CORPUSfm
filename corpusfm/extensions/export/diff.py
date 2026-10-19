@@ -240,7 +240,7 @@ def _paired_entry(e, mode: str) -> "dict | None":
     return entry
 
 
-def _build_data_from_artifacts(inp: "ArtifactDiffInput") -> dict:
+def _build_data_from_artifacts(inp: "ArtifactDiffInput", generated: "datetime | None" = None) -> dict:
     """Build diff data dict from two Artifact objects — no XML re-parse.
 
     Pairing comes from ONE authority (`align_artifacts`, packet 1425) and every source item lands
@@ -256,7 +256,8 @@ def _build_data_from_artifacts(inp: "ArtifactDiffInput") -> dict:
 
     ts_a = _fmt_ts(inp.meta_a.timestamp)
     ts_b = _fmt_ts(inp.meta_b.timestamp)
-    generated = datetime.now(timezone.utc)   # ONE instant for both generated_at fields (packet 1418)
+    if generated is None:   # ONE instant for both generated_at fields (packet 1418) — and, when a
+        generated = datetime.now(timezone.utc)   # report embeds both views, for both (packet 1426)
 
     by_section: dict = {}
     for e in entries:
@@ -429,7 +430,7 @@ button:focus-visible,a:focus-visible{
 #total-bar{padding:.45rem 1.5rem;font-size:.82rem;color:var(--text-dim);
   border-bottom:1px solid var(--border)}
 #total-bar strong{color:var(--text)}
-#summary{padding:.6rem 1.5rem;display:flex;flex-wrap:wrap;gap:.4rem;
+.summary{padding:.6rem 1.5rem;display:flex;flex-wrap:wrap;gap:.4rem;
   position:sticky;top:0;z-index:100;background:var(--bg);
   border-bottom:1px solid var(--border)}
 .sum-card{background:var(--surface);border:none;border-radius:4px;
@@ -448,7 +449,7 @@ button:focus-visible,a:focus-visible{
 .cf-cmt{color:var(--calc-comment)}.cf-str{color:var(--calc-string)}.cf-num{color:var(--calc-number)}
 .cf-field{color:var(--calc-field)}.cf-func{color:var(--calc-function)}.cf-kw{color:var(--calc-keyword)}
 .cf-op{color:var(--calc-operator)}
-#content{padding:.5rem 1.5rem 2.5rem}
+.content{padding:.5rem 1.5rem 2.5rem}
 .sec-block{margin-bottom:1.25rem}
 .sec-hdr{font-size:.9rem;font-weight:700;color:var(--primary);padding:.45rem 0;
   margin-bottom:.5rem;cursor:pointer;
@@ -497,8 +498,22 @@ button:focus-visible,a:focus-visible{
 .field-row{font-size:.78rem;padding:.15rem .6rem;border-radius:4px;margin:.1rem 0}
 .field-add{background:var(--diff-add-bg);color:var(--diff-add)}
 .field-rem{background:var(--diff-rem-bg);color:var(--diff-rem)}
-#align-bar{padding:.4rem 1.5rem;font-size:.78rem;color:var(--text-dim);border-bottom:1px solid var(--border)}
-#align-bar strong{color:var(--text)}
+.align-bar{padding:.4rem 1.5rem;font-size:.78rem;color:var(--text-dim);border-bottom:1px solid var(--border)}
+.align-bar strong{color:var(--text)}
+.align-ctl{display:flex;align-items:center;gap:.4rem;flex-shrink:0;font-size:.78rem;color:var(--text-dim)}
+.align-ctl[hidden],[data-view][hidden],.align-err[hidden]{display:none}
+.seg{display:inline-flex;border:1px solid var(--border-2);border-radius:5px;overflow:hidden}
+.seg-btn{font:inherit;font-size:.76rem;padding:.25rem .65rem;border:0;background:transparent;
+  color:var(--text-3);cursor:pointer}
+.seg-btn[aria-pressed="true"]{background:var(--primary-tint);color:var(--primary);font-weight:600}
+.align-err{padding:.4rem 1.5rem;font-size:.8rem;color:var(--diff-rem);background:var(--diff-rem-bg);
+  border-bottom:1px solid var(--diff-rem-bd)}
+@media (max-width:640px){
+  #hdr{flex-wrap:wrap;padding:.6rem 1rem}
+  #hdr .sub{flex-basis:100%;order:3}
+  .align-ctl{order:4}
+  #total-bar,.align-bar,.summary,.content,.align-err{padding-left:1rem;padding-right:1rem}
+}
 .una{color:var(--warning)}
 .tag-una{background:var(--surface-2);border:1px dashed var(--border-2);color:var(--text-2)}
 .una-lbl{font-size:.72rem;font-weight:700;color:var(--warning);text-transform:uppercase;
@@ -518,7 +533,7 @@ button:focus-visible,a:focus-visible{
 
 _HTML = """\
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-alignment="{initial}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -535,6 +550,7 @@ _HTML = """\
   <div id="hdr-wordmark-light">{header_wordmark_light}</div>
   <h1>Diff</h1>
   <div class="sub">{label_a} &nbsp;↔&nbsp; {label_b}</div>
+  <div id="align-ctl" class="align-ctl" hidden><span id="align-lbl">Align by</span><span class="seg" role="group" aria-labelledby="align-lbl">{align_buttons}</span></div>
   <div id="hdr-btns">
     <button id="theme-btn" class="icon-btn" type="button" onclick="_toggleTheme()" title="Toggle theme">
       <svg id="theme-sun" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
@@ -545,23 +561,58 @@ _HTML = """\
     </button>
   </div>
 </div>
+<div id="align-err" class="align-err" role="alert" hidden></div>
 <div id="total-bar">
-  <strong>{total}</strong> difference{total_s}{unaligned_html} &nbsp;·&nbsp; <time data-cfm-instant="{ts_a_utc}">{ts_a} UTC</time> vs <time data-cfm-instant="{ts_b_utc}">{ts_b} UTC</time>
+  {counts_html} &nbsp;·&nbsp; <time data-cfm-instant="{ts_a_utc}">{ts_a} UTC</time> vs <time data-cfm-instant="{ts_b_utc}">{ts_b} UTC</time>
   &nbsp;·&nbsp; ingested A {build_a} / B {build_b}
   &nbsp;·&nbsp; Generated <time data-cfm-instant="{generated_at_utc}">{generated_at}</time> &nbsp;·&nbsp; CorpusFM {app_version}
 </div>
-<div id="align-bar"><strong>Aligned {align_label}.</strong> {align_text} A matching key does not establish that two objects share a lineage, and no rename is inferred.</div>
-<div id="summary">
-{summary_cards}
-</div>
-<div id="content">
-{sections_html}
-</div>
+{views_html}
 <button id="back-top" onclick="window.scrollTo({{top:0,behavior:'smooth'}})" title="Back to top">↑ Top</button>
 <script>
+// Both prepared comparisons ship in this one file (packet 1426); the control only changes which is
+// visible. The saved copy keeps both views and the active one, and is named after the active one.
+var _ALIGN_FILENAMES = {filenames};
+function _activeAlign() {{ return document.documentElement.getAttribute('data-alignment') || 'id'; }}
+function _applyAlign(mode) {{
+  var views = Array.prototype.slice.call(document.querySelectorAll('[data-view]'));
+  if (!views.some(function(v) {{ return v.getAttribute('data-view') === mode && v.classList.contains('view'); }}))
+    throw new Error('this report holds no "' + mode + '" view');
+  views.forEach(function(v) {{
+    if (v.getAttribute('data-view') === mode) v.removeAttribute('hidden'); else v.setAttribute('hidden', '');
+  }});
+  document.querySelectorAll('#align-ctl [data-mode]').forEach(function(b) {{
+    b.setAttribute('aria-pressed', b.getAttribute('data-mode') === mode ? 'true' : 'false');
+  }});
+  document.documentElement.setAttribute('data-alignment', mode);
+}}
+function _switchAlign(mode) {{
+  var prev = _activeAlign(), err = document.getElementById('align-err');
+  try {{
+    _applyAlign(mode);
+    err.textContent = ''; err.setAttribute('hidden', '');
+  }} catch (e) {{
+    try {{ _applyAlign(prev); }} catch (_) {{}}
+    err.textContent = 'Could not switch the alignment (' + e.message + '). Still showing ' +
+      (prev === 'name' ? 'By Name' : 'By ID') + '.';
+    err.removeAttribute('hidden');
+  }}
+}}
+(function() {{
+  var ctl = document.getElementById('align-ctl');
+  ctl.removeAttribute('hidden');   // switching needs script: the no-script page shows only its initial view
+  ctl.addEventListener('click', function(e) {{
+    var b = e.target.closest('[data-mode]');
+    if (b) _switchAlign(b.getAttribute('data-mode'));
+  }});
+  _switchAlign(_activeAlign());    // a reopened saved copy shows exactly what was saved
+}})();
 async function _saveDiff() {{
-  var filename = {filename};
-  var html = '<!DOCTYPE html>\\n' + document.documentElement.outerHTML;
+  var filename = _ALIGN_FILENAMES[_activeAlign()] || _ALIGN_FILENAMES.id;
+  var copy = document.documentElement.cloneNode(true);
+  // The saved file must not claim switching works before its own script runs.
+  copy.querySelector('#align-ctl').setAttribute('hidden', '');
+  var html = '<!DOCTYPE html>\\n' + copy.outerHTML;
   var blob = new Blob([html], {{type: 'text/html; charset=utf-8'}});
   if (window.showSaveFilePicker) {{
     try {{
@@ -626,34 +677,33 @@ function _toggleTheme() {{
   document.documentElement.setAttribute('data-theme', t);
   try {{ localStorage.setItem('fmc_theme', t); }} catch(e) {{}}
 }}
-// Section accordion — starts open, click closes
-document.querySelectorAll('.sec-hdr').forEach(function(hdr) {{
-  var block = hdr.closest('.sec-block');
-  var body = block.querySelector('.sec-body');
-  hdr.addEventListener('click', function() {{
+// ONE delegated click path for every view (packet 1426): section accordion (starts open, click
+// closes), item accordion (starts closed, click opens), summary card → its own view's section.
+// Nothing is bound per element, so switching views never adds or loses a handler.
+document.addEventListener('click', function(e) {{
+  var hdr = e.target.closest('.sec-hdr');
+  if (hdr) {{
+    var block = hdr.closest('.sec-block');
     block.classList.toggle('closed');
-    body.style.display = block.classList.contains('closed') ? 'none' : '';
-  }});
-}});
-// Item accordion — starts closed, click opens
-document.querySelectorAll('.item-hdr').forEach(function(hdr) {{
-  var body = hdr.nextElementSibling;
-  hdr.addEventListener('click', function() {{
-    body.classList.toggle('open');
-    hdr.classList.toggle('open');
-  }});
-}});
-// Scroll to section if clicked from summary
-document.querySelectorAll('.sum-card[data-sec]').forEach(card => {{
-  card.addEventListener('click', () => {{
-    const el = document.getElementById('sec-' + card.dataset.sec);
+    block.querySelector('.sec-body').style.display = block.classList.contains('closed') ? 'none' : '';
+    return;
+  }}
+  var ih = e.target.closest('.item-hdr');
+  if (ih) {{
+    ih.nextElementSibling.classList.toggle('open');
+    ih.classList.toggle('open');
+    return;
+  }}
+  var card = e.target.closest('.sum-card[data-target]');
+  if (card) {{
+    var el = document.getElementById(card.getAttribute('data-target'));
     if (el) el.scrollIntoView({{behavior: 'smooth'}});
-  }});
+  }}
 }});
 // Keyboard navigation: j/k = next/prev section, t = top, ? = shortcut help
 (function() {{
   var _kbdEl = null;
-  function _secHdrs() {{ return Array.from(document.querySelectorAll('.sec-hdr')); }}
+  function _secHdrs() {{ return Array.from(document.querySelectorAll('.view:not([hidden]) .sec-hdr')); }}
   document.addEventListener('keydown', function(e) {{
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.key === 'Escape') {{
@@ -782,11 +832,12 @@ def _item_block(cls: str, icon: str, entry: dict, body_html: str) -> str:
             f'</div>')
 
 
-def _render_html(data: dict, filename: str = "diff.html", syntax_palettes: object = None) -> str:
-    from corpusfm.extensions.export.syntax_palettes import palette_css, resolve_selection
-    selected = resolve_selection(syntax_palettes)
+def _render_view(data: dict) -> dict:
+    """The mode-specific fragments of ONE comparison: headline counts, mode explanation, summary
+    cards and sections. Section ids carry the mode so two embedded views never share an id."""
     meta = data["metadata"]
     sections = data["sections"]
+    mode = meta.get("alignment", "id")
 
     # Summary cards
     cards = []
@@ -801,7 +852,7 @@ def _render_html(data: dict, filename: str = "diff.html", syntax_palettes: objec
         if unaligned: parts.append(f'<span class="una" title="Not aligned — review">?{unaligned}</span>')
         counts = "&nbsp;".join(parts) if parts else "—"
         cards.append(
-            f'<div class="sum-card" data-sec="{_esc(key)}">'
+            f'<div class="sum-card" data-sec="{_esc(key)}" data-target="sec-{mode}-{_esc(key)}">'
             f'<div class="sec-name">{_esc(label)}</div>'
             f'<div class="counts">{counts}</div>'
             f'</div>'
@@ -881,7 +932,7 @@ def _render_html(data: dict, filename: str = "diff.html", syntax_palettes: objec
             inner.extend(_whole(e, "tag-una") for e in group)
 
         sec_blocks.append(
-            f'<div class="sec-block" id="sec-{_esc(key)}" data-sec="{_esc(key)}">'
+            f'<div class="sec-block" id="sec-{mode}-{_esc(key)}" data-sec="{_esc(key)}">'
             f'<div class="sec-hdr">'
             f'<span class="sec-label">{_esc(label)}</span>'
             f'<span class="sec-counts">{counts_str}</span>'
@@ -893,12 +944,47 @@ def _render_html(data: dict, filename: str = "diff.html", syntax_palettes: objec
 
     total = meta["total"]
     unaligned = meta.get("unaligned", 0)
-    align_label, align_text = _ALIGN_TEXT.get(meta.get("alignment", "id"), _ALIGN_TEXT["id"])
+    align_label, align_text = _ALIGN_TEXT.get(mode, _ALIGN_TEXT["id"])
+    counts = (f'<strong>{total}</strong> difference{"" if total == 1 else "s"}'
+              + (f' &nbsp;·&nbsp; <strong class="una">{unaligned}</strong> not aligned — review below'
+                 if unaligned else ""))
+    align = (f'<strong>Aligned {_esc(align_label)}.</strong> {_esc(align_text)} A matching key does not '
+             'establish that two objects share a lineage, and no rename is inferred.')
+    return {"mode": mode, "counts": counts, "align": align,
+            "cards": "\n".join(cards), "sections": "\n".join(sec_blocks)}
+
+
+def _render_html(views: "dict[str, dict]", initial: str, filenames: "dict[str, str]",
+                 syntax_palettes: object = None) -> str:
+    """ONE page holding every prepared comparison of the same A/B pair (packet 1426). Only the
+    `initial` view is visible; the in-report control switches which one is, with no recomputation."""
+    from corpusfm.extensions.export.syntax_palettes import palette_css, resolve_selection
+    selected = resolve_selection(syntax_palettes)
+    if initial not in views:
+        raise ValueError(f"no prepared view for alignment {initial!r}")
+    meta = views[initial]["metadata"]
+    rendered = [_render_view(views[m]) for m in views]
+
+    def _hid(v):
+        return "" if v["mode"] == initial else " hidden"
+
+    counts_html = "".join(f'<span class="v-counts" data-view="{v["mode"]}"{_hid(v)}>{v["counts"]}</span>'
+                          for v in rendered)
+    views_html = "\n".join(
+        f'<div class="view" data-view="{v["mode"]}"{_hid(v)}>'
+        f'<div class="align-bar">{v["align"]}</div>'
+        f'<div class="summary">\n{v["cards"]}\n</div>'
+        f'<div class="content">\n{v["sections"]}\n</div>'
+        f'</div>' for v in rendered)
+    buttons = "".join(
+        f'<button type="button" class="seg-btn" data-mode="{v["mode"]}" '
+        f'aria-pressed="{"true" if v["mode"] == initial else "false"}">'
+        f'{_esc(_ALIGN_TEXT.get(v["mode"], _ALIGN_TEXT["id"])[0])}</button>' for v in rendered)
     return _HTML.format(
-        unaligned_html=(f' &nbsp;·&nbsp; <strong class="una">{unaligned}</strong> not aligned — review below'
-                        if unaligned else ""),
-        align_label=_esc(align_label),
-        align_text=_esc(align_text),
+        initial=_esc(initial),
+        align_buttons=buttons,
+        counts_html=counts_html,
+        views_html=views_html,
         title=f"CorpusFM Diff — {_esc(meta['label_a'])} ↔ {_esc(meta['label_b'])}",
         css=_CSS + "\n" + palette_css(selected),
         calculation_palette=selected.calculation,
@@ -908,8 +994,6 @@ def _render_html(data: dict, filename: str = "diff.html", syntax_palettes: objec
         header_wordmark_light=_load_asset("corpusfm-wordmark-lightmode.svg"),
         label_a=_esc(meta["label_a"]),
         label_b=_esc(meta["label_b"]),
-        total=total,
-        total_s="" if total == 1 else "s",
         ts_a=_esc(meta["timestamp_a"]),
         ts_b=_esc(meta["timestamp_b"]),
         ts_a_utc=_esc(meta.get("timestamp_a_utc", "")),
@@ -920,10 +1004,8 @@ def _render_html(data: dict, filename: str = "diff.html", syntax_palettes: objec
         app_version=_esc(meta["app_version"]),
         build_a=_esc(meta.get("build_a", "?")),
         build_b=_esc(meta.get("build_b", "?")),
-        summary_cards="\n".join(cards),
-        sections_html="\n".join(sec_blocks),
         highlight_js=_load_highlight_asset(),
-        filename=_js_str(filename),
+        filenames=json.dumps(filenames).replace("</", "<\\/"),
     )
 
 
@@ -939,13 +1021,24 @@ def generate_diff_html(inp: "ArtifactDiffInput", syntax_palettes: object = None)
 
     if not isinstance(inp, ArtifactDiffInput):
         raise TypeError("generate_diff_html requires an ArtifactDiffInput")
-    data = _build_data_from_artifacts(inp)
+    from dataclasses import replace
+    from corpusfm.core.comparator import ALIGNMENTS
+    initial = inp.alignment
+    if initial not in ALIGNMENTS:
+        raise ValueError(f"unknown alignment {initial!r}")
+    # Both comparisons of the SAME loaded pair, built here and embedded (packet 1426): switching in
+    # the report shows the other prepared view. Either build failing fails the whole report, so a
+    # report never advertises a mode it does not carry.
+    generated = datetime.now(timezone.utc)
+    views = {m: _build_data_from_artifacts(replace(inp, alignment=m), generated=generated)
+             for m in ALIGNMENTS}
 
-    meta = data["metadata"]
+    fm_key = views[initial]["metadata"]["fm_key"]
     ts_a = inp.meta_a.timestamp
     ts_b = inp.meta_b.timestamp
-    out_name = f"{meta['fm_key']}_{ts_a}_vs_{ts_b}_by{meta['alignment']}_diff.html"
-    html = _render_html(data, filename=out_name, syntax_palettes=syntax_palettes)
+    filenames = {m: f"{fm_key}_{ts_a}_vs_{ts_b}_by{m}_diff.html" for m in ALIGNMENTS}
+    out_name = filenames[initial]
+    html = _render_html(views, initial, filenames, syntax_palettes=syntax_palettes)
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="corpusfm_diff_"))
     # Slugify the ON-DISK name only (packet 082): fm_key derives from the untrusted FM `File=`

@@ -34,7 +34,8 @@ It surfaces, per section:
 ## Aligning objects: By ID or By Name
 
 Before it can compare two objects, the Diff has to decide which object in A corresponds to which
-in B. You choose how, with **Align by** beside the Catalog's Diff button:
+in B. You choose how with **Align by** in the Diff's own header, and you can switch back and forth
+as often as you like:
 
 - **By ID** (the default) pairs objects whose FileMaker internal serial ID is the same, within the
   same section and kind (a field is scoped by its own table's ID). Two objects with the same ID but
@@ -58,18 +59,25 @@ another, even when they share an ID or a name.
 The header counts differences and not-aligned items separately, so a report with nothing changed
 still tells you when something needs review.
 
-**Changing the alignment later.** In **Recent activity → Diff**, each comparison shows the mode it
-used; pick the other mode beside **Re-run** to regenerate from the same two stored artifacts — no
-new capture from FileMaker. A comparison made before alignment modes existed shows
-**By Name (legacy)**; re-running it uses today's Name mode, which shows the duplicates the old
-report could hide. A report already open or saved is not changed.
+**Switching inside the report.** A Diff opens **By ID** unless it was launched another way, and
+both comparisons of the same two artifacts are already inside the report — switching shows the
+other one instantly, with no new capture from FileMaker and no connection to CORPUSfm needed. The
+counts, summary, sections and explanation all change together. **Save As** keeps both comparisons
+and remembers which one you were looking at; the saved file is named for it (`…_byid_diff.html` or
+`…_byname_diff.html`) and still switches when opened offline. Without JavaScript, a report shows only
+the comparison it opened with.
+
+**Recent activity → Diff** shows the mode each comparison opened in and reopens it that way with
+**Re-run**, from the same two stored artifacts. A comparison made before alignment modes existed
+shows **By Name (legacy)**; re-running it uses today's Name mode, which shows the duplicates the old
+report could hide. A report generated before the switch existed does not gain it; re-run it.
 
 **Content still compares as rendered.** Alignment only decides the pairs. References inside a
 script or calculation are compared as they read, so two objects can still differ where they name
 other objects differently.
 
-The ISV workflow's **View Diff (by name)** always aligns by name, matching how the patch beside it
-pairs objects.
+The ISV workflow's **View Diff (by name)** opens By Name, matching how the patch beside it pairs
+objects; the report can still switch to By ID.
 
 ## Cross-file objects
 

@@ -68,7 +68,7 @@
     "corpusfm/app/web/docs/applying-patches.md": "46e982798af6d9b3763cb8f0de5f490ddae661c80cdf5f6072497fa53d75db1c",
     "corpusfm/app/web/docs/artifacts-catalog.md": "b0ca3f32da55185d4e739cb73264480a66bdc202844cdd62cb9998270e8dc77d",
     "corpusfm/app/web/docs/choose-schema-import-path.md": "af677bdf60b97f8316370ea3883563f3b390ea6072ea4a91bfcd0d46516f54d9",
-    "corpusfm/app/web/docs/diff.md": "0becebe10e8cafc0afa18e7097c6e5d5fe3b021ed1d40cde41a7eb8daf657fbc",
+    "corpusfm/app/web/docs/diff.md": "92f4b3aede6e79e8e52cb0f2cb66af7bcc1a33f9a8b000a7d84bb3d8de4c374c",
     "corpusfm/app/web/docs/explorer.md": "1fd540ec1fd31d14664d371bbdb2d910b8f2ef33bd2d5bbaf0a39755ea74a3d3",
     "corpusfm/app/web/docs/file-materialization.md": "4c8fc39d1c1ac4cfe5eca3b6b9fdbd15eaccebc12147db600b0a81f486f0382a",
     "corpusfm/app/web/docs/git-export.md": "6d6cb318389c6cddfd95b359ef14eb121c311ede5ef84549203cd34ebdfdc6a5",
@@ -171,7 +171,7 @@
     "corpusfm/app/web/templates/_help.html": "2704491b9ed3b7ec80cad0010e8db7f6878f0a37f34bc691dd42f9da85a43078",
     "corpusfm/app/web/templates/about.html": "c2bed1de80296ffe32aa9962f83b77f76d6fc06f5d94643f3a7df05543490e5f",
     "corpusfm/app/web/templates/account.html": "4c532095832343a65d51db244a7083b9463d2a5a586ac5aa8f8cecbf30d673ae",
-    "corpusfm/app/web/templates/artifacts.html": "33fe451fed266f2ee58b3dccbf0acebd88cbc5fa8ab189b6e95ca1d65a001679",
+    "corpusfm/app/web/templates/artifacts.html": "7a9991973ffde71c96d06be3ab332c3d63ee6e10307a4853183bf062af059c8e",
     "corpusfm/app/web/templates/base.html": "c936d7c341e294309cce6f7d918f08f8669607afd68cd880b8ef63f96ab6130f",
     "corpusfm/app/web/templates/converting.html": "3eb6d1e2afa25b508099c13c10fbd807f691fb2793ac21aa0a9dccb0fce3fe87",
     "corpusfm/app/web/templates/docs.html": "7ed604676df505d0f2a2e00ddc5d6a9a37f28fdd6b9301d46026c0b76c8ad006",
@@ -183,7 +183,7 @@
     "corpusfm/app/web/templates/needs_upgrade.html": "87dfed8d51d9fd08457945f1a39d9dc9df4ad84f226203414d50416b678cdeee",
     "corpusfm/app/web/templates/oauth_consent.html": "9c496b434674c9c79c7b909e3bc963de17fb55b7bafd1a957aff9c667bcdd84f",
     "corpusfm/app/web/templates/oauth_error.html": "cf6e12fe073deb1f947df55a722f9f072c5b99c614cb0e835d38dbff4386de1f",
-    "corpusfm/app/web/templates/patch_isv.html": "44e21486afd820f2e689c15a72e244be853438cf7282a343541a2182aa6a5cbb",
+    "corpusfm/app/web/templates/patch_isv.html": "b61f2f6083cb83a58a54e44a5a1cb32f5822799d7687775b86e94a430e40ebb0",
     "corpusfm/app/web/templates/queue.html": "b36dd75183a2cc0592bc0f0a40ae5797fe83bf45e8c0789a88fb8cae1b34db38",
     "corpusfm/app/web/templates/reload.html": "b88b2106cf3ba573d06c096463ecef4db84d5bc9c43010451f7933e95cf066b3",
     "corpusfm/app/web/templates/runs.html": "a2803847bacdccd532d891edd9516e35ceea95ebb1299cfd73860d7b989e1c55",
@@ -272,7 +272,7 @@
     "corpusfm/extensions/export/construction.py": "1389af36c853b5f8ac9e2381e6be5e7a06c6229a0a8d79b3df648912d8dd0a75",
     "corpusfm/extensions/export/contracts.py": "44586b983070d0bcaacaf522bdbc1576ebbe79e855f4bcb0a0586380530e607c",
     "corpusfm/extensions/export/coverage_gate.py": "d5e628d0f7d9ed554d3251d08055fed98ee3c18eb3a1ea7c3240b534720c61ba",
-    "corpusfm/extensions/export/diff.py": "24ca0f685330ab4b1df312e5da56b6c8d7ab6800da610984b35edf5388bacfd7",
+    "corpusfm/extensions/export/diff.py": "cc5d48f3796bb4550a2b4b6e1580f6ee9c4866c90b0942f270bf449890fbe987",
     "corpusfm/extensions/export/explorer.py": "b1a388ede62c7a6b8c28dd6972264c569ad41b470974d2cf8b502a56538ae472",
     "corpusfm/extensions/export/patch_build.py": "e1de4dd80044d688346d81b7a84623948e34ec541a66131fb1bbc348d77f0f59",
     "corpusfm/extensions/export/patch_capabilities.yaml": "55557275c694bb47a74844b401312d9f7be4d0a73cc41628e30e4790dc510539",
@@ -529,7 +529,7 @@
     "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
     "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
     "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
-    "release-build.txt": "446aa1680db78e8013564375cf4e484216d85c275ab62cb9e088c0968e7fec41",
+    "release-build.txt": "dd0cb592970e98d8449d5dcc2b92c296084d2d3c769266bbf421b93d59de6572",
     "requirements.txt": "de35ad4921dbea3081d2ecf6a9b214bf801806c4103c9c9b6dd0fb6fdea1c08b",
     "scripts/_release_gate_live.py": "335454a6e3e43c5e0375f7524a33a60647a862637e41dcba453cd474ab7d15b5",
     "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
@@ -3243,10 +3243,10 @@
     "profile_sha256": "06202387046b1750fb47d336abdbaf39b707e54300c04a9a63a3ad91f4e58d59",
     "profile_version": 1
   },
-  "release_build": 3096,
+  "release_build": 3098,
   "schema_version": 2,
   "source_commits": {
-    "application": "8f125eb5e0959272c21f36c342de1a3a62623981",
+    "application": "28ee924b5ca8d78b8afbbb8dc7ca48f8ef88de2e",
     "installer": "10879b8afc715b78675a39b09678fc0c6f109154"
   }
 }
