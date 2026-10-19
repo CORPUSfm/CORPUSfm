@@ -660,6 +660,9 @@ function jobsPage() {
     msgErr: false,
     detail: null, _trap: null,
     jobs: [], jobForm: null, jobMsg: '', savingJob: false, runningJob: {},
+    // Bumped by every job-list read and by closing the panel (packet 1424): a read whose token is no
+    // longer current answered for a panel that has since closed, reopened or changed server.
+    _jobsSeq: 0,
     confirmDelJob: false, _jobTrap: null,
     // The schedule form's server-computed preview + clock envelope (packet 1185).
     preview: { summary: '', next: [], errors: [] },
@@ -979,14 +982,42 @@ function jobsPage() {
       this.confirmOrphanWipe = false;
       this.loadJobs(f.name);
     },
-    closeDetail() { this.detail = null; this.jobForm = null; },
+    closeDetail() { this.detail = null; this.jobForm = null; this._jobsSeq++; },
 
+    // Answers whether the rows were read and applied. A late answer for a panel that is no longer the
+    // one on screen is dropped, and an errored read leaves the current rows alone rather than
+    // blanking them (the route answers {jobs: [], error} on failure).
     async loadJobs(name) {
+      const tok = ++this._jobsSeq, sr = this.serverRef;
       try {
         const r = await fetch(`/api/files/${encodeURIComponent(name)}/jobs` + this._sr());
         const d = await r.json();
+        if (tok !== this._jobsSeq || sr !== this.serverRef || !this.detail || this.detail.name !== name) return false;
+        if (d.error) return false;
         this.jobs = d.jobs || [];
-      } catch (e) { /* non-fatal */ }
+        return true;
+      } catch (e) { return false; }
+    },
+
+    // The job-derived columns of a file row, as `_attach_jobs` computes them for a file with no jobs.
+    _NO_JOB_FIELDS: { job_count: 0, job_tags: [], running: false, has_credential: false,
+                      needs_credential: false, all_verified: false, job_summary: '',
+                      last_run: '', last_run_utc: '', last_status: '', next_run: '' },
+    // Re-reads ONE file's job summary from the read-only file projection (no live discovery) and
+    // patches only its job columns, so a live scan's missing/closed facts and the job-less files it
+    // listed stay on the gallery. Answers whether the readback succeeded.
+    async _refreshFileJobSummary(file, sr) {
+      try {
+        const r = await fetch('/api/files?server_ref=' + encodeURIComponent(sr));
+        const d = await r.json();
+        if (d.error || sr !== this.serverRef) return false;
+        const row = (d.files || []).find(f => f.name === file);
+        const patch = {};
+        for (const k of Object.keys(this._NO_JOB_FIELDS)) patch[k] = row ? row[k] : this._NO_JOB_FIELDS[k];
+        this.files = this.files.map(f => f.name === file ? Object.assign({}, f, patch) : f);
+        if (this.detail && this.detail.name === file) this.detail = Object.assign({}, this.detail, patch);
+        return true;
+      } catch (e) { return false; }
     },
 
     // ── Job-row actions — every one scoped to THIS job's uuid (packet 1143) ──
@@ -1044,7 +1075,8 @@ function jobsPage() {
     startAddJob() {
       this.jobMsg = ''; this.confirmDelJob = false;
       this.jobForm = {
-        is_new: true, name: '', trigger_type: 'manual',
+        // The file's displayed name, editable (packet 1424). Names need not be unique.
+        is_new: true, name: (this.detail && this.detail.name) || '', trigger_type: 'manual',
         server_time: '02:00', weekdays: [], legacy_cron: '',
         script: this.defaultMethod, file_path: '',
         index_on_ingest: true, summarize_on_ingest: true, export_timeout_min: '',
@@ -1162,21 +1194,40 @@ function jobsPage() {
 
     async doDeleteJob() {
       if (this.delJobBusy) return;            // BEFORE any await (packet 1186)
+      // The operation's context, captured before any await (packet 1424): the user may open another
+      // job, file or server while the DELETE is in flight, and nothing below may act on those.
+      const form = this.jobForm;
       this.delJobBusy = true;
       try {
         // Inside the try: a null `jobForm`/`detail` on a delayed invocation must not throw past the
         // finally and strand this control disabled until reload.
         // Addressed by the job's own id (packet 1372-02): the name is a label two jobs may share.
-        const r = await fetch(`/api/jobs/${encodeURIComponent(this.jobForm.id)}`,
-                              { method: 'DELETE' });
+        const id = form.id, jobName = form.name;
+        const file = this.detail && this.detail.name, sr = this.serverRef;
+        const r = await fetch(`/api/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
         const d = await r.json();
         // fetch does not reject on 4xx/5xx — the route's {ok} is the only honest signal.
-        if (!d.ok) { this.jobMsg = d.error || 'Delete failed.'; window.cfmNotify.error(this.jobMsg); return; }
-        this.confirmDelJob = false;           // only on success — a failure keeps Confirm for a retry
-        window.cfmNotify.success(`Job '${name}' deleted.`);
-        this.jobForm = null;
-        await this.loadJobs(file); await this.load();
-      } catch (e) { this.jobMsg = String(e); }
+        if (!d.ok) {
+          const msg = d.error || 'Delete failed.';
+          if (this.jobForm === form) this.jobMsg = msg;
+          window.cfmNotify.error(msg);
+          return;
+        }
+        if (this.jobForm === form) {          // close THIS editor only, never one opened since
+          this.confirmDelJob = false;         // only on success — a failure keeps Confirm for a retry
+          this.jobForm = null;
+        }
+        window.cfmNotify.success(`Job '${jobName}' deleted.`);
+        const here = () => sr === this.serverRef && !!this.detail && this.detail.name === file;
+        // The confirmed deletion is applied locally first, so a failed readback cannot restore it.
+        if (here()) this.jobs = this.jobs.filter(j => (j.id || j.uuid) !== id);
+        let reread = true;
+        // A readback dropped because the panel moved on is not a failure to report.
+        if (here() && !(await this.loadJobs(file)) && here()) reread = false;
+        if (sr === this.serverRef && file && !(await this._refreshFileJobSummary(file, sr))
+            && sr === this.serverRef) reread = false;
+        if (!reread) window.cfmNotify.error(`'${jobName}' was deleted, but the job list could not be re-read — use Refresh.`);
+      } catch (e) { if (this.jobForm === form) this.jobMsg = String(e); else window.cfmNotify.error(String(e)); }
       finally { this.delJobBusy = false; }
     },
 
