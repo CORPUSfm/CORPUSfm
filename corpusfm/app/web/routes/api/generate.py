@@ -148,6 +148,7 @@ def ephemeral_activity_snapshot(now_monotonic: "float | None" = None) -> "list[d
 # {"path", "error"} dict.
 _pool: "concurrent.futures.ProcessPoolExecutor | None" = None
 _pool_lock = threading.Lock()
+_inflight = 0          # submitted jobs whose result has not been recorded yet
 
 
 _SERVER_MAX_WORKERS = 2
@@ -185,6 +186,30 @@ def _get_pool() -> "concurrent.futures.ProcessPoolExecutor":
     return _pool
 
 
+def shutdown_idle_pool() -> bool:
+    """Release the generation pool at application shutdown when no job is in flight (packet 1430).
+
+    uvicorn re-raises the captured SIGTERM once the lifespan has finished, so the process dies by
+    that signal and never reaches the interpreter exit hook that would join the pool: its queue
+    semaphores are reported leaked and a spawned idle worker is orphaned. A pool with work in flight
+    is left exactly as before — draining, cancelling or abandoning that work is an undecided policy.
+    """
+    global _pool
+    with _pool_lock:
+        pool = _pool
+        if pool is None or _inflight:
+            return False
+        _pool = None
+    pool.shutdown(wait=True)
+    return True
+
+
+def _inflight_add(n: int) -> None:
+    global _inflight
+    with _pool_lock:
+        _inflight += n
+
+
 def _submit(tid: str, job_fn, *args) -> None:
     """Submit a generation job to the process pool; record its result into _tasks when done."""
     import time
@@ -198,7 +223,10 @@ def _submit(tid: str, job_fn, *args) -> None:
         except Exception as exc:
             path, error = None, str(exc)
         metrics.generation_finished(bool(path), time.monotonic() - started)
-        _finish_task(tid, Path(path) if path else None, error)
+        try:
+            _finish_task(tid, Path(path) if path else None, error)
+        finally:
+            _inflight_add(-1)
         if path and not build_context().is_server:   # standalone: open locally (no-op in server mode)
             try:
                 import webbrowser
@@ -206,9 +234,11 @@ def _submit(tid: str, job_fn, *args) -> None:
             except Exception:
                 pass
     metrics.generation_submitted()
+    _inflight_add(1)
     try:
         _get_pool().submit(job_fn, *args).add_done_callback(_done)
     except Exception as exc:
+        _inflight_add(-1)
         metrics.generation_finished(False, time.monotonic() - started)
         _finish_task(tid, None, f"Could not start generation: {exc}")
 

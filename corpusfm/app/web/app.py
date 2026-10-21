@@ -300,6 +300,11 @@ def _make_lifespan(mcp_app):
                 availability.reset()         # clear the gate with the process
             except Exception:
                 pass
+            try:
+                from corpusfm.app.web.routes.api.generate import shutdown_idle_pool
+                shutdown_idle_pool()
+            except Exception:
+                logging.getLogger(__name__).debug("generation pool release failed", exc_info=True)
     return _lifespan
 
 

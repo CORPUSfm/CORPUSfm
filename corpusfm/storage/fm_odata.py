@@ -31,6 +31,7 @@ Container fields — raw binary, NOT base64-in-JSON:
 """
 from __future__ import annotations
 
+import enum
 import io
 import json
 import logging
@@ -374,6 +375,17 @@ def _publish_removed(backend, record_uuid: str) -> None:
     catalog.publish_deleted(backend, catalog.TABLE_STORAGE, record_uuid)
 
 
+class DeleteOutcome(enum.Enum):
+    """What a keyed STORAGE delete established (packet 1429). Compare members explicitly: a
+    truthiness test would read FAILED as success, so it raises instead."""
+    DELETED = "deleted"
+    ABSENT = "absent"
+    FAILED = "failed"
+
+    def __bool__(self):
+        raise TypeError("compare a DeleteOutcome explicitly")
+
+
 class FileMakerODataBackend:
     """StorageBackend implementation backed by a FileMaker database via OData v4."""
 
@@ -604,20 +616,27 @@ class FileMakerODataBackend:
         except Exception:
             return len(self.iter_artifact_metas())
 
-    def _delete_record_best_effort(self, record_uuid: str) -> bool:
-        """Compensating delete of a just-created STORAGE record when a follow-up container upload failed
-        (packet 064). Best-effort — logs on failure (a failed compensate leaves a narrow orphan window,
-        far better than an unconditional orphan). Returns whether the delete was confirmed, so the
-        caller can publish the removal (packet 1361-01)."""
+    def _delete_record_best_effort(self, record_uuid: str) -> tuple[DeleteOutcome, str]:
+        """Delete one STORAGE record by UUID and say what that established, with a failure detail.
+
+        Never raises; callers own the logging, because the same 404 is expected before a first
+        create and unexpected during compensation (packet 1429). A record-addressed 404 is accepted
+        as ABSENT only once a bounded read of the STORAGE collection succeeds: FileMaker answers 404
+        for a missing record AND for an undefined entity set, so the 404 alone cannot tell them apart.
+        """
         try:
-            self._session.delete(
-                self._url(f"{self._phys('STORAGE')}('{record_uuid}')")
-            ).raise_for_status()
-            return True
-        except Exception:
-            logger.error("FM OData: compensating delete failed for orphan record %s", record_uuid,
-                         exc_info=True)
-            return False
+            resp = self._session.delete(self._url(f"{self._phys('STORAGE')}('{record_uuid}')"))
+            if resp.status_code != 404:
+                resp.raise_for_status()
+                return DeleteOutcome.DELETED, ""
+        except Exception as exc:
+            return DeleteOutcome.FAILED, f"{type(exc).__name__}: {exc}"
+        try:
+            self._session.get(self._url(self._phys("STORAGE")) + "?$top=0").raise_for_status()
+        except Exception as exc:
+            return DeleteOutcome.FAILED, (f"HTTP 404 on the record, and the STORAGE collection read "
+                                          f"failed: {type(exc).__name__}: {exc}")
+        return DeleteOutcome.ABSENT, ""
 
     def store_artifact(
         self,
@@ -685,8 +704,14 @@ class FileMakerODataBackend:
             # The removal is published even though a create follows: if that create or its container
             # upload fails, the prior record is genuinely gone and the catalog must not keep serving
             # it (packet 1361-01). LocalBackend already did this; the asymmetry was the defect.
-            if self._delete_record_best_effort(record_uuid):
+            #
+            # The QUEUE pre-generates this uuid, so ABSENT is the ordinary first attempt (packet 1429).
+            outcome, detail = self._delete_record_best_effort(record_uuid)
+            if outcome is DeleteOutcome.DELETED or outcome is DeleteOutcome.ABSENT:
                 _publish_removed(self, record_uuid)
+            else:
+                logger.error("FM OData: could not remove a prior attempt %s before re-creating it: %s",
+                             record_uuid, detail)
 
         jor = {
             "Type": artifact_type,
@@ -722,9 +747,16 @@ class FileMakerODataBackend:
             # The removal is published ONLY when the delete was confirmed. A compensating delete that
             # itself failed leaves the record in FileMaker, and telling the catalog it is gone would
             # be the one claim that misleads an administrator (packet 1361-01).
-            if self._delete_record_best_effort(record_uuid):
+            outcome, detail = self._delete_record_best_effort(record_uuid)
+            if outcome is DeleteOutcome.DELETED:
+                _publish_removed(self, record_uuid)
+            elif outcome is DeleteOutcome.ABSENT:
+                logger.warning("FM OData: container upload failed and the record %s it belonged to "
+                               "was already absent", record_uuid)
                 _publish_removed(self, record_uuid)
             else:
+                logger.error("FM OData: compensating delete failed for orphan record %s: %s",
+                             record_uuid, detail)
                 from corpusfm.server import catalog
                 catalog.note_unpublishable_write(catalog.TABLE_STORAGE, record_uuid,
                                                  "store_deliverable (compensation failed)")

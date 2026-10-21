@@ -4830,7 +4830,7 @@ def get_step_exemplar(
                 art = backend.load_artifact(latest.uuid)   # UUID-addressed (packet 085 U3f)
             except Exception:
                 continue
-            items.extend((file_name, it) for it in art.items.values())
+            items.extend((latest.file_name, it) for it in art.items.values())
         if capped:
             scope += f" (scanned first {MAX_SCAN} files; narrow with a tag for full coverage)"
 
