@@ -108,6 +108,8 @@ def _make_lifespan(mcp_app):
     async def _lifespan(app: FastAPI):
         from corpusfm.logging_config import setup_logging
         setup_logging()
+        from corpusfm.app.web.routes.api.generate import accept_generations
+        accept_generations()
         # Publish the informational post-update notice off the startup path. This never opens storage,
         # resets the index, or enqueues derived work; real migrations receive their own lifecycle.
         try:
@@ -280,6 +282,13 @@ def _make_lifespan(mcp_app):
             else:
                 yield
         finally:
+            # Refuse new generations the moment shutdown begins; the running ones are drained last,
+            # against a grace counted from here (packet 1432).
+            try:
+                from corpusfm.app.web.routes.api.generate import stop_accepting
+                stop_accepting()
+            except Exception:
+                pass
             # Shutdown prevents any LATER cycle; it does not join an observation already handed to
             # the privileged one-shot (packet 1281 route step 6).
             if _update_observer is not None:
@@ -301,10 +310,10 @@ def _make_lifespan(mcp_app):
             except Exception:
                 pass
             try:
-                from corpusfm.app.web.routes.api.generate import shutdown_idle_pool
-                shutdown_idle_pool()
+                from corpusfm.app.web.routes.api.generate import shutdown_pool
+                shutdown_pool()
             except Exception:
-                logging.getLogger(__name__).debug("generation pool release failed", exc_info=True)
+                logging.getLogger(__name__).warning("generation pool shutdown failed", exc_info=True)
     return _lifespan
 
 

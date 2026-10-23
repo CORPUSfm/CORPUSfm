@@ -55,7 +55,7 @@
     "corpusfm/app/web/_reabsorb_staging.py": "8abcec061fe78d7752afb8c9dafaceafc03f33ab373a4f897ae679413b159a60",
     "corpusfm/app/web/_staging_guard.py": "2a9c9699557d77f0306b8adda1f313a1b756cbdd21220d7fd352daa3a1ad1d40",
     "corpusfm/app/web/_temp_cleanup.py": "19d149e02c54515a9225ca64e5241306b0fa6863b1906b53c7a178905d5d1171",
-    "corpusfm/app/web/app.py": "034c58ee2166dbcc7790c69168ca2ef3152124843d4744ef7a8abe6ce698b79c",
+    "corpusfm/app/web/app.py": "23346e72eb20e8d509b55f3880c92c0dab8c657ecd202d5e656d746a7fa2904f",
     "corpusfm/app/web/appearance_preferences.py": "39cef8babed36cedb04a4d92d2796deb520907934f5b5e29753f22e2bc4a6291",
     "corpusfm/app/web/artifact_ref.py": "6142b6beeba38cce35780a2b0f91879f3db79bbef5407405030058f12bbf9684",
     "corpusfm/app/web/auth.py": "2ff2c1c889a2db3293940bc8d504d195bf4073dd3677de50c98c11796d9abeb0",
@@ -112,7 +112,7 @@
     "corpusfm/app/web/routes/api/diff_history.py": "7debdf8816e7d4ef2313bb17ce08dd64f696a81e32f2fde46d8045fda7f3d20a",
     "corpusfm/app/web/routes/api/explore_history.py": "13885ed00e4f9f13fe916f68c1ccdb7bc95caa2550f4b77ad3c5865e8cec2dac",
     "corpusfm/app/web/routes/api/files.py": "beb6ed53f96943fc0e070588814632ac921121a71e9956f34bdbb67e486a7dfb",
-    "corpusfm/app/web/routes/api/generate.py": "94e207ed3280509599412f7463a7f8de25fec1eaa0a124394e87788f1163cd86",
+    "corpusfm/app/web/routes/api/generate.py": "1626202dbacdb5484bb5af98baf6dd9e859dfde0d8b671239f221ab161f05acf",
     "corpusfm/app/web/routes/api/import_queue.py": "8d518ac405a672e22df989b85a15dfb5a47437e7f0e38343d5ad47d8d7d6329a",
     "corpusfm/app/web/routes/api/indexed.py": "445d6301f7c42eb0afe1f97b46548eb45d2b10b3fd3ae8490c4e9019454d8c88",
     "corpusfm/app/web/routes/api/jobs.py": "68f2507c9adf183e55bd384c7fb59058ecd790b60a7050e8428b1f2450bc9189",
@@ -529,7 +529,7 @@
     "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
     "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
     "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
-    "release-build.txt": "511a760fb5bb05a6d7a5e0ff2c7659acdb51e49691c4d7d41695b0aaf9c72268",
+    "release-build.txt": "2d0beab693e359f78b346f9e0d5cf96ba423d58472de15ce3f821e1fb5651dce",
     "requirements.txt": "de35ad4921dbea3081d2ecf6a9b214bf801806c4103c9c9b6dd0fb6fdea1c08b",
     "scripts/_release_gate_live.py": "335454a6e3e43c5e0375f7524a33a60647a862637e41dcba453cd474ab7d15b5",
     "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
@@ -3243,10 +3243,10 @@
     "profile_sha256": "06202387046b1750fb47d336abdbaf39b707e54300c04a9a63a3ad91f4e58d59",
     "profile_version": 1
   },
-  "release_build": 3103,
+  "release_build": 3106,
   "schema_version": 2,
   "source_commits": {
-    "application": "d999ea5e839be9750e4d72e28eb4378390eb357e",
+    "application": "4f14fa6368bb690e0967d2748e2ac3e34ba11c64",
     "installer": "10879b8afc715b78675a39b09678fc0c6f109154"
   }
 }

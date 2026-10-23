@@ -148,7 +148,14 @@ def ephemeral_activity_snapshot(now_monotonic: "float | None" = None) -> "list[d
 # {"path", "error"} dict.
 _pool: "concurrent.futures.ProcessPoolExecutor | None" = None
 _pool_lock = threading.Lock()
-_inflight = 0          # submitted jobs whose result has not been recorded yet
+_pool_cond = threading.Condition(_pool_lock)
+_inflight: "set[str]" = set()        # task ids submitted whose result has not been recorded yet
+_interrupted: "set[str]" = set()     # task ids recorded as interrupted by shutdown
+_accepting = True
+_shutdown_began: "float | None" = None
+SHUTDOWN_GRACE_S = 30.0
+INTERRUPTED_MESSAGE = "Interrupted: CORPUSfm shut down before this generation finished."
+SHUTTING_DOWN_MESSAGE = "CORPUSfm is shutting down; this generation was not started."
 
 
 _SERVER_MAX_WORKERS = 2
@@ -172,6 +179,8 @@ def _max_generation_workers(cores: int | None = None, server: bool | None = None
 def _get_pool() -> "concurrent.futures.ProcessPoolExecutor":
     global _pool
     with _pool_lock:
+        if not _accepting:
+            raise RuntimeError(SHUTTING_DOWN_MESSAGE)
         if _pool is None:
             server = build_context().is_server
             cores = os.cpu_count() or 4
@@ -186,28 +195,74 @@ def _get_pool() -> "concurrent.futures.ProcessPoolExecutor":
     return _pool
 
 
-def shutdown_idle_pool() -> bool:
-    """Release the generation pool at application shutdown when no job is in flight (packet 1430).
+def accept_generations() -> None:
+    """Application startup: generation is open (packet 1432)."""
+    global _accepting, _shutdown_began
+    with _pool_cond:
+        _accepting, _shutdown_began = True, None
+        _interrupted.clear()
 
-    uvicorn re-raises the captured SIGTERM once the lifespan has finished, so the process dies by
-    that signal and never reaches the interpreter exit hook that would join the pool: its queue
-    semaphores are reported leaked and a spawned idle worker is orphaned. A pool with work in flight
-    is left exactly as before — draining, cancelling or abandoning that work is an undecided policy.
+
+def stop_accepting() -> None:
+    """The first act of application shutdown: refuse new generations and start the grace clock."""
+    import time
+    global _accepting, _shutdown_began
+    with _pool_cond:
+        _accepting = False
+        if _shutdown_began is None:
+            _shutdown_began = time.monotonic()
+
+
+def shutdown_pool(grace_s: float = SHUTDOWN_GRACE_S) -> "list[str]":
+    """Finish generation at application shutdown and release the pool (packets 1430, 1432).
+
+    Running generations get up to ``grace_s`` from the moment shutdown began to finish; whatever is
+    still running is then recorded as interrupted and its workers are killed. The grace needs the
+    workers to outlive the start of shutdown: a stop that signals the whole service group (systemd
+    ``KillMode=control-group``) ends them at once, and that is the installer's unit to change, not
+    something the workers should resist — an idle worker that ignores SIGTERM deadlocks the stdlib's
+    broken-pool cleanup (packet 1432, N1). The pool is joined here
+    because uvicorn re-raises the captured SIGTERM once the lifespan has finished, so the interpreter
+    exit hook that would otherwise join it never runs — its queue semaphores were reported leaked and
+    a spawned worker was orphaned. Returns the interrupted task ids.
     """
+    import gc
+    import time
     global _pool
-    with _pool_lock:
-        pool = _pool
-        if pool is None or _inflight:
-            return False
-        _pool = None
-    pool.shutdown(wait=True)
-    return True
+    stop_accepting()
+    with _pool_cond:
+        deadline = _shutdown_began + grace_s
+        pool, _pool = _pool, None
+        while _inflight and deadline - time.monotonic() > 0:
+            _pool_cond.wait(deadline - time.monotonic())
+        unfinished = sorted(_inflight)
+        _interrupted.update(unfinished)
+        _inflight.clear()
+    for tid in unfinished:
+        _finish_task(tid, None, INTERRUPTED_MESSAGE)
+    if unfinished:
+        logging.getLogger("corpusfm.generate").warning(
+            "shutdown: %d generation(s) still running after %.0fs recorded as interrupted: %s",
+            len(unfinished), grace_s, ", ".join(unfinished))
+        if pool is not None:
+            _kill_workers(pool)
+    if pool is not None:
+        pool.shutdown(wait=True, cancel_futures=True)
+        del pool
+        # A broken pool leaves its queues in a reference cycle; collect it now, because the signal
+        # death that follows runs no collector and their semaphores would be reported leaked. The
+        # executor itself must be unreferenced first, or the cycle survives.
+        gc.collect()
+    return unfinished
 
 
-def _inflight_add(n: int) -> None:
-    global _inflight
-    with _pool_lock:
-        _inflight += n
+def _kill_workers(pool) -> None:
+    # Python 3.13 has no public API for this; 3.14's terminate_workers() also skips the join.
+    for proc in list((getattr(pool, "_processes", None) or {}).values()):
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 def _submit(tid: str, job_fn, *args) -> None:
@@ -223,10 +278,12 @@ def _submit(tid: str, job_fn, *args) -> None:
         except Exception as exc:
             path, error = None, str(exc)
         metrics.generation_finished(bool(path), time.monotonic() - started)
-        try:
+        with _pool_cond:                 # claim the result atomically against the shutdown snapshot
+            claimed = tid in _inflight and tid not in _interrupted
+            _inflight.discard(tid)
+            _pool_cond.notify_all()
+        if claimed:                      # never overwrite the shutdown's record with the broken pool
             _finish_task(tid, Path(path) if path else None, error)
-        finally:
-            _inflight_add(-1)
         if path and not build_context().is_server:   # standalone: open locally (no-op in server mode)
             try:
                 import webbrowser
@@ -234,11 +291,20 @@ def _submit(tid: str, job_fn, *args) -> None:
             except Exception:
                 pass
     metrics.generation_submitted()
-    _inflight_add(1)
+    with _pool_cond:
+        accepting = _accepting
+        if accepting:
+            _inflight.add(tid)
+    if not accepting:
+        metrics.generation_finished(False, time.monotonic() - started)
+        _finish_task(tid, None, SHUTTING_DOWN_MESSAGE)
+        return
     try:
         _get_pool().submit(job_fn, *args).add_done_callback(_done)
     except Exception as exc:
-        _inflight_add(-1)
+        with _pool_cond:
+            _inflight.discard(tid)
+            _pool_cond.notify_all()
         metrics.generation_finished(False, time.monotonic() - started)
         _finish_task(tid, None, f"Could not start generation: {exc}")
 
