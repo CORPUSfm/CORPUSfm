@@ -313,13 +313,13 @@
     "corpusfm/lifecycle/atomic.py": "c47138750e68b315d447f444981f14e34a3ee9c92f82bb737779c5e5f411b285",
     "corpusfm/lifecycle/bridge.py": "bca8a15cb246dc052fe69721a53442270b312a33ddb101a342b366d5cc7c226d",
     "corpusfm/lifecycle/bytecode_cleanup.py": "008bf10a5f831bc0ae7e40d39247238da4187b011a4e8d255905036a14e13a18",
-    "corpusfm/lifecycle/cli.py": "f71c2674dab1991273611dcd28d5e494ecc1c2b61a79361c64fad3ddfebf519b",
-    "corpusfm/lifecycle/composition.py": "252555cba0420f1662224df63f70008a563b3c88c845b662154fd66dc5a79c25",
+    "corpusfm/lifecycle/cli.py": "0668e88a4128a5c81fcb69b0c5293c473195533e300ecad4e50e7a759f340177",
+    "corpusfm/lifecycle/composition.py": "104c93ac16ad8c1217c5a68e5d1730839da5148688bc0be22e53564e7220d2ca",
     "corpusfm/lifecycle/consent.py": "ba8d7d1c801afa560a11ecba35c7ddaceeeba0394479e8308deb2fe9fd2a3e19",
     "corpusfm/lifecycle/corpus_identity.py": "2f9c16e4a084dbf8e355d4dacde63764296e2565cea5f35687a0e521e81e1e68",
     "corpusfm/lifecycle/errors.py": "94c383e684427175475795fca5a244c211125f83532d5797b6296ea66e693ff7",
     "corpusfm/lifecycle/fms_folders.py": "ae7877f1937b06fe214cd60bbb1ee8807cd8542984cdade67d494c4849a386b0",
-    "corpusfm/lifecycle/install_attempt.py": "2c5a4886a9205b4ec7597a0b8371bb22d9eaf2b5fa636763d1744374835e1a4c",
+    "corpusfm/lifecycle/install_attempt.py": "9a8a3facb3952c0d66fb4a4562c877d01cebf0bf4d8c02ee2b1d50e631cf0134",
     "corpusfm/lifecycle/installer_channel.py": "0171a6e69036d03902d928ccd9d89e8e9d751d4c49e621a8da03dc74da7f6101",
     "corpusfm/lifecycle/installer_channel_observer.py": "fe10601d68312c8f5acc0f2c4f517656e70d3ad7c19d76195066078fd023bba0",
     "corpusfm/lifecycle/installer_disposition.py": "adeaa4cd7d26343482b88c4af04aa6dd60aecb7091a2bbf5ac41e2e173a1d838",
@@ -504,7 +504,7 @@
     "installer/linux/corpusfm-proxy.sh": "050e96a1af3d0c975274fd53f35d0c6d86f44351ab314647af840e02f639c197",
     "installer/linux/corpusfm-recovery.sh": "c213caf789d255fbc6e828f6a07b7b2d39c73ec5be0981105c83abf6fa841bad",
     "installer/linux/corpusfm-update.sh": "161bc4c98fa6be8d4d7c17d1aed17181b389ea1d421b8d71202a834e8245ac24",
-    "installer/linux/install.sh": "742e87eb0ade9d917fd90634e168ee87b4c1a7951fa97e4a05b3a7c4c733949c",
+    "installer/linux/install.sh": "61258774b15a74c2586f67ab560c5a7ff546459cf7dc365f63401d4c10ab5f8a",
     "installer/linux/uninstall.sh": "757b37dcbb5f15b418597c3f7734108f37f99249426ab4fbec795ca42a0dd022",
     "installer/package-installer.sh": "fadb8e9f75464562d31f701c8a28949e032a43a4a506b00cd7aff690947e91b5",
     "installer/requirements-server.txt": "abea698b78e22153851894197613660f8b9258081bf5e9245a963fa6d68ab86f",
@@ -529,7 +529,7 @@
     "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
     "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
     "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
-    "release-build.txt": "96a29ae5bc3a5e35537bcea1068c746ddba205d17fcc8e522a52402c7ed69927",
+    "release-build.txt": "deafe7bf26e791ad3aa81a24ab1d8bf2fc23feadd9353209c1239c9f31101ad3",
     "requirements.txt": "de35ad4921dbea3081d2ecf6a9b214bf801806c4103c9c9b6dd0fb6fdea1c08b",
     "scripts/_release_gate_live.py": "335454a6e3e43c5e0375f7524a33a60647a862637e41dcba453cd474ab7d15b5",
     "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
@@ -577,7 +577,7 @@
     "tests/test_installer_fms_admin_user.py": "eeccee08bce2cfce1c6f79452417e66fb7de7e395cf915d5d13e53c70baf4807",
     "tests/test_installer_fmsadmin_group.py": "7965b061e8607103c38e24ae5e46f7f74fc6d4229cc18a7b8a1081e92db89066",
     "tests/test_installer_hardening.py": "c0a90e8ae55cea90d51bc01acc4c6044e1a1e566996a75ab109efeff980229f3",
-    "tests/test_installer_layout_and_identity.py": "93ce4ad02140f9d8d1498efc710782aae7d9ed87d83995027c257292dabb0f2a",
+    "tests/test_installer_layout_and_identity.py": "d27dc3394bc984dd5952b4152122b07975de46918ec0400259b1d82034b33a7e",
     "tests/test_installer_lifecycle_pythonpath.py": "35c2e1d189e1eb690a4f2a015fadc577c90a8f5dd96fa0ba6127797e4d80ef9e",
     "tests/test_installer_logging.py": "e26459a1496cc42f0c455b7e3b2505f3ffaa16acf76fff8555848b8aa2cf00a1",
     "tests/test_installer_loopback_tls_quiet.py": "b431c79d5dfbbff35ad0b348f965437a7b056612766af37a0abb777c4269a884",
@@ -595,7 +595,7 @@
     "tests/test_installer_source_update_credentials.py": "a7447794cfc3c61644582dbc6ada52d88ac2d5d556ae4750ecc3283b2a5ecfce",
     "tests/test_installer_storage_tail.py": "1c36e63c9aea423f747d6a28187a21b4c50250c5b6dfee57a82591fe0df8af02",
     "tests/test_installer_warning_contract.py": "29954edf80408f62e1c57a2138289b980fb6bdc2da30c951fe70c7320711e203",
-    "tests/test_linux_install_attempt.py": "6e97a0032d8f04a0f7fa8aa7342ca4c9e92b38b6ceb4ba723e04c1094c2befe4",
+    "tests/test_linux_install_attempt.py": "785eb19058bbdf73e45108a63f4d7d51dc008f7d956cc4ba574f0981a52eaa1d",
     "tests/test_linux_installer_orchestration.py": "9eef2ddb6191a80828d50d47564a32b73cfd631a959b1b793ee56ad2e41014b8",
     "tests/test_linux_installer_package_boundary.py": "c21afc409c1b9872bc351b46a4719dba07df8783eb1e1949af996ff2bf777936",
     "tests/test_linux_installer_surface.py": "dac0eff29655b059cd62dc6869a12f48f57fd2925865b9ca22c74b3653d61d6f",
@@ -624,7 +624,8 @@
     "tests/test_uninstall_stage_fence.py": "24f4fd164411a112666bf8a2aa3b4e57dc413a03e821b909d023026100584cfa",
     "tests/test_update_service.py": "9563d94cff9dd9c87d96cbbd900eb2d61e1334e0e91da1fb450571bcc967a072",
     "tests/test_updater.py": "8828df4baa533a22d759eece870316758f247712b778a73ce835726ec77ef83c",
-    "tests/test_updater_sudoers_ownership_1433.py": "4f5871da19c1bb12c58d0ab65527c44d09e335f55e7d7218212eb8bb009f5904",
+    "tests/test_updater_sudoers_overwrite_own_1433.py": "6c81566a4fdd3587b7fa12dff1e0e2adc1ee7418a252ea0e8685b2cade0c1cdd",
+    "tests/test_updater_sudoers_ownership_1433.py": "e14eb949b0cd90cbfa45da79553b61cbb1e23bce912dd3796417375ff6a1e0e1",
     "tests/test_updater_task_action_binding.py": "af23e7a2f57d780279fb785cda0e7e32aa720f37b6b010d864585309336fcad4",
     "tests/test_upgrade_location_authority.py": "6089879484896b87b11021305fe30440e55d6f2c81fd0e892d205b5c88a249a9",
     "tests/test_upgrade_trust.py": "c817b3afcfa013163eea9c1cdb0966e51f66331772aaa1f8cd676997342af349",
@@ -3143,6 +3144,10 @@
       "class": "generated",
       "owner": "public-profile:public:application"
     },
+    "tests/test_updater_sudoers_overwrite_own_1433.py": {
+      "class": "exact-copy",
+      "owner": "installer:tests/test_updater_sudoers_overwrite_own_1433.py"
+    },
     "tests/test_updater_sudoers_ownership_1433.py": {
       "class": "exact-copy",
       "owner": "installer:tests/test_updater_sudoers_ownership_1433.py"
@@ -3248,10 +3253,10 @@
     "profile_sha256": "06202387046b1750fb47d336abdbaf39b707e54300c04a9a63a3ad91f4e58d59",
     "profile_version": 1
   },
-  "release_build": 3114,
+  "release_build": 3116,
   "schema_version": 2,
   "source_commits": {
-    "application": "99e6355f1e56c9a78bdd9eb50640eb04942f4983",
-    "installer": "40921f909b78ecfdf11010df0926ed04f41fb720"
+    "application": "0574e499028325b47fa3d209232da4ca5506aec8",
+    "installer": "d3e78ba9b33c2d5b98ef2fb1c053be4b8d17297a"
   }
 }

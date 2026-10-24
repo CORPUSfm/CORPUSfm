@@ -1128,6 +1128,23 @@ def classify_target(record: AttemptRecord, target: str, kind: str, *, observer=d
                            + ("now gone" if observed == "absent" else "created by the attempt"))
 
 
+def overwrote_updater_grant(record: AttemptRecord, target: str) -> bool:
+    """The attempt replaced a grant already standing at the fixed updater-sudoers path (1433).
+
+    The installer overwrites and OWNS that one resource; its ledger keeps the truthful history
+    (present before, overwritten). Classification still says modified; this is the single,
+    named exception that lets the attempt remove what it now owns.
+    """
+    if record.platform != POSIX:
+        return False
+    grant = Path(record.paths["config_dir"]).parent.parent.joinpath(*_POSIX_SYSTEM_FILES["update_sudoers"])
+    if _canon(target, POSIX) != _canon(str(grant), POSIX):
+        return False
+    entries = [e for e in record.ledger if e.kind == "file" and _canon(e.target, POSIX) == _canon(target, POSIX)]
+    return bool(entries) and entries[0].intent == "overwrite" and any(
+        e.state in (STATE_DONE, STATE_INTENDED) for e in entries)
+
+
 def _moved_before(record, entry) -> bool:
     return False
 
@@ -1196,7 +1213,7 @@ def attempt_plan(record: AttemptRecord, layout, *, observer=default_observer) ->
             decisions["cli_shim"] = _decision(PRESERVE, f"install_attempt: {cls}")
         helpers = [files[name] for name in ("db_helper_sudoers", "update_sudoers", "tmpfiles")
                    if classify_target(record, files[name], "file", observer=observer)[0]
-                   == CLASS_CREATED]
+                   == CLASS_CREATED or overwrote_updater_grant(record, files[name])]
         for helper in helpers:
             ownership.append(OwnershipEntry("exact_resource", "privilege_helper_path", helper))
         decisions["sudoers_helpers"] = (
@@ -1280,7 +1297,8 @@ def attempt_filter(record: AttemptRecord, decisions: dict, manifest, *, observer
         "cli_shim": lambda: bool(ownership("cli_shim_path"))
         and all(created(path, "file") for path in ownership("cli_shim_path")),
         "sudoers_helpers": lambda: bool(ownership("privilege_helper_path"))
-        and all(created(path, "file") for path in ownership("privilege_helper_path")),
+        and all(created(path, "file") or overwrote_updater_grant(record, path)
+                for path in ownership("privilege_helper_path")),
         "web_service": lambda: unit_created("web"),
         "updater_task": lambda: unit_created("updater"),
     }

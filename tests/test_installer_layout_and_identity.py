@@ -619,6 +619,9 @@ def test_the_service_grant_is_exactly_one_command(sh):
 
 def test_the_sudoers_rule_is_validated_before_installation(sh):
     """A malformed sudoers file can lock every sudo user out of the box."""
-    block = sh[sh.index("Privileged one-shot updater") if "Privileged one-shot updater" in sh
-               else 0:]
-    assert "visudo -cf" in block
+    # The grant must precede foundation's ownership snapshot (1433); the updater body itself
+    # renders afterward. Assert the real validation guard, not its obsolete phase location.
+    import re
+    assert re.search(
+        r'if visudo -cf "\$UPD_SUDOERS_TMP"[^\n]*; then\s*'
+        r'la_do file ensure - /etc/sudoers\.d/corpusfm-update -- install ', sh)

@@ -16,7 +16,7 @@ SCRIPT = Path(os.environ.get("CFM_INSTALLER_SH", Path(__file__).resolve().parent
 def test_grant_is_ledgered_before_foundation_takes_helper_ownership():
     text = SCRIPT.read_text()
     grant = "la_do file ensure - /etc/sudoers.d/corpusfm-update -- install"
-    snapshot = 'la_created file "$_lc_h" && _lc_helpers+=("$_lc_h")'
+    snapshot = 'for _lc_h in /etc/sudoers.d/corpusfm-db-helper /etc/sudoers.d/corpusfm-update /etc/tmpfiles.d/corpusfm.conf; do'
     assert text.count(grant) == 1
     assert text.index(grant) < text.index(snapshot), (
         "foundation misses the later updater grant, so uninstall leaves it behind")
@@ -53,6 +53,8 @@ la_do() {
     created="$4"
 }
 la_created() { [[ "$1" == file && "$2" == "$created" ]]; }
+la_wrote() { la_created "$@"; }
+die() { echo "DIE: $*" >&2; exit 9; }
 '''
     # Non-matches are ordinary decisions in the production for loop, not shell failures.
     proc = subprocess.run(["bash", "-c", harness + block + snapshot +

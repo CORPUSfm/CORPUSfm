@@ -408,6 +408,7 @@ def publish_installer_identity(
     installer_bundle_protocol: int,
     installer_source: str,
     installer_entry_point: str | None = None,
+    own_updater_sudoers: bool = False,
     lock,
     journal: Journal,
     lifecycle_layout,
@@ -418,6 +419,11 @@ def publish_installer_identity(
     installer supplies one, a schema-2 installation must already name the same one, and an ordinary
     installer refuses every cross-series attempt. The write is one journaled compare-and-swap and
     is resumable across a crash before or after the manifest replacement.
+
+    `own_updater_sudoers` (packet 1433, Linux only): the installer has just written the canonical
+    updater grant at its fixed path. An installation recorded by an older installer never owned it,
+    so its uninstall left the grant behind. The same compare-and-swap records exactly that one
+    privilege-helper path; no other ownership can be added here.
     """
     store = ManifestStore(install_dir, layout=lifecycle_layout)
     current = store.read()
@@ -432,6 +438,18 @@ def publish_installer_identity(
         "bundle_protocol": installer_bundle_protocol, "source": installer_source,
         "entry_point": installer_entry_point,
     })
+    ownership = current.ownership
+    if own_updater_sudoers:
+        from .install_attempt import system_paths
+
+        grant = system_paths(lifecycle_layout).get("update_sudoers")
+        if not grant:
+            raise CompositionError("own_updater_sudoers applies only to a Linux installation")
+        if not any(e.kind == OWNERSHIP_KIND_PRIVILEGE_HELPER and e.identifier == grant
+                   for e in ownership):
+            ownership = ownership + (OwnershipEntry(ownership_class="exact_resource",
+                                                    kind=OWNERSHIP_KIND_PRIVILEGE_HELPER,
+                                                    identifier=grant),)
     previous_schema = current.schema_version
     if (current.schema_version >= 2 and current.installer.series is not None
             and current.installer.series != installer.series):
@@ -441,7 +459,8 @@ def publish_installer_identity(
 
     same = (current.schema_version == 2 and current.build.version == build.version
             and current.build.commit == build.commit
-            and current.installer.to_dict() == installer.to_dict())
+            and current.installer.to_dict() == installer.to_dict()
+            and ownership == current.ownership)
     record = _journal_record(journal)
     resumable = (record is not None and record.installation_id == wanted_id
                  and record.mode == "installer_identity"
@@ -493,12 +512,14 @@ def publish_installer_identity(
             raise CompositionError(
                 "the installer-identity journal exists but its manifest write does not agree "
                 "with this request")
-        proposed = replace(current, schema_version=2, build=build, installer=installer)
+        proposed = replace(current, schema_version=2, build=build, installer=installer,
+                           ownership=ownership)
         written = store.write(proposed, lock=lock, expected_generation=expected_generation)
         current = store.read()
         if (current.generation != written.generation or current.schema_version != 2
                 or current.installer.to_dict() != installer.to_dict()
-                or current.build.version != build.version or current.build.commit != build.commit):
+                or current.build.version != build.version or current.build.commit != build.commit
+                or current.ownership != ownership):
             raise CompositionError("the installer identity did not read back exactly as written")
 
     store.commit(lock=lock)

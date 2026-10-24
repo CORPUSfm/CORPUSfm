@@ -146,9 +146,11 @@ def test_the_refuse_first_set_is_the_packet_list(box):
         target.mkdir() if relative == "opt/CORPUSfm" else target.write_text("x")
     refused = box.run("refuse-check", json.dumps(box.paths), "false", check=False)
     assert refused.returncode == 3
-    assert len(refused.stdout.split("\n")) - 1 == 8
+    # 1433: the regular-file updater grant is the one entry a fresh install overwrites and owns.
+    assert len(refused.stdout.split("\n")) - 1 == 7
+    assert "etc/sudoers.d/corpusfm-update" not in refused.stdout
     moved = box.run("refuse-check", json.dumps(box.paths), "true", check=False)
-    assert box.paths["install_dir"] not in moved.stdout and len(moved.stdout.split("\n")) - 1 == 7
+    assert box.paths["install_dir"] not in moved.stdout and len(moved.stdout.split("\n")) - 1 == 6
     assert not box.container.exists(), "a refuse-first check creates nothing"
 
 

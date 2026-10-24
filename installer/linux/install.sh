@@ -1055,6 +1055,16 @@ def refuse_first(paths):
         system("etc", "tmpfiles.d", "corpusfm.conf"))]
 
 
+def updater_grant(paths):
+    """The ONE refuse-first resource a fresh install overwrites and owns instead of refusing (1433).
+
+    Its whole content is the installer's fixed one-command rule, so whatever stands there is
+    replaced with the canonical, visudo-validated rule and recorded as an overwrite, never as a
+    creation. Nothing else on the refuse-first list is relaxed.
+    """
+    return refuse_first(paths)[6]
+
+
 def check_container(container, uid):
     try:
         st = os.lstat(container)
@@ -1181,6 +1191,12 @@ def contained(ledger, target):
                and inside(target, e["target"]) for e in ledger)
 
 
+def wrote(ledger, kind, target):
+    """The attempt created OR overwrote this target, and the write completed."""
+    return any(e["intent"] in ("create", "overwrite") and e["state"] == "done"
+               for e in entries_for(ledger, kind, target))
+
+
 def created(ledger, kind, target):
     found = entries_for(ledger, kind, target)
     return bool(found) and found[0]["intent"] == "create" \
@@ -1223,8 +1239,11 @@ def op_step(container, uid, kind, intent, extra, targets):
             fail("intent %r is not allowed for %s" % (word, entry_kind))
         if word == "delete" and entry_kind in FS_KINDS and not present:
             continue
+        overwrite_owned = (entry_kind == "file" and word == "overwrite"
+                           and canon(target) == updater_grant(record["paths"]))
         if (entry_kind in FS_KINDS and word in ("create", "set_owner_mode", "overwrite") and present
-                and canon(target) in refuse and not entries_for(before, entry_kind, target)):
+                and canon(target) in refuse and not entries_for(before, entry_kind, target)
+                and not overwrite_owned):
             fail("REFUSE-FIRST: %s already exists and no ledger entry of this attempt created it. "
                  "A fresh install does not take over a CORPUSfm resource it cannot account for."
                  % target)
@@ -1284,8 +1303,10 @@ def op_begin(container, uid, attempt_id, installation_id, paths_json, package_js
 
 def op_refuse_check(paths_json, install_dir_may_exist):
     paths = json.loads(paths_json)
+    grant = updater_grant(paths)
     present = [p for p in refuse_first(paths) if os.path.lexists(p)
-               and not (p == canon(paths["install_dir"]) and install_dir_may_exist == "true")]
+               and not (p == canon(paths["install_dir"]) and install_dir_may_exist == "true")
+               and not (p == grant and not os.path.islink(p) and os.path.isfile(p))]
     for path in present:
         print(path)
     if present:
@@ -1351,7 +1372,7 @@ def main(argv):
         op_result(argv[1], int(argv[2]), argv[3], argv[4], argv[5:])
     elif op == "refuse-check":
         op_refuse_check(argv[1], argv[2])
-    elif op in ("seq-of", "created", "field", "path"):
+    elif op in ("seq-of", "created", "wrote", "field", "path"):
         record = read_record(argv[1], int(argv[2]))
         if op == "field":
             print(record[argv[3]])
@@ -1359,6 +1380,8 @@ def main(argv):
             print(record["paths"][argv[3]])
         elif op == "created":
             print("true" if created(record["ledger"], argv[3], argv[4]) else "false")
+        elif op == "wrote":
+            print("true" if wrote(record["ledger"], argv[3], argv[4]) else "false")
         else:
             found = entries_for(record["ledger"], argv[3], argv[4])
             print(found[-1]["seq"] if found else "")
@@ -1608,6 +1631,7 @@ la_field() { la_py field "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$1"; }
 la_path() { la_py path "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$1"; }
 la_seq_of() { la_py seq-of "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$1" "$2"; }
 la_created() { [[ "$(la_py created "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$1" "$2")" == true ]]; }
+la_wrote() { [[ "$(la_py wrote "$CFM_ATTEMPT_DIR" "$CFM_ATTEMPT_UID" "$1" "$2")" == true ]]; }
 
 # ── Arg parsing ─────────────────────────────────────────────────────────────────
 # TEN SWITCHES IN NINE SEMANTIC GROUPS (parent §4H.1), identical in meaning on both platforms.
@@ -3673,12 +3697,20 @@ ok "Preview temp-cleanup rule installed (6h, via systemd-tmpfiles-clean.timer)"
 
 
 # ── Updater sudoers ownership before foundation publication (packet 1433) ────────
-# The foundation takes its helper ownership from files ALREADY created in the attempt ledger.
+# The foundation takes its helper ownership from files ALREADY written in the attempt ledger.
 # Rendering the updater itself needs that published foundation, but its fixed systemctl grant
-# does not. Create and ledger the grant here so a successful uninstall also removes it. Keeping
-# this write after foundation left an unrecorded root file that blocked the next fresh install.
+# does not. Write and ledger the grant here so a successful uninstall also removes it.
+# OVERWRITE AND OWN: a grant already standing at this fixed path (an older installer that never
+# recorded it) is replaced with the canonical rule and owned - on a fresh install as a ledgered
+# overwrite, on an update through publish-installer. A link or any non-regular object there is
+# refused: the write must replace this entry, never reach through it to another file.
 UPDATER_SRC="$CFM_RUNTIME_ROOT/installer/linux/corpusfm-update.sh"
 UPDATER_SUDOERS_READY=false
+UPD_SUDOERS_DST=/etc/sudoers.d/corpusfm-update
+if [[ -L "$UPD_SUDOERS_DST" ]] || { [[ -e "$UPD_SUDOERS_DST" ]] && [[ ! -f "$UPD_SUDOERS_DST" ]]; }; then
+    die "$UPD_SUDOERS_DST is a link or not a regular file. The installer replaces this one fixed
+     updater rule in place and will not write through anything else. Nothing has been changed there."
+fi
 if [[ -f "$UPDATER_SRC" ]]; then
     UPD_SUDOERS_TMP="$(mktemp)"
     printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl start corpusfm-update.service\n' \
@@ -3690,6 +3722,12 @@ if [[ -f "$UPDATER_SRC" ]]; then
         warn "sudoers validation failed - the in-app update path stays disabled"
     fi
     rm -f "$UPD_SUDOERS_TMP"
+fi
+# A grant already standing here is accepted ONLY to be replaced: leaving its old contents active,
+# unowned and unvalidated, is never the outcome.
+if [[ -e "$UPD_SUDOERS_DST" ]] && ! $UPDATER_SUDOERS_READY; then
+    die "$UPD_SUDOERS_DST exists but the canonical updater rule could not be written over it (updater
+     template missing or sudoers validation failed). Refusing to leave an unvalidated grant in place."
 fi
 
 # ═══ PHASE 11 — Foundation publication — generation 1 ═══════════════════════════════════
@@ -3725,7 +3763,10 @@ if [[ "$_lc_locator" != "present" ]]; then
         la_created account "$SERVICE_USER" && CREATED_SERVICE_ACCOUNT=true
         _lc_helpers=()
         for _lc_h in /etc/sudoers.d/corpusfm-db-helper /etc/sudoers.d/corpusfm-update /etc/tmpfiles.d/corpusfm.conf; do
-            la_created file "$_lc_h" && _lc_helpers+=("$_lc_h")
+            if la_created file "$_lc_h" \
+                || { [[ "$_lc_h" == "$UPD_SUDOERS_DST" ]] && $UPDATER_SUDOERS_READY && la_wrote file "$_lc_h"; }; then
+                _lc_helpers+=("$_lc_h")
+            fi
         done
         _lc_helpers_json="$(lc_json_array "${_lc_helpers[@]}")"
     else
@@ -3765,10 +3806,11 @@ else
      '$INSTALL_DIR'. Refusing to compose into another installation's record."
     [[ "$CFM_GENERATION" =~ ^[0-9]+$ && "$CFM_GENERATION" -ge 1 ]] \
         || die "the published manifest reports generation '$CFM_GENERATION'; refusing to update it."
-    _lc_req="$(lc_request publish-installer "$(printf '{"schema_version":1,"installation_id":"%s","expected_generation":%s,"install_dir":"%s","version":"%s","commit":"%s","installer_series":"%s","installer_version":"%s","installer_bundle_protocol":%s,"installer_source":"%s","installer_entry_point":"%s","actor":"installer"}' \
+    _lc_req="$(lc_request publish-installer "$(printf '{"schema_version":1,"installation_id":"%s","expected_generation":%s,"install_dir":"%s","version":"%s","commit":"%s","installer_series":"%s","installer_version":"%s","installer_bundle_protocol":%s,"installer_source":"%s","installer_entry_point":"%s","own_updater_sudoers":%s,"actor":"installer"}' \
         "$INSTALLATION_ID" "$CFM_GENERATION" "$INSTALL_DIR" "$CFM_BUILD_VERSION" \
         "$CFM_BUILD_COMMIT" "$CFM_INSTALLER_SERIES" "$CFM_INSTALLER_VERSION" \
-        "$CFM_INSTALLER_BUNDLE_PROTOCOL" "$CFM_INSTALLER_SOURCE" "$INSTALLER_ENTRY_POINT")")"
+        "$CFM_INSTALLER_BUNDLE_PROTOCOL" "$CFM_INSTALLER_SOURCE" "$INSTALLER_ENTRY_POINT" \
+        "$UPDATER_SUDOERS_READY")")"
     _lc_out="$(lc_run "installer identity publication" composition publish-installer --request "$_lc_req")"
     CFM_GENERATION="$(lc_json_field "$_lc_out" generation)"
     [[ "$CFM_GENERATION" =~ ^[0-9]+$ && "$CFM_GENERATION" -ge 1 ]] \
