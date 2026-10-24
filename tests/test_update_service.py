@@ -675,3 +675,25 @@ def test_the_PASSIVE_default_is_what_the_sidebar_actually_sends():
     settings = (root / "settings.html").read_text(encoding="utf-8")
     assert "checkUpdate(true)" in settings, "no deliberate action requests a fresh observation"
     assert "?refresh=true" in settings
+
+
+# ── packet 1433: the Windows self-restart takes the graceful path ─────────────────────────────────
+
+@pytest.mark.parametrize("osname", ["nt", "posix"])
+def test_the_supervised_stop_is_graceful_on_both_platforms(monkeypatch, osname):
+    """On Windows os.kill(SIGTERM) is TerminateProcess, so the lifespan — and the generation drain
+    — never ran. An in-process SIGINT takes uvicorn's graceful path there; POSIX keeps SIGTERM."""
+    import signal as _signal
+    from corpusfm.server import update_service as us
+    calls = []
+    monkeypatch.setattr(us.os, "name", osname)
+    monkeypatch.setattr(_signal, "raise_signal", lambda sig: calls.append(("raise", sig)))
+    monkeypatch.setattr(us.os, "kill", lambda pid, sig: calls.append(("kill", sig)))
+    monkeypatch.setattr(us, "_restart_requested", False)
+    us._supervised_stop()
+    if osname == "nt":
+        assert calls == [("raise", _signal.SIGINT)]
+        assert us.restart_requested() is True, "the Windows restart must record its intent before signalling"
+    else:
+        assert calls == [("kill", _signal.SIGTERM)]
+        assert us.restart_requested() is False, "POSIX restarts by signal death; it records no Windows intent"

@@ -18,6 +18,22 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def ignore_console_interrupt() -> None:
+    """Windows pool-worker initializer (packet 1433).
+
+    A Windows service stop delivers Ctrl+C to every process on the console, so a running render
+    died at once instead of getting the web process's shutdown grace. Workers leave it to the
+    parent, which ends them with TerminateProcess — a termination they cannot ignore. (On POSIX the
+    workers keep the default handlers: there the stdlib ends a broken pool's workers with an
+    ignorable SIGTERM, packet 1432.)
+    """
+    import signal
+    for name in ("SIGINT", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            signal.signal(sig, signal.SIG_IGN)
+
+
 def explorer_job(snap_paths: list, syntax_palettes: object = None) -> dict:
     try:
         from corpusfm.app.web._temp_cleanup import sweep_preview_temp, PREVIEW_TTL_SECONDS

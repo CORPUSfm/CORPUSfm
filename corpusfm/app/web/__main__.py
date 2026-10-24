@@ -96,6 +96,22 @@ def main() -> None:
         ssl_certfile=args.ssl_certfile,
         ssl_keyfile=args.ssl_keyfile,
     )
+    exit_for_requested_restart()
+
+
+def exit_for_requested_restart(platform: "str | None" = None) -> None:
+    """End a requested Windows restart with a failure status (packet 1433).
+
+    uvicorn returns normally after the graceful SIGINT an in-app update sends itself, so the process
+    would exit 0 and WinSW would treat it as an administrator's stop. Only a restart this process
+    requested exits non-zero; an ordinary service stop never sets the intent and stays a clean stop.
+    """
+    import os
+    if (platform or os.name) != "nt":
+        return
+    update_service = sys.modules.get("corpusfm.server.update_service")
+    if update_service is not None and update_service.restart_requested():
+        sys.exit(update_service.REQUESTED_RESTART_EXIT_CODE)
 
 
 if __name__ == "__main__":

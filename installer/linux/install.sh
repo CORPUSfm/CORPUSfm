@@ -3672,6 +3672,26 @@ systemd-tmpfiles --create /etc/tmpfiles.d/corpusfm.conf 2>/dev/null || true
 ok "Preview temp-cleanup rule installed (6h, via systemd-tmpfiles-clean.timer)"
 
 
+# ── Updater sudoers ownership before foundation publication (packet 1433) ────────
+# The foundation takes its helper ownership from files ALREADY created in the attempt ledger.
+# Rendering the updater itself needs that published foundation, but its fixed systemctl grant
+# does not. Create and ledger the grant here so a successful uninstall also removes it. Keeping
+# this write after foundation left an unrecorded root file that blocked the next fresh install.
+UPDATER_SRC="$CFM_RUNTIME_ROOT/installer/linux/corpusfm-update.sh"
+UPDATER_SUDOERS_READY=false
+if [[ -f "$UPDATER_SRC" ]]; then
+    UPD_SUDOERS_TMP="$(mktemp)"
+    printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl start corpusfm-update.service\n' \
+        "$SERVICE_USER" > "$UPD_SUDOERS_TMP"
+    if visudo -cf "$UPD_SUDOERS_TMP" >/dev/null 2>&1; then
+        la_do file ensure - /etc/sudoers.d/corpusfm-update -- install -m 0440 -o root -g root "$UPD_SUDOERS_TMP" /etc/sudoers.d/corpusfm-update
+        UPDATER_SUDOERS_READY=true
+    else
+        warn "sudoers validation failed - the in-app update path stays disabled"
+    fi
+    rm -f "$UPD_SUDOERS_TMP"
+fi
+
 # ═══ PHASE 11 — Foundation publication — generation 1 ═══════════════════════════════════
 
 # The FIRST write of this installation. Publishes the manifest at generation 1 — the seven PathsBlock
@@ -3856,7 +3876,6 @@ fi
 # a request and triggers ONE fixed unit; everything else is decided by root. The service's whole
 # grant is `systemctl start corpusfm-update.service` - no path, no ref, no command, no environment.
 info "Privileged one-shot updater"
-UPDATER_SRC="$CFM_RUNTIME_ROOT/installer/linux/corpusfm-update.sh"
 UPDATER_DST="$INSTALL_DIR/bin/corpusfm-update"
 if [[ -f "$UPDATER_SRC" ]]; then
     mkdir -p "$INSTALL_DIR/bin"
@@ -3951,17 +3970,10 @@ User=root
 ExecStart=$UPDATER_DST
 UNIT
     la_end "$_la_rc" "$_la_seqs"
-    UPD_SUDOERS_TMP="$(mktemp)"
-    printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl start corpusfm-update.service\n' \
-        "$SERVICE_USER" > "$UPD_SUDOERS_TMP"
-    if visudo -cf "$UPD_SUDOERS_TMP" >/dev/null 2>&1; then
-        la_do file ensure - /etc/sudoers.d/corpusfm-update -- install -m 0440 -o root -g root "$UPD_SUDOERS_TMP" /etc/sudoers.d/corpusfm-update
+    if $UPDATER_SUDOERS_READY; then
         systemctl daemon-reload 2>/dev/null || true
         ok "One-shot updater installed ($UPDATER_DST; sudoers validated)"
-    else
-        warn "sudoers validation failed - the in-app update path stays disabled"
     fi
-    rm -f "$UPD_SUDOERS_TMP"
 else
     warn "corpusfm-update.sh not found at $UPDATER_SRC - in-app updates disabled"
 fi

@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from corpusfm.runtime import build_context
 from corpusfm.app.web.auth import require_auth, require_gate, require_any_gate
-from corpusfm.generation_jobs import explorer_job, diff_job, patch_job
+from corpusfm.generation_jobs import explorer_job, diff_job, ignore_console_interrupt, patch_job
 from corpusfm.server import activity_contract
 
 router = APIRouter()
@@ -188,7 +188,8 @@ def _get_pool() -> "concurrent.futures.ProcessPoolExecutor":
             _pool = concurrent.futures.ProcessPoolExecutor(
                 max_workers=workers,
                 mp_context=multiprocessing.get_context("spawn"),
-                max_tasks_per_child=_MAX_TASKS_PER_CHILD)
+                max_tasks_per_child=_MAX_TASKS_PER_CHILD,
+                initializer=ignore_console_interrupt if os.name == "nt" else None)
             logging.getLogger("corpusfm.generate").info(
                 "generation pool: workers=%d (mode=%s, cores=%d), max_tasks_per_child=%d",
                 workers, "server" if server else "local", cores, _MAX_TASKS_PER_CHILD)
@@ -275,8 +276,8 @@ def _submit(tid: str, job_fn, *args) -> None:
         try:
             res = fut.result()
             path, error = res.get("path"), res.get("error")
-        except Exception as exc:
-            path, error = None, str(exc)
+        except BaseException as exc:     # the worker's own KeyboardInterrupt arrives here as a result
+            path, error = None, str(exc) or type(exc).__name__
         metrics.generation_finished(bool(path), time.monotonic() - started)
         with _pool_cond:                 # claim the result atomically against the shutdown snapshot
             claimed = tid in _inflight and tid not in _interrupted

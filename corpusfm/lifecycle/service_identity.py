@@ -57,6 +57,12 @@ RETIRED_SERVICE_ROLES: tuple[str, ...] = (SCHEDULER_ROLE,)
 #: is the set a removal path iterates; `SERVICE_ROLES` is the set a renderer iterates.
 REMOVABLE_SERVICE_ROLES: tuple[str, ...] = SERVICE_ROLES + RETIRED_SERVICE_ROLES
 
+#: How long the service manager lets the web process stop before killing it (packet 1433). The
+#: process gives running generations a 30-second grace on shutdown, then interrupts and kills them
+#: itself, so each budget covers that grace plus the rest of shutdown.
+SYSTEMD_STOP_TIMEOUT_S = 90
+WINSW_STOP_TIMEOUT_S = 45
+
 POSIX_SERVICE_USER = "corpusfm"
 
 # Windows accounts that carry authority the web and scheduler have no business holding. Compared
@@ -499,6 +505,10 @@ def render_systemd_unit(spec: SystemdUnitSpec) -> str:
         f"ExecStart={render_command(spec.command)}\n"
         "Restart=always\n"
         "RestartSec=5\n"
+        # SIGTERM to the web process alone: signalling the whole unit (control-group) ended running
+        # generations at once, before the process could give them their grace (packet 1433).
+        "KillMode=mixed\n"
+        f"TimeoutStopSec={SYSTEMD_STOP_TIMEOUT_S}\n"
         "StandardOutput=journal\n"
         "StandardError=journal\n"
         "\n"
@@ -592,6 +602,11 @@ def render_winsw_service(spec: WinswServiceSpec) -> str:
         "  </serviceaccount>\n"
         f"{env}"
         '  <onfailure action="restart" delay="5 sec" />\n'
+        # Without these, a stop of WinSW 2.12 killed the web process at its 15-second default before
+        # it had drained its generations (measured, packet 1433). The parent is asked first so the
+        # process itself decides what happens to its children.
+        f"  <stoptimeout>{WINSW_STOP_TIMEOUT_S} sec</stoptimeout>\n"
+        "  <stopparentprocessfirst>true</stopparentprocessfirst>\n"
         "  <log mode=\"roll-by-size\"><sizeThreshold>10240</sizeThreshold>"
         "<keepFiles>4</keepFiles></log>\n"
         f"  <logpath>{t(spec.log_path)}</logpath>\n"

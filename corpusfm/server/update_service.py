@@ -607,6 +607,37 @@ class ApplyResult:
 
 # ── the privileged one-shot (packet 1246-03) ──────────────────────────────────────────
 
+#: Exit status of a Windows web process that stopped for a REQUESTED restart (packet 1433). WinSW restarts
+#: the service only after a failure exit, and uvicorn turns the graceful SIGINT into a clean return, so
+#: without this a requested restart ended as an administrator's stop (measured: "finished with 0").
+REQUESTED_RESTART_EXIT_CODE = 75
+_restart_requested = False
+
+
+def restart_requested() -> bool:
+    """Whether this process asked to be restarted; read by the web entry point after uvicorn returns."""
+    return _restart_requested
+
+
+def _supervised_stop() -> None:
+    """Stop this web process through uvicorn's graceful path so the service manager restarts it.
+
+    On Windows ``os.kill(SIGTERM)`` is TerminateProcess: no lifespan, so no generation drain. An
+    in-process SIGINT takes the graceful path there; the intent recorded first makes the entry point
+    exit with ``REQUESTED_RESTART_EXIT_CODE`` so WinSW's failure-restart policy brings it back. An
+    ordinary service stop records nothing and still ends cleanly (packet 1433)."""
+    import signal
+    global _restart_requested
+    if os.name == "nt":
+        _restart_requested = True
+        try:
+            signal.raise_signal(signal.SIGINT)
+            return
+        except Exception:
+            pass
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 def _default_restart_scheduler(supervised: bool) -> None:
     """Restart this web process shortly after its successful response has had time to flush.
 
@@ -622,7 +653,7 @@ def _default_restart_scheduler(supervised: bool) -> None:
     def _restart() -> None:
         time.sleep(1.0)
         if supervised:
-            os.kill(os.getpid(), signal.SIGTERM)
+            _supervised_stop()
             return
         try:
             os.execv(sys.executable, [sys.executable, "-m", "corpusfm.app.web", *sys.argv[1:]])

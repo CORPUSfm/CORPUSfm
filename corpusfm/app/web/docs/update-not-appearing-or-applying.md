@@ -24,6 +24,7 @@ states; they are not interchangeable failures.
 | **Update available (code-only)** | **Solution 2 — Apply the inspected code update** |
 | **Needs the installer**, stale runtime stamp, or missing source credential | **Solution 3 — Follow the installer handoff** |
 | Divergence or another explicit refusal | **Solution 4 — Preserve the evidence and stop** |
+| Windows: Apply (or an MCP address save with restart now) completed but CORPUSfm stays offline | **Solution 5 — Restart the stopped Windows service** |
 
 Do not turn an installer handoff or divergence refusal into a code-only update by changing the checkout
 manually. The page is telling you which authority owns the next step.
@@ -102,6 +103,29 @@ the page reports an error that is not resolved by the named installer handoff.
 
 **Done when:** the maintainer identifies a supported code-only or installer route and the server can
 complete it without bypassing the refusal.
+
+## Solution 5 — Restart the stopped Windows service
+
+**Use this when:** on Windows, an update was applied, or a new MCP address was saved with **restart now**, and
+CORPUSfm then stayed offline with the `corpusfm-web` service **Stopped**. The restart CORPUSfm asked for ended as an
+ordinary stop, so the service wrapper did not start it again.
+
+In an elevated PowerShell window on the server:
+
+```powershell
+Get-Service -Name corpusfm-web
+Start-Service -Name corpusfm-web
+Get-Service -Name corpusfm-web
+```
+
+Run `Start-Service` only if the service is stopped. Reopen CORPUSfm, sign in, and check readiness and the installed
+update result. The update that was applied stays applied. If startup fails, keep the application and service-wrapper
+logs and seek support; do not reset the checkout or edit the installation record. FileMaker Server does not need
+restarting.
+
+**Done when:** CORPUSfm is reachable and Settings shows the expected version. If the service stops this way again
+after a later update, run the current installer through the installer command that Settings shows
+(**Solution 3**): the installer brings the installation's restart handling up to date, and an in-app update cannot.
 
 ## If none works
 
