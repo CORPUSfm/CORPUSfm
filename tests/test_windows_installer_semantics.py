@@ -1109,13 +1109,25 @@ function Section($m) {{ Write-Output ("SECTION: " + $m) }}
 function Die($m) {{ Write-Output ("DIE: " + $m); exit 9 }}
 function Code($u) {{ if ($u -like '*/login') {{ return $CfmLoop }} elseif ($u -like '*fmi*') {{ return $CfmFms }} else {{ return $CfmProx }} }}
 function CodePost($u) {{ return $CfmMcp }}
+$CfmHealth = @({health}); $script:CfmHealthN = 0
+function HealthBody($u) {{ $a = $CfmHealth[[Math]::Min($script:CfmHealthN, $CfmHealth.Count - 1)]; $script:CfmHealthN++; if ($a -eq '__DOWN__') {{ return $null }} return $a }}
 function Get-Service {{ param($Name, $ErrorAction) return [pscustomobject]@{{ Status = $CfmSvcStatus }} }}
 function Start-Sleep {{ param($Seconds) }}
 """
 
 
+PS_READY = '{"ok": true, "database_ready": true, "state": "ready", "phase": "ready"}'
+PS_PAUSED = '{"ok": true, "database_ready": false, "state": "paused", "phase": "initializing"}'
+
+
+def _ps_answers(health) -> str:
+    """One answer per poll, as a PowerShell array literal of single-quoted strings."""
+    answers = [health] if isinstance(health, str) else list(health)
+    return ", ".join("'" + a.replace("'", "''") + "'" for a in answers)
+
+
 def run_summary_ps(tmp_path, *, tag="", svc="Running", loop=200, prox=200, fms=200, mcp=401,
-                   storage="OK:7", login="1"):
+                   storage="OK:7", login="1", health=PS_READY):
     """The child `& $Py <script>` calls are answered by a stub interpreter, so the storage and
     login probes return exactly what the case under test needs."""
     stub_py = tmp_path / f"py{tag}.sh"
@@ -1126,7 +1138,7 @@ def run_summary_ps(tmp_path, *, tag="", svc="Running", loop=200, prox=200, fms=2
     script = tmp_path / f"summary{tag}.ps1"
     script.write_text(
         _SUMMARY_STUBS.format(tmp=tmp_path, py=stub_py, svc=svc, loop=loop, prox=prox, fms=fms,
-                              mcp=mcp, storage=storage, login=login)
+                              mcp=mcp, storage=storage, login=login, health=_ps_answers(health))
         + body + "\nWrite-Output 'REACHED-END'\n", encoding="utf-8")
     return subprocess.run([_PWSH, "-NoProfile", "-File", str(script)], capture_output=True,
                           text=True, env={**os.environ, "CFM_STORAGE": storage, "CFM_LOGIN": login})
@@ -1140,6 +1152,7 @@ def test_the_windows_verification_PASSES_when_every_gate_is_healthy(tmp_path):
     assert "REACHED-END" in r.stdout
     assert "OK: Post-install verification passed" in r.stdout
     for proof in ("corpusfm-web running", "corpusfm-scheduler running", "Loopback login responds",
+                  "Application database ready",
                   "proxied /corpusfm/", "MCP fail-closed", "all four required default artifacts installed",
                   "Login user configured", "coexistence verified"):
         assert proof in r.stdout, f"the healthy run never proved: {proof}"
@@ -1155,6 +1168,16 @@ def test_the_windows_verification_PASSES_when_every_gate_is_healthy(tmp_path):
     ("default artifacts are incomplete", {"storage": "MISSING:CORPUSfm_ADDON/MergedXML"},
      "Required default artifacts did not complete within 60 seconds"),
     ("no login user exists", {"login": "0"}, "No login user yet"),
+    ("the app stays paused", {"health": PS_PAUSED}, "did NOT report its database ready"),
+    ("readiness is the string true", {"health": '{"database_ready": "true"}'},
+     "did NOT report its database ready"),
+    ("readiness is the number 1", {"health": '{"database_ready": 1}'},
+     "did NOT report its database ready"),
+    ("readiness is absent", {"health": '{"ok": true}'}, "did NOT report its database ready"),
+    ("health answers HTML", {"health": "<html>login</html>"}, "did NOT report its database ready"),
+    ("health answers a JSON array", {"health": "[true]"}, "did NOT report its database ready"),
+    ("health answers an empty body", {"health": ""}, "did NOT report its database ready"),
+    ("health is unreachable", {"health": "__DOWN__"}, "did NOT report its database ready"),
 ])
 def test_EVERY_WINDOWS_CRITICAL_GATE_INDEPENDENTLY_REFUSES(tmp_path, gate, kwargs, expected):
     """Each failure alone. A stage that only fails when several things break at once passes a box
@@ -1165,6 +1188,30 @@ def test_EVERY_WINDOWS_CRITICAL_GATE_INDEPENDENTLY_REFUSES(tmp_path, gate, kwarg
     assert "DIE: Post-install verification FAILED" in r.stdout
     assert "REACHED-END" not in r.stdout, f"{gate}: Next steps was reached over a degraded install"
     assert "Post-install verification passed" not in r.stdout
+
+
+@needs_pwsh
+def test_a_PAUSED_windows_app_that_becomes_ready_within_the_wait_SETTLES(tmp_path):
+    """Ordinary startup: paused while the app converts and validates its database, then ready. The
+    wait reports the paused phase and passes once `database_ready` is true."""
+    r = run_summary_ps(tmp_path, tag="settles", health=[PS_PAUSED, PS_READY])
+    assert r.returncode == 0, f"{r.stdout}{r.stderr}"
+    assert "Application not ready yet (PAUSED:initializing)" in r.stdout
+    assert "OK: Application database ready" in r.stdout
+    assert "REACHED-END" in r.stdout
+
+
+@needs_pwsh
+def test_a_paused_windows_app_reports_its_phase_and_the_logs(tmp_path):
+    """The refusal names what the app said and where to look; the installer repairs nothing."""
+    r = run_summary_ps(tmp_path, tag="paused-phase",
+                       health='{"ok": true, "database_ready": false, "phase": "intervention"}')
+    assert r.returncode == 9
+    assert "last: PAUSED:intervention" in r.stdout
+    assert f"corpusfm-web logs in {tmp_path}" in r.stdout
+    # `intervention` deliberately stops the app's own retries, so the refusal must not promise
+    # that startup carries on in the service.
+    assert "startup continues" not in r.stdout
 
 
 @needs_pwsh

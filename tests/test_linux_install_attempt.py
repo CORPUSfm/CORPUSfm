@@ -146,11 +146,13 @@ def test_the_refuse_first_set_is_the_packet_list(box):
         target.mkdir() if relative == "opt/CORPUSfm" else target.write_text("x")
     refused = box.run("refuse-check", json.dumps(box.paths), "false", check=False)
     assert refused.returncode == 3
-    # 1433: the regular-file updater grant is the one entry a fresh install overwrites and owns.
-    assert len(refused.stdout.split("\n")) - 1 == 7
-    assert "etc/sudoers.d/corpusfm-update" not in refused.stdout
+    # 1433 / 1435 M2: the four regular fixed whole-content files are overwritten and owned instead.
+    assert len(refused.stdout.split("\n")) - 1 == 4
+    for managed in ("usr/local/bin/corpusfm", "etc/sudoers.d/corpusfm-db-helper",
+                    "etc/sudoers.d/corpusfm-update", "etc/tmpfiles.d/corpusfm.conf"):
+        assert managed not in refused.stdout
     moved = box.run("refuse-check", json.dumps(box.paths), "true", check=False)
-    assert box.paths["install_dir"] not in moved.stdout and len(moved.stdout.split("\n")) - 1 == 6
+    assert box.paths["install_dir"] not in moved.stdout and len(moved.stdout.split("\n")) - 1 == 3
     assert not box.container.exists(), "a refuse-first check creates nothing"
 
 
@@ -244,11 +246,11 @@ def test_a_walk_over_every_linux_entry_validates_and_classifies_in_the_applicati
 
 
 def test_refuse_first_happens_at_step_one_and_publishes_no_intent(box):
-    shim = box.root / "usr" / "local" / "bin" / "corpusfm"
-    shim.parent.mkdir(parents=True)
-    shim.write_text("foreign")
+    marker = box.root / "etc" / "corpusfm" / "install.yaml"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("foreign")
     box.begin()
-    refused = box.run("step", box.container, UID, "file", "ensure", "-", shim, check=False)
+    refused = box.run("step", box.container, UID, "file", "ensure", "-", marker, check=False)
     assert refused.returncode == 3 and "REFUSE-FIRST" in refused.stderr
     assert box.raw()["ledger"] == []
 
@@ -410,11 +412,11 @@ la_do file ensure - "{target}/../elsewhere" -- false || echo FAILED-AS-EXPECTED
 
 
 def test_a_ledger_refusal_cannot_be_swallowed_by_a_callers_redirect(box, tmp_path):
-    shim = box.root / "usr" / "local" / "bin" / "corpusfm"
-    shim.parent.mkdir(parents=True)
-    shim.write_text("foreign")
+    marker = box.root / "etc" / "corpusfm" / "install.yaml"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("foreign")
     box.begin()
-    proc, _ = shell(f'la_do file ensure - "{shim}" -- touch "{shim}" 2>/dev/null || true\necho CONTINUED',
+    proc, _ = shell(f'la_do file ensure - "{marker}" -- touch "{marker}" 2>/dev/null || true\necho CONTINUED',
                     attempt=True, box=box, tmp_path=tmp_path)
     assert proc.returncode == 1 and "CONTINUED" not in proc.stdout
     assert "REFUSE-FIRST" in proc.stderr
@@ -482,7 +484,7 @@ MUTATIONS = [
     r"rm -f .*(/etc/sudoers\.d|_sched_unit_file|MCP_SERVICE|_mcp_env)",
     r"cat > /(usr|etc)/", r"systemd/system/\$_unit\.service\" \"\$INSTALL_DIR\" <<'RENDER'",
     r"composition foundation --request", r"provision-keys --request",
-    r"retire-scheduler-authority --request \"\$req\"", r"backfill-storage-projections",
+    r"retire-scheduler-authority --request \"\$req\"",
     r"storage create-first-admin", r"install -m 0600 .* \"\$INSTALL_YAML\"",
 ]
 

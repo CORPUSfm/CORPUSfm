@@ -409,6 +409,7 @@ def publish_installer_identity(
     installer_source: str,
     installer_entry_point: str | None = None,
     own_updater_sudoers: bool = False,
+    own_managed_files: tuple = (),
     lock,
     journal: Journal,
     lifecycle_layout,
@@ -423,7 +424,12 @@ def publish_installer_identity(
     `own_updater_sudoers` (packet 1433, Linux only): the installer has just written the canonical
     updater grant at its fixed path. An installation recorded by an older installer never owned it,
     so its uninstall left the grant behind. The same compare-and-swap records exactly that one
-    privilege-helper path; no other ownership can be added here.
+    privilege-helper path.
+
+    `own_managed_files` (packet 1435 M2, Linux only) extends the same rule to the other fixed
+    whole-content files this run wrote: names from `install_attempt.MANAGED_FILES`, never paths. The
+    CLI shim is recorded as the CLI shim, the rest as privilege helpers, each at most once. Nothing
+    else can be added here — no database, key or secrets ownership.
     """
     store = ManifestStore(install_dir, layout=lifecycle_layout)
     current = store.read()
@@ -439,17 +445,26 @@ def publish_installer_identity(
         "entry_point": installer_entry_point,
     })
     ownership = current.ownership
-    if own_updater_sudoers:
-        from .install_attempt import system_paths
+    names = tuple(own_managed_files) + (("update_sudoers",) if own_updater_sudoers else ())
+    if names:
+        from .install_attempt import MANAGED_FILES, system_paths
 
-        grant = system_paths(lifecycle_layout).get("update_sudoers")
-        if not grant:
-            raise CompositionError("own_updater_sudoers applies only to a Linux installation")
-        if not any(e.kind == OWNERSHIP_KIND_PRIVILEGE_HELPER and e.identifier == grant
-                   for e in ownership):
-            ownership = ownership + (OwnershipEntry(ownership_class="exact_resource",
-                                                    kind=OWNERSHIP_KIND_PRIVILEGE_HELPER,
-                                                    identifier=grant),)
+        unknown = sorted(set(names) - set(MANAGED_FILES))
+        if unknown:
+            raise CompositionError(f"not an installer-managed file: {', '.join(unknown)}")
+        files = system_paths(lifecycle_layout)
+        if not files:
+            raise CompositionError("managed-file ownership applies only to a Linux installation")
+        for name in MANAGED_FILES:
+            if name not in names:
+                continue
+            kind = (OWNERSHIP_KIND_CLI_SHIM if name == "cli_shim"
+                    else OWNERSHIP_KIND_PRIVILEGE_HELPER)
+            if any(e.kind == kind and (kind == OWNERSHIP_KIND_CLI_SHIM
+                                       or e.identifier == files[name]) for e in ownership):
+                continue
+            ownership = ownership + (OwnershipEntry(ownership_class="exact_resource", kind=kind,
+                                                    identifier=files[name]),)
     previous_schema = current.schema_version
     if (current.schema_version >= 2 and current.installer.series is not None
             and current.installer.series != installer.series):

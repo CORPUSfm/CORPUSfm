@@ -54,12 +54,18 @@ def test_a_link_or_directory_at_the_grant_path_still_refuses(box, tmp_path):
 
 
 def test_no_other_refuse_first_resource_is_relaxed(box):
-    _place(box.root / "etc" / "sudoers.d" / "corpusfm-db-helper")
+    """1435 M2 relaxed the other fixed whole-content files too; the record and units stay refused."""
+    marker = box.root / "etc" / "corpusfm" / "install.yaml"
+    _place(marker)
+    _place(box.root / "etc" / "systemd" / "system" / "corpusfm.service")
     refused = box.run("refuse-check", json.dumps(box.paths), "false", check=False)
-    assert refused.returncode == 3 and "corpusfm-db-helper" in refused.stdout
+    assert refused.returncode == 3
+    assert "install.yaml" in refused.stdout and "corpusfm.service" in refused.stdout
+    marker.unlink()
+    (box.root / "etc" / "systemd" / "system" / "corpusfm.service").unlink()
     box.begin()
-    step = box.run("step", box.container, os.getuid(), "file", "ensure", "-",
-                   box.root / "etc" / "sudoers.d" / "corpusfm-db-helper", check=False)
+    _place(marker)
+    step = box.run("step", box.container, os.getuid(), "file", "ensure", "-", marker, check=False)
     assert step.returncode != 0 and "REFUSE-FIRST" in step.stderr
 
 
@@ -133,7 +139,7 @@ warn() {{ :; }}
 die() {{ echo "DIE: $*"; exit 9; }}
 la_do() {{ while [[ "$1" != -- ]]; do shift; done; shift; [[ "$1 $2 $3 $4 $5 $6 $7" == "install -m 0440 -o root -g root" ]]; cp "$8" "$9"; chmod 0440 "$9"; }}
 la_created() {{ false; }}
-la_wrote() {{ {"true" if wrote else "false"}; }}
+la_wrote() {{ [[ "$2" == "{dst}" ]] && {"true" if wrote else "false"}; }}
 '''
     env = dict(os.environ, CFM_RUNTIME_ROOT=str(tmp_path / "runtime"), SERVICE_USER="corpusfm")
     proc = subprocess.run(["bash", "-c", harness + block + snapshot +

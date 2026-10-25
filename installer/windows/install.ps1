@@ -774,6 +774,22 @@ function Code($url) {
     if ($_.Exception.Response) { return [int]$_.Exception.Response.StatusCode } else { return -1 }
   }
 }
+# The response BODY of a GET without following redirects, or $null when nothing answered. Used by
+# phase 21's database-readiness wait, which parses the app's /api/health JSON itself.
+# Timeout bounds only the headers; ReadWriteTimeout bounds the body read. A body that stalls or
+# breaks is "nothing answered", never an exception that ends the install.
+function HealthBody($url) {
+  try {
+    $req = [System.Net.HttpWebRequest]::Create($url)
+    $req.AllowAutoRedirect = $false; $req.Timeout = 5000; $req.ReadWriteTimeout = 5000
+    $req.UserAgent = 'corpusfm-installer'
+    $resp = $req.GetResponse()
+    try { return (New-Object System.IO.StreamReader($resp.GetResponseStream())).ReadToEnd() }
+    finally { $resp.Close() }
+  } catch [System.Net.WebException] {
+    if ($_.Exception.Response) { $_.Exception.Response.Close(); return '' } else { return $null }
+  } catch { return $null }
+}
 # Same, but an unauthenticated POST {} - used by phase 21's MCP fail-closed smoke test (the
 # folded-in MCP must reject an unauthenticated request with 401; a GET could 405 before the auth gate).
 function CodePost($url) {
@@ -1606,7 +1622,7 @@ $script:LaLifecycleRc = 0
 $script:LaKinds = [ordered]@{
   'dir'              = @('create', 'set_acl', 'move_aside')
   'file'             = @('create', 'overwrite', 'append', 'delete')
-  'service'          = @('create')
+  'service'          = @('create', 'delete')
   'task'             = @('create')
   'git_config_entry' = @('append', 'unset')
   'iis_setting'      = @('enable_arr_proxy')
@@ -2245,12 +2261,8 @@ function La-BeginAttempt {
          "). A fresh install records its patch hosting folder as its own resource, which a folder inside the" +
          " install root cannot be. Choose a patch hosting folder outside " + $InstallDir + ". Nothing has been changed.")
   }
-  if ([bool]$SchedRetiredPresent) {
-    # The closed ledger vocabulary has no service deletion, so this removal could not be recorded.
-    Die ("The retired " + $SchedServiceRetired + " service is registered on a box that has no CORPUSfm" +
-         " installation record. A fresh install records every change it makes and cannot record that" +
-         " removal, so it refuses before any change. Remove that service deliberately, then re-run.")
-  }
+  # A registered retired scheduler does not refuse here (1435): phase 20 retires it under a recorded
+  # `service delete`, exactly as on an update.
   $refused = @()
   foreach ($r in (La-RefuseFirst)) {
     if ($r.kind -eq 'dir') { if ((La-PathItem $r.target) -and -not $ReplaceAside) { $refused += $r.target } }
@@ -2826,23 +2838,30 @@ function Remove-CfmRetiredSchedulerService {
   # guarded - see there for why.
   if (-not $script:SchedRetiredSid) { return }
   Info ("Retiring the standalone " + $script:SchedServiceRetired + " service (scheduling is inside the web app)...")
-  $schedExe = Join-Path $script:SvcDir ($script:SchedServiceRetired + '.exe')
-  if (Test-Path $schedExe) {
-    & $schedExe stop      2>&1 | Out-Null
-    & $schedExe uninstall 2>&1 | Out-Null
-  } else {
-    Stop-Service $script:SchedServiceRetired -Force -ErrorAction SilentlyContinue
-    & sc.exe delete $script:SchedServiceRetired 2>&1 | Out-Null
-  }
-  for ($i=0; $i -lt 20 -and (Get-Service $script:SchedServiceRetired -ErrorAction SilentlyContinue); $i++) {
-    Start-Sleep -Seconds 1
-  }
-  # AUTHORITATIVE ABSENCE, required before anything proceeds. `-ErrorAction SilentlyContinue` on the
-  # probe is how "is it gone" is asked; it is not how "it is gone" is proven.
-  if (Get-Service $script:SchedServiceRetired -ErrorAction SilentlyContinue) {
-    Die ("The retired " + $script:SchedServiceRetired + " service could not be removed. It cannot start" +
-         " under this build and must not be left registered; remove it and re-run the installer.")
-  }
+  # RECORDED on a fresh install (1435): the one closed retired name, as `service delete`. Without an
+  # attempt La-Do only runs the block.
+  La-Do 'service' 'delete' $null @($script:SchedServiceRetired) {
+    $schedExe = Join-Path $script:SvcDir ($script:SchedServiceRetired + '.exe')
+    if (Test-Path $schedExe) {
+      & $schedExe stop      2>&1 | Out-Null
+      & $schedExe uninstall 2>&1 | Out-Null
+    } else {
+      Stop-Service $script:SchedServiceRetired -Force -ErrorAction SilentlyContinue
+      & sc.exe delete $script:SchedServiceRetired 2>&1 | Out-Null
+    }
+    for ($i=0; $i -lt 20 -and (Get-Service $script:SchedServiceRetired -ErrorAction SilentlyContinue); $i++) {
+      Start-Sleep -Seconds 1
+    }
+    # AUTHORITATIVE ABSENCE, required before anything proceeds. `-ErrorAction SilentlyContinue` on the
+    # probe is how "is it gone" is asked; it is not how "it is gone" is proven.
+    if (Get-Service $script:SchedServiceRetired -ErrorAction SilentlyContinue) {
+      Die ("The retired " + $script:SchedServiceRetired + " service could not be removed. It cannot start" +
+           " under this build and must not be left registered; remove it and re-run the installer.")
+    }
+    # Proven absence decides the result: a native exit code left by stop/uninstall/sc.exe must not
+    # record a completed removal as failed. Reset only here, never before the absence check.
+    $global:LASTEXITCODE = 0
+  } | Out-Null
   Ok ("Standalone " + $script:SchedServiceRetired + " service unregistered; the web service schedules.")
 }
 
@@ -5200,8 +5219,8 @@ if (("" + (Lc-Field $stState 'journal')) -ne 'none') {
 # did not describe, and it is the same shape as the proxy defect measured on winfms2026 the same day.
 #
 # The lifecycle storage provider owns the corpus, its credential and its rotation. What remains
-# below CONSUMES that composition: the projection backfill reads the composed backend, and phase 19
-# handles the first administrator. Neither publishes storage authority.
+# below CONSUMES that composition: phase 19 handles the first administrator, and it publishes no
+# storage authority.
 #
 # THE FMS ADMINISTRATOR CREDENTIAL HAS NO CONSUMER LEFT. Phase 5 verified it, phase 16 and 18 pass
 # it to the provider through the credential frame; nothing after this point needs it, so it is
@@ -5213,29 +5232,11 @@ Remove-Item Env:\FM_ADMIN_USER -ErrorAction SilentlyContinue
 Remove-Item Env:\FM_ADMIN_PASS -ErrorAction SilentlyContinue
 Ok "storage is composed and owned by the lifecycle provider; the FM administrator credential is cleared"
 
-# -- Indexed-slot projection backfill (idempotent; OData-only, no DB swap) ------------------------
-# Fills newly-added query slots on historical records; slots fill only on commit, so pre-existing
-# rows need a one-time re-projection. Marker-gated: a no-op once current (and trivial on a fresh
-# install). Best-effort - the picker uses its scan fallback until it completes.
-Info "Projection backfill"
-# Capture native stdout+stderr WITHOUT terminating: under $ErrorActionPreference='Stop', a benign
-# line on the child's stderr (e.g. a urllib3 InsecureRequestWarning from the verify_ssl=False OData
-# call) is otherwise raised as a fatal NativeCommandError - which once killed the whole install at
-# this step. Relax EAP around the call; judge success by $LASTEXITCODE only.
-if ($script:CfmAttempt) {
-  # RULING 6: bound to this attempt's storage-target entry and storage route. It only reports that
-  # projection writes may have occurred; an adopted database is always preserved.
-  La-ProviderBegin 'backfill_storage_projections' ([ordered]@{
-    target_seq = [int](La-SeqOf 'file' ("" + $script:AttemptRecord.paths.storage_target)); route = $stRoute }) 'storage'
-}
-$eapB = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-$pbOut = (& $Py -m corpusfm.server.cli backfill-storage-projections 2>&1 | Out-String).Trim()
-$pbrc = $LASTEXITCODE
-$ErrorActionPreference = $eapB
-La-ProviderEnd 'backfill_storage_projections' $pbrc $pbOut
-$pbLast = if ($pbOut) { ($pbOut -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1).Trim() } else { "" }
-if ($pbrc -eq 0) { Ok ("Projections current" + $(if ($pbLast) { " - $pbLast" } else { "" })) }
-else { Warn ("Projection backfill did not complete - picker uses the scan fallback until it does. " + $pbOut) }
+# (The installer no longer runs `backfill-storage-projections` (packet 1435 M1). Ordinary app
+# startup owns projection assertion, JOB conversion, the FileMaker refresh and the version stamp, and
+# phase 21 waits for the app to report its database ready. The attempt vocabulary still names
+# 'backfill_storage_projections' so an attempt record written by an earlier installer stays
+# readable and discardable.)
 
 
 # === PHASE 19 - Post-composition installation work ==============================================
@@ -5544,6 +5545,37 @@ $loop = -1
 for ($i=0; $i -lt 6 -and $loop -lt 0; $i++) { Start-Sleep -Seconds 2; $loop = Code "http://127.0.0.1:$WebPort/login" }
 if ($loop -ge 200 -and $loop -lt 400) { Ok ("Loopback login responds: HTTP " + $loop) }
 else { Warn ("The app did NOT answer on loopback (HTTP " + $loop + ") - check the " + $WebService + " logs in " + $LogDir); $CfmSelfTestCrit = 1 }
+
+# 2b. THE APP REPORTS ITS DATABASE READY. A paused app answers every route above with HTTP 200, so
+#     none of them says startup finished. The app's own startup converts and validates its
+#     database, then opens its gate; /api/health reports that gate as the boolean
+#     database_ready. Only a parsed JSON true is ready - a redirect, HTML, an unreachable socket or
+#     any other value is not. Up to 12 checks 5s apart, with 5s header and body-read timeouts:
+#     about 60s when the app answers promptly, longer when it does not. The installer reports and never repairs.
+$ready = 'UNREACHABLE'
+$lastReady = ''
+for ($i = 1; $i -le 12; $i++) {
+  $hb = HealthBody "http://127.0.0.1:$WebPort/api/health"
+  if ($null -eq $hb) { $ready = 'UNREACHABLE' }
+  else {
+    $hj = $null
+    try { $hj = $hb | ConvertFrom-Json -ErrorAction Stop } catch { $hj = $null }
+    $hr = if ($hj -is [System.Management.Automation.PSCustomObject]) { $hj.PSObject.Properties['database_ready'] } else { $null }
+    if ($hr -and $hr.Value -is [bool] -and $hr.Value) { $ready = 'READY' }
+    elseif ($hr -and $hr.Value -is [bool]) {
+      $ready = 'PAUSED:' + $(if ($hj.phase) { "" + $hj.phase } else { 'unknown' })
+    }
+    else { $ready = 'MALFORMED' }
+  }
+  if ($ready -eq 'READY') { break }
+  if ($ready -ne $lastReady) { Info ("Application not ready yet (" + $ready + ")"); $lastReady = $ready }
+  if ($i -lt 12) { Start-Sleep -Seconds 5 }
+}
+if ($ready -eq 'READY') { Ok "Application database ready (/api/health database_ready=true)" }
+else {
+  Warn ("The application did NOT report its database ready after 12 bounded startup checks (last: " + $ready + "). Check the " + $WebService + " logs in " + $LogDir + $(if ($script:CfmLog) { " and " + $script:CfmLog } else { "" }))
+  $CfmSelfTestCrit = 1
+}
 
 # 3. THE PROXIED ROUTE ANSWERS, AND FMS STILL COEXISTS. A proxy edit that works for CORPUSfm and
 #    breaks FMS's own :443 is not a successful install - it is an outage we caused.

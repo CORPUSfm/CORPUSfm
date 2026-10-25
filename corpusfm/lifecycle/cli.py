@@ -3321,7 +3321,8 @@ _CO_OPTIONAL_KEYS: dict[str, frozenset[str]] = {
     "foundation": frozenset({"created_service_account", "privilege_helpers", "cli_shim",
                               "support_dir", "uninstaller_path", "version", "commit",
                               "installer_entry_point"}),
-    "publish-installer": frozenset({"installer_entry_point", "own_updater_sudoers"}),
+    "publish-installer": frozenset({"installer_entry_point", "own_updater_sudoers",
+                                    "own_managed_files"}),
 }
 
 
@@ -3420,6 +3421,14 @@ def _co_read_request(path: str, verb: str, *, authority_api=None) -> dict:
                     "publish-installer expected_generation must be a positive integer")
     if verb == "publish-installer" and not isinstance(raw.get("own_updater_sudoers", False), bool):
         raise _RequestRefused("publish-installer own_updater_sudoers must be a boolean")
+    if verb == "publish-installer" and "own_managed_files" in raw:
+        from .install_attempt import MANAGED_FILES
+
+        names = raw["own_managed_files"]
+        if (not isinstance(names, list) or not all(isinstance(n, str) for n in names)
+                or not set(names) <= set(MANAGED_FILES)):
+            raise _RequestRefused(
+                f"publish-installer own_managed_files must be a list drawn from {MANAGED_FILES}")
     if verb == "discard-provider":
         if raw["provider"] not in PROVIDERS:
             raise _RequestRefused(f"provider must be one of {PROVIDERS}, got {raw['provider']!r}")
@@ -3562,6 +3571,7 @@ def _composition(args, *, engine=None, lifecycle=None, os_layout=None, locator_a
                         if raw.get("installer_entry_point") else None
                     ),
                     own_updater_sudoers=bool(raw.get("own_updater_sudoers", False)),
+                    own_managed_files=tuple(raw.get("own_managed_files", ())),
                     lock=lock, journal=journal, lifecycle_layout=layout)
                 payload = {
                     "result": out.result, "operation_id": out.operation_id, "provider": None,

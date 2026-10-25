@@ -119,12 +119,26 @@ def test_WINDOWS_NEVER_DEPLOYS_THE_DATABASE_OR_ROTATES_THE_CREDENTIAL_ITSELF():
 
 
 def test_WHAT_CONSUMES_THE_COMPOSITION_STILL_RUNS_ON_WINDOWS():
-    """The tail was deleted, not the phases after it. Projection backfill reads the composed
-    backend and phase 19 handles the first administrator; neither publishes storage authority."""
+    """The tail was deleted, not the phases after it. Phase 19 handles the first administrator and
+    phase 21 starts the services; neither publishes storage authority."""
     tail = _after_windows_storage()
-    assert "backfill-storage-projections" in tail, "the projection backfill went with the tail"
+    assert "storage create-first-admin" in tail, "the first administrator went with the tail"
     assert "PHASE 19" in PS1.read_text(encoding="ascii")
     assert "PHASE 21" in tail or "PHASE 21" in PS1.read_text(encoding="ascii")
+
+
+def test_NEITHER_INSTALLER_RUNS_THE_PROJECTION_CONVERSION_ITSELF():
+    """Packet 1435 M1. Ordinary app startup owns projection assertion, JOB conversion, the FileMaker
+    refresh and the version stamp; an installer that also ran `backfill-storage-projections` was a
+    second invocation of that work, ahead of the startup chain's own build probe. Phase 21 now waits
+    for the app's `database_ready` instead. The attempt vocabulary still NAMES the intent, so an
+    attempt record written by an earlier installer stays readable and discardable."""
+    for name, text in (("install.sh", SH.read_text(encoding="utf-8")),
+                       ("install.ps1", PS1.read_text(encoding="ascii"))):
+        body = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+        assert "backfill-storage-projections" not in body, f"{name} still runs the conversion"
+        assert "backfill_storage_projections" in body, (
+            f"{name} dropped the historical attempt intent; an older attempt record would not parse")
 
 
 def test_THE_FMS_ADMIN_CREDENTIAL_IS_CLEARED_AFTER_ITS_LAST_CONSUMER():

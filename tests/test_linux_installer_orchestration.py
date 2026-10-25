@@ -836,7 +836,11 @@ CFM_STORAGE=%(storage)s
 CFM_HTTP=%(http)s
 CFM_PROXY=%(proxy)s
 CFM_MCP=%(mcp)s
+CFM_HEALTH='%(health)s'
+CFM_HEALTH_N=%(install)s/health.n
+WEB_SERVICE=corpusfm
 CFM_ATTEMPT=false
+mkdir -p "$INSTALL_DIR/venv/bin"; ln -sf %(python)s "$INSTALL_DIR/venv/bin/python"
 die() { echo "DIE: $*"; exit 9; }
 ok() { echo "OK: $*"; }
 warn() { echo "WARN: $*"; }
@@ -858,6 +862,12 @@ curl() {
   case "$url" in
     *:8533/login)  printf '%%s' "$CFM_HTTP" ;;
     *:8533/mcp/)   printf '%%s' "$CFM_MCP" ;;
+    *:8533/api/health)                 # one '|'-separated answer per poll; the last repeats
+      local n; n=$(cat "$CFM_HEALTH_N" 2>/dev/null || echo 0); echo $((n + 1)) > "$CFM_HEALTH_N"
+      local IFS='|'; local answers=($CFM_HEALTH); local a="${answers[$n]:-${answers[${#answers[@]}-1]}}"
+      [ "$a" = __DOWN__ ] && return 7
+      [ "$a" = __HTTP500__ ] && return 22   # curl --fail on an HTTP error status
+      printf '%%s' "$a" ;;
     */fmi/*)       printf '200' ;;
     *)             printf '%%s' "$CFM_PROXY" ;;
   esac
@@ -879,12 +889,17 @@ echo "REACHED-END"
 """
 
 
+READY = '{"ok": true, "database_ready": true, "state": "ready", "phase": "ready"}'
+PAUSED = '{"ok": true, "database_ready": false, "state": "paused", "phase": "initializing"}'
+
+
 def run_summary(sh, tmp_path, *, tag="", active=0, http="200", proxy="200", mcp="401",
-                storage="OK:7", login="1"):
+                storage="OK:7", login="1", health=READY):
     script = tmp_path / f"summary{tag}.sh"
     script.write_text(SUMMARY_HARNESS % {
-        "install": str(tmp_path), "active": active, "login": login, "storage": storage,
-        "http": http, "proxy": proxy, "mcp": mcp, "body": summary_body(sh)})
+        "install": str(tmp_path / f"root{tag}"), "active": active, "login": login,
+        "storage": storage, "http": http, "proxy": proxy, "mcp": mcp, "health": health,
+        "python": sys.executable, "body": summary_body(sh)})
     return subprocess.run(["bash", str(script)], capture_output=True, text=True)
 
 
@@ -894,7 +909,8 @@ def test_the_post_install_verification_PASSES_when_every_gate_is_healthy(sh, tmp
     assert r.returncode == 0, f"{r.stdout}{r.stderr}"
     assert "REACHED-END" in r.stdout, "the success path never reached Next steps"
     assert "OK: Post-install verification passed" in r.stdout
-    for proof in ("corpusfm active", "Loopback login responds", "Proxied /corpusfm/ responds",
+    for proof in ("corpusfm active", "Loopback login responds", "Application database ready",
+                  "Proxied /corpusfm/ responds",
                   "MCP fail-closed", "Storage reachable", "Login user configured",
                   "coexistence verified"):
         assert proof in r.stdout, f"the healthy run never proved: {proof}"
@@ -918,6 +934,16 @@ def test_the_loopback_gate_accepts_live_route_dispositions(sh, tmp_path, http):
     ("unauthenticated MCP is accepted", {"mcp": "200"}, "did NOT reject unauthenticated access"),
     ("storage is unreachable", {"storage": "FAIL:OSError"}, "Storage is NOT reachable"),
     ("no login user exists", {"login": "0"}, "No login user yet"),
+    ("the app stays paused", {"health": PAUSED}, "did NOT report its database ready"),
+    ("readiness is the string true", {"health": '{"database_ready": "true"}'},
+     "did NOT report its database ready"),
+    ("readiness is the number 1", {"health": '{"database_ready": 1}'},
+     "did NOT report its database ready"),
+    ("readiness is absent", {"health": '{"ok": true}'}, "did NOT report its database ready"),
+    ("health answers HTML", {"health": "<html>login</html>"}, "did NOT report its database ready"),
+    ("health answers a JSON array", {"health": "[true]"}, "did NOT report its database ready"),
+    ("health is unreachable", {"health": "__DOWN__"}, "did NOT report its database ready"),
+    ("health answers an HTTP error", {"health": "__HTTP500__"}, "did NOT report its database ready"),
 ])
 def test_EVERY_CRITICAL_GATE_INDEPENDENTLY_REFUSES_SUCCESS(sh, tmp_path, gate, kwargs, expected):
     """Each failure alone. A verification that only fails when several things break at once would
@@ -928,6 +954,28 @@ def test_EVERY_CRITICAL_GATE_INDEPENDENTLY_REFUSES_SUCCESS(sh, tmp_path, gate, k
     assert "DIE: Post-install verification FAILED" in r.stdout
     assert "REACHED-END" not in r.stdout, f"{gate}: Next steps was reached over a degraded install"
     assert "Post-install verification passed" not in r.stdout
+
+
+def test_a_PAUSED_app_that_becomes_ready_within_the_wait_SETTLES(sh, tmp_path):
+    """Ordinary startup: the app answers paused while it converts and validates its database, then
+    opens its gate. The wait reports the paused phase and passes once `database_ready` is true."""
+    r = run_summary(sh, tmp_path, tag="settles", health=PAUSED + "|" + READY)
+    assert r.returncode == 0, f"{r.stdout}{r.stderr}"
+    assert "Application not ready yet (PAUSED:initializing)" in r.stdout
+    assert "OK: Application database ready" in r.stdout
+    assert "REACHED-END" in r.stdout
+
+
+def test_a_paused_app_reports_its_phase_and_the_logs(sh, tmp_path):
+    """The refusal names what the app said and where to look; the installer repairs nothing."""
+    r = run_summary(sh, tmp_path, tag="paused-phase",
+                    health='{"ok": true, "database_ready": false, "phase": "intervention"}')
+    assert r.returncode == 9
+    assert "last: PAUSED:intervention" in r.stdout
+    assert "journalctl -u corpusfm" in r.stdout
+    # `intervention` deliberately stops the app's own retries, so the refusal must not promise
+    # that startup carries on in the service.
+    assert "startup continues" not in r.stdout
 
 
 def test_an_UNKNOWN_login_state_warns_without_refusing(sh, tmp_path):

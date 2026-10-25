@@ -116,6 +116,9 @@ _POSIX_SYSTEM_FILES = {
     "update_sudoers": ("etc", "sudoers.d", "corpusfm-update"),
     "tmpfiles": ("etc", "tmpfiles.d", "corpusfm.conf"),
 }
+#: The fixed whole-content files the installer replaces and owns when something already stands at
+#: the path (1433 for the updater grant, 1435 M2 for the rest). Closed: names, never caller paths.
+MANAGED_FILES = tuple(_POSIX_SYSTEM_FILES)
 
 
 class AttemptRefused(LifecycleError):
@@ -672,8 +675,11 @@ LEDGER_VOCABULARY: dict = {
     },
     "account": {"create": (_NAME_TARGET, _present_or_absent({"uid": "int", "gid": "int"}),
                            _present_or_absent({"uid": "int", "gid": "int"}))},
-    "service": {"create": (_NAME_TARGET, _present_or_absent({"binary_path": "str"}),
-                           _present_or_absent({"binary_path": "str"}))},
+    # `delete` is the Windows retirement of the closed retired-scheduler name (1435). Its prior is a
+    # present service, so classification says modified and no plan ever restores or removes it.
+    "service": {intent: (_NAME_TARGET, _present_or_absent({"binary_path": "str"}),
+                         _present_or_absent({"binary_path": "str"}))
+                for intent in ("create", "delete")},
     "task": {"create": (_NAME_TARGET, _present_or_absent({"task_path": "str"}),
                         _present_or_absent({"task_path": "str"}))},
     "unit": {**{intent: (_PATH_TARGET, _present_or_absent({"sha256": "hex"}),
@@ -1129,16 +1135,22 @@ def classify_target(record: AttemptRecord, target: str, kind: str, *, observer=d
 
 
 def overwrote_updater_grant(record: AttemptRecord, target: str) -> bool:
-    """The attempt replaced a grant already standing at the fixed updater-sudoers path (1433).
+    """The attempt replaced a grant already standing at the fixed updater-sudoers path (1433)."""
+    return overwrote_managed_file(record, target, names=("update_sudoers",))
 
-    The installer overwrites and OWNS that one resource; its ledger keeps the truthful history
-    (present before, overwritten). Classification still says modified; this is the single,
-    named exception that lets the attempt remove what it now owns.
+
+def overwrote_managed_file(record: AttemptRecord, target: str, *, names=MANAGED_FILES) -> bool:
+    """The attempt replaced a file already standing at one of the fixed managed paths (1433, 1435).
+
+    The installer overwrites and OWNS those whole-content files; its ledger keeps the truthful
+    history (present before, overwritten). Classification still says modified; this is the named
+    exception that lets the attempt remove what it now owns. A failed write confers nothing.
     """
     if record.platform != POSIX:
         return False
-    grant = Path(record.paths["config_dir"]).parent.parent.joinpath(*_POSIX_SYSTEM_FILES["update_sudoers"])
-    if _canon(target, POSIX) != _canon(str(grant), POSIX):
+    root = Path(record.paths["config_dir"]).parent.parent
+    if not any(_canon(target, POSIX) == _canon(str(root.joinpath(*_POSIX_SYSTEM_FILES[n])), POSIX)
+               for n in names):
         return False
     entries = [e for e in record.ledger if e.kind == "file" and _canon(e.target, POSIX) == _canon(target, POSIX)]
     return bool(entries) and entries[0].intent == "overwrite" and any(
@@ -1206,14 +1218,14 @@ def attempt_plan(record: AttemptRecord, layout, *, observer=default_observer) ->
             decisions["service_account"] = _decision(PRESERVE, f"install_attempt: {cls}")
         files = system_paths(layout)
         cls, detail = classify_target(record, files["cli_shim"], "file", observer=observer)
-        if cls == CLASS_CREATED:
+        if cls == CLASS_CREATED or overwrote_managed_file(record, files["cli_shim"]):
             ownership.append(OwnershipEntry("exact_resource", "cli_shim_path", files["cli_shim"]))
             decisions["cli_shim"] = _decision(REMOVE, f"install_attempt: {detail}")
         else:
             decisions["cli_shim"] = _decision(PRESERVE, f"install_attempt: {cls}")
         helpers = [files[name] for name in ("db_helper_sudoers", "update_sudoers", "tmpfiles")
                    if classify_target(record, files[name], "file", observer=observer)[0]
-                   == CLASS_CREATED or overwrote_updater_grant(record, files[name])]
+                   == CLASS_CREATED or overwrote_managed_file(record, files[name])]
         for helper in helpers:
             ownership.append(OwnershipEntry("exact_resource", "privilege_helper_path", helper))
         decisions["sudoers_helpers"] = (
@@ -1295,9 +1307,10 @@ def attempt_filter(record: AttemptRecord, decisions: dict, manifest, *, observer
         "proxy_edits": lambda: proxy_clean,
         "service_account": lambda: platform == POSIX and created(POSIX_SERVICE_ACCOUNT, "account"),
         "cli_shim": lambda: bool(ownership("cli_shim_path"))
-        and all(created(path, "file") for path in ownership("cli_shim_path")),
+        and all(created(path, "file") or overwrote_managed_file(record, path)
+                for path in ownership("cli_shim_path")),
         "sudoers_helpers": lambda: bool(ownership("privilege_helper_path"))
-        and all(created(path, "file") or overwrote_updater_grant(record, path)
+        and all(created(path, "file") or overwrote_managed_file(record, path)
                 for path in ownership("privilege_helper_path")),
         "web_service": lambda: unit_created("web"),
         "updater_task": lambda: unit_created("updater"),

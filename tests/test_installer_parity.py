@@ -86,6 +86,9 @@ _VERIFICATION_PROBES = {
     "proxy": (r"127\.0\.0\.1\$\{?WEB_PREFIX\}?/", r"127\.0\.0\.1\" \+ \$WebPrefix"),
     "fms_coexistence": (r"/fmi/", r"/fmi/"),
     "storage": (r"get_backend", r"get_backend"),
+    # Packet 1435 M1: a paused app answers every route above with HTTP 200, so the app's own gate,
+    # read as the parsed boolean, is the readiness obligation.
+    "database_ready": (r"127\.0\.0\.1:\$\{?WEB_PORT\}?/api/health", r"127\.0\.0\.1:\$WebPort/api/health"),
 }
 
 
@@ -391,7 +394,7 @@ def test_the_divergence_catalogue_covers_every_parity_assertion():
 # ── §4H item 9: the post-start verification, and the divergence that would have caught the RC3 ──
 
 REQUIRED_PROBES = frozenset({"units_active", "loopback", "proxy", "fms_coexistence", "mcp_401",
-                             "storage", "named_user"})
+                             "storage", "named_user", "database_ready"})
 
 
 def test_BOTH_PLATFORMS_VERIFY_AFTER_STARTING_AND_BEFORE_CLAIMING_SUCCESS(facts):

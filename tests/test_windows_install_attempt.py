@@ -125,7 +125,7 @@ MUTATIONS = [
     r"Register-ScheduledTask -TaskName", r"Remove-Item -LiteralPath \$staleMcpEnv",
     r"Register-CfmService \$id$", r"Grant-OrDie \$PatchHostingDir", r"Grant-OrDie \$LogDir",
     r"Set-WebConfigurationProperty .*system\.webServer/proxy", r"'retire-scheduler-authority','--request',\$req\)$",
-    r"backfill-storage-projections", r"storage create-first-admin",
+    r"storage create-first-admin", r"& \$schedExe uninstall", r"& sc\.exe delete \$script:SchedServiceRetired",
 ]
 
 
@@ -375,8 +375,11 @@ La-Do 'dir' 'ensure' $null @('{INSTALL}') {{ }} | Out-Null
 # ── ruling 7: a nested patch hosting folder refuses before the container exists ─────
 
 
-def _ps_begin(tmp_path, hosting):
+def _ps_begin(tmp_path, hosting, present=("service:corpusfm-web",)):
+    """`La-BeginAttempt` with the retired scheduler registered. Container creation is reached when
+    `La-ContainerProblem` runs, and that double stops the walk there."""
     container = tmp_path / "attempt-not-created"
+    present_list = ",".join("'" + p + "'" for p in present)
     script = "\n".join([
         "$ErrorActionPreference = 'Stop'",
         "function Die($m) { throw ('DIE: ' + $m) }",
@@ -386,6 +389,15 @@ def _ps_begin(tmp_path, hosting):
         f"$script:PatchHostingDir = '{hosting}'; $PatchHostingDir = '{hosting}'",
         f"$script:AttemptDir = '{container}'",
         "$SchedRetiredPresent = $true; $SchedServiceRetired = 'corpusfm-scheduler'",
+        f"$script:Present = @({present_list}) + @('service:corpusfm-scheduler')",
+        "function La-RefuseFirst { return @(@{ kind = 'service'; target = 'corpusfm-web' },"
+        " @{ kind = 'task'; target = '\\CORPUSfm Update' }) }",
+        "function La-PathItem([string]$Path) { Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }",
+        "function La-ServiceState([string]$Name) { [ordered]@{ exists = ($script:Present -contains ('service:' + $Name)) } }",
+        "function La-TaskState([string]$Target) { [ordered]@{ exists = ($script:Present -contains ('task:' + $Target)) } }",
+        "function La-ProtectedSecurity([bool]$Directory) { return $null }",
+        "function La-SetProtected([string]$Path, [bool]$Directory) { }",
+        "function La-ContainerProblem { throw 'REACHED-CONTAINER' }",
         "try { La-BeginAttempt } catch { $_.Exception.Message }",
     ])
     path = tmp_path / "begin.ps1"
@@ -407,13 +419,122 @@ def test_a_nested_patch_hosting_folder_refuses_before_the_container_exists(tmp_p
 def test_a_sibling_patch_hosting_folder_passes_the_nested_check(tmp_path):
     """The control: a sibling reaches the next preflight refusal, still before the container."""
     proc, container = _ps_begin(tmp_path, r"C:\CORPUSfm-Hosted")
-    assert "retired corpusfm-scheduler" in proc.stdout and "-PatchHostingDir" not in proc.stdout
+    assert "REFUSE-FIRST" in proc.stdout and "service corpusfm-web" in proc.stdout, proc.stdout + proc.stderr
+    assert "-PatchHostingDir" not in proc.stdout and "corpusfm-scheduler" not in proc.stdout
     assert not container.exists()
 
 
+@supplementary
+def test_a_registered_retired_scheduler_alone_does_not_refuse_the_fresh_attempt(tmp_path):
+    """1435: phase 20 retires it under a recorded `service delete`, so the preflight goes on to
+    create the container. The current web service and task still refuse (the control above)."""
+    proc, container = _ps_begin(tmp_path, r"C:\CORPUSfm-Hosted", present=())
+    assert "REACHED-CONTAINER" in proc.stdout, proc.stdout + proc.stderr
+    assert "REFUSE-FIRST" not in proc.stdout and "DIE" not in proc.stdout
+    assert container.is_dir()
+
+
 def test_the_nested_check_is_the_first_statement_of_the_preflight():
-    body = ps_function("La-BeginAttempt")
-    assert body.index("La-NestedHostingDir") < body.index("SchedRetiredPresent") < body.index("CreateDirectory")
+    body = code(ps_function("La-BeginAttempt"))
+    assert body.index("La-NestedHostingDir") < body.index("La-RefuseFirst") < body.index("CreateDirectory")
+    assert "SchedRetiredPresent" not in body, "the retired scheduler refuses the fresh attempt again"
+
+
+# ── 1435: the retired scheduler's deletion is recorded as `service delete` ─────────────
+
+
+def _retire_ps(tmp_path, *, removes: bool, exit_code: int, attempt=True, wrapper=True):
+    """The REAL `Remove-CfmRetiredSchedulerService` over the real `La-` writer. The WinSW wrapper
+    (or, with no wrapper on disk, `sc.exe`) is a native executable that exits `exit_code`; its
+    `uninstall` / `delete` unregisters the service (deletes the marker that the service doubles
+    read) only when `removes`."""
+    svc = tmp_path / "services"
+    svc.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    marker = tmp_path / "scheduler-registered"
+    marker.write_text("x")
+    exe = (svc / "corpusfm-scheduler.exe") if wrapper else (bin_dir / "sc.exe")
+    verb = "uninstall" if wrapper else "delete"
+    exe.write_text("#!/bin/sh\n" + (f'[ "$1" = {verb} ] && rm -f "{marker}"\n' if removes else "")
+                   + f"exit {exit_code}\n")
+    exe.chmod(0o755)
+    body = ("La-Write" if attempt else "") + rf"""
+$env:PATH = '{bin_dir}' + [IO.Path]::PathSeparator + $env:PATH
+function Stop-Service {{ }}
+function Info($m) {{ }}
+function Start-Sleep {{ }}
+function Get-Service($Name, $ErrorAction) {{ if (Test-Path -LiteralPath '{marker}') {{ return [pscustomobject]@{{ Name = $Name }} }} }}
+function La-ServiceState([string]$Name) {{ if (Test-Path -LiteralPath '{marker}') {{ return [ordered]@{{ exists = $true; binary_path = '{exe}' }} }}; return [ordered]@{{ exists = $false }} }}
+$script:SvcDir = '{svc}'; $script:SchedServiceRetired = 'corpusfm-scheduler'; $script:SchedRetiredSid = 'S-1-5-80-0'
+{ps_function("Remove-CfmRetiredSchedulerService")}
+try {{ Remove-CfmRetiredSchedulerService; 'RETIRED' }} catch {{ $_.Exception.Message }}
+"""
+    return run_ps(tmp_path, body, attempt=attempt)
+
+
+@supplementary
+@pytest.mark.parametrize("wrapper", [True, False], ids=["winsw", "sc.exe"])
+def test_a_proven_removal_is_recorded_done_even_after_a_non_zero_native_exit(tmp_path, wrapper):
+    proc, raw = _retire_ps(tmp_path, removes=True, exit_code=3, wrapper=wrapper)
+    assert "RETIRED" in proc.stdout, proc.stdout + proc.stderr
+    record = ia.AttemptRecord.from_dict(raw)
+    [entry] = record.ledger
+    assert (entry.kind, entry.target, entry.intent, entry.state) == (
+        "service", "corpusfm-scheduler", "delete", "done")
+    assert entry.prior["exists"] is True and entry.post == {"exists": False}
+    # Present before: never claimed as created, so discard neither removes nor re-registers it.
+    assert ia.classify_target(record, "corpusfm-scheduler", "service",
+                              observer=lambda t, k: "absent")[0] == ia.CLASS_MODIFIED
+
+
+@supplementary
+def test_a_service_still_registered_after_removal_is_recorded_failed(tmp_path):
+    proc, raw = _retire_ps(tmp_path, removes=False, exit_code=0)
+    assert "DIE: The retired corpusfm-scheduler service could not be removed" in proc.stdout, \
+        proc.stdout + proc.stderr
+    record = ia.AttemptRecord.from_dict(raw)
+    [entry] = record.ledger
+    assert (entry.intent, entry.state) == ("delete", "failed")
+    assert entry.post["exists"] is True
+    assert ia.classify_target(record, "corpusfm-scheduler", "service",
+                              observer=lambda t, k: "match")[0] == ia.CLASS_UNTOUCHED
+
+
+@supplementary
+def test_without_an_attempt_the_retirement_runs_unrecorded(tmp_path):
+    """The update path: no attempt, so La-Do only runs the block."""
+    proc, raw = _retire_ps(tmp_path, removes=True, exit_code=3, attempt=False)
+    assert "RETIRED" in proc.stdout, proc.stdout + proc.stderr
+    assert raw is None
+
+
+@supplementary
+def test_an_interrupted_service_delete_reads_as_modified_and_plans_nothing(tmp_path):
+    """Write-ahead only: the process stopped after the intent and before its result."""
+    proc, raw = run_ps(tmp_path, r"""
+La-Write
+La-Step 'service' 'delete' $null @('corpusfm-scheduler')
+""", present=["service:corpusfm-scheduler"])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    record = ia.AttemptRecord.from_dict(raw)
+    [entry] = record.ledger
+    assert (entry.intent, entry.state, entry.prior["exists"]) == ("delete", "intended", True)
+    for observed in ("match", "absent"):
+        assert ia.classify_target(record, "corpusfm-scheduler", "service",
+                                  observer=lambda t, k, o=observed: o)[0] == ia.CLASS_MODIFIED
+
+
+def test_the_retired_service_deletion_is_the_one_recorded_service_delete():
+    """Scoped to the closed retired name: no other site deletes a service through the ledger."""
+    sites = re.findall(r"La-Do 'service' 'delete' \$null @\(([^)]*)\)", code(TEXT))
+    assert sites == ["$script:SchedServiceRetired"]
+    body = code(ps_function("Remove-CfmRetiredSchedulerService"))
+    assert body.index("if (-not $script:SchedRetiredSid) { return }") < body.index("La-Do 'service' 'delete'")
+    # The reset follows the authoritative absence check and is the block's last statement.
+    reset = body.index("$global:LASTEXITCODE = 0")
+    assert body.index("if (Get-Service $script:SchedServiceRetired") < reset
+    assert body.index("Die (") < reset
 
 
 def test_a_development_discard_names_its_execution_requirement_not_authority():
