@@ -56,6 +56,10 @@
 
   var SHORT = { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
                 timeZoneName: 'short' };
+  // The same instant as two separately formatted parts, for an opt-in two-line display. Each part is its
+  // own Intl format of the one parsed instant — never a split of the SHORT string.
+  var DATE_PART = { year: 'numeric', month: 'short', day: 'numeric' };
+  var TIME_PART = { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' };
   var FULL = { weekday: 'short', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric',
                minute: '2-digit', second: '2-digit', timeZoneName: 'long' };
 
@@ -80,7 +84,7 @@
     }
     var full = fmt(ms, FULL), utc = utcText(ms);
     return { ok: true, text: fmt(ms, SHORT), full: full, utc: utc, iso: new Date(ms).toISOString(),
-             title: full + ' — ' + utc };
+             title: full + ' — ' + utc, date: fmt(ms, DATE_PART), time: fmt(ms, TIME_PART) };
   }
 
   // Explicit left/top: with `auto` offsets an absolutely positioned span keeps its static position, so
@@ -90,11 +94,22 @@
                  'overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0';
 
   // Render an instant into an element: visible local text, a title with the full local value, zone and
-  // original UTC, a machine-readable datetime, and the same detail for screen readers.
+  // original UTC, a machine-readable datetime, and the same detail for screen readers. An element with
+  // data-cfm-lines="2" shows a valid instant as a date line and a time-with-zone line instead.
   function render(el, v, prefix) {
     var d = describe(v);
     while (el.firstChild) el.removeChild(el.firstChild);
-    el.appendChild(document.createTextNode((prefix || '') + d.text));
+    if (d.ok && el.getAttribute('data-cfm-lines') === '2') {
+      var parts = [(prefix || '') + d.date, d.time];
+      for (var i = 0; i < 2; i++) {
+        var line = document.createElement('span');
+        line.setAttribute('style', 'display:block;white-space:nowrap');
+        line.textContent = parts[i];
+        el.appendChild(line);
+      }
+    } else {
+      el.appendChild(document.createTextNode((prefix || '') + d.text));
+    }
     if (d.ok) {
       var sr = document.createElement('span');
       sr.setAttribute('style', SR_STYLE);

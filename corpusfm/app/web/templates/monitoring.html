@@ -76,21 +76,22 @@
     <p class="cfm-muted">No alerts recorded yet.</p>
   </template>
   <template x-if="alertHistory.length > 0">
-    <div class="cfm-panel cfm-table-wrap">
-      <table class="cfm-table">
-        <thead><tr><th>Time</th><th>Severity</th><th>Condition</th><th>Job</th><th>Message</th></tr></thead>
-        <tbody>
-          <template x-for="(a, i) in alertHistory" :key="i">
-            <tr>
-              <td><time x-cfm-time="a.ts_utc || a.ts"></time></td>
-              <td><span class="cfm-badge" :class="a.severity === 'error' ? 'cfm-badge--broken' : 'cfm-badge--warn'" x-text="a.severity"></span></td>
-              <td x-text="a.condition"></td>
-              <td x-text="a.job_name"></td>
-              <td x-text="a.message"></td>
-            </tr>
-          </template>
-        </tbody>
-      </table>
+    {# A list, not a table (packet 1437): each alert's labeled details wrap to the panel's own width and
+       its message runs full width beneath them, so nothing is crushed into a narrow column. #}
+    <div class="cfm-panel">
+      <ol class="cfm-alert-log" role="list" aria-label="Alert history, newest first">
+        <template x-for="(a, i) in alertHistory" :key="i">
+          <li>
+            <dl class="cfm-alert-entry">
+              <div class="cfm-alert-field cfm-alert-field--time"><dt>Time</dt><dd><time data-cfm-lines="2" x-cfm-time="a.ts_utc || a.ts"></time></dd></div>
+              <div class="cfm-alert-field cfm-alert-field--sev"><dt>Severity</dt><dd><span class="cfm-badge" :class="a.severity === 'error' ? 'cfm-badge--broken' : 'cfm-badge--warn'" x-text="a.severity"></span></dd></div>
+              <div class="cfm-alert-field cfm-alert-field--grow"><dt>Condition</dt><dd x-text="a.condition"></dd></div>
+              <div class="cfm-alert-field cfm-alert-field--grow"><dt>Job</dt><dd x-text="a.job_name || '—'" :class="a.job_name ? '' : 'cfm-muted'"></dd></div>
+              <div class="cfm-alert-field cfm-alert-field--message"><dt class="cfm-sr-only">Message</dt><dd x-text="a.message"></dd></div>
+            </dl>
+          </li>
+        </template>
+      </ol>
     </div>
   </template>
 

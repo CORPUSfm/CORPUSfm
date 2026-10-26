@@ -522,6 +522,23 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
 .cfm-alert-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
 .cfm-alert-row + .cfm-alert-row { border-top: 1px solid var(--border); }
 .cfm-muted { color: var(--text-3); }
+/* Alert History (packet 1437): metadata fields flex-wrap against the panel's own width (the sidebar is
+   accounted for without a viewport breakpoint); the message takes a full-width line of its own. */
+.cfm-alert-log { list-style: none; margin: 0; padding: 0; }
+.cfm-alert-log > li { padding: 10px 0; }
+.cfm-alert-log > li:first-child { padding-top: 0; }
+.cfm-alert-log > li:last-child { padding-bottom: 0; }
+.cfm-alert-log > li + li { border-top: 1px solid var(--border); }
+.cfm-alert-entry { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 0; font-size: 13px; }
+.cfm-alert-field { flex: 0 0 auto; min-width: 0; max-width: 100%; }
+.cfm-alert-field--grow { flex: 1 1 10rem; }
+.cfm-alert-field--message { flex: 1 1 100%; }
+.cfm-alert-field dt { color: var(--text-3); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.cfm-alert-field dd { margin: 2px 0 0; color: var(--text-2); overflow-wrap: anywhere; }
+.cfm-alert-field--time { min-width: 7.5rem; }
+.cfm-alert-field--sev { min-width: 4.5rem; }
+.cfm-alert-field--time dd { font-variant-numeric: tabular-nums; }
+.cfm-alert-field--message dd { margin: 0; color: var(--text-strong); white-space: pre-wrap; }
 .cfm-filterbar--tight { margin-top: 12px; margin-bottom: 0; }
 
 /* ── Log viewer (anchored scroll) ────────────────────────────────────────── */
