@@ -25,6 +25,26 @@ _LEDGER_PATH = Path(__file__).parent / "patch_capabilities.yaml"
 _STATUS_VALUES = frozenset({"verified", "refuted", "inferred", "unknown"})
 _CATEGORY_VALUES = frozenset({"apply-semantics", "grammar", "limitation", "operational"})
 
+# Tested facts (packet 1443): what FMUpgradeTool DID on a named build, graded by proof. Information
+# only — never read by render_capability_guidance, so nothing here can widen what an author is told
+# to build. `collateral` = the intended change landed with an unintended one beside it.
+_OUTCOME_VALUES = ("landed", "collateral", "failed", "no-op", "refused", "destructive", "discrepancy",
+                   "unconfirmed", "untested", "documented")
+_PROOF_VALUES = ("none", "xml", "rendered", "behavioral")  # weakest → strongest
+
+
+@dataclass
+class Fact:
+    claim: str
+    builds: dict          # build ("22.0.6.600" | … | "docs") -> (outcome, proof)
+    form: str = ""
+    note: str = ""
+    evidence: list = field(default_factory=list)
+    help: bool = False
+
+    def strongest_proof(self) -> str:
+        return max((p for _, p in self.builds.values()), key=_PROOF_VALUES.index, default="none")
+
 
 @dataclass
 class Capability:
@@ -39,6 +59,9 @@ class Capability:
     verified_via: str = ""
     tool_version: str = ""
     date: str = ""
+    scope: str = ""
+    corpusfm_policy: str = ""
+    facts: list = field(default_factory=list)  # list[Fact]
 
 
 @dataclass
@@ -67,6 +90,20 @@ def _flow(text: str) -> str:
     return " ".join((text or "").split())
 
 
+def _load_fact(entry_id: str, raw: dict) -> Fact:
+    builds = {}
+    for build, cell in (raw.get("builds") or {}).items():
+        outcome, _, proof = str(cell).partition("/")
+        if outcome not in _OUTCOME_VALUES or proof not in _PROOF_VALUES:
+            raise ValueError(f"capability {entry_id!r}: bad fact cell {cell!r} for {build}")
+        builds[str(build)] = (outcome, proof)
+    if not builds:
+        raise ValueError(f"capability {entry_id!r}: fact {raw.get('claim')!r} names no build")
+    return Fact(claim=_flow(raw["claim"]), builds=builds, form=_flow(raw.get("form", "")),
+                note=_flow(raw.get("note", "")), evidence=list(raw.get("evidence") or []),
+                help=bool(raw.get("help", False)))
+
+
 def load_capabilities() -> CapabilityLedger:
     """Load and validate the FMUpgradeTool capability ledger."""
     with open(_LEDGER_PATH, encoding="utf-8") as fh:
@@ -86,6 +123,9 @@ def load_capabilities() -> CapabilityLedger:
             verified_via=e.get("verified_via", ""),
             tool_version=e.get("tool_version", ""),
             date=str(e.get("date", "")),
+            scope=_flow(e.get("scope", "")),
+            corpusfm_policy=_flow(e.get("corpusfm_policy", "")),
+            facts=[_load_fact(e["id"], f) for f in e.get("facts") or []],
         )
         if cap.status not in _STATUS_VALUES:
             raise ValueError(f"capability {cap.id!r}: bad status {cap.status!r}")
@@ -124,4 +164,44 @@ def render_capability_guidance(ledger: "CapabilityLedger | None" = None) -> str:
         lines.append("LIMITS — do not work around these; surface them honestly:")
         for e in lims:
             lines.append(f"  - {e.ai_guidance}")
+    return "\n".join(lines)
+
+
+def render_tested_facts(ledger: "CapabilityLedger | None" = None) -> str:
+    """Render the proof-graded tested facts for MCP — evidence of tool behavior, not permission.
+
+    Deliberately separate from render_capability_guidance (the authoring prompt): an entry can carry
+    facts and no ai_guidance, and its facts still reach a reader here without becoming instructions.
+    Each entry's CORPUSfm policy is printed beside its facts so tool ability never reads as permission.
+    """
+    led = ledger or load_capabilities()
+    with_facts = [e for e in led.entries if e.facts]
+    if not with_facts:
+        return ""
+    lines = [
+        "TESTED FMUPGRADETOOL BEHAVIOR — evidence of what the tool did, NOT what CORPUSfm permits:",
+        "  Outcomes: " + " | ".join(_OUTCOME_VALUES) + " (collateral = intended change landed with an"
+        " unintended one; failed = intended change did not land but something else changed; refused ="
+        " the tool reported an error and applied nothing).",
+        "  Proof, weakest to strongest: xml (native before/after export) < rendered (FileMaker Pro drew"
+        " it) < behavioral (it ran). Exit 0 and validatePatch are not proof: they passed on every no-op"
+        " and destructive row. A build missing from a row was not tested for it.",
+    ]
+    shown = {"policy": "", "scope": ""}
+    for e in with_facts:
+        lines.append("")
+        lines.append(f"  [{e.id}] {e.title}")
+        for key, label, text in (("policy", "CORPUSfm policy", e.corpusfm_policy), ("scope", "Scope", e.scope)):
+            if text and text != shown[key]:
+                lines.append(f"    {label}: {text}")
+            elif text:
+                lines.append(f"    {label}: as above.")
+            shown[key] = text or shown[key]
+        for f in e.facts:
+            cells = " · ".join(f"{b} {o} ({p})" for b, (o, p) in f.builds.items())
+            lines.append(f"    - {f.claim}: {cells}")
+            if f.form:
+                lines.append(f"        form: {f.form}")
+            if f.note:
+                lines.append(f"        note: {f.note}")
     return "\n".join(lines)

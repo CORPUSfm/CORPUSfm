@@ -97,6 +97,52 @@ def _render_script_steps(
         return [], f"(render error: {exc})"
 
 
+_COMMENT_STEP_ID = 89
+
+
+def _script_search_sources(steps: list[dict], lines: list[str]) -> dict:
+    """Split a script's bounded step lines into the two separately searchable sources (packet 1440):
+    comment steps (step id 89, enabled or disabled) and every other step with its parameters and
+    calculations. Classified by the step's own id — never by the rendered ``#`` or ``//`` prefix.
+    An empty comment is a blank line in FileMaker and contributes nothing."""
+    comments, other = [], []
+    for step, line in zip(steps, lines):
+        if step.get("step_id") == _COMMENT_STEP_ID:
+            if line.strip() not in ("", "#", "// #"):
+                comments.append(line.strip())
+        else:
+            other.append(line.strip())
+    return {"comments": "\n".join(comments), "steps": "\n".join(other)}
+
+
+def _without_leading_name(rendered: str, name: str) -> str:
+    """Rendered text usually opens with the object's own name; that line is the ``name`` source."""
+    first, sep, rest = (rendered or "").partition("\n")
+    return rest.strip() if sep and first.strip() == name else (rendered or "").strip()
+
+
+def _search_entry(section_key: str, item, rendered: str, summary: str, sources: "dict | None",
+                  is_folder: bool, name: str = "") -> dict:
+    """One header-search entry, with each searchable source in its own field (packet 1440).
+
+    ``name`` is always searched; ``text`` holds the ordinary rendered text of non-script objects
+    (field calculations, custom-function formulas and the like) and is searched by default too.
+    A script's step body never goes into ``text``: comments and steps are separate opt-in-able
+    fields. A script without structured steps keeps its rendered body under ``steps`` with
+    ``steps_unclassified`` set — it cannot be split truthfully, so it stays behind the steps switch."""
+    entry = {"section": section_key, "item": item.item_id, "display_name": item.name,
+             "name": name or item.name, "text": "", "summary": summary}
+    if section_key == "ScriptCatalog" and not is_folder:
+        if sources is not None:
+            entry.update(sources)
+        else:
+            entry.update(comments="", steps=_without_leading_name(rendered, item.name),
+                         steps_unclassified=True)
+    else:
+        entry["text"] = _without_leading_name(rendered, item.name)
+    return entry
+
+
 def _format_value_size(byte_count: int) -> str:
     if byte_count < 1024:
         return f"{byte_count} B"
@@ -105,8 +151,12 @@ def _format_value_size(byte_count: int) -> str:
     return f"{byte_count / (1024 * 1024):.1f} MB"
 
 
-def _pool_long_step_parameters(steps: list[dict], pool: dict[str, str]) -> str:
-    """Replace proven long parameter values with references and return bounded body text."""
+def _pool_long_step_parameters(steps: list[dict], pool: dict[str, str],
+                               lines_out: "list[str] | None" = None) -> str:
+    """Replace proven long parameter values with references and return bounded body text.
+
+    ``lines_out`` receives the bounded line of each step in order (one per step; a line may hold
+    newlines), so search can classify lines by the step that produced them (packet 1440)."""
     body_lines: list[str] = []
     for step in steps:
         parts = step.get("display_parts") or []
@@ -147,6 +197,8 @@ def _pool_long_step_parameters(steps: list[dict], pool: dict[str, str]) -> str:
             step["parameter_safe_inline"] = True
             body_text = step.get("full_text", "")
         body_lines.append(("// " if step.get("disabled") else "   ") + body_text)
+    if lines_out is not None:
+        lines_out.extend(body_lines)
     return "\n".join(body_lines)
 
 
@@ -1416,12 +1468,8 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
                     item_data[_item.item_id] = _fld_entry
                     item_names_fft.append(_item.item_id)
                     children.append(_item.item_id)
-                    search_index.append({
-                        "section": section_key, "item": _item.item_id,
-                        "display_name": _item.name,
-                        "text": f"{tname}::{_item.name}\n{_item.rendered_text}",
-                        "summary": summary,
-                    })
+                    search_index.append(_search_entry(section_key, _item, _item.rendered_text, summary,
+                                                      None, False, name=f"{tname}::{_item.name}"))
                     if _item.dead_end:
                         dead_count_by_section[section_key] = dead_count_by_section.get(section_key, 0) + 1
                 folder_children[vkey] = children
@@ -1456,6 +1504,7 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
 
             summary, body = _split_rendered_text(_item.rendered_text, _item.name)
             search_rendered = _item.rendered_text
+            search_sources = None
             xml_srcs = [{"catalog": s.catalog, "xml": _pretty_xml(s.xml)} for s in _item.xml_sources]
             primary_xml = xml_srcs[0]["xml"] if xml_srcs else ""
 
@@ -1569,7 +1618,8 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
                             if "com.fmi." in ol:
                                 ol = _s["full_text"].replace("\r\n", "\n").replace("\r", "\n").replace("\n", "¶")
                             _s["one_line"] = ol
-                    bounded_steps_body = _pool_long_step_parameters(steps_list, long_values)
+                    step_lines: list[str] = []
+                    bounded_steps_body = _pool_long_step_parameters(steps_list, long_values, step_lines)
                     # Oversize presentation cap (packet 1282) — annotated AFTER every full_text
                     # transformation, so the marker's size/SHA describe the exact bytes the
                     # "Show anyway" control reveals. The template's oversize branch renders the
@@ -1581,7 +1631,7 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
                     if steps_list:
                         entry["steps"] = steps_list
                         entry["body"] = bounded_steps_body
-                        search_rendered = bounded_steps_body
+                        search_sources = _script_search_sources(steps_list, step_lines)
 
             if section_key == "RelationshipCatalog" and not is_fldr and not is_separator and _item.xml_sources:
                 try:
@@ -1643,12 +1693,8 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
             item_data[_item.item_id] = entry
 
             if not is_separator:
-                search_index.append({
-                    "section": section_key, "item": _item.item_id,
-                    "display_name": _item.name,
-                    "text": f"{_item.name}\n{search_rendered}",
-                    "summary": summary,
-                })
+                search_index.append(_search_entry(section_key, _item, search_rendered, summary,
+                                                  search_sources, is_fldr))
                 if _item.dead_end and not is_fldr:
                     dead_count_by_section[section_key] = dead_count_by_section.get(section_key, 0) + 1
 

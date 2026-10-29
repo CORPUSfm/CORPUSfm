@@ -192,6 +192,7 @@ def record_run(backend, run) -> None:
             # The label frozen at write time (packet 1149). UUIDJob remains the only link; this is
             # display data, so a renamed-away or deleted job never re-labels or hides its history.
             "job_name": getattr(run, "job_name", "") or "",
+            "source_server": dict(getattr(run, "source_server", None) or {}),
         },
     }
     _upsert_run_row(backend, jor, getattr(run, "run_id", "") or "")
@@ -260,6 +261,7 @@ def get_run_record(backend, run_id: str):
             run_id=s.get("run_id") or r.key,
             job_uuid=j.get("UUIDJob") or None,
             job_name=s.get("job_name") or None,
+            source_server=dict(s.get("source_server") or {}) or None,
         )
     return None
 
@@ -297,6 +299,7 @@ def list_run_records(backend, job_uuid: str, limit: int = 50) -> list:
             run_id=s.get("run_id") or r.key,
             job_uuid=j.get("UUIDJob") or None,
             job_name=s.get("job_name") or None,
+            source_server=dict(s.get("source_server") or {}) or None,
         ))
     out.sort(key=lambda r: r.ts, reverse=True)
     return out[: max(0, limit)] if limit else out
@@ -337,6 +340,7 @@ def list_all_runs(backend, limit: int = 500) -> list:
             run_id=s.get("run_id") or r.key,
             job_uuid=j.get("UUIDJob") or None,
             job_name=s.get("job_name") or None,
+            source_server=dict(s.get("source_server") or {}) or None,
         ))
     out.sort(key=lambda r: r.ts or "", reverse=True)
     return out[: max(0, limit)] if limit else out

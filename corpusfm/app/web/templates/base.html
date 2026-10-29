@@ -279,20 +279,11 @@
           <span class="nav-update-ver" x-show="updateVersion" x-text="updateVersion"></span>
         </div>
         {# Non-blocking global TRANSFER indicator (Stage 2) — driven by upload's client-owned local
-           transfer state (cfm-transfer-start/end), NOT the server feed. Server work shows on the chip. #}
+           transfer state (cfm-transfer-start/end), NOT the server feed. Server work shows on the Queue badge. #}
         <div class="activity-indicator" x-show="transferActive" x-transition.opacity>
           <div class="spinner-small"></div>
           <span class="activity-msg" x-text="transferMsg"></span>
         </div>
-        {# App-wide enrichment-queue chip (packet 052) — NON-blocking. Shown while the server queue has a
-           running or pending job; links to the Queue page (where cancel/restart live). Polls /api/queue;
-           survives navigation + reload. (packet 1162: the in-chip Stop button was removed — the Queue page
-           is the single cancel control; the chip is now a status indicator that links there.) #}
-        <a class="cfm-index-chip" x-show="queue.active" x-cloak
-           href="{{ url_prefix }}/queue" :title="queueChipText">
-          <div class="spinner-small" :class="queue.queueSoft ? 'spinner-soft' : ''"></div>
-          <span class="cfm-index-chip-lbl" x-text="queueChipText"></span>
-        </a>
         <button type="button" class="nav-link theme-toggle" @click="toggleTheme()"
                 aria-label="Toggle light/dark mode"
                 :title="darkMode ? 'Switch to light mode' : 'Switch to dark mode'">
@@ -439,19 +430,19 @@
       });
 
       // App-wide UNIFIED ACTIVITY feed (packet 1136 Stage 2) — the single client source of truth for the
-      // global chip, the nav badges, the Jobs "Running" cards, and (Stage 4) spinner state. Polls
+      // nav badges, the Jobs "Running" cards, and (Stage 4) spinner state. Polls
       // /api/queue (~1.5s) while ANY activity is in flight; stops when idle. Survives navigation/reload via
       // attach(). It consumes d.activity (durable rows normalized to the activity-record contract + the
       // ephemeral generation tasks), d.generation, and d.activity_sources — honoring PER-SOURCE observation
       // validity: a source whose `.ok` is false is NOT observed this tick, so its last-known records are
       // RETAINED and its disappearances are NOT reconciled (pin #1 — a failed poll is never completion).
       Alpine.store('queue', {
-        running: null, queuedCount: 0, inFlightCount: 0, failedCount: 0, me: '', isAdmin: false,
+        running: null, inFlightCount: 0, failedCount: 0, me: '', isAdmin: false,
         // packet 075: targets queued OR running for index/summarize, so the catalog can color the
         // Indexed/Summarized badge "in flight". Rebuilt each poll (clears itself when work drains).
         pending: { index: {}, summarize: {} },
         // Audit #3: the full last /api/queue payload — the Queue page binds to d.records (unchanged).
-        // importsActive keeps the poll alive during imports (the chip/badge stay enrichment-only via `active`).
+        // importsActive keeps the poll alive during imports.
         data: null, importsActive: false,
         // Unified-feed state (Stage 2). _durableRecords / _ephemeralRecords are the last-known halves, each
         // updated ONLY when its source was successfully observed.
@@ -470,7 +461,6 @@
         _lastPollAt: 0,
         get softTimedOut() { return !!this._cad.softTimedOut; },
         get cadencePhase() { return this._cad.phase; },
-        get active() { return !!this.running || this.queuedCount > 0; },
         // JobRun fold (R4): the running/queued job IDENTITIES + file names, derived from the unified
         // JobRun activity rows — replacing the retired /api/jobs/running duplicate.
         //
@@ -504,8 +494,6 @@
           return it ? (it.soft ? 'soft' : 'active') : null;
         },
         itemSoft(id) { const it = this._items[id]; return !!(it && it.soft); },
-        // The RUNNING enrichment item's soft state — the chip's soft ("taking longer / no update") signal.
-        get queueSoft() { const r = this.running; return !!(r && this.itemSoft(r.id)); },
         _deriveDurable() {
           // All durable-scoped derivations run off the last-known durable half.
           const recs = this._durableRecords;
@@ -514,7 +502,6 @@
           this.running = runEnr
             ? { id: runEnr.id, owner: runEnr.owner, kind: runEnr.current, targets: runEnr.uuid ? [runEnr.uuid] : [] }
             : null;
-          this.queuedCount = enr.filter(r => r.status === 'queued').length;
           this.importsActive = recs.some(r => (r.kinds || []).includes('import') && (r.status === 'running' || r.status === 'queued'));
           this.inFlightCount = recs.filter(r => r.status === 'running' || r.status === 'queued').length;
           // Per-artifact pending overlay carries the per-item spinner STATE ('active' | 'soft'), so a
@@ -614,7 +601,7 @@
           // Force a FRESH observation (packet 1000 Phase 2). If a scheduled poll is mid-flight it may have
           // started BEFORE the caller staged new records (e.g. the import→feed handoff), so `_poll()` would
           // no-op on the re-entrancy guard and the handoff could fall into the idle cadence (up to a
-          // heartbeat with neither the transfer indicator nor the queue chip showing the new work). Schedule
+          // heartbeat with neither the transfer indicator nor the Queue badge showing the new work). Schedule
           // a prompt re-poll so a fresh read lands right after the in-flight one.
           if (this._inflight) { this._stopTimer(); this._timer = setTimeout(() => this._poll(), 200); return Promise.resolve(); }
           return this._poll();
@@ -628,7 +615,7 @@
         // client-owned local transfer state via `cfm-transfer-start`/`cfm-transfer-end`. This replaces the
         // retired imperative global `busy`/`fm-task-*` driver (whose only dispatcher was the upload, always
         // noLock). It NEVER locks the screen and is NEVER driven by the server feed (a transfer is
-        // client-owned; server work shows on the chip/badges).
+        // client-owned; server work shows on the Queue badges).
         transferActive: false,
         transferMsg: '',
         offline: false,
@@ -639,25 +626,6 @@
         updateVersion: '',
         currentVersion: '{{ version }}',
         updateNotice: null,          // post-update action warning; null unless one is owed
-
-        // App-wide enrichment queue — the live state lives in the Alpine $store.queue (so the
-        // Artifacts page can read $store.queue.active to gate its buttons). The chip binds to it;
-        // init() kicks the store's self-attach poll.
-        get queue() { return this.$store.queue; },
-        get queueChipText() {
-            const q = this.$store.queue;
-            const r = q.running;
-            const tail = q.queuedCount > 0 ? (' (+' + q.queuedCount + ' queued)') : '';
-            if (!r) return q.queuedCount + ' queued';
-            const verb = r.kind === 'deindex' ? 'De-indexing'
-                       : r.kind === 'summarize' ? 'Summarizing' : 'Indexing';
-            // Soft (progress-silence) state: a VISIBLE "taking longer / no update" — never a success, and
-            // the item keeps spinning (it may still be alive; the server watchdog owns the real timeout).
-            // (No done/total fraction: durable enrichment records are per-artifact, so `running` carries
-            // no aggregate count — the queued tail below is the honest progress cue.)
-            if (q.queueSoft) return verb + ' — taking longer, no update' + tail;
-            return verb + '…' + tail;
-        },
 
         // Documentation drawer (global, lazy-loaded, context-aware)
         docsOpen: false,

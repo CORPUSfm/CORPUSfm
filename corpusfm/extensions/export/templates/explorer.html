@@ -43,11 +43,36 @@
       </div>
     </div>
   </div>
-  <div id="search-wrap">
-    <input type="text" placeholder="Search all sections…"
-           :placeholder="searchScopeLabel" :aria-label="searchScopeLabel"
-           x-model="searchQuery" @input="doSearch()" @keydown.escape="clearSearch()"
-           x-ref="searchInput">
+  <div id="search-wrap" :class="{'search-wrap--clear': !!searchQuery}">
+    <!-- One input group (packet 1440): the search field with its options gear butted to its right
+         edge; the options menu opens below the group. Names and text are always searched; comments
+         and script steps are independent switches. -->
+    <div class="search-group">
+      <input type="text" id="search-input" placeholder="Search all sections…"
+             :placeholder="searchScopeLabel" :aria-label="searchScopeLabel"
+             x-model="searchQuery" @input="doSearch()" @keydown.escape="clearSearch()"
+             x-ref="searchInput">
+      <div id="search-opts" @click.outside="searchOptsOpen && toggleSearchOptions(false)"
+           @keydown.escape="if (searchOptsOpen) { $event.stopPropagation(); toggleSearchOptions(false, true); }"
+           @focusout="if (searchOptsOpen && $event.relatedTarget && !$el.contains($event.relatedTarget)) toggleSearchOptions(false)">
+        <button type="button" id="search-opts-btn" class="search-opts-btn" @click="toggleSearchOptions()"
+                aria-label="Search options"
+                :aria-expanded="searchOptsOpen ? 'true' : 'false'" aria-controls="search-opts-panel"
+                :data-tip="'Search options — ' + searchSourcesLabel.replace('Searching ', 'searching ')">
+          <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span class="search-opts-dot" x-show="!!searchOpts.steps || !searchOpts.comments" aria-hidden="true"></span>
+        </button>
+        <div id="search-opts-panel" class="search-opts-panel" role="group" aria-labelledby="search-opts-title"
+             x-show="searchOptsOpen" x-cloak>
+          <div id="search-opts-title" class="search-opts-title">Search also looks in</div>
+          <label class="search-opt"><input type="checkbox" id="search-opt-comments"
+                 :checked="!!searchOpts.comments" @change="setSearchOpt('comments', $event.target.checked)"> Comments</label>
+          <label class="search-opt"><input type="checkbox" id="search-opt-steps"
+                 :checked="!!searchOpts.steps" @change="setSearchOpt('steps', $event.target.checked)"> Script steps</label>
+          <div class="search-opts-note">Names and other object text are always searched.</div>
+        </div>
+      </div>
+    </div>
     <button id="search-btn" x-show="searchQuery" @click="clearSearch()">✕ Clear</button>
   </div>
   <button class="icon-btn" type="button" @click="toggleTheme()"
@@ -146,7 +171,7 @@
     <!-- Search results panel -->
     <div id="search-panel" x-show="isSearching">
       <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.5rem"
-           x-text="searchResults.length + ' result' + (searchResults.length!==1?'s':'')"></div>
+           x-text="searchResults.length + ' result' + (searchResults.length!==1?'s':'') + ' · ' + searchSourcesLabel"></div>
       <template x-for="(hit, i) in searchResults" :key="i">
         <!-- Every result names its owning file and section (packet 1408) so a hit from another
              loaded file is never mistaken for an object in the selected one. -->
@@ -154,6 +179,7 @@
              :data-file-key="hit.file_key" :data-section="hit.section" :data-item="hit.item">
           <div class="sr-sec"><span class="sr-file" x-text="hit.file_key"></span> · <span x-text="sectionLabelIn(hit.fileIdx, hit.section)"></span></div>
           <div class="sr-name" x-text="hit.display_name || hit.item"></div>
+          <div class="sr-src" x-show="!!hit.matchedLabel" x-text="'Matched in ' + hit.matchedLabel"></div>
           <template x-for="(m, mi) in (hit.reasons || [])" :key="mi">
             <div class="sr-why" x-show="m.kind === 'external_script_reference'"
                  x-text="'External script reference → ' + m.file + ' › ' + (m.script || m.uuid)
@@ -935,6 +961,10 @@ document.addEventListener('alpine:init', () => {
     searchQuery: '',
     isSearching: false,
     searchResults: [],
+    // Header-search sources (packet 1440). Fresh on every open — never restored — so a new Explorer
+    // always starts lightweight: names and text, comments on, script steps off.
+    searchOpts: {comments: true, steps: false},
+    searchOptsOpen: false,
     _fuseMap: {},
     _collapsedFolders: {},
     _xrefCollapsed: {},
@@ -1678,15 +1708,7 @@ document.addEventListener('alpine:init', () => {
     },
 
     init() {
-      this._fuseMap = {};
-      for (let i = 0; i < appData.files.length; i++) {
-        this._fuseMap[i] = new Fuse(appData.files[i].search_index, {
-          keys: ['text'],
-          threshold: 0.35,
-          includeScore: true,
-          minMatchCharLength: 2,
-        });
-      }
+      this._fuseMap = {};   // per-(file, source) indexes, built on first use by _fuseFor
       this.currentItem = this._firstSelectableItem(this.currentSection);
       this.sortMode = this._defaultSort(this.currentSection);
       this._pushHistory();
@@ -1860,48 +1882,140 @@ document.addEventListener('alpine:init', () => {
     },
 
     // "Search all sections" covers EVERY section of EVERY file loaded into this Explorer, whatever file
-    // tab is selected (packet 1408). Fuzzy hits come from each file's index; a caller also matches,
-    // exactly, on the name or UUID of an external script it references (ext_refs), labelled as such.
+    // tab is selected (packet 1408). Each entry carries its searchable text in separate SOURCES
+    // (packet 1440): name and ordinary text always; script comments and script steps under their own
+    // switches. Each source has its own index, so an excluded source can neither qualify a result nor
+    // supply its snippet. A caller also matches, exactly, on the name or UUID of an external script it
+    // references (ext_refs), labelled as such.
+    _searchSources() {
+      return ['name', 'text'].concat(this.searchOpts.comments ? ['comments'] : [], this.searchOpts.steps ? ['steps'] : []);
+    },
+    // Built on first use, per file and source: opting into steps costs its index once. Every source
+    // ignores location, so a match — typo or exact — late in a long body still counts; the tighter
+    // body threshold keeps that from turning into fuzzy noise (packet 1439 measurement). Coverage is
+    // deliberately not traded for speed here (developer direction, 1440 correction): ordinary text is
+    // the largest source and the costliest to scan, and that cost is measured and reported instead.
+    // Exact substrings are also collected directly (_exactTextHits) so they never fall outside
+    // Fuse's per-file top 100, and ordinary text keeps the original near-start pass at the looser
+    // 0.35 too (':near'), so a typo at the start of a formula stays as forgiving as it always was.
+    _fuseFor(fi, src) {
+      const k = fi + ':' + src;
+      if (!this._fuseMap[k]) {
+        const docs = (appData.files[fi].search_index || []).filter(e => e[src]);
+        this._fuseMap[k] = new Fuse(docs, {keys: [src], includeScore: true, includeMatches: true, minMatchCharLength: 2,
+                                           ignoreLocation: true, threshold: src === 'name' ? 0.35 : 0.2});
+        if (src === 'text') {
+          this._fuseMap[k + ':lc'] = docs.map(e => [e, e.text.toLowerCase()]);
+          this._fuseMap[k + ':near'] = new Fuse(docs, {keys: ['text'], includeScore: true, includeMatches: true,
+                                                       minMatchCharLength: 2, threshold: 0.35});
+        }
+      }
+      return this._fuseMap[k];
+    },
+    _exactTextHits(fi, q, limit) {
+      this._fuseFor(fi, 'text');
+      const out = [];
+      for (const [e, lc] of this._fuseMap[fi + ':text:lc']) {
+        if (lc.includes(q)) { out.push({item: e, score: 0.05}); if (out.length >= limit) break; }
+      }
+      return out;
+    },
+    // The matching LINE of the source that qualified: the exact occurrence when there is one, else
+    // the longest fuzzy run Fuse reports.
+    _snippetFrom(value, q, indices) {
+      let pos = value.toLowerCase().indexOf(q);
+      let len = q.length;
+      if (pos < 0) {
+        const best = (indices || []).reduce((a, r) => (!a || r[1] - r[0] > a[1] - a[0]) ? r : a, null);
+        if (!best) return '';
+        pos = best[0]; len = best[1] - best[0] + 1;
+      }
+      const ls = value.lastIndexOf('\n', pos - 1) + 1;
+      let le = value.indexOf('\n', pos); if (le < 0) le = value.length;
+      const seg = value.slice(ls, le);
+      const line = seg.trim();
+      const off = Math.max(0, pos - ls - (seg.length - seg.trimStart().length) - 30);
+      let snip = (off ? '…' : '') + line.slice(off, off + 100);
+      if (off + 100 < line.length) snip += '…';
+      return snip;
+    },
+    sourceLabel(src, entry) {
+      if (src === 'steps' && entry && entry.steps_unclassified) return 'Script text';
+      return {name: 'Name', text: 'Text', comments: 'Comment', steps: 'Script step'}[src] || src;
+    },
+    get searchSourcesLabel() {
+      const on = ['names and text'].concat(this.searchOpts.comments ? ['comments'] : [], this.searchOpts.steps ? ['script steps'] : []);
+      return 'Searching ' + on.join(', ') + (this.searchOpts.steps ? '' : ' · script steps off');
+    },
     doSearch() {
       this.isSearching = this.searchQuery.length > 0;
       if (this.searchQuery.length < 2) { this.searchResults = []; return; }
       const q = this.searchQuery.toLowerCase();
       const qt = q.trim();
-      const snippetOf = (entry) => {
-        for (const line of (entry.text || '').split('\\n')) {
-          if (line.toLowerCase().includes(q)) {
-            const pos = line.toLowerCase().indexOf(q);
-            const start = Math.max(0, pos - 20);
-            let s = (start ? '…' : '') + line.slice(start, start + 80);
-            if (start + 80 < line.length) s += '…';
-            return s;
-          }
-        }
-        return '';
-      };
+      const srcs = this._searchSources();
       const hits = new Map();
       for (let fi = 0; fi < appData.files.length; fi++) {
         const file = appData.files[fi];
-        const fuse = this._fuseMap[fi];
-        for (const r of (fuse ? fuse.search(this.searchQuery, {limit: 100}) : [])) {
-          const key = fi + '\\u0000' + r.item.section + '\\u0000' + r.item.item;
-          hits.set(key, {...r.item, fileIdx: fi, file_key: file.file_key, score: r.score, reasons: [], snippet: snippetOf(r.item)});
+        for (const src of srcs) {
+          const found = this._fuseFor(fi, src).search(this.searchQuery, {limit: 100});
+          if (src === 'text' && qt.length >= 2) {
+            const seen = new Set(found.map(r => r.item.item));
+            for (const r of this._fuseMap[fi + ':text:near'].search(this.searchQuery, {limit: 100}).concat(this._exactTextHits(fi, qt, 100))) {
+              if (!seen.has(r.item.item)) { seen.add(r.item.item); found.push(r); }
+            }
+          }
+          for (const r of found) {
+            const e = r.item;
+            const key = fi + '\u0000' + e.section + '\u0000' + e.item;
+            const hit = hits.get(key) || {...e, fileIdx: fi, file_key: file.file_key, score: 1, matched: [], reasons: [], snippet: ''};
+            hit.matched.push({src, label: this.sourceLabel(src, e), score: r.score,
+                              snippet: src === 'name' ? '' : this._snippetFrom(e[src], qt, ((r.matches || [])[0] || {}).indices)});
+            hit.score = Math.min(hit.score, r.score);
+            hits.set(key, hit);
+          }
         }
         for (const entry of (file.search_index || [])) {
           const ext = (entry.ext_refs || []).filter(x => qt && (
             (x.script || '').toLowerCase().includes(qt) || (x.uuid || '').toLowerCase() === qt
             || ((x.uuid || '').length && qt.length >= 8 && (x.uuid || '').toLowerCase().includes(qt))));
           if (!ext.length) continue;
-          const key = fi + '\\u0000' + entry.section + '\\u0000' + entry.item;
-          const prev = hits.get(key) || {...entry, fileIdx: fi, file_key: file.file_key, score: 0, reasons: [], snippet: snippetOf(entry)};
+          const key = fi + '\u0000' + entry.section + '\u0000' + entry.item;
+          const prev = hits.get(key) || {...entry, fileIdx: fi, file_key: file.file_key, score: 0, matched: [], reasons: [], snippet: ''};
           prev.score = Math.min(prev.score, 0);
           prev.reasons = ext.map(x => ({kind: 'external_script_reference', file: x.file, script: x.script, uuid: x.uuid, status: x.status}));
           hits.set(key, prev);
         }
       }
+      for (const h of hits.values()) {
+        h.matched.sort((a, b) => a.score - b.score);
+        const withSnip = h.matched.find(m => m.snippet);
+        h.snippet = withSnip ? withSnip.snippet : '';
+        h.matchedLabel = [...new Set(h.matched.map(m => m.label))].join(' · ');
+      }
       this.searchResults = [...hits.values()]
         .sort((a, b) => (a.score - b.score) || (a.fileIdx - b.fileIdx))
         .slice(0, 200);
+    },
+    setSearchOpt(name, value) {
+      this.searchOpts[name] = !!value;
+      if (this.searchQuery) this.doSearch();
+    },
+    // Focus moves only while the user is still on the Options control. Escape hands focus back to
+    // the button at once (it is already visible); a close caused by clicking elsewhere — typically
+    // into the search box — leaves focus where the user put it. A deferred focus that lands after the
+    // user has moved on would send their next keystrokes to the button and reopen the panel.
+    toggleSearchOptions(open, returnFocus = false) {
+      this.searchOptsOpen = open === undefined ? !this.searchOptsOpen : !!open;
+      const btn = document.getElementById('search-opts-btn');
+      if (this.searchOptsOpen) {
+        this.$nextTick(() => {
+          const el = document.getElementById('search-opt-comments');
+          const wrap = document.getElementById('search-opts');
+          if (el && this.searchOptsOpen && wrap && wrap.contains(document.activeElement)) el.focus();
+        });
+      } else if (returnFocus && btn) {
+        btn.focus();
+      }
     },
 
     clearSearch() {
@@ -1913,6 +2027,7 @@ document.addEventListener('alpine:init', () => {
     handleKeydown(e) {
       const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
       if (e.key === 'Escape') {
+        if (this.searchOptsOpen) { this.toggleSearchOptions(false, true); return; }
         if (this.showShortcuts) { this.showShortcuts = false; return; }
         if (this.showAbout) { this.showAbout = false; return; }
         if (this.graphFullscreen) { this.graphFullscreen = false; return; }

@@ -6,8 +6,10 @@ apply, not guesses:
 
   - a field ReplaceAction that CHANGES the field type produces an UNHOSTABLE
     file (ledger: field-replace-sametype-ok-typechange-unhostable);
-  - a layout cannot be Replaced or Deleted — the export carries no layout UUID
-    to target (ledger: layout-add-only-no-uuid-to-target);
+  - the generator does not produce a layout Replace or Delete. This is CORPUSfm's
+    current implementation, not a tool limit: layouts carry their own UUID and the
+    tool's tested layout behavior is recorded as ledger facts. It still cites the
+    refuted ledger entry layout-add-only-no-uuid-to-target as its provenance;
   - accounts and built-in privilege sets cannot be deleted (ledger:
     account-delete-unsupported, builtin-privset-delete-unsupported);
   - a script added into a PRE-EXISTING folder lands at the catalog root
@@ -22,8 +24,8 @@ ledger rename can never silently strand a gate.
 
 from __future__ import annotations
 
-# Sections whose objects the patch format cannot Replace or Delete — the export
-# carries no targetable UUID. Ledger: layout-add-only-no-uuid-to-target.
+# Sections the generator only adds to. An implementation limit, not a tool limit
+# (ledger: layout-add-only-no-uuid-to-target, refuted).
 _ADD_ONLY_SECTIONS = frozenset({"LayoutCatalog"})
 
 # FM built-in privilege sets — cannot be deleted via patch.
@@ -41,8 +43,10 @@ BUILTIN_PRIVSETS = frozenset({
 _GATES: dict[str, tuple[str, str]] = {
     "layout_add_only": (
         "layout-add-only-no-uuid-to-target",
-        "Layouts are add-only — the export carries no layout UUID to target a {action}; "
-        "add a new layout instead",
+        "Layouts are add-only in CORPUSfm's patch generator, which does not produce a layout "
+        "{action}. That is the current implementation, not a tool limit: layouts carry their own "
+        "UUID, and the upgrade tool's tested layout behavior is in get_patch_capabilities and the "
+        "Existing layouts help. Add a new layout instead",
     ),
     "field_typechange": (
         "field-replace-sametype-ok-typechange-unhostable",

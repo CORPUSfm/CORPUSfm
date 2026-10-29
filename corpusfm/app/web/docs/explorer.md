@@ -32,6 +32,30 @@ artifact (workflows, security reach, the data model, AI usage) are served throug
   - **Tree / Attributes / Raw** — the underlying structure and the original FileMaker XML.
   - **Graph** (relationships) / **Wireframe** (layouts) where they apply.
 
+## Searching
+
+The search box at the top looks through **every file loaded into this Explorer**, whichever file
+tab is selected, and each result names the file it belongs to. It always searches object **names**
+and their ordinary text: field definitions and calculations, custom-function formulas, value
+lists, layouts and the rest.
+
+Script contents are split into two kinds you control with **search options** — the gear at the
+right end of the search box:
+
+- **Comments** — on by default. Finds words in script comments.
+- **Script steps** — off by default. Turn it on to find scripts that use a step, or a word in a
+  step's parameters or calculations. For example, search **Execute FileMaker Data API** to find
+  every script that calls it, wherever the step sits in the script.
+
+Each result says what matched (**Name**, **Text**, **Comment**, **Script step** or an
+**External script reference**) and shows the matching line. Search is textual: a step's name
+written inside another step's calculation also counts as a script-step match. It does not prove
+the step runs, and a disabled step still matches. A very long script-step value, over 2,000
+characters, shows as a size marker and is not searched. A script whose steps can't be told apart
+is searched as a whole only with Script steps on. Close misspellings are found too, anywhere in
+the text. The options reset each time you open an Explorer. Choosing a result opens
+that object; it doesn't jump to the matching line.
+
 ## Cross-references
 
 Every object carries its **XRef** — what it uses and what uses it. A script shows the scripts

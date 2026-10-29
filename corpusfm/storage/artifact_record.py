@@ -24,7 +24,8 @@ from corpusfm.storage.local import ArtifactMeta, _safe_dir_name
 
 def build_record(artifact, *, timestamp: str, label: str = "", origin: str = "Import",
                  job_uuid: str = "", run_uuid: str = "", addon_package=None,
-                 xml_bytes: Optional[bytes] = None, keep_source_xml: bool = False) -> dict:
+                 xml_bytes: Optional[bytes] = None, keep_source_xml: bool = False,
+                 source_server: Optional[dict] = None) -> dict:
     """The canonical artifact-record/2 jor.
 
     ``IsLatest`` is NOT written here any more (packet 1361-01): "which artifact of this lineage is
@@ -76,6 +77,9 @@ def build_record(artifact, *, timestamp: str, label: str = "", origin: str = "Im
         "Description": "",
         "Memory": "",
         "RunUUID": run_uuid,
+        # The FileMaker server a Job's acquire took these bytes from (packet 1438): {ref, name, host}
+        # frozen at acquisition. JOR-only, absent when not recorded — never inferred later.
+        "SourceServer": dict(source_server or {}),
         "FMVersion": getattr(identity, "fm_version", "") or "",
         "schema_version": getattr(provenance, "catalog_version", "") or "",
         # Detail-pop-over provenance + analyzer status ride the record (audit #1 NO-BLOB):
@@ -137,6 +141,7 @@ def meta_from_jor(jor: dict, uuid: str = "") -> ArtifactMeta:
         gap_unmapped=list(jor.get("gap_unmapped", [])),
         xml_bytes=int(jor.get("xml_bytes", 0) or 0), enc_bytes=0,
         job_uuid=jor.get("UUIDJob", ""), run_uuid=jor.get("RunUUID", ""),
+        source_server=dict(jor.get("SourceServer") or {}),
         artifact_type=jor.get("Type", ""),
         addon_version=jor.get("addon_version", ""), addon_locale=jor.get("addon_locale", ""),
         has_name_map=bool(jor.get("has_name_map", False)),

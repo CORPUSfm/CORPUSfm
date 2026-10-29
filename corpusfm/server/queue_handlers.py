@@ -230,7 +230,40 @@ def _resolve_run_job(row):
         return None
 
 
-def _record_run_error(row, message: str) -> None:
+def _source_server(job, host: str) -> dict:
+    """The FileMaker server one acquire attempt contacts, as frozen non-secret facts (packet 1438).
+
+    ``host`` is the address the attempt ACTUALLY uses — a pull reads the host saved on its job, a
+    push the live SERVER/co-located transport — so it is passed in, never re-derived from the ref.
+    ``name`` is the SERVER record's name as it is now, or "" when that record is gone; it is never
+    guessed. ``ref`` keeps two servers that share a name (after a rename) distinguishable."""
+    import re
+    ref = (getattr(job.source, "server_ref", None) or "").strip() or "local"
+    name = "Local"
+    if ref != "local":
+        try:
+            from corpusfm.server import remote_servers
+            srv = remote_servers.get_server_by_id(ref)
+        except Exception:
+            srv = None
+        name = getattr(srv, "name", "") or ""
+    return {"ref": ref, "name": name,
+            "host": re.sub(r"^https?://", "", (host or "").strip()).rstrip("/")}
+
+
+def _pull_host(job) -> str:
+    """The host a pull method contacts. ``fms_local`` drives the local fmsadmin CLI, so its host is the
+    co-located transport; the OData pulls use the host saved on the job's source."""
+    if (job.source.type or "").strip() == "fms_local":
+        try:
+            from corpusfm.server.fms_transport import colocated
+            return colocated().host
+        except Exception:
+            return ""
+    return job.source.server or ""
+
+
+def _record_run_error(row, message: str, source_server: "dict | None" = None) -> None:
     """Write an ``error`` RunRecord to HISTORY for a failed Job Run step (packet 1142 — parity with the
     old ``runner._record_error``: a failed acquire must still show on the Runs page and resolve via
     ``get_job_run`` after the queue row is cleared). Keyed by ``run_id``, so a later Restart's success
@@ -255,7 +288,7 @@ def _record_run_error(row, message: str) -> None:
             ts=now.isoformat(timespec="seconds"), status="error",
             trigger=p.get("trigger") or "schedule", duration_s=max(0.0, dur), error=message,
             run_id=p.get("run_id") or None, job_uuid=row.jor.get("UUIDJob", "") or None,
-            job_name=p.get("job_name") or "")
+            job_name=p.get("job_name") or "", source_server=source_server or None)
         _record_run(row.jor.get("UUIDJob", "") or "", run, get_backend())
     except Exception:
         log.debug("acquire: error run-record write failed", exc_info=True)
@@ -367,12 +400,14 @@ def _acquire_pull(repo, backend, row, job, bound) -> W.StepResult:
         _record_run_error(row, msg)
         return W.fail(msg)
     source = dataclasses.replace(job.source, databases=[target])
+    origin_server = _source_server(job, _pull_host(job))
+    repo.set_source_server(qid, origin_server)
     try:
         xml_bytes = pull_source(source, creds, timeout=bound)
     except Exception as exc:
         repo.clear_source(qid)
         msg = f"Acquire failed: {exc}"
-        _record_run_error(row, msg)
+        _record_run_error(row, msg, origin_server)
         return W.fail(msg)
     backend.engine.blob_put("QUEUE", qid, "SourceXML",
                             encode_blob(compress(xml_bytes), encrypt_on=backend._encrypt_blobs()))
@@ -451,6 +486,9 @@ def _acquire_push(repo, backend, row, job, bound) -> W.StepResult:
     creds = {"username": c["account"], "password": c["password"],
              "verify_ssl": "true" if verify_ssl else "false"}
     source = dataclasses.replace(job.source, server=server_url, databases=[file_name], script=script)
+    # Stamped BEFORE firing: FileMaker deposits the bytes into this record during the blocking call.
+    origin_server = _source_server(job, server_url)
+    repo.set_source_server(qid, origin_server)
 
     # Mint the one-time token and stamp its HASH on THIS record BEFORE firing, so FM's mid-call POST to
     # /api/upload resolves the exact acquiring record (find_pending_push: Type=acquire + hash).
@@ -466,17 +504,17 @@ def _acquire_push(repo, backend, row, job, bound) -> W.StepResult:
     except FMSPushTimeout as exc:
         _cleanup()
         msg = f"Acquire timed out — {exc}"
-        _record_run_error(row, msg)
+        _record_run_error(row, msg, origin_server)
         return W.fail(msg)
     except FMSPushConnectionReset as exc:
         _cleanup()
         msg = f"Acquire ended by the server — {exc}"
-        _record_run_error(row, msg)
+        _record_run_error(row, msg, origin_server)
         return W.fail(msg)
     except FMSError as exc:
         _cleanup()
         msg = f"Acquire trigger failed: {exc}"
-        _record_run_error(row, msg)
+        _record_run_error(row, msg, origin_server)
         return W.fail(msg)
 
     v = (verdict or "").strip()
@@ -485,7 +523,7 @@ def _acquire_push(repo, backend, row, job, bound) -> W.StepResult:
         if backend.load_staged_source(qid) is None:
             _cleanup()
             msg = "FileMaker reported success but no schema was received at /api/upload."
-            _record_run_error(row, msg)
+            _record_run_error(row, msg, origin_server)
             return W.fail(msg)
         repo.set_push_token(qid, "")   # spent; the record now advances acquire→ingest
         return W.ok()
@@ -496,7 +534,7 @@ def _acquire_push(repo, backend, row, job, bound) -> W.StepResult:
     reason = (f"FileMaker returned: {v}" if v.startswith("error")
               else "The export target is not configured (the script's security-guard Exit Script is "
                    "still enabled)." if not v else f"FileMaker returned an unexpected result: {v!r}")
-    _record_run_error(row, reason)
+    _record_run_error(row, reason, origin_server)
     return W.fail(reason)
 
 
@@ -683,7 +721,7 @@ def _close_run_record(backend, row, uuid_storage: str) -> None:
             ts=now.isoformat(timespec="seconds"), status="ok", trigger=p.get("trigger") or "schedule",
             duration_s=max(0.0, duration), archive_path=us,
             run_id=run_id, job_uuid=row.jor.get("UUIDJob", "") or None,
-            job_name=p.get("job_name") or "")
+            job_name=p.get("job_name") or "", source_server=p.get("source_server") or None)
         _record_run(row.jor.get("UUIDJob", "") or "", run, backend)
     except Exception:
         log.debug("run-record write failed at ingest", exc_info=True)

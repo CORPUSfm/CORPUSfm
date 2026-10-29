@@ -12,6 +12,7 @@ job model resolving — a model the product does not support.
 
 Public API:
     RunRecord
+    describe_source_server(source_server) -> str — one report line for a frozen source server
     record_run(backend, run)                    — write a HISTORY Type=Run row
     list_runs_for(job_uuid, limit, backend)     — read Type=Run for one job
 """
@@ -36,6 +37,19 @@ class RunRecord:
     # The job's name AS IT WAS at run time (packet 1149) — frozen data, never the link. History must
     # render without consulting live config: a deleted job's runs still say which job they were.
     job_name: Optional[str] = None
+    # The FileMaker server the run's acquire contacted (packet 1438) — {ref, name, host}, frozen at
+    # acquisition like job_name. None = not recorded (an older run, or a failure before the attempt).
+    source_server: Optional[dict] = None
+
+
+def describe_source_server(source_server) -> str:
+    """One report line for a frozen source server: ``Name (host)``, either alone, or "" when none was
+    recorded — the text/CLI form of what the Runs page and artifact detail show (packet 1438)."""
+    s = source_server or {}
+    name, host = (s.get("name") or "").strip(), (s.get("host") or "").strip()
+    if name and host:
+        return f"{name} ({host})"
+    return name or host
 
 
 def record_run(backend, run: RunRecord) -> None:

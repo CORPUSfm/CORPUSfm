@@ -21,6 +21,7 @@ patch_format_version: "2.2.3.0"
 verified_tool_versions:
   - "22.0.6.600"
   - "26.0.1.68"   # FM Server 2026 (04-30-2026); re-probed 2026-06-14 — see fm2026-* entries
+  - "26.0.3.309"  # FM Server 2026 on fms-dev (08-26-2026); layout probes 2026-10-27 — see layout-* entries (packet 1427)
 
 entries:
   - id: replace-targets-by-uuid
@@ -370,8 +371,9 @@ entries:
       Layout-object construction is feasible (it was the suspected blocker — the hash is
       not). The AI can author a new layout with text + a script-running button using
       placeholder hashes and no DDRREF. SCOPE: this ADDS a new layout. Injecting an
-      object into an EXISTING layout is a ReplaceAction of the whole object list
-      (replace-beyond-scripts, still unprobed).
+      object into an EXISTING layout was probed in packet 1427: no direct add form landed; only a
+      whole-layout Replace does, on 26.0.3.309, and it regenerates every object's UUID
+      (layout-replace-whole-version-dependent).
     ai_guidance: >
       Build a new layout via LayoutCatalog AddAction; set every LayoutObject
       hash="00000000000000000000000000000000"; a button's action ScriptReference uses the
@@ -429,13 +431,24 @@ entries:
       built-in privilege sets.
 
   - id: layout-add-only-no-uuid-to-target
-    title: Layouts are add-only — the export carries no layout UUID to target Replace/Delete
+    title: "REFUTED 2026-10-27 — layouts DO carry a UUID; they are not add-only (gate still cites this id)"
     category: grammar
-    status: verified
+    status: refuted
     verified_via: live-apply
     tool_version: "22.0.6.600"
     date: "2026-06-04"
     behavior: >
+      REFUTED by packet 1427 (2026-10-27, evidence .claude/evidence/1427/). Every real layout in
+      every sampled SaveAsXML export (FM 21.1.2, 22.0.6, 26.0.1, 26.0.3) carries a direct <UUID>
+      child — later in the element, after TableView, not first — and it equals the UUID that
+      LayoutReferences elsewhere point to. Targeting THAT UUID, Delete removes the layout on
+      22.0.6.600 and 26.0.3.309, and whole-layout Replace lands on 26.0.3.309 (entries
+      layout-delete-by-layout-uuid, layout-replace-whole-version-dependent). Object-level
+      Replace/Delete by the object's own UUID works on both builds (layout-object-replace-delete).
+      The 2026-06-04 no-ops below targeted a NESTED object's UUID, which 1427 reproduced as a
+      no-op control — the measurement stands, the conclusion drawn from it does not.
+      coverage_gate still blocks layout Replace/Delete under this id; changing that is a separate
+      decision, not done here. ORIGINAL 2026-06-04 TEXT, kept as history:
       Probe sweep (live): a SaveAsXML LayoutCatalog <Layout id name width> entry carries NO
       UUID — not as an attribute and not as a direct <UUID> child (only its nested children
       — TableOccurrenceReference, LayoutThemeReference, LayoutObjects — have UUIDs). Since
@@ -444,14 +457,494 @@ entries:
       hosted) but were NO-OPs (the layout was unchanged / not removed). CORPUSfm's own
       _build_replace/_build_delete already bail on layouts for lack of fm_uuid.
     implication: >
-      Layouts are ADD-ONLY via patch. You cannot modify or delete an existing layout, and
-      you cannot inject an object into one (that would require a layout Replace). This is
-      the structural reason behind the layout-construction template's new-layout-only scope.
-      ENFORCED: generate_patch (via coverage_gate) marks any layout Replace/Delete
-      not_patchable with this structural reason.
+      No structural reason remains: the tool can Replace and Delete layouts and layout objects by
+      their own UUIDs, with the build-, file- and form-dependent outcomes recorded as facts on the
+      layout entries below. What remains is CORPUSfm's current implementation: generate_patch (via
+      coverage_gate) still marks any layout Replace/Delete not_patchable and cites this id as its
+      provenance, and the authoring templates cover new layouts only. Until 2026-10-27 this field
+      read "Layouts are ADD-ONLY via patch", the conclusion the refutation withdraws.
     ai_guidance: >
-      Only ADD layouts. Never try to Replace or Delete a layout, or to add an object onto
-      an existing layout — author a new layout instead.
+      CORPUSfm's generator and authoring templates currently cover only ADDING layouts; that is the
+      current implementation, not a tool limit (layouts carry their own UUID). The tool's tested
+      layout Replace/Delete behavior, including no-ops, crashes, identity changes and destructive
+      forms, is recorded per build in get_patch_capabilities. Only ADD layouts; do not hand-author a
+      layout or layout-object Replace/Delete, and do not try to add an object onto an existing layout
+      — author a new layout instead.
+
+  # ── packet 1427 (2026-10-27): layout patching re-measured. Fixture = copy of the Claris-shipped
+  # Content Management starter (FM Pro 26.0.3 bundle); apply on fms-dev 26.0.3.309 and local
+  # 22.0.6.600; native before/after via FMDeveloperTool --saveAsXML -id, --checkConsistency, and
+  # FileMaker Pro 26.0.3 renders. Every row below exited 0 — including every no-op and every
+  # destructive variant — so exit code / validatePatch never discriminate. Evidence and the full
+  # map: .claude/evidence/1427/README.md. No ai_guidance on these: the generator gate is unchanged.
+  - id: layout-delete-by-layout-uuid
+    title: A layout deletes by its own UUID; inbound references are cleared
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600, 26.0.3.309"
+    date: "2026-10-27"
+    scope: >
+      Fixture = a copy of the Claris Content Management starter shipped in FileMaker Pro 26.0.3 (an
+      FM-26 file, SaveAsXML 2.3.0.0). Native before/after = FMDeveloperTool 26.0.3.309 --saveAsXML -id
+      plus --checkConsistency. Rendered/behavioral proof = FileMaker Pro 26.0.3 on 26.0.3.309 outputs;
+      a 22.0.6.600 cell is XML-only unless it cites a FileMaker Pro 22.0.6 render (packet 1444, on the
+      Contacts starter shipped with FileMaker Pro 22.0.6).
+    corpusfm_policy: >
+      Not generated — current implementation, not a tool limit. generate_patch marks every layout
+      Replace/Delete not_patchable (coverage_gate, citing the refuted id layout-add-only-no-uuid-to-target),
+      and the assistant authoring guidance only adds layouts. check_patch, dry-run and apply have no
+      layout-specific refusal, so a hand-written layout Replace/Delete is not blocked; dry-run Verify is
+      its check, as for any patch. These facts record what FMUpgradeTool did on the named builds and
+      fixtures: a hazard is a condition to know, an untested case is unknown, and neither is a CORPUSfm
+      rule.
+    facts:
+      - claim: Delete a layout by its own UUID
+        help: true
+        form: DeleteAction > ItemReference[type=LayoutReference, UUID=the Layout's own <UUID> child]
+        builds: {"22.0.6.600": landed/xml, "26.0.3.309": landed/rendered}
+        note: Inbound Go to Layout references to it are emptied; an image used only by it is dropped.
+        evidence: [layout_delete__t22, layout_delete]
+      - claim: Delete a layout by a nested object's UUID
+        builds: {"26.0.3.309": no-op/xml}
+        note: >
+          Reproduces the 2026-06-04 no-ops that produced the refuted "layouts carry no UUID" entry.
+        evidence: [layout_delete_nested_uuid_control]
+    behavior: >
+      <DeleteAction><ItemReference UUID="<Layout/UUID>" type="LayoutReference"/></DeleteAction>
+      removed the layout on both builds; file consistent, reopens in FM Pro 26.0.3. A button on
+      another layout whose Go to Layout pointed at it was emptied (LayoutReferenceContainer with no
+      reference) and a LibraryCatalog image used only by that layout was dropped — FileMaker's own
+      delete consequences, not unrelated loss. Control: the same Delete with a nested object's UUID
+      was a no-op (reproduces 2026-06-04).
+
+  - id: layout-replace-whole-version-dependent
+    title: Whole-layout Replace lands on 26.0.3.309 only, and rebuilds every object's identity
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.3.309"
+    date: "2026-10-27"
+    scope: >
+      Fixture = a copy of the Claris Content Management starter shipped in FileMaker Pro 26.0.3 (an
+      FM-26 file, SaveAsXML 2.3.0.0). Native before/after = FMDeveloperTool 26.0.3.309 --saveAsXML -id
+      plus --checkConsistency. Rendered/behavioral proof = FileMaker Pro 26.0.3 on 26.0.3.309 outputs;
+      a 22.0.6.600 cell is XML-only unless it cites a FileMaker Pro 22.0.6 render (packet 1444, on the
+      Contacts starter shipped with FileMaker Pro 22.0.6).
+    corpusfm_policy: >
+      Not generated — current implementation, not a tool limit. generate_patch marks every layout
+      Replace/Delete not_patchable (coverage_gate, citing the refuted id layout-add-only-no-uuid-to-target),
+      and the assistant authoring guidance only adds layouts. check_patch, dry-run and apply have no
+      layout-specific refusal, so a hand-written layout Replace/Delete is not blocked; dry-run Verify is
+      its check, as for any patch. These facts record what FMUpgradeTool did on the named builds and
+      fixtures: a hazard is a condition to know, an untested case is unknown, and neither is a CORPUSfm
+      rule.
+    facts:
+      - claim: Replace a whole layout with complete Layout XML
+        help: true
+        form: ReplaceAction > Replace[type=Layout, UUID] > complete Layout (no LayoutCatalog wrapper)
+        builds: {"22.0.6.600": no-op/xml, "26.0.3.309": collateral/rendered}
+        note: >
+          On 26.0.3.309 the intended edits landed and the layout kept its UUID, but every object got a
+          new UUID and id. 22.0.6.600 never landed it in five tries (packet 1444 added the Contacts file
+          shipped with FileMaker Pro 22.0.6 and layout XML exported by Pro 22.0.6). 26.0.3.309 landed
+          it on two files and not on a third (next row), so it is also file-dependent — tested
+          combinations, not a version ban.
+        evidence: [layout_replace_whole_nocat__t22, layout_replace_whole_nocat_v2230__t22, layout_replace_whole_nocat, layout_part_resize_whole, layout_to_context_whole, 1444/whole_t26contacts_details, 1444/whole_t26contacts_list, 1444/whole_t26contacts_list__view, 1444/whole_t26contacts_list__t22, 1444/whole_t26contacts_list_v223__t22]
+      - claim: Whole-layout Replace on the Contacts file shipped with FileMaker Pro 22.0.6
+        help: true
+        builds: {"22.0.6.600": no-op/xml, "26.0.3.309": no-op/xml}
+        note: >
+          No-op with Pro 22.0.6-exported XML at 2.2.3.0 and FMDeveloperTool XML at 2.3.0.0, on a simple
+          layout as well, and after opening the file in FileMaker Pro 26.0.3. --generateGUIDs updated 0
+          items. The same Replace landed on the Contacts file shipped with Pro 26.0.3. Compacted copies of
+          this file written by Pro 22.0.6, Pro 26.0.3 and FMDeveloperTool still refused it, so the cause
+          travels with the file's content, not with the client that last wrote it. FMDeveloperTool
+          --recover found no problems (0 structure items modified) and the recovered file still refused
+          it. Cause found by bisection: the file's web viewer. Deleting only the web viewer, or replacing
+          it with its own unchanged XML, made 26.0.3.309 whole-layout Replace land on any layout of the
+          file (next row); the state is internal and absent from the export.
+        evidence: [1444/whole_t22r_list, 1444/whole_t22r_list__t22, 1444/whole_t22w26_list, 1444/whole_t22w26_list__t22, 1444/whole_t22w22_list, 1444/whole_t22w22_list__t22, 1444/whole_t22dc_list, 1444/whole_t22dc_list__t22, 1444/era_whole_layout__t22, 1444/era_whole_layout, 1444/era_whole_dt26xml_v230, 1444/era_whole_pro22xml_v230, 1444/era_whole_dt26xml_v223, 1444/era_whole_dt26xml_v230__t22, 1444/whole_t22p_list, 1444/whole_t22o_list, 1444/whole_t22o_list__t22]
+      - claim: Whole-layout Replace on new blank files created in FileMaker Pro 22.0.6 and 26.0.3
+        help: true
+        builds: {"22.0.6.600": no-op/xml, "26.0.3.309": landed/xml}
+        note: >
+          26.0.3.309 renamed and resized the only layout of a blank file created by either client;
+          22.0.6.600 changed neither. So the creation version is not what blocks 26.0.3.309, and
+          22.0.6.600 failed even on a file its own-era client created. The blank layouts held no objects.
+        evidence: [1444/whole_n26_blank, 1444/whole_n26_blank__t22, 1444/whole_n22_blank, 1444/whole_n22_blank__t22]
+      - claim: Unblock it by replacing the old web viewer with its own XML
+        help: true
+        builds: {"22.0.6.600": no-op/xml, "26.0.3.309": landed/rendered}
+        note: >
+          The web viewer kept its UUID, its export was unchanged and it rendered the same page; afterwards
+          26.0.3.309 whole-layout Replace landed. 22.0.6.600 still did nothing on the unblocked file.
+        evidence: [1444/bisect_wv_identity, 1444/bisect_wv_identity__view, 1444/T22p_Contacts__view, 1444/bisect_whole_after_wv_identity, 1444/bisect_whole_after_wv_identity__t22, 1444/bisect_del_webviewer, 1444/bisect_whole_after_del_wv, 1444/bisect_tab_identity, 1444/bisect_whole_after_tab_identity, 1444/bisect_del_details, 1444/bisect_whole_list]
+      - claim: A fresh FMDeveloperTool --clone
+        builds: {"22.0.6.600": refused/none, "26.0.3.309": refused/none}
+        note: >
+          Neither tool could open it ("(804) File cannot be opened as read only in its current state"),
+          so no patch applied.
+        evidence: [1444/whole_t22dl_list, 1444/whole_t22dl_list__t22]
+      - claim: Whole-layout Replace wrapped in LayoutCatalog
+        builds: {"26.0.3.309": no-op/xml}
+        evidence: [layout_replace_whole]
+      - claim: Layout Replace without its parts
+        help: true
+        builds: {"26.0.3.309": destructive/rendered}
+        note: >
+          A "properties only" Replace renamed the layout and deleted all 34 objects; it renders blank.
+          Replace is full replacement, not merge.
+        evidence: [layout_props_only_rename]
+      - claim: Add an object through whole-layout Replace
+        builds: {"26.0.3.309": collateral/rendered}
+        note: The object appears, with the whole-layout identity regeneration above.
+        evidence: [add_obj_via_whole_replace]
+    behavior: >
+      <ReplaceAction><Replace type="Layout" UUID="<Layout/UUID>"><Layout …complete…/></Replace>
+      </ReplaceAction> (NO LayoutCatalog wrapper) applied the intended edits — rename, text change,
+      an added object, body-part resize, table-occurrence context — and kept the layout's UUID, so
+      inbound references follow a rename. But every LayoutObject came back with a NEW UUID and id
+      (internal label links re-pointed consistently). Silent no-ops: the same body wrapped in
+      <LayoutCatalog>; the same patch on 22.0.6.600 (patch version 2.3.0.0 or 2.2.3.0, FM-26 seed).
+      DESTRUCTIVE: a "properties-only" Layout Replace (no PartsList) renamed the layout and
+      DELETED ALL its objects — the documented "omit ObjectList to replace properties only" does
+      not hold for layouts.
+
+  - id: layout-object-replace-delete
+    title: One layout object replaces/deletes in place by its own UUID, with a LayoutReference
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "22.0.6.600, 26.0.3.309"
+    date: "2026-10-27"
+    scope: >
+      Fixture = a copy of the Claris Content Management starter shipped in FileMaker Pro 26.0.3 (an
+      FM-26 file, SaveAsXML 2.3.0.0). Native before/after = FMDeveloperTool 26.0.3.309 --saveAsXML -id
+      plus --checkConsistency. Rendered/behavioral proof = FileMaker Pro 26.0.3 on 26.0.3.309 outputs;
+      a 22.0.6.600 cell is XML-only unless it cites a FileMaker Pro 22.0.6 render (packet 1444, on the
+      Contacts starter shipped with FileMaker Pro 22.0.6).
+    corpusfm_policy: >
+      Not generated — current implementation, not a tool limit. generate_patch marks every layout
+      Replace/Delete not_patchable (coverage_gate, citing the refuted id layout-add-only-no-uuid-to-target),
+      and the assistant authoring guidance only adds layouts. check_patch, dry-run and apply have no
+      layout-specific refusal, so a hand-written layout Replace/Delete is not blocked; dry-run Verify is
+      its check, as for any patch. These facts record what FMUpgradeTool did on the named builds and
+      fixtures: a hazard is a condition to know, an untested case is unknown, and neither is a CORPUSfm
+      rule.
+    facts:
+      - claim: Replace one layout object by its own UUID
+        help: true
+        form: Replace[type=LayoutObject, UUID] > LayoutReference (sibling, first) + complete LayoutObject
+        builds: {"22.0.6.600": landed/rendered, "26.0.3.309": landed/rendered}
+        note: >
+          The object keeps its UUID; a second patch on the same object also landed (26.0.3.309). The
+          22.0.6.600 render is FileMaker Pro 22.0.6 drawing a retexted label in the Contacts file
+          shipped with it.
+        evidence: [obj_replace_with_lref__t22, obj_replace_text_move_visible, chain_second_patch, 1444/era_obj_replace__t22, 1444/era_obj_replace__t22__view_pro22]
+      - claim: Object Replace without a LayoutReference sibling
+        help: true
+        builds: {"26.0.3.309": no-op/xml}
+        note: Both a bare Replace and the object nested inside LayoutReference were no-ops.
+        evidence: [obj_replace_bare, obj_replace_in_layoutref]
+      - claim: Object Replace with a wrong UUID or another layout's reference
+        builds: {"26.0.3.309": no-op/xml}
+        note: No cross-layout move.
+        evidence: [neg_bad_uuid, neg_cross_layout]
+      - claim: Delete one layout object
+        help: true
+        form: DeleteAction > ItemReference[type=LayoutObjectReference, UUID] > LayoutReference
+        builds: {"22.0.6.600": landed/xml, "26.0.3.309": landed/rendered}
+        evidence: [obj_delete__t22, obj_delete]
+      - claim: Object Delete without a LayoutReference child
+        builds: {"26.0.3.309": no-op/xml}
+        evidence: [obj_delete_no_lref_control]
+      - claim: Partial LayoutObject payload
+        help: true
+        builds: {"26.0.3.309": destructive/rendered}
+        note: The object was replaced wholesale and its text vanished. Replace is not a merge.
+        evidence: [neg_partial_object]
+      - claim: Portal Replace without its children
+        help: true
+        builds: {"26.0.3.309": destructive/xml}
+        note: Both child objects were deleted.
+        evidence: [portal_props_no_children]
+      - claim: Portal Replace with its children
+        builds: {"26.0.3.309": collateral/xml}
+        note: The children were recreated with new UUIDs and ids.
+        evidence: [portal_props]
+      - claim: Text to Rectangle type change
+        help: true
+        builds: {"22.0.6.600": discrepancy/xml, "26.0.3.309": discrepancy/rendered}
+        note: >
+          Accepted and drawn as a rectangle although Claris documents type changes as unsupported. An
+          observed documentation discrepancy, not a supported or safe operation.
+        evidence: [neg_type_change__t22, neg_type_change]
+      - claim: Fill, text colour and size, resize
+        help: true
+        builds: {"26.0.3.309": landed/rendered}
+        evidence: [app_rect_fill, app_text_color_size, app_rect_resize]
+      - claim: Field binding of an edit box
+        help: true
+        builds: {"26.0.3.309": collateral/rendered}
+        note: Every edit-box Replace tested dropped the box's accessibility label link.
+        evidence: [fld_rebind]
+      - claim: Tooltip, object name, tab order, value-list swap
+        builds: {"26.0.3.309": collateral/xml}
+        note: Same accessibility label loss.
+        evidence: [fld_tooltip, obj_rename, fld_taborder, fld_valuelist_swap]
+      - claim: Control style, edit box to drop-down
+        builds: {"26.0.3.309": collateral/xml}
+        note: FileMaker rewrote the object type itself; the drop-down is not visible in print.
+        evidence: [fld_controlstyle_keep_type, fld_controlstyle_type_attr]
+      - claim: Hide condition
+        help: true
+        builds: {"22.0.6.600": landed/xml, "26.0.3.309": landed/rendered}
+        note: FileMaker set findMode to True on both builds.
+        evidence: [cond_hide__t22, cond_hide]
+      - claim: Conditional formatting
+        help: true
+        builds: {"22.0.6.600": landed/rendered, "26.0.3.309": landed/rendered}
+        note: >
+          A native conditional format given new CSS turned its label red only while the condition was
+          true, on both builds; the 22.0.6.600 output was drawn by FileMaker Pro 22.0.6. Correction (1444)
+          of the 1427 "unconfirmed" result: that probe authored Condition Options 129, which disables the
+          condition (a 129 control drew nothing); native conditions use 3.
+        evidence: [cond_format, 1444/cf_red_opt3, 1444/cf_red_opt3__view, 1444/cf_red_opt129, 1444/era_cf_red__t22, 1444/era_cf_red__t22__view_pro22]
+      - claim: Object script trigger
+        help: true
+        builds: {"22.0.6.600": collateral/xml, "26.0.3.309": collateral/behavioral}
+        note: >
+          An OnObjectEnter trigger fired in FileMaker Pro 26.0.3; the unpatched control did not. The
+          edit-box accessibility label loss applies.
+        evidence: [trigger_add__t22, trigger_add, beh_trigger_behavior]
+      - claim: Button label, button script and parameter
+        help: true
+        builds: {"22.0.6.600": collateral/behavioral, "26.0.3.309": landed/behavioral}
+        note: >
+          A real mouse click on a button patched to run a new script with a new parameter ran it on both
+          builds (Pro 26.0.3 and, for the 22.0.6.600 output on the Pro 22.0.6 Contacts file, Pro 22.0.6);
+          the same click on the unpatched file did not. The label also rendered. 22.0.6.600 rewrote a
+          time-format Options value (143 to 159).
+        evidence: [btn_label__t22, btn_action_script__t22, btn_label, btn_action_script, 1444/btn_click_patched, 1444/btn_click_patched__click, 1444/T26_Contacts__click, 1444/btn_click_patched__t22, 1444/btn_click_patched__t22__click_pro22, 1444/T22p_Contacts__click_pro22]
+      - claim: Portal child move or delete, button-bar segment
+        builds: {"22.0.6.600": collateral/xml, "26.0.3.309": landed/xml}
+        note: >
+          Target the child directly. Deleting the portal's field also removed its Table View column
+          entry. On 22.0.6.600 only the child move was tested.
+        evidence: [portal_child_move__t22, portal_child_move, portal_child_delete, btnbar_segment]
+      - claim: Add an object directly to an existing layout
+        help: true
+        builds: {"26.0.3.309": no-op/xml}
+        note: AddAction with a LayoutReference, and a partial LayoutCatalog layout, were both no-ops.
+        evidence: [add_obj_lref, add_obj_layoutcat_partial]
+      - claim: Further chart cases
+        help: true
+        builds: {"22.0.6.600": untested/none, "26.0.3.309": untested/none}
+        note: >
+          Skipped at the developer's direction once any chart Replace was shown to lose the chart's
+          settings; a configured chart on 22.0.6.600 is untested.
+        evidence: []
+      - claim: Replaceable object types listed by Claris
+        builds: {"docs": documented/none}
+        note: >
+          The current page lists 7 types; the FileMaker 2024 page lists 15 (adds Portal, Tab Control,
+          Panel, Button, Button Bar, Popover Button, PopoverPanel, Slide Control). Only the Button,
+          portal-child and button-bar edits above were tested.
+        evidence: []
+      - claim: Any apply on 26.0.3.309
+        builds: {"26.0.3.309": collateral/xml}
+        note: >
+          Every --update, including no-ops, added a CustomMenuCatalog to a file that had none (three
+          seeds); none was added to the Contacts file shipped with Pro 26.0.3, which already had one.
+        evidence: [layout_delete_nested_uuid_control, 1444/whole_t22p_list, 1444/whole_t26contacts_list]
+    behavior: >
+      Replace lands ONLY as <Replace type="LayoutObject" UUID=…><LayoutReference id name UUID/>
+      <LayoutObject …complete…/></Replace> (LayoutReference a SIBLING before the object); Delete
+      only as <ItemReference UUID=… type="LayoutObjectReference"><LayoutReference …/></ItemReference>.
+      Bare forms and the object nested inside LayoutReference are silent no-ops, as are a wrong UUID
+      and a LayoutReference naming another layout (no cross-layout move). Identity is preserved and
+      survives a second patch. Landed and matched the sent XML (FileMaker reformats CSS): move/
+      resize, text, object name, fill/colour/font CSS, field rebind, tooltip, tab order, value-list
+      swap, control style (FileMaker rewrites type Edit Box→Drop-down List itself), hide condition,
+      conditional formatting, OnObjectEnter trigger, button label and button script+parameter,
+      portal child move/delete, button-bar segment. Seen in FM Pro: move/text/colour/fill/resize/
+      rebind/hide/button label render; a patched trigger FIRED (control did not). Conditional
+      formatting landed in XML but did not render in 1427 — corrected by 1444: that probe authored
+      Options 129, which disables the condition; native Options 3 renders on both builds (see the
+      Conditional formatting fact). Portal/Button types work on
+      both builds although only the FM 2024 doc lists them. COLLATERAL/HAZARDS: Replace is a full
+      replacement, not a merge — a partial object wiped its text; an Edit Box Replace drops its
+      Accessibility label link; a Text→Rectangle type change was ACCEPTED and rendered (doc: not
+      supported); a container Replace regenerates its children (with ObjectList) or DELETES them
+      (without). 22.0.6.600 also rewrites a Time format Options value (143→159). No form found that
+      adds an object to an existing layout (AddAction with LayoutReference, or a partial
+      LayoutCatalog layout, are no-ops); only a whole-layout or enclosing-container Replace does (26.0.3.309,
+      packet 1444), at the identity cost.
+
+  - id: layout-containers-webviewer-theme
+    title: Tab controls, web viewers, child additions and theme switching (packet 1444)
+    category: apply-semantics
+    status: verified
+    verified_via: live-apply
+    tool_version: "26.0.3.309"
+    date: "2026-10-27"
+    behavior: >
+      Child-targeted edits inside a native tab control land in place. Replacing a tab panel or the tab
+      control itself is full replacement: without children they are deleted, with children they are
+      recreated with new UUIDs — which is also the only way an object was added to an existing panel.
+      A web viewer URL calculation change took effect at runtime. A theme switch through whole-layout
+      Replace was ignored while every object was still recreated.
+    scope: >
+      Fixtures = copies of the Claris Contacts and Tasks starters shipped in FileMaker Pro 26.0.3 (native
+      tab control with four panels, a web viewer, conditional formatting, a second theme), plus new blank
+      files in which FileMaker Pro 26.0.3 and Pro 22.0.6 themselves created a popover button, slide
+      control, chart and group in layout mode (UI automation). Applied by FMUpgradeTool 26.0.3.309 on
+      fms-dev and 22.0.6.600 locally; native before/after = FMDeveloperTool 26.0.3.309; renders and
+      runtime reads (GetLayoutObjectAttribute) in FileMaker Pro 26.0.3, and in Pro 22.0.6 for 22.0.6.600
+      outputs. Evidence: .claude/evidence/1444/.
+    corpusfm_policy: >
+      Not generated — current implementation, not a tool limit. generate_patch marks every layout
+      Replace/Delete not_patchable (coverage_gate, citing the refuted id layout-add-only-no-uuid-to-target),
+      and the assistant authoring guidance only adds layouts. check_patch, dry-run and apply have no
+      layout-specific refusal, so a hand-written layout Replace/Delete is not blocked; dry-run Verify is
+      its check, as for any patch. These facts record what FMUpgradeTool did on the named builds and
+      fixtures: a hazard is a condition to know, an untested case is unknown, and neither is a CORPUSfm
+      rule.
+    facts:
+      - claim: Retext an object inside a tab panel
+        help: true
+        builds: {"26.0.3.309": landed/rendered}
+        note: Target the child directly; the panel and tab control keep their UUIDs and other children.
+        evidence: [1444/tab_child_text, 1444/tab_child_text__view]
+      - claim: Tab panel Replace without its children
+        help: true
+        builds: {"26.0.3.309": destructive/xml}
+        note: All five of the panel's children were deleted.
+        evidence: [1444/tab_panel_without_children]
+      - claim: Tab panel Replace with its children (tab label, object name)
+        help: true
+        builds: {"26.0.3.309": collateral/behavioral}
+        note: >
+          The new tab label rendered and Go to Object by the new panel name brought that panel to the
+          front, but the panel's five children were recreated with new UUIDs.
+        evidence: [1444/tab_panel_with_children, 1444/tab_panel_with_children__view]
+      - claim: Tab control Replace (default front tab)
+        help: true
+        builds: {"26.0.3.309": collateral/rendered}
+        note: >
+          The chosen panel rendered in front, but all 31 objects inside the tab control were recreated
+          with new UUIDs, and FileMaker also changed the control's visible attribute.
+        evidence: [1444/tab_control_default_front, 1444/tab_control_default_front__view]
+      - claim: Add an object to an existing tab panel
+        help: true
+        form: Replace the panel with its complete children plus the new object
+        builds: {"26.0.3.309": collateral/rendered}
+        note: >
+          The new object was drawn in the panel; every existing child of that panel was recreated with a
+          new UUID. The panel itself kept its UUID.
+        evidence: [1444/tab_panel_add_child, 1444/tab_panel_add_child__view]
+      - claim: Web viewer URL calculation
+        help: true
+        builds: {"26.0.3.309": landed/rendered}
+        note: >
+          With the same record, the unpatched viewer loaded its page and the patched one (pointing at a
+          non-resolving host) drew blank. GetLayoutObjectAttribute "source" read back empty in both, so it
+          is not usable proof here.
+        evidence: [1444/web_viewer_calc, 1444/web_viewer_calc__view]
+      - claim: Switch a layout's theme through whole-layout Replace
+        help: true
+        builds: {"26.0.3.309": failed/xml}
+        note: >
+          The theme reference was ignored — the layout kept its theme — but all 29 objects were still
+          recreated with new UUIDs.
+        evidence: [1444/theme_switch_whole]
+      - claim: Popover button Replace with its panel
+        help: true
+        builds: {"22.0.6.600": refused/none, "26.0.3.309": collateral/behavioral}
+        note: >
+          On 26.0.3.309 a move plus a new panel title, and separately a named child added through the
+          button, kept the panel's UUID, and FileMaker reported the new panel and child by name at
+          runtime; objects already in the panel were recreated with new UUIDs. 22.0.6.600 crashed
+          (exit 139) on every popover button Replace, from either client's file, and left an unchanged
+          copy at the destination path.
+        evidence: [1444/pop_button_with_panel, 1444/pop_button_add_child, 1444/pop_button_add_child__view, 1444/pop_existing_child_move, 1444/n22_pop_button_with_panel__t22, 1444/n22_pop_button_add_child__t22, 1444/pop_button_with_panel_on_n26__t22]
+      - claim: Malformed input — popover button with its panel left out
+        builds: {"26.0.3.309": destructive/xml}
+        note: >
+          Not a real edit: a popover button always has its panel. The tool accepted the malformed
+          payload without error and FileMaker substituted a new, empty, untitled 0 x 0 panel.
+        evidence: [1444/pop_button_without_panel]
+      - claim: Popover panel targeted directly
+        help: true
+        builds: {"22.0.6.600": no-op/xml, "26.0.3.309": no-op/xml}
+        note: A panel title change and a child addition aimed at the panel's own UUID did nothing.
+        evidence: [1444/pop_panel_title, 1444/pop_panel_add_child, 1444/n22_pop_panel_direct__t22, 1444/n22_pop_panel_direct]
+      - claim: Add an object to an empty slide panel
+        builds: {"22.0.6.600": failed/behavioral, "26.0.3.309": landed/behavioral}
+        note: >
+          26.0.3.309: the panel and its new child were reported by name at runtime. 22.0.6.600: the export
+          gained a fourth panel instead, no child was added, and at runtime no object had the panel's new
+          name.
+        evidence: [1444/slide_panel_add_child, 1444/slide_panel_add_child__view, 1444/n22_slide_panel_add_child__t22, 1444/n22_slide_panel_add_child__t22__view_pro22]
+      - claim: Slide control Replace with its panels
+        builds: {"26.0.3.309": collateral/xml}
+        note: All three panels were recreated with new UUIDs.
+        evidence: [1444/slide_control_with_children, 1444/chart_move_only_slide]
+      - claim: Slide control Replace without its panels
+        help: true
+        builds: {"22.0.6.600": no-op/xml, "26.0.3.309": destructive/xml}
+        note: 26.0.3.309 deleted all three panels; 22.0.6.600 changed nothing.
+        evidence: [1444/slide_control_without_children, 1444/n22_slide_control_without_children, 1444/n22_slide_control_without_children__t22]
+      - claim: Chart Replace, even with unchanged XML
+        help: true
+        builds: {"22.0.6.600": destructive/rendered, "26.0.3.309": destructive/rendered}
+        note: >
+          The export carries no chart configuration (an empty Chart element). Replacing the chart with its
+          own XML left the export identical but the chart then drew as a solid black box; a move did the
+          same. A configured chart (title, data series, drawing bars) also exports only as an empty Chart
+          element and lost everything the same way. XML comparison cannot detect this. Same on 22.0.6.600
+          with an unconfigured chart Pro 22.0.6 created, drawn by Pro 22.0.6.
+        evidence: [1444/cfgchart_identity_replace, 1444/cfgchart_identity_replace__view, 1444/cfgchart_move, 1444/cfgchart_move__view, 1444/N26_Chart__view, 1444/chart_identity_replace, 1444/chart_identity_replace__view, 1444/chart_move, 1444/chart_move__view, 1444/chart_move_only_slide, 1444/chart_move_only_slide__view, 1444/N26_Objects__view, 1444/n22_chart_identity_replace__t22, 1444/n22_chart_identity_replace__t22__view_pro22, 1444/n22_chart_identity_replace]
+      - claim: Move or delete one member of a group
+        builds: {"22.0.6.600": landed/xml, "26.0.3.309": landed/xml}
+        note: Target the member directly; the group keeps its UUID. 22.0.6.600 was tested with a move.
+        evidence: [1444/group_member_move, 1444/group_member_delete, 1444/n22_group_member_move__t22, 1444/n22_group_member_move]
+      - claim: Group Replace with or without its members
+        help: true
+        builds: {"22.0.6.600": destructive/rendered, "26.0.3.309": destructive/rendered}
+        note: >
+          26.0.3.309: without members, both were deleted and the layout rendered empty; with members they
+          were recreated with new UUIDs, which is also how a member was added. 22.0.6.600 (without
+          members): the members were kept but the group and both members grew to 50 times their size,
+          drawing as one huge object in FileMaker Pro 22.0.6.
+        evidence: [1444/group_without_children, 1444/group_without_children__view, 1444/group_with_children, 1444/group_add_member, 1444/n22_group_without_children__t22, 1444/n22_group_without_children__t22__view_pro22, 1444/n22_group_without_children]
+      - claim: Relabel a button-bar segment
+        help: true
+        builds: {"22.0.6.600": landed/xml, "26.0.3.309": landed/rendered}
+        note: >
+          Target the segment directly. The bar sits in the layout's top navigation part, which does not
+          print, so the 26.0.3.309 result was checked in a live window capture.
+        evidence: [1444/bb_segment_label__t22, 1444/bb_segment_label, 1444/bb_segment_label__screen, 1444/T26_Contacts__screen]
+      - claim: Give a button-bar segment a script action
+        help: true
+        builds: {"22.0.6.600": landed/behavioral, "26.0.3.309": landed/behavioral}
+        note: >
+          A real click on the patched segment ran the new script with its parameter in FileMaker Pro
+          26.0.3 and, for the 22.0.6.600 output, Pro 22.0.6; the unpatched segment did not.
+        evidence: [1444/bb_segment_action, 1444/bb_segment_action__click, 1444/T26_Contacts__click_segment_control, 1444/bb_segment_action__t22, 1444/bb_segment_action__t22__click_pro22]
+      - claim: Add a button-bar segment
+        help: true
+        form: Replace the bar with its complete segments plus the new one
+        builds: {"22.0.6.600": refused/none, "26.0.3.309": collateral/rendered}
+        note: >
+          26.0.3.309: the bar showed both segments, but the existing segment was recreated with a new UUID.
+          22.0.6.600 crashed (exit 139) on every button-bar Replace, as on popover buttons.
+        evidence: [1444/bb_add_segment, 1444/bb_add_segment__screen, 1444/bb_add_segment__t22]
+      - claim: Malformed input — button bar with its segments left out
+        builds: {"22.0.6.600": refused/none, "26.0.3.309": destructive/rendered}
+        note: A button bar always has a segment. 26.0.3.309 accepted it and the bar drew empty; 22.0.6.600 crashed.
+        evidence: [1444/bb_without_segments, 1444/bb_without_segments__screen, 1444/bb_without_segments__t22]
 
   - id: valuelist-add-ok
     title: A value list adds via a generic-catalog AddAction
@@ -819,8 +1312,9 @@ open_questions:
       MOSTLY RESOLVED (2026-06-04 probe sweep): BaseTable Replace OK (Probes 0-2).
       FIELD same-type Replace OK; FIELD type-change Replace = TOOL LIMIT (unhostable
       file) — see entry field-replace-sametype-ok-typechange-unhostable. LAYOUT
-      Replace is moot/impossible — the export carries no layout UUID to target (entry
-      layout-add-only-no-uuid-to-target). STILL OPEN: relationship Replace and
+      Replace: re-measured 2026-10-27 (packet 1427) — layouts DO carry a UUID; see
+      layout-replace-whole-version-dependent and layout-object-replace-delete (the old
+      layout-add-only-no-uuid-to-target is refuted). STILL OPEN: relationship Replace and
       value-list Replace (the playground has none to target; would need to add one
       first in a prior state). Delete: field + table-occurrence verified OK (entry
       delete-field-and-table-occurrence-ok); relationship/VL delete still unprobed.

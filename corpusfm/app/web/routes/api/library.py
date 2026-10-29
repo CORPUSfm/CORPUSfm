@@ -499,6 +499,8 @@ def _enrich_meta(fm_file, meta, tags_map, is_latest, indexed_keys=frozenset(),
         # Just the uuid presence — NO per-row name lookup (that'd be N store hits); the detail
         # pane resolves the name. "" for manual uploads → no badge.
         "job_uuid":      getattr(meta, "job_uuid", "") or "",
+        # The server a Job acquired this from (packet 1438), frozen on the record — {} = not recorded.
+        "source_server": dict(getattr(meta, "source_server", None) or {}),
         "root_uuid":     meta.root_uuid,
         "artifact_type": meta.artifact_type,
         # Server-authored per-artifact capabilities (packet 040): the front-end gates
@@ -1593,6 +1595,7 @@ def artifact_detail(ref: str) -> JSONResponse:
         "job_uuid":    getattr(meta, "job_uuid", "") or "",
         "run_uuid":    getattr(meta, "run_uuid", "") or "",
         "job_name":    _resolve_job_name(getattr(meta, "job_uuid", "") or ""),
+        "source_server": dict(getattr(meta, "source_server", None) or {}),
         "identity": {
             "file_name":  _display_file_name(meta),
             "root_uuid":  meta.root_uuid,

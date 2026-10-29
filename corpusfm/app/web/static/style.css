@@ -246,29 +246,6 @@ a:hover { text-decoration: underline; }
   text-overflow: ellipsis;
 }
 
-/* App-wide indexing progress chip — non-blocking; in the sidebar footer, shown only while a
-   server-side index/de-index batch runs. Never the screen-lock overlay. */
-.cfm-index-chip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 8px 6px;
-  padding: 7px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--accent, #4aa3ff);
-  background: rgba(74, 163, 255, .10);
-  border: 1px solid rgba(74, 163, 255, .35);
-  border-radius: 4px;
-  cursor: default;
-}
-.cfm-index-chip-lbl {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-a.cfm-index-chip { text-decoration: none; }
-
 /* Queue page (packet 052) */
 .cfm-qbar { position: relative; height: 6px; width: 100%; overflow: hidden; border-radius: 3px; background: var(--surface-hover, rgba(139,146,165,.18)); }
 .cfm-qbar-fill { height: 100%; background: var(--accent, #4aa3ff); transition: width .4s ease; }
@@ -287,10 +264,6 @@ a.cfm-index-chip { text-decoration: none; }
   display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 6px;
   font-size: 11px; font-weight: 700; line-height: 16px; text-align: center;
   color: #fff; background: var(--health-fail, #e5484d); border-radius: 8px;
-}
-@media (max-width: 640px) {
-  .cfm-index-chip { margin: 6px; padding: 8px 0; justify-content: center; }
-  .cfm-index-chip-lbl { display: none; }
 }
 
 /* ── Main content ──────────────────────────────────────────────────────────── */

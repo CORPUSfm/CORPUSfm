@@ -606,7 +606,7 @@ def _build_replace(
     items_b: dict,
 ) -> "tuple[ET.Element | None, bool, str]":
     """Build a ReplaceAction element."""
-    # Ledger-driven block: layouts are add-only (no targetable UUID).
+    # Ledger-driven block: the generator is add-only for layouts.
     allowed, reason = gate_action(section, "Replace")
     if not allowed:
         return None, False, reason

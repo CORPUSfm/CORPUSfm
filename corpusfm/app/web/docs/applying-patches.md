@@ -36,6 +36,11 @@ fails fast and free:
    patch meant to make is confirmed to have landed, and any collateral change is flagged.
 5. **Apply** — only then, the real apply to the hosted file.
 
+The upgrade tool's own success message isn't enough to skip the Verify step. In layout testing, it
+reported success on patches that changed nothing, and on one that deleted every object on a layout.
+CORPUSfm doesn't generate layout Replace or Delete, but apply doesn't block one you write yourself.
+See [Existing layouts](/docs/patch-authoring#existing-layouts) for what the tool did in testing.
+
 ## How apply protects production
 
 The real apply is a close → patch → swap → reopen sequence with safeguards:

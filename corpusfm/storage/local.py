@@ -58,6 +58,7 @@ class ArtifactMeta:
     enc_bytes: int = 0                  # legacy on-disk size; 0 on record-store backends
     job_uuid: str = ""                 # job that produced this artifact, by uuid (empty for manual)
     run_uuid: str = ""                 # the run that produced this artifact, by uuid (empty for manual)
+    source_server: dict = field(default_factory=dict)  # packet 1438 — {ref, name, host} a Job acquired from; {} = unknown
     addon_version: str = ""            # Version from info.json (addon only)
     addon_locale: str = ""             # Locale code used for name resolution (addon only)
     has_name_map: bool = False         # addon name map stored with the record

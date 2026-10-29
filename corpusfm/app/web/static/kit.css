@@ -446,10 +446,54 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
    developer 2026-08-19). The template hides it entirely for artifact types without an
    Explorer lens. */
 .cfm-card-explore {
-  position: absolute; right: 8px; bottom: 8px;
+  flex: none; margin-left: auto;
   color: var(--wedge-color, var(--primary));
 }
 .cfm-card-explore:hover { border-color: var(--wedge-color, var(--primary)); }
+
+/* Artifact card anatomy (packet 1438). Header: icon, then a text column holding the type line
+   (type + I/J markers) and the source server; the right padding keeps both clear of the corner
+   wedge. The footer is in-flow, so the date and the Explorer button take separate space. */
+.cfm-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; padding-right: 22px; }
+.cfm-card-head .cfm-card-icon { flex: none; }
+.cfm-card-headtext { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cfm-card-typeline { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.cfm-card-type { font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap; margin-right: 2px; }
+.cfm-card-src {
+  font-size: 12px; color: var(--text-2); min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cfm-card-src--unknown { color: var(--text-3); font-style: italic; }
+.cfm-card-tag { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+/* The date is never truncated (it is what tells versions apart): when date + Explorer do not fit
+   one row, the button wraps to its own right-aligned row instead of squeezing the date. */
+.cfm-card-bottom { margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-height: 26px; }
+
+/* Compact filled state markers (I = indexed, J = created by a job). The glyph is a fixed near-black
+   on a light fill in BOTH themes — the theme-neutral fills stay light, so the letter keeps its
+   contrast either way. Focusable, so the data-tip explanation shows on keyboard focus too. */
+.cfm-mark {
+  position: relative; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%;
+  font-size: 10px; font-weight: 700; line-height: 1; color: #111111;
+  background: #c9ced3; cursor: default;
+}
+.cfm-mark--ok      { background: var(--health-ok); }
+.cfm-mark--pending { background: #8fc0ff; animation: cfm-badge-pulse 1.4s ease-in-out infinite; }
+.cfm-mark--soft    { background: var(--health-warn); }
+.cfm-mark--job     { background: #c9ced3; }
+.cfm-mark:focus { outline: none; }
+.cfm-mark:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.cfm-mark[data-tip]:hover::after, .cfm-mark[data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute; left: 50%; top: calc(100% + 6px); transform: translateX(-50%);
+  z-index: 20; padding: 4px 8px; border-radius: 4px; white-space: nowrap;
+  font-size: 12px; font-weight: 500; letter-spacing: 0;
+  background: var(--text-strong); color: var(--surface);
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) { .cfm-mark--pending { animation: none; } }
 
 /* ── Card: 60×360 list-card (Runs) ───────────────────────────────────────── */
 .cfm-listcard {

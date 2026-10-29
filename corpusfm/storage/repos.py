@@ -452,6 +452,20 @@ class QueueRepo:
         jor["PushTokenHash"] = push_token_hash or ""
         self._e.update(_QUEUE, queue_id, jor)
 
+    def set_source_server(self, queue_id: str, source_server: dict) -> None:
+        """Freeze the FileMaker server THIS acquire attempt contacts onto the record's payload (packet
+        1438), before the fetch, so the bytes it stages and the artifact/run they become carry the
+        attempt's own source. A restarted acquire stamps again; an ingest-only restart keeps the stamp
+        of the acquire that produced the staged bytes. Non-secret facts only. No-op if gone."""
+        row = self.get(queue_id)
+        if row is None:
+            return
+        jor = dict(row.jor)
+        payload = dict(jor.get("Payload") or {})
+        payload["source_server"] = dict(source_server or {})
+        jor["Payload"] = payload
+        self._e.update(_QUEUE, queue_id, jor)
+
     def clear_source(self, queue_id: str) -> None:
         """CLEANUP for a failed acquire (packet 1142): drop any bytes a partial/failed fetch deposited
         into the record's SourceXML container, so a Restart re-fires the trigger and produces ONE

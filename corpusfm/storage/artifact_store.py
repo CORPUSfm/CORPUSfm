@@ -211,12 +211,14 @@ def land_artifact(backend, queue_id: str, artifact, *, xml_bytes: Optional[bytes
     # through store_artifact, or its artifact is invisible to UUIDJob-scoped reads (latest, retention).
     job_uuid = (qjor.get("UUIDJob") or "") if qrows else ""
     run_uuid = ((qjor.get("Payload") or {}).get("run_id") or "") if qrows else ""
+    # The source server rides the same row: the acquire that staged these bytes stamped it (packet 1438).
+    source_server = ((qjor.get("Payload") or {}).get("source_server") or {}) if job_uuid else {}
     if job_uuid and origin == "Import":
         origin = "Job"
     jor = build_record(artifact, timestamp=_now_ts(), label=label, origin=origin,
                        job_uuid=job_uuid, run_uuid=run_uuid,
                        addon_package=addon_package, xml_bytes=xml_bytes,
-                       keep_source_xml=keep_source_xml)
+                       keep_source_xml=keep_source_xml, source_server=source_server)
     # Anchor the new landing on the QUEUE row BEFORE creating the STORAGE row (crash anchor).
     if qrows:
         qjor["UUIDStorage"] = record_uuid
@@ -259,7 +261,7 @@ def land_artifact(backend, queue_id: str, artifact, *, xml_bytes: Optional[bytes
 # provenance) is taken FRESH from the re-ingest — that is the whole point of refreshing.
 _REINGEST_PRESERVE_KEYS = (
     "ArtifactTimestamp",   # the lineage/version key — MUST NOT change (this is a refresh, not a snapshot)
-    "Description", "Memory", "Origin", "UUIDJob", "RunUUID",
+    "Description", "Memory", "Origin", "UUIDJob", "RunUUID", "SourceServer",
     "icon_b64", "addon_version", "addon_locale", "has_name_map",
 )
 

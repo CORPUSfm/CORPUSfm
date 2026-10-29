@@ -55,6 +55,10 @@
         <span class="cfm-lc-ident">
           <span class="cfm-lc-name" x-text="r.job_name" :title="r.job_name"></span>
           <span class="cfm-lc-sub" x-show="r.file_name" x-text="r.file_name" :title="r.file_name"></span>
+          {# The server the run acquired from, frozen at acquisition (packet 1438); absent = not recorded. #}
+          <span class="cfm-lc-sub" x-show="!!(r.source_server && (r.source_server.name || r.source_server.host))"
+                x-text="'from ' + ((r.source_server || {}).name || (r.source_server || {}).host || '')"
+                :title="[(r.source_server || {}).name, (r.source_server || {}).host].filter(Boolean).join(' — ')"></span>
         </span>
         <span class="cfm-lc-dur" x-text="(r.duration_s == null ? 0 : r.duration_s) + 's'"></span>
         <span class="cfm-lc-tail" x-text="r.trigger || 'manual'"></span>

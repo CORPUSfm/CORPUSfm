@@ -15,9 +15,17 @@ every automated pull, every merged or generated artifact. It's both your library
 
 ## Cards and selection
 
-Each artifact is a card showing its file name, type, and when it was captured. The card type
-badge tells you what it is — a schema snapshot (SaveAsXML), an add-on, a merged artifact, or a
-generated one.
+Each artifact is a card showing its file name, type, and when it was captured. The type beside
+the icon tells you what it is — a schema snapshot (SaveAsXML), an add-on, a merged artifact, or a
+generated one. Two small round markers sit next to it; hover or tab to one to see what it means:
+
+- **I** — the artifact is in the search index (it pulses while indexing is queued).
+- **J** — a job created it.
+
+A job-created card also names the **FileMaker server the job took the XML from**, so the same
+file pulled from two servers stays easy to tell apart. When two different servers share a name,
+the card adds the host. The full server name and address are in the detail pop-over. Artifacts a
+job created before CORPUSfm recorded this say *Server not recorded*; CORPUSfm never guesses it.
 
 - **Select** a card with its **+/×** control. Selected cards **lift** into a sticky *Action
   space* above the filter bar.

@@ -85,6 +85,7 @@ def run(args: argparse.Namespace) -> int:
         list_runs_for, save_job,
         JobConfig, JobSource, JobProcess, JobGitExport, JobTrigger, generate_token,
     )
+    from corpusfm.server.jobs.history import describe_source_server
 
     # ── list ──────────────────────────────────────────────────────────────────
     if args.jobs_cmd == "list":
@@ -198,7 +199,9 @@ def run(args: argparse.Namespace) -> int:
             ts = r.ts[:19].replace("T", " ")
             dur = f"{r.duration_s:.1f}s" if r.duration_s else "?"
             err = f"  error: {r.error}" if r.error else ""
-            print(f"  {ts}  {r.status}  {r.trigger}  {dur}{err}")
+            src = describe_source_server(r.source_server)
+            src = f"  from: {src}" if src else ""
+            print(f"  {ts}  {r.status}  {r.trigger}  {dur}{src}{err}")
         return 0
 
     # ── create ────────────────────────────────────────────────────────────────

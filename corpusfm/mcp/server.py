@@ -3046,6 +3046,9 @@ if _SERVER_MODE:
                 lines.append(f"  job_uuid:     {j.get('UUIDJob')}")
             if j.get("UUIDStorage"):
                 lines.append(f"  artifact:     {j.get('UUIDStorage')}")
+            from corpusfm.server.jobs.history import describe_source_server
+            if describe_source_server(p.get("source_server")):
+                lines.append(f"  source:       {describe_source_server(p.get('source_server'))}")
             if st == "failed" and j.get("Outcome"):
                 lines.append(f"  error:        {j.get('Outcome')}")
             return "\n".join(lines)
@@ -3061,6 +3064,9 @@ if _SERVER_MODE:
                 lines.append(f"  job_uuid:   {rec.job_uuid}")
             if rec.archive_path:
                 lines.append(f"  artifact:   {rec.archive_path}")
+            from corpusfm.server.jobs.history import describe_source_server
+            if describe_source_server(rec.source_server):
+                lines.append(f"  source:     {describe_source_server(rec.source_server)}")
             if rec.error:
                 lines.append(f"  error:      {rec.error}")
             if rec.git_commits:
@@ -3086,6 +3092,9 @@ if _SERVER_MODE:
             line = f"  {r.ts}  {r.status}  {r.duration_s}s  trigger={r.trigger}"
             if r.archive_path:
                 line += f"  archive={r.archive_path}"
+            from corpusfm.server.jobs.history import describe_source_server
+            if describe_source_server(r.source_server):
+                line += f"  source={describe_source_server(r.source_server)}"
             if r.error:
                 line += f"  error={r.error[:80]}"
             lines.append(line)
@@ -4848,9 +4857,14 @@ def get_patch_capabilities() -> str:
     a new folder needs its open AND close markers in document order. Behavior is
     tool-version-specific; each claim is tagged with the build it was verified on,
     and OPEN QUESTIONS are not yet verified — do not rely on them.
+
+    TESTED FMUPGRADETOOL BEHAVIOR lists proof-graded facts per build (e.g. layout
+    patching on 22.0.6.600 vs 26.0.3.309). Those are evidence of what the tool did,
+    NOT permission: each block states CORPUSfm's current policy, and the authoring
+    rules above still govern what you may build.
     """
     from corpusfm.extensions.export.capabilities import (
-        load_capabilities, render_capability_guidance,
+        load_capabilities, render_capability_guidance, render_tested_facts,
     )
     led = load_capabilities()
     lines = [render_capability_guidance(led), "", "VERIFICATION:"]
@@ -4862,6 +4876,9 @@ def get_patch_capabilities() -> str:
         lines.append("OPEN QUESTIONS (not yet verified — do not rely on):")
         for q in led.open_questions:
             lines.append(f"  - {q.question}")
+    facts = render_tested_facts(led)
+    if facts:
+        lines += ["", facts]
     return "\n".join(lines)
 
 

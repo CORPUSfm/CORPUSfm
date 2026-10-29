@@ -121,6 +121,7 @@ def runs_list(
                     "archive_exists":   archive_exists,
                     "prev_archive_path": prev_path,
                     "error":            run.error or "",
+                    "source_server":    dict(run.source_server or {}),
                 })
 
         all_rows.sort(key=lambda x: x["ts"], reverse=True)

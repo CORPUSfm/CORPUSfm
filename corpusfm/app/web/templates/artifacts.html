@@ -69,6 +69,8 @@
                 <template x-if="!(s.is_addon && s.has_icon)"><span x-html="typeSvg(typeKey(s))"></span></template>
               </div>
               <div class="cfm-card-name" x-text="fileName(s)" :title="fileName(s)"></div>
+              <div x-show="!!s.job_uuid" class="cfm-card-src" :class="serverKnown(s) ? '' : 'cfm-card-src--unknown'"
+                   x-text="serverLabel(s)" :title="serverTitle(s)"></div>
               <div class="cfm-card-foot">
                 <span class="cfm-badge cfm-badge--muted" x-text="typeLabel(s)"></span>
                 <template x-for="t in (s.tags || []).slice(0, 2)" :key="'st'+s.uuid+t">
@@ -304,39 +306,57 @@
                     :aria-label="'Add ' + fileName(s) + ' to selection'" title="Add to selection">
               <svg class="cfm-wedge-check" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 6.5l2.5 2.5L10 3"/></svg>
             </button>
-            <div class="cfm-card-icon" :class="'cfm-card-icon--' + typeKey(s)">
-              <template x-if="s.is_addon && s.has_icon">
-                <img :src="(window.CFM_PREFIX||'') + '/api/artifact-icon/' + s.uuid" alt="">
-              </template>
-              <template x-if="!(s.is_addon && s.has_icon)"><span x-html="typeSvg(typeKey(s))"></span></template>
+            {# Artifact card (packet 1438): header = icon · type · I/J markers, then the source server a
+               Job acquired from; status + tags get their own row; date and Explorer share an in-flow
+               footer so the button can never cover the date. #}
+            <div class="cfm-card-head">
+              <div class="cfm-card-icon" :class="'cfm-card-icon--' + typeKey(s)">
+                <template x-if="s.is_addon && s.has_icon">
+                  <img :src="(window.CFM_PREFIX||'') + '/api/artifact-icon/' + s.uuid" alt="">
+                </template>
+                <template x-if="!(s.is_addon && s.has_icon)"><span x-html="typeSvg(typeKey(s))"></span></template>
+              </div>
+              <div class="cfm-card-headtext">
+                <div class="cfm-card-typeline">
+                  <span class="cfm-card-type" x-text="typeLabel(s)"></span>
+                  {# Markers: a focusable element each, so the explanation shows on keyboard focus as
+                     well as hover (data-tip) and is read by assistive tech (aria-label). #}
+                  <span x-show="!!(_isIndexed(s) || _indexPending(s))" class="cfm-mark" tabindex="0" role="img"
+                        :class="_indexPending(s) ? (_indexSoft(s) ? 'cfm-mark--soft' : 'cfm-mark--pending') : 'cfm-mark--ok'"
+                        :aria-label="indexTip(s)" :data-tip="indexTip(s)" @click.stop>I</span>
+                  <span x-show="!!s.job_uuid" class="cfm-mark cfm-mark--job" tabindex="0" role="img"
+                        aria-label="J — Created by a job" data-tip="J — Created by a job" @click.stop>J</span>
+                </div>
+                <div x-show="!!s.job_uuid" class="cfm-card-src" :class="serverKnown(s) ? '' : 'cfm-card-src--unknown'"
+                     x-text="serverLabel(s)" :title="serverTitle(s)"></div>
+              </div>
             </div>
             <div class="cfm-card-name" x-text="fileName(s)" :title="fileName(s)"></div>
-            <div class="cfm-card-foot">
-              <span class="cfm-badge cfm-badge--muted" x-text="typeLabel(s)"></span>
-              <span x-show="!!(_isIndexed(s) || _indexPending(s))" class="cfm-badge"
-                    :class="_indexPending(s) ? (_indexSoft(s) ? 'cfm-badge--soft' : 'cfm-badge--pending') : 'cfm-badge--ok'"
-                    :title="_indexPending(s) ? (_indexSoft(s) ? 'Indexing — taking longer, no recent update' : 'Queued: indexing…') : 'Indexed for search'">Indexed</span>
+            <div class="cfm-card-tags">
               <span x-show="!!(s.has_summaries || _summarizePending(s))" class="cfm-badge"
                     :class="_summarizePending(s) ? (_summarizeSoft(s) ? 'cfm-badge--soft' : 'cfm-badge--pending') : 'cfm-badge--ok'"
                     :title="_summarizePending(s) ? (_summarizeSoft(s) ? 'Summarizing — taking longer, no recent update' : 'Queued: summarizing…') : 'Has AI summaries'">Summarized</span>
-              <span x-show="s.job_uuid" class="cfm-badge cfm-badge--muted" title="Produced by a job (see detail for which)">Job</span>
               <span x-show="s.gap_issues > 0" class="cfm-badge cfm-badge--warn" x-text="'⚠ ' + s.gap_issues"></span>
               <span x-show="!!s.analysis_incomplete" class="cfm-badge cfm-badge--warn"
                     title="A forward-compat analyzer could not complete — coverage is partial, not proven clean (see Health)">⚠ analysis incomplete</span>
               <span x-show="!!s.acceptance_state" class="cfm-badge" x-text="acceptanceLabel(s)"
                     :class="acceptanceBadgeClass(s)" :title="'Paste-acceptance observation (see detail for batch/case/source)'"></span>
-              <template x-for="t in (s.tags || []).slice(0, 2)" :key="'c'+s.uuid+t">
-                <span class="cfm-badge" x-text="t"></span>
+              <template x-for="t in (s.tags || []).slice(0, 3)" :key="'c'+s.uuid+t">
+                <span class="cfm-badge cfm-card-tag" x-text="t" :title="t"></span>
               </template>
+              <span x-show="(s.tags || []).length > 3" class="cfm-badge cfm-badge--muted"
+                    x-text="'+' + ((s.tags || []).length - 3)" :title="(s.tags || []).join(', ')"></span>
             </div>
-            <time class="cfm-card-sub" x-cfm-time="s.timestamp"></time>
-            {# One-click Explorer (packet 1287; text form per developer 2026-08-19) — hidden, not
-               disabled, when the artifact has no Explorer lens (server-authored capability; same
-               gate as the toolbar Explore). #}
-            <button type="button" class="cfm-btn cfm-btn--sm cfm-card-explore"
-                    x-show="_hasCap(s, 'explorer')" @click.stop="openExplorer(s)"
-                    :aria-label="'Open ' + fileName(s) + ' in Explorer'"
-                    title="Open in Explorer">Explorer</button>
+            <div class="cfm-card-bottom">
+              <time class="cfm-card-sub" x-cfm-time="s.timestamp"></time>
+              {# One-click Explorer (packet 1287; text form per developer 2026-08-19) — hidden, not
+                 disabled, when the artifact has no Explorer lens (server-authored capability; same
+                 gate as the toolbar Explore). #}
+              <button type="button" class="cfm-btn cfm-btn--sm cfm-card-explore"
+                      x-show="_hasCap(s, 'explorer')" @click.stop="openExplorer(s)"
+                      :aria-label="'Open ' + fileName(s) + ' in Explorer'"
+                      title="Open in Explorer">Explorer</button>
+            </div>
           </div>
         </template>
       </div>
@@ -491,6 +511,15 @@
                   </span></template>
                 <template x-if="detail.job_name"><span class="cfm-meta-k">Job</span></template>
                 <template x-if="detail.job_name"><span class="cfm-meta-v"><a :href="(window.CFM_PREFIX||'') + '/jobs'" x-text="detail.job_name"></a></span></template>
+                {# Frozen at the Job's acquisition (packet 1438) — never re-derived from today's job/server. #}
+                <template x-if="detail.job_uuid"><span class="cfm-meta-k">Source server</span></template>
+                <template x-if="detail.job_uuid">
+                  <span class="cfm-meta-v">
+                    <span x-text="serverFull(detail.source_server) || 'Not recorded'"
+                          :class="serverFull(detail.source_server) ? '' : 'cfm-muted'"></span>
+                    <template x-if="detail.source_server && detail.source_server.ref && detail.source_server.ref !== 'local'">
+                      <span class="cfm-meta-v--uuid cfm-muted" x-text="' · ' + detail.source_server.ref"></span></template>
+                  </span></template>
                 <template x-if="detail.type !== 'MergedXML'">
                   <span class="cfm-meta-k">Internal name</span></template>
                 <template x-if="detail.type !== 'MergedXML'">
@@ -1685,6 +1714,38 @@ function libraryPage() {
 
     fileName(s) {
       return s.name || s.fm_file;
+    },
+
+    // ── Source server a Job acquired from (packet 1438) — frozen on the record, never re-derived ──
+    serverKnown(s) { const v = (s && s.source_server) || {}; return !!(v.name || v.host); },
+    serverFull(v) {
+      v = v || {};
+      return v.name && v.host ? v.name + ' (' + v.host + ')' : (v.name || v.host || '');
+    },
+    // Two DIFFERENT servers can share a frozen name (one renamed, another given the old name): when
+    // the visible rows hold such a pair, the card adds the host so the cards stay distinguishable.
+    _serverNameCollides(v) {
+      if (!v || !v.name) return false;
+      const all = (this.rows || []).concat(this._selRows ? this._selRows() : []);
+      return all.some(r => {
+        const o = r.source_server || {};
+        return o.name === v.name && ((o.ref || '') !== (v.ref || '') || (o.host || '') !== (v.host || ''));
+      });
+    },
+    serverLabel(s) {
+      const v = (s && s.source_server) || {};
+      if (!this.serverKnown(s)) return 'Server not recorded';
+      if (!v.name) return v.host;
+      return this._serverNameCollides(v) && v.host ? v.name + ' · ' + v.host : v.name;
+    },
+    serverTitle(s) {
+      return this.serverKnown(s)
+        ? 'Source server: ' + this.serverFull(s.source_server)
+        : 'This artifact predates source-server recording — its server is unknown';
+    },
+    indexTip(s) {
+      if (this._indexPending(s)) return this._indexSoft(s) ? 'I — Indexing, taking longer, no recent update' : 'I — Queued for indexing';
+      return 'I — Indexed for search';
     },
 
     // ── Card type → glyph/colour ──────────────────────────────────────────────
