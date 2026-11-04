@@ -263,6 +263,14 @@ def _dead_custom_functions(result: "ParseResult", xref: "XRefGraph") -> set[str]
         except ET.ParseError:
             pass
 
+    # Script formulas are read from the stream the caller panel projects, so a listed caller
+    # always means not unused; an unresolvable source or ambiguous target can still be used
+    # with no caller listed, the safer way to be wrong. "Used" means referenced in stored script content, which
+    # includes disabled steps; it is not a claim the call executes.
+    for detail in (getattr(xref, "script_edge_details", None) or ()):
+        if detail.get("type") == "ScriptCFCall":
+            called.add(detail.get("name", "").lower())
+
     # A CF formula names its target and nothing else — FileMaker supplies no
     # identifier there — so this stays name-matched by construction (the
     # formula boundary packet 1348 explicitly does not cross). Only the

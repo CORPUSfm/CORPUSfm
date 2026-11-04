@@ -1172,6 +1172,11 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
     script_navigates_layouts: dict[str, list[str]] = defaultdict(list)
     script_navigates_tos:     dict[str, list[str]] = defaultdict(list)
     script_edge_details:      list = []
+    # lowercase display name -> display name. Formula text names a custom function as
+    # text and in any casing; only a catalog name turns a parsed name into a call.
+    script_cf_names = {_display_name(k).lower(): _display_name(k)
+                       for k, x in (result.section_xml or {}).get("CustomFunctionsCatalog", {}).items()
+                       if "isFolder=" not in (x or "") and "isSeparatorItem=" not in (x or "")}
 
     for _src_uuid, _src_id, script_name, xml_str in _script_fragments(result):
         try:
@@ -1347,6 +1352,9 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
 
             # Fields named inside step <Text> calculation slots are always READS;
             # ExecuteSQL() table references are the SQL blind spot, surfaced here.
+            # Only a Calculation's own Text is a formula, so only that can call a custom
+            # function: Insert Text content and comment text are stored words, not calls.
+            formula_texts = {id(t) for c in step.iter("Calculation") for t in c.findall("Text")}
             for text_el in step.iter("Text"):
                 txt = text_el.text or ""
                 if not txt.strip():
@@ -1360,9 +1368,17 @@ def build_xref_graph(result: "ParseResult") -> XRefGraph:
                         sql_seen.add(sql_tbl)
                         script_sql_tables[script_name].append(sql_tbl)
                 try:
-                    refs = analyze(_ADDON_CMT_LF_PAT.sub(r'\1\n', txt)).field_refs
+                    parsed = analyze(_ADDON_CMT_LF_PAT.sub(r'\1\n', txt))
+                    refs, cf_candidates = parsed.field_refs, parsed.func_calls + parsed.bare_names
                 except Exception:
-                    refs = []
+                    refs, cf_candidates = [], []
+                if id(text_el) in formula_texts:
+                    for candidate in cf_candidates:
+                        cf_name = script_cf_names.get(candidate.lower())
+                        if cf_name:
+                            # A formula names its function as text — the formula boundary.
+                            _edge("ScriptCFCall", "CustomFunctionsCatalog", name=cf_name,
+                                  kind="formula-name")
                 for fr in (str(r) for r in refs):
                     if "::" not in fr:
                         continue

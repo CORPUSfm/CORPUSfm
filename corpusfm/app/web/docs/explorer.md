@@ -39,8 +39,16 @@ tab is selected, and each result names the file it belongs to. It always searche
 and their ordinary text: field definitions and calculations, custom-function formulas, value
 lists, layouts and the rest.
 
-Script contents are split into two kinds you control with **search options** — the gear at the
-right end of the search box:
+**Search options** — the gear at the right end of the search box — set how it matches and where it
+looks. Matching has two choices:
+
+- **Exact** — the default. Finds the characters you typed, in that order, anywhere in the text.
+  Capitals don't matter; spaces inside your search and punctuation do. `Timestamp` finds a longer function name and
+  the word inside a formula. A result whose whole name is your query comes first.
+- **Fuzzy** — also finds close misspellings and similar text, anywhere in the text, so it can
+  return things that don't contain what you typed.
+
+Script contents are split into two kinds you can search:
 
 - **Comments** — on by default. Finds words in script comments.
 - **Script steps** — off by default. Turn it on to find scripts that use a step, or a word in a
@@ -52,9 +60,11 @@ Each result says what matched (**Name**, **Text**, **Comment**, **Script step** 
 written inside another step's calculation also counts as a script-step match. It does not prove
 the step runs, and a disabled step still matches. A very long script-step value, over 2,000
 characters, shows as a size marker and is not searched. A script whose steps can't be told apart
-is searched as a whole only with Script steps on. Close misspellings are found too, anywhere in
-the text. The options reset each time you open an Explorer. Choosing a result opens
-that object; it doesn't jump to the matching line.
+is searched as a whole only with Script steps on. The options reset each time you open an Explorer.
+Choosing a result opens that object; it doesn't jump to the matching line.
+
+The list shows at most 200 results. Exact tells you the full count when there are more. Fuzzy stops
+early, so it says more may exist; narrow the search or use Exact to see them.
 
 ## Cross-references
 
@@ -72,6 +82,13 @@ One caveat worth knowing: in a solution that uses **add-ons**, some add-on scrip
 workers called only by other add-on scripts under UUID names, which can look like dead ends
 from the host file alone. [Merging the add-on](/docs/merge) resolves those names so the
 analysis is accurate.
+
+A custom function counts as used when a script calculation, field, layout, custom menu or another
+custom function names it. That means it is referenced in stored content, not that it runs: a call
+in a disabled step counts, and a call built as text for `Evaluate` can't be seen. Outside scripts,
+a function called with no arguments and no parentheses may not be recognized yet, so treat Unused
+as a prompt to look rather than proof. References are recorded when a file is ingested, so
+re-ingest an older artifact and generate a new Explorer to pick up script calls.
 
 ## The relationship graph
 

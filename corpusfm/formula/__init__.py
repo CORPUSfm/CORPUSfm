@@ -89,6 +89,10 @@ def _scan_refs_from_tokens(
     toks = [t for t in tokenize(formula, resilient=True)
             if t.type not in (TT.COMMENT, TT.EOF)]
     seen = {(f.table, f.field) for f in refs.field_refs}
+    # Without a tree a binding is known only by its shape, so `name =` anywhere disqualifies
+    # that name: losing a call here is preferable to inventing one from a Let variable.
+    bound = {t.value.lower() for t, n in zip(toks, toks[1:])
+             if t.type is TT.IDENT and n.type is TT.EQ}
     for idx, tok in enumerate(toks):
         if tok.type is TT.FIELD_REF and "::" in tok.value:
             table, _, fld = tok.value.partition("::")
@@ -97,3 +101,12 @@ def _scan_refs_from_tokens(
                 refs.field_refs.append(FieldRef(table, fld))
         elif tok.type is TT.IDENT and idx + 1 < len(toks) and toks[idx + 1].type is TT.LPAREN:
             refs.func_calls.append(tok.value)
+        elif (tok.type is TT.IDENT and tok.value.lower() not in bound
+              and not _in_get_selector(toks, idx)):
+            refs.bare_names.append(tok.value)
+
+
+def _in_get_selector(toks: list, idx: int) -> bool:
+    """Whether the identifier at idx is the keyword argument of a Get ( … ) call."""
+    return (idx >= 2 and toks[idx - 1].type is TT.LPAREN
+            and toks[idx - 2].type is TT.IDENT and toks[idx - 2].value.lower() == "get")

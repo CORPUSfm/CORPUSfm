@@ -21,6 +21,10 @@ _DYNAMIC_FUNCS = frozenset({
 # ValueListItems(fileName; valueListName) — second arg is a VL name string.
 _VL_FUNC = "valuelistitems"
 
+# Arguments from this position on are FileMaker keywords, not expressions, even though they
+# parse as bare names: Get ( ScriptParameter ), TextStyleAdd ( x ; Bold ).
+_KEYWORD_ARGS_FROM = {"get": 0, "textstyleadd": 1, "textstyleremove": 1}
+
 
 @dataclass
 class DynamicRef:
@@ -37,6 +41,9 @@ class FormulaRefs:
     vl_refs:      list[str]        = field(default_factory=list)  # from ValueListItems
     dynamic_refs: list[DynamicRef] = field(default_factory=list)
     errors:       list[str]        = field(default_factory=list)
+    # Unscoped names no Let/While binds and no keyword position explains. Only a caller that
+    # knows a catalog can say what one is: a zero-argument custom function is written this way.
+    bare_names:   list[str]        = field(default_factory=list)
 
 
 def _walk(
@@ -57,6 +64,9 @@ def _walk(
         # reference when a TableOccurrenceReference supplies the implicit TO context.
         if implicit_to and node.scope == "" and node.name not in let_bound:
             refs.field_refs.append(FieldRef(implicit_to, node.name))
+        # FileMaker names are case-insensitive, so a binding shadows every casing of its name.
+        if node.scope == "" and node.name.lower() not in {b.lower() for b in let_bound}:
+            refs.bare_names.append(node.name)
 
     elif isinstance(node, (StrLit, NumLit, BoolLit, PilcrowLit)):
         pass
@@ -97,8 +107,12 @@ def _walk(
             arg_text = first.value if isinstance(first, StrLit) else ""
             refs.dynamic_refs.append(DynamicRef(node.name, arg_text))
 
-        for arg in node.args:
+        keyword_from = _KEYWORD_ARGS_FROM.get(name_lower)
+        for position, arg in enumerate(node.args):
+            before = len(refs.bare_names)
             _walk(arg, refs, let_bound, implicit_to)
+            if keyword_from is not None and position >= keyword_from:
+                del refs.bare_names[before:]
 
     elif isinstance(node, BinOp):
         # Concat/arithmetic chains are LEFT-nested and can be hundreds deep (a long `a & ¶ & b & …`),

@@ -74,6 +74,9 @@ button:focus-visible,a:focus-visible,input:focus-visible{
 .search-opt{display:flex;align-items:center;gap:.45rem;font-size:.85rem;color:var(--text);cursor:pointer}
 .search-opt input{width:15px;height:15px;accent-color:var(--primary);cursor:pointer}
 .search-opts-note{font-size:.75rem;color:var(--text-dim);line-height:1.3}
+.search-sources-group{display:flex;flex-direction:column;gap:.45rem}
+.search-mode-group{display:flex;flex-direction:column;gap:.3rem;padding-bottom:.35rem;border-bottom:1px solid var(--border)}
+.search-mode-group .search-opts-note{padding-left:calc(15px + .45rem)}
 .icon-btn{display:flex;align-items:center;justify-content:center;width:32px;height:32px;
   background:none;border:none;color:var(--text-3);cursor:pointer;border-radius:6px;flex-shrink:0}
 .icon-btn:hover{color:var(--primary)}

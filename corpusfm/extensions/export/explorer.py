@@ -930,6 +930,8 @@ _XREF_DISPATCH: dict[tuple, tuple] = {
     # only used_in_menus is a new block in the template.
     ("CustomFunctionsCatalog", "CustomFunctionReference", "to"):   ("used_in_cfs", "Used in custom functions"),
     ("CustomFunctionsCatalog", "CustomFunctionReference", "from"): ("calls_cfs", "Calls custom functions"),
+    ("ScriptCatalog", "ScriptCFCall", "from"):           ("calls_cfs", "Calls custom functions"),
+    ("CustomFunctionsCatalog", "ScriptCFCall", "to"):    ("used_in_scripts", "Used in scripts"),
     ("CustomFunctionsCatalog", "FieldCFCall", "to"):     ("used_in_field_calcs", "Used in field calculations"),
     ("CustomFunctionsCatalog", "LayoutCFCall", "to"):    ("used_in_layouts", "Used in layouts"),
     ("CustomFunctionsCatalog", "MenuCFCall", "to"):      ("used_in_menus", "Used in custom menus"),

@@ -875,6 +875,21 @@ def _stage_assemble_items(state: PipelineState) -> None:
                 type="SQLQuery", mode="read", via="sql"))
             continue
 
+        if edge_type == "ScriptCFCall":
+            # Formula text is the only place FileMaker names this target, so it has no
+            # identity to offer. A name more than one function owns yields no edge.
+            to_id = _text_target("CustomFunctionsCatalog", target_name)
+            if to_id:
+                records.append(XRefRecord(
+                    from_id=from_id, from_name=from_name,
+                    to=to_id, to_name=_resolved_name(target_name), type="ScriptCFCall"))
+            else:
+                entry = f"{section}/formula-name:{target_name}"
+                if entry not in _unresolved_seen:
+                    _unresolved_seen.add(entry)
+                    state.unresolved_uuids.append(entry)
+            continue
+
         if edge_type == "FieldReference":
             to_id, field_key = (_formula_field_target(target_name) if kind == "formula-name"
                                 else _structured_field_target(detail))
