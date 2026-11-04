@@ -30,8 +30,8 @@
 ::-webkit-scrollbar-thumb{background:var(--border-2);border-radius:3px}
 ::-webkit-scrollbar-thumb:hover{background:var(--text-dim)}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-  background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden}
-button:focus-visible,a:focus-visible,input:focus-visible{
+  background:var(--bg);color:var(--text);height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+button:focus-visible,a:focus-visible,input:focus-visible,.sr-item:focus-visible,#xref-tab:focus-visible{
   outline:2px solid var(--focus-ring);outline-offset:2px}
 #hdr{background:var(--surface);border-bottom:1px solid var(--border);padding:.6rem 1rem;
   display:flex;align-items:center;gap:1rem;flex-shrink:0}
@@ -132,7 +132,7 @@ button:focus-visible,a:focus-visible,input:focus-visible{
   background:var(--surface);border:1px solid var(--border-2);border-radius:5px;min-width:220px;
   max-width:380px;max-height:300px;overflow-y:auto;padding:.3rem 0;
   box-shadow:0 4px 16px rgba(0,0,0,.35)}
-.recent-item{padding:.35rem .7rem;font-size:.78rem;color:var(--text-2);cursor:pointer;
+.recent-item{display:block;width:100%;text-align:left;background:none;border:none;font-family:inherit;padding:.35rem .7rem;font-size:.78rem;color:var(--text-2);cursor:pointer;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .recent-item:hover{background:var(--surface-hover);color:var(--text)}
 .recent-none{padding:.4rem .7rem;font-size:.78rem;color:var(--text-muted);cursor:default}
@@ -510,15 +510,68 @@ kbd{display:inline-block;background:var(--surface-2);border:1px solid var(--bord
   border-radius:3px;padding:.05rem .35rem;font-size:.75rem;font-family:'SFMono-Regular',Consolas,monospace;
   color:var(--text-2);line-height:1.4}
 
-/* body clips overflow, so a header wider than the window strands its right-hand utility icons. */
-@media (max-width:640px){
-  #hdr{gap:.25rem;padding-left:.5rem;padding-right:.5rem}
-  #hdr h1,#hdr .meta{display:none}
-}
-@media (max-width:600px){
-  #hdr-wordmark-dark,#hdr-wordmark-light,[data-theme="light"] #hdr-wordmark-light{display:none}
-  #search-wrap{min-width:100px}
-}
+/* Window tiers (packet 1449). body.compact and body.narrow come from isCompact/isNarrow, the one authority.
+   body clips overflow, so a header wider than the window would strand its right-hand controls. */
+#browse-bar,#drawer-hdr,#more-btn,.util-label{display:none}
+#hdr-more,#hdr-utils{display:contents}
+#drawer-scrim{position:fixed;inset:0;z-index:299;background:rgba(0,0,0,.45)}
+#browse-btn{display:flex;align-items:center;gap:.35rem;flex:none;background:var(--surface-2);color:var(--text);
+  border:1px solid var(--border-2);border-radius:4px;padding:.35rem .6rem;font-size:.82rem;line-height:1;cursor:pointer}
+#browse-btn:hover{color:var(--primary);border-color:var(--primary)}
+#browse-context{display:flex;align-items:center;gap:.3rem;flex:1;min-width:0;font-size:.78rem;color:var(--text-dim)}
+.browse-file{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.browse-sep,.browse-sec{flex:none;white-space:nowrap}
+.browse-sec{color:var(--text)}
+#detail-title{outline:none}
+.drawer-heading{flex:1;min-width:0}
+#drawer-title{font-size:.95rem;font-weight:600;color:var(--text)}
+.drawer-meta{font-size:.72rem;color:var(--text-dim);overflow-wrap:anywhere;line-height:1.3}
+
+body.compact #hdr{gap:.4rem;padding-left:.5rem;padding-right:.5rem}
+body.compact #browse-bar{display:flex;align-items:center;gap:.5rem;flex-shrink:0;min-width:0;padding:.3rem .5rem;
+  background:var(--surface);border-bottom:1px solid var(--border)}
+body.compact #resize-h,body.compact #resize-xref{display:none!important}
+/* visibility, not transform or display: the list keeps its scroll position while closed, and the
+   scrollIntoView that follows navigation cannot scroll an ancestor to reach an off-canvas drawer. */
+body.compact #sidebar{position:fixed;top:0;bottom:0;left:0;z-index:300;width:min(88vw,360px)!important;
+  visibility:hidden;border-right:1px solid var(--border-2);box-shadow:0 0 24px rgba(0,0,0,.35)}
+body.compact #sidebar.open{visibility:visible}
+body.compact #drawer-hdr{display:flex;align-items:flex-start;gap:.5rem;flex-shrink:0;padding:.5rem .5rem .5rem .75rem;
+  background:var(--surface);border-bottom:1px solid var(--border)}
+body.compact #file-tabs{max-height:20vh;overflow-y:auto}
+body.compact #sec-tabs{max-height:32vh;overflow-y:auto}
+body.compact .item-btn,body.compact .folder-btn{padding-top:.5rem;padding-bottom:.5rem}
+body.compact #recent-dropdown{left:0;right:auto;min-width:0;width:min(320px,calc(100vw - 7rem))}
+body.compact .search-opts-btn[data-tip]:hover::after,body.compact .search-opts-btn[data-tip]:focus-visible::after{
+  white-space:normal;width:220px}
+/* The References rail would take its width from the object, so it stacks above it instead. */
+body.compact #detail{flex-direction:column}
+body.compact #xref-tab{width:auto;flex-direction:row;align-items:center;padding:.25rem .75rem;flex-shrink:0;
+  border-bottom:1px solid var(--border)}
+body.compact .xref-tab-icon{width:20px;height:20px}
+body.compact .xref-tab-label{writing-mode:horizontal-tb;font-size:.8rem}
+body.compact #detail-xref{width:auto!important;max-height:38vh;border-right:none;border-bottom:1px solid var(--border)}
+body.compact #detail-scroll{min-height:0;padding:.6rem .75rem}
+body.compact #detail-tabs,body.compact #graph-toolbar{flex-wrap:wrap}
+/* A wide table or block scrolls in its own frame; the title and tabs stay put. */
+body.compact #detail-code>*,body.compact #detail-header{min-width:0;overflow-x:auto}
+body.compact #detail-tabs{overflow-x:visible}
+
+body.narrow #hdr{flex-wrap:wrap;row-gap:.35rem}
+body.narrow #hdr h1,body.narrow #hdr .meta,body.narrow #hdr-wordmark-dark,
+body.narrow #hdr-wordmark-light,[data-theme="light"] body.narrow #hdr-wordmark-light{display:none}
+body.narrow #stats-btn{margin-left:auto}
+body.narrow #search-wrap,body.narrow #search-wrap.search-wrap--clear{order:1;flex:1 0 100%;min-width:0}
+body.narrow .search-group{flex:1 1 0}
+body.narrow #search-input{flex:1 1 auto;width:0;min-width:0}
+body.narrow #hdr-more{display:block;position:relative;flex:none}
+body.narrow #more-btn{display:flex}
+body.narrow #hdr-utils{display:none;position:absolute;top:calc(100% + 6px);right:0;z-index:210;min-width:200px;
+  flex-direction:column;padding:.3rem;background:var(--surface);border:1px solid var(--border-2);border-radius:5px;
+  box-shadow:0 4px 16px rgba(0,0,0,.35)}
+body.narrow #hdr-utils.open{display:flex}
+body.narrow #hdr-utils .icon-btn{width:100%;height:40px;justify-content:flex-start;gap:.6rem;padding:0 .6rem}
+body.narrow .util-label{display:inline;font-size:.82rem;color:var(--text)}
 
 /* Statistics page (packet 1446) */
 #stats-page{flex:1;overflow-y:auto;padding:1rem;min-width:0}

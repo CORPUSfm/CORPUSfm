@@ -10,7 +10,7 @@
 <style>__CORPUSFM_CSS__</style>
 <script>(function(){try{var t=localStorage.getItem('fmc_theme');if(t==='light')document.getElementById('fmc-root').dataset.theme='light';}catch(e){}})()</script>
 </head>
-<body x-data="fmExplorer" x-init="init()" @keydown.window="handleKeydown($event)" :class="{'graph-fs': graphFullscreen}">
+<body x-data="fmExplorer" x-init="init()" @keydown.window="handleKeydown($event)" :class="{'graph-fs': graphFullscreen, compact: isCompact, narrow: isNarrow}">
 
 <div id="splash">
   <div id="splash-wordmark">__CORPUSFM_WORDMARK__</div>
@@ -19,7 +19,7 @@
   <div id="splash-bar-wrap"><div id="splash-bar"></div></div>
 </div>
 
-<div id="hdr">
+<div id="hdr" :inert="!!drawerOpen">
   <div id="hdr-wordmark-dark">__CORPUSFM_NODE_ICON__</div>
   <div id="hdr-wordmark-light">__CORPUSFM_HDR_WM_LIGHT__</div>
   <h1>Explorer</h1>
@@ -29,16 +29,18 @@
       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
       Back
     </button>
-    <div style="position:relative">
-      <button type="button" class="nav-btn" @click="showRecent=!showRecent" title="Recently visited">
+    <div style="position:relative"
+         @focusout="if (showRecent && $event.relatedTarget && !$el.contains($event.relatedTarget)) showRecent=false">
+      <button type="button" id="recent-btn" class="nav-btn" @click="showRecent=!showRecent" title="Recently visited"
+              :aria-expanded="showRecent ? 'true' : 'false'" aria-controls="recent-dropdown">
         Recent
         <svg class="nav-chevron" :class="{open: showRecent}" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
       </button>
       <div id="recent-dropdown" x-show="showRecent" @click.outside="showRecent=false">
         <div x-show="recentItems.length===0" class="recent-none">No history yet.</div>
         <template x-for="(h, i) in recentItems" :key="i">
-          <div class="recent-item" @click="navigateToHistory(h)"
-               x-text="(appData.files.length > 1 ? h.fk + ' › ' : '') + h.display"></div>
+          <button type="button" class="recent-item" @click="navigateToHistory(h)"
+               x-text="(appData.files.length > 1 ? h.fk + ' › ' : '') + h.display"></button>
         </template>
       </div>
     </div>
@@ -90,23 +92,62 @@
           :class="{active: statsOpen && !isSearching}" :aria-pressed="(statsOpen && !isSearching) ? 'true' : 'false'">
     <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M8 17v-5"/><path d="M13 17V7"/><path d="M18 17v-8"/></svg>
   </button>
-  <button class="icon-btn" type="button" @click="toggleTheme()"
+  <!-- Packet 1449: the same buttons, inline until the narrow tier makes #hdr-utils a menu. display:contents
+       keeps this wrapper out of the wider layouts, so there is one copy of each control and of its state. -->
+  <div id="hdr-more" @click.outside="moreOpen && closeMore()"
+       @focusout="if (moreOpen && $event.relatedTarget && !$el.contains($event.relatedTarget)) closeMore()">
+  <button id="more-btn" class="icon-btn" type="button" @click="moreOpen=!moreOpen" title="More actions" aria-label="More actions"
+          :aria-expanded="moreOpen ? 'true' : 'false'" aria-controls="hdr-utils">
+    <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+  </button>
+  <div id="hdr-utils" :class="{open: moreOpen}">
+  <button id="theme-btn" class="icon-btn" type="button" @click="toggleTheme(); closeMore(true)"
           :title="darkMode ? 'Switch to light mode' : 'Switch to dark mode'"
           aria-label="Toggle light/dark mode">
     <svg x-show="darkMode" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
     <svg x-show="!darkMode" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+    <span class="util-label" x-text="darkMode ? 'Light mode' : 'Dark mode'"></span>
   </button>
   <button id="about-btn" class="icon-btn" type="button" x-show="!!currentFileObj.about"
-          @click="showAbout=true" title="About this snapshot">
+          @click="showAbout=true; closeMore()" title="About this snapshot" aria-label="About this snapshot">
     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+    <span class="util-label">About this snapshot</span>
   </button>
-  <button id="save-btn" class="icon-btn" type="button" onclick="_savePage()" title="Save As…">
+  <button id="save-btn" class="icon-btn" type="button" onclick="_savePage()" @click="closeMore(true)" title="Save As…" aria-label="Save As…">
     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+    <span class="util-label">Save As…</span>
   </button>
+  </div>
+  </div>
 </div>
 
+<!-- Compact windows (packet 1449): the way back to browsing, and which file and section this is. -->
+<div id="browse-bar" :inert="!!drawerOpen">
+  <button id="browse-btn" type="button" @click="openDrawer()" aria-haspopup="dialog"
+          :aria-expanded="drawerOpen ? 'true' : 'false'" aria-controls="sidebar">
+    <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></svg>
+    Browse
+  </button>
+  <div id="browse-context">
+    <span class="browse-file" x-show="!isSearching" x-text="currentFileObj.file_key" :title="currentFileObj.file_key"></span>
+    <span class="browse-sep" x-show="!isSearching" aria-hidden="true">›</span>
+    <span class="browse-sec" x-text="browseContextLabel"></span>
+  </div>
+</div>
+<div id="drawer-scrim" x-show="drawerOpen" x-cloak @click="closeDrawer()"></div>
+
 <div id="ws">
-  <div id="sidebar">
+  <div id="sidebar" :class="{open: drawerOpen}" :role="isCompact ? 'dialog' : null"
+       :aria-modal="isCompact ? 'true' : null" :aria-labelledby="isCompact ? 'drawer-title' : null">
+    <div id="drawer-hdr">
+      <div class="drawer-heading">
+        <h2 id="drawer-title">Browse</h2>
+        <div class="drawer-meta" x-text="currentFileMeta"></div>
+      </div>
+      <button id="drawer-close" class="icon-btn" type="button" @click="closeDrawer()" title="Close" aria-label="Close browser">
+        <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
     <div id="file-tabs">
       <template x-for="(f, idx) in appData.files" :key="f.file_key">
         <button class="file-btn" :class="{active: currentFileIdx===idx}"
@@ -115,7 +156,7 @@
     </div>
     <div id="sec-tabs">
       <template x-for="[key, label, count, dead_count] in currentFileObj.section_order" :key="key">
-        <button class="sec-btn" :class="{active: currentSection===key && !isSearching}"
+        <button class="sec-btn" :class="{active: currentSection===key && browseListShown}"
                 @click="selectSection(key)">
           <span class="sec-tile-count" x-text="count"></span>
           <span class="sec-tile-name" x-text="label"></span>
@@ -123,7 +164,7 @@
         </button>
       </template>
     </div>
-    <div id="item-filter" x-show="!isSearching">
+    <div id="item-filter" x-show="browseListShown">
       <div class="filter-row">
         <div class="filter-wrap">
           <input type="text" placeholder="filter items… ( / )" x-model="filterQuery"
@@ -161,7 +202,7 @@
                 @click="flipAll = !flipAll">⇄ Flip sides</button>
       </div>
     </div>
-    <div id="item-list" x-show="!isSearching">
+    <div id="item-list" x-show="browseListShown">
       <template x-for="node in displayItems" :key="(node.is_header ? 'h:'+node.header : node.name) + '_' + node.depth">
         <button
           :class="node.is_header ? 'tree-group-hdr'
@@ -182,7 +223,7 @@
     </div>
   </div>
   <div id="resize-h"></div>
-  <div id="main">
+  <div id="main" :inert="!!drawerOpen">
     <!-- Search results panel -->
     <div id="search-panel" x-show="isSearching">
       <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.5rem"
@@ -190,7 +231,9 @@
       <template x-for="(hit, i) in searchResults" :key="i">
         <!-- Every result names its owning file and section (packet 1408) so a hit from another
              loaded file is never mistaken for an object in the selected one. -->
-        <div class="sr-item" @click="navigateExact(hit.fileIdx, hit.section, hit.item)"
+        <div class="sr-item" role="button" tabindex="0" @click="navigateExact(hit.fileIdx, hit.section, hit.item)"
+             @keydown.enter="openSearchHit(hit)"
+             @keydown.space.prevent="openSearchHit(hit)"
              :data-file-key="hit.file_key" :data-section="hit.section" :data-item="hit.item">
           <div class="sr-sec"><span class="sr-file" x-text="hit.file_key"></span> · <span x-text="sectionLabelIn(hit.fileIdx, hit.section)"></span></div>
           <div class="sr-name" x-text="hit.display_name || hit.item"></div>
@@ -383,7 +426,10 @@
       <!-- XRef left-edge tab (packet 1286): panel-toggle icon + vertical References·count label -->
       <div id="xref-tab"
            x-show="hasXRef && detailTab !== 'graph'"
+           role="button" tabindex="0" :aria-expanded="xrefOpen ? 'true' : 'false'"
            @click="xrefOpen = !xrefOpen"
+           @keydown.enter="xrefOpen = !xrefOpen"
+           @keydown.space.prevent="xrefOpen = !xrefOpen"
            :class="{open: xrefOpen}"
            :title="xrefOpen ? 'Close references' : 'Open references'">
         <svg class="xref-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -393,7 +439,7 @@
           <rect class="xref-tab-fill" x="4.2" y="5.2" width="4.6" height="13.6" rx="1"
                 fill="currentColor" stroke="none"/>
         </svg>
-        <span class="xref-tab-label" x-show="!xrefOpen"
+        <span class="xref-tab-label" x-show="!xrefOpen || isCompact"
               x-text="'References' + (xrefCount ? ' · ' + xrefCount : '')"></span>
       </div>
 
@@ -678,10 +724,10 @@
         This addon snapshot was imported without a locale file — object names appear as UUIDs.
         Re-import using the <code>.fmaddon</code> archive to see readable names.
       </div>
-      <div x-show="!currentItem" id="empty">Select an item from the sidebar.</div>
+      <div x-show="!currentItem" id="empty" x-text="isCompact ? 'Choose Browse to select an item.' : 'Select an item from the sidebar.'"></div>
       <div id="detail-main" x-show="currentItem">
         <div id="detail-header">
-          <h2 x-text="relHeaderText"></h2>
+          <h2 id="detail-title" tabindex="-1" x-text="relHeaderText"></h2>
         </div>
         <div id="detail-body">
           <div id="detail-code">
@@ -1133,6 +1179,8 @@ function _xmlTree(xmlStr) {
 
 __CORPUSFM_FMHL_JS__
 __CORPUSFM_GRAPH_JS__
+const _TIER_COMPACT = window.matchMedia('(max-width:900px)');
+const _TIER_NARROW = window.matchMedia('(max-width:760px)');
 document.addEventListener('alpine:init', () => {
   const _statsRowCache = new Map();
   const _statsVisibleCache = {key: null, rows: []};
@@ -1169,6 +1217,11 @@ document.addEventListener('alpine:init', () => {
     _history: [],
     _histIdx: -1,
     showRecent: false,
+    // Packet 1449: the only authority for the window tiers; CSS keys on the body classes they set.
+    isCompact: _TIER_COMPACT.matches,
+    isNarrow: _TIER_NARROW.matches,
+    drawerOpen: false,   // only ever true while isCompact
+    moreOpen: false,     // only ever true while isNarrow
     _graphCurrentFile: -1,
     _graphTab: 'cluster',
     _graphCache: {},
@@ -1901,9 +1954,83 @@ document.addEventListener('alpine:init', () => {
       this.searchResults = [];
       this._pushHistory();
       this._navigateNoHistory(h.fileIdx, h.section, h.item_key);
+      this.$nextTick(() => document.getElementById('recent-btn')?.focus({ preventScroll: true }));
+    },
+
+    get browseListShown() {
+      return !this.isSearching || this.drawerOpen;
+    },
+    get browseContextLabel() {
+      if (this.isSearching) return 'Search results';
+      if (this.statsOpen) return 'Statistics';
+      return this.sectionLabelIn(this.currentFileIdx, this.currentSection);
+    },
+    _bindWindowTiers() {
+      if (this._tiersBound) return;
+      this._tiersBound = true;
+      const apply = () => {
+        this.isCompact = _TIER_COMPACT.matches;
+        this.isNarrow = _TIER_NARROW.matches;
+        if (!this.isCompact) this.drawerOpen = false;
+        if (!this.isNarrow) this.moreOpen = false;
+        this.$nextTick(() => this._rescueFocus());
+      };
+      _TIER_COMPACT.addEventListener('change', apply);
+      _TIER_NARROW.addEventListener('change', apply);
+    },
+    // A tier change can hide the focused control; the keyboard user must not be left on something invisible.
+    _rescueFocus() {
+      const shown = el => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+      const active = document.activeElement;
+      if (!active || active === document.body || shown(active)) return;
+      const menu = document.getElementById('more-btn');
+      const target = [active.closest('#hdr-more') && menu, document.getElementById('browse-btn'), menu,
+                      document.querySelector('#item-list .item-btn.active'), document.getElementById('search-input')].find(shown);
+      if (target) target.focus(); else active.blur();
+    },
+    openDrawer(focusFilter = false) {
+      if (!this.isCompact) return;
+      this.graphFullscreen = false;
+      this.showRecent = false;
+      this.showShortcuts = false;
+      this.showAbout = false;
+      this.moreOpen = false;
+      this.searchOptsOpen = false;
+      this.drawerOpen = true;
+      this.$nextTick(() => {
+        if (focusFilter) { this.$refs.filterInput?.focus(); return; }
+        const list = document.getElementById('item-list');
+        const item = document.querySelector('#item-list .item-btn.active');
+        const inView = item && list && item.getBoundingClientRect().top >= list.getBoundingClientRect().top
+          && item.getBoundingClientRect().bottom <= list.getBoundingClientRect().bottom;
+        (inView ? item : document.getElementById('drawer-close')).focus({ preventScroll: true });
+      });
+    },
+    closeDrawer(focusId = 'browse-btn') {
+      if (!this.drawerOpen) return;
+      this.drawerOpen = false;
+      this.$nextTick(() => document.getElementById(focusId)?.focus({ preventScroll: true }));
+    },
+    // By keyboard the chosen row disappears with the results, so focus goes on to what it opened.
+    openSearchHit(hit) {
+      this.navigateExact(hit.fileIdx, hit.section, hit.item);
+      this.$nextTick(() => document.getElementById('detail-title')?.focus({ preventScroll: true }));
+    },
+    closeMore(returnFocus = false) {
+      if (!this.moreOpen) return;
+      this.moreOpen = false;
+      if (returnFocus) document.getElementById('more-btn')?.focus();
     },
 
     init() {
+      this._bindWindowTiers();
+      this.$watch('showAbout', open => {
+        if (open) return;
+        this.$nextTick(() => {
+          const menu = document.getElementById('more-btn');
+          (menu.getClientRects().length ? menu : document.getElementById('about-btn')).focus();
+        });
+      });
       this._fuseMap = {};   // per-(file, source) indexes, built on first use by _fuseFor
       this.currentItem = this._firstSelectableItem(this.currentSection);
       this.sortMode = this._defaultSort(this.currentSection);
@@ -1988,6 +2115,10 @@ document.addEventListener('alpine:init', () => {
       if (this.currentSection === 'LayoutCatalog' && this.detailTab === 'rendered'
           && this.currentItemData?.objects) this.detailTab = 'objects';
       this._addHist(this.currentFileIdx, this.currentSection, name);
+      if (this.drawerOpen) {
+        if (this.isSearching) this.clearSearch();
+        this.closeDrawer('detail-title');
+      }
       this.$nextTick(() => {
         const el = document.querySelector('#item-list [data-item="' + CSS.escape(name) + '"]');
         if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -2580,8 +2711,18 @@ document.addEventListener('alpine:init', () => {
         if (this.searchOptsOpen) { this.toggleSearchOptions(false, true); return; }
         if (this.showShortcuts) { this.showShortcuts = false; return; }
         if (this.showAbout) { this.showAbout = false; return; }
+        if (this.moreOpen) { this.closeMore(true); return; }
+        if (this.drawerOpen) {
+          if (e.target === this.$refs.filterInput && this.filterQuery) this.filterQuery = '';
+          else this.closeDrawer();
+          return;
+        }
         if (this.graphFullscreen) { this.graphFullscreen = false; return; }
-        if (this.showRecent) { this.showRecent = false; return; }
+        if (this.showRecent) {
+          this.showRecent = false;
+          if (document.getElementById('recent-dropdown').contains(e.target)) document.getElementById('recent-btn').focus();
+          return;
+        }
         if (this.statsOpen && !this.isSearching) {
           if (isInput && e.target.closest('#stats-page')) {
             if (e.target.id === 'stats-filter' && this.stats.filter) this.setStatsFilter('');
@@ -2593,7 +2734,7 @@ document.addEventListener('alpine:init', () => {
             return;
           }
         }
-        if (this.filterQuery) {
+        if (this.filterQuery && !this.isCompact) {
           this.filterQuery = '';
           this.$refs.filterInput?.focus();
         } else if (this.isSearching) {
@@ -2604,19 +2745,22 @@ document.addEventListener('alpine:init', () => {
         return;
       }
       if (isInput) return;
+      // The drawer is modal: only the list keys it serves reach through it.
+      if (this.drawerOpen && !['ArrowDown', 'ArrowUp', '/'].includes(e.key)) return;
       if ((e.key === 'Alt' || e.altKey) && e.key === 'ArrowLeft') {
         e.preventDefault();
         this.goBack();
         return;
       }
       // List shortcuts act on the object list behind the page, so they would silently leave Statistics.
-      if (this.statsOpen && e.key !== '?') return;
+      if (this.statsOpen && !this.drawerOpen && e.key !== '?') return;
       if (e.key === '/') {
         e.preventDefault();
-        this.$refs.filterInput?.focus();
+        if (this.isCompact && !this.drawerOpen) this.openDrawer(true);
+        else this.$refs.filterInput?.focus();
         return;
       }
-      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !this.isSearching) {
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && this.browseListShown) {
         e.preventDefault();
         const items = this.displayItems.filter(n => !n.is_separator && !n.is_folder);
         if (!items.length) return;
@@ -2628,6 +2772,8 @@ document.addEventListener('alpine:init', () => {
         this.$nextTick(() => {
           const el = document.querySelector('#item-list [data-item="' + CSS.escape(next.name) + '"]');
           if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          // In the modal drawer the row is what Enter acts on, so focus has to travel with the highlight.
+          if (el && this.drawerOpen) el.focus({ preventScroll: true });
         });
         return;
       }

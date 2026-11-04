@@ -66,6 +66,16 @@ Choosing a result opens that object; it doesn't jump to the matching line.
 The list shows at most 200 results. Exact tells you the full count when there are more. Fuzzy stops
 early, so it says more may exist; narrow the search or use Exact to see them.
 
+## Narrow windows
+
+Explorer keeps every action on a small window or phone. Below about 900 pixels wide, the selected object takes
+the whole width and **Browse**, above it, opens files, sections and the object list. Choosing an object closes
+Browse; reopening returns you to the same section, filter and place in the list. Press Escape or the close
+button to leave without choosing. References open above the object instead of beside it.
+
+Below about 760 pixels, search takes its own row, and theme, About and Save move to the **⋯** menu. Statistics
+stays in the toolbar.
+
 ## Statistics
 
 The chart icon at the top right, just after the search box, opens **Statistics** for the selected file; switching file
