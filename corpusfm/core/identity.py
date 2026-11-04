@@ -260,5 +260,19 @@ class CatalogIndex:
         return self.resolve(reference_identity(self.section, ref))
 
 
+def field_context_index(items) -> dict[tuple[str, str], list[str]]:
+    """(base table, field id) → field item ids. A field id is unique only WITHIN its base table, so a
+    bare id lookup is invalid and this pair is the only id route a structured field reference may take.
+    More than one id under a key means the reference cannot be resolved by id."""
+    index: dict[tuple[str, str], list[str]] = {}
+    for item_id, item in items.items():
+        if item.section != "FieldsForTables" or item.is_folder or "::" not in item.xml_key:
+            continue
+        field_id = (item.attributes or {}).get("id", "")
+        if field_id:
+            index.setdefault((item.xml_key.split("::", 1)[0], field_id), []).append(item_id)
+    return index
+
+
 def build_indexes(section_xml: dict, sections: Iterable[str]) -> dict[str, CatalogIndex]:
     return {s: CatalogIndex(s, (section_xml or {}).get(s, {})) for s in sections}

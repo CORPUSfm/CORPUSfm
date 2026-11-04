@@ -69,7 +69,7 @@
     "corpusfm/app/web/docs/artifacts-catalog.md": "8e195cd6e72c5c625b0a8f457bffa8240f3275e9cfab1de557f399ce4ceb4ade",
     "corpusfm/app/web/docs/choose-schema-import-path.md": "af677bdf60b97f8316370ea3883563f3b390ea6072ea4a91bfcd0d46516f54d9",
     "corpusfm/app/web/docs/diff.md": "92f4b3aede6e79e8e52cb0f2cb66af7bcc1a33f9a8b000a7d84bb3d8de4c374c",
-    "corpusfm/app/web/docs/explorer.md": "bcd0ffca2908d71c9a1e780cc29ed50940e2ae38c4e54dc389389a692a0ccde5",
+    "corpusfm/app/web/docs/explorer.md": "60263d80c7650c21896c12ac1e662f1640ad2cffad2ac2c99aaef717e62e3431",
     "corpusfm/app/web/docs/file-materialization.md": "4c8fc39d1c1ac4cfe5eca3b6b9fdbd15eaccebc12147db600b0a81f486f0382a",
     "corpusfm/app/web/docs/git-export.md": "6d6cb318389c6cddfd95b359ef14eb121c311ede5ef84549203cd34ebdfdc6a5",
     "corpusfm/app/web/docs/importing.md": "a1e953fb7b036646e62c8cb9357bfada558d981e4938482a9d20d00e0d9c328c",
@@ -229,7 +229,7 @@
     "corpusfm/core/git_formatter/_exporter.py": "3870bf8bb687ec4be3884edd269835ca4d027d861920df4315a4233b9c4a4411",
     "corpusfm/core/git_formatter/_renderer.py": "ebe72271a68b03ddd389811d35e980da6e1c9efdca770b88d102e93be5071d69",
     "corpusfm/core/git_formatter/registrations.py": "54184495beb7e9fda75508d8a83c25be1b3bf2932243429cbfebee161bffa548",
-    "corpusfm/core/identity.py": "0a385ad7239f94803d9678ab82d6ecfafdf2c3b4083523a797427b95d8633188",
+    "corpusfm/core/identity.py": "8991234bdba4ff5041d60d2e0abc0508c7cdadbe49fe02b242de6ff318c663f7",
     "corpusfm/core/instants.py": "039682d1a183e2eebe0ac1b024e63f495eba1b412362630c18cfd434f07d0a7b",
     "corpusfm/core/layout_bindings.py": "22521922d26dd31f5ec4991d19f5f88d9ec04e6f710d26467ca0f1b69535c90e",
     "corpusfm/core/layout_objects.py": "db9e0098ab411aab30b241ea0b238b23e53cb9b23bdc49410ebcacc10422c22f",
@@ -273,7 +273,7 @@
     "corpusfm/extensions/export/contracts.py": "44586b983070d0bcaacaf522bdbc1576ebbe79e855f4bcb0a0586380530e607c",
     "corpusfm/extensions/export/coverage_gate.py": "7b68c756322b0b1bba21fa164c5ba1c9303ad76039d1a2a988ba8f3ae8630b7b",
     "corpusfm/extensions/export/diff.py": "cc5d48f3796bb4550a2b4b6e1580f6ee9c4866c90b0942f270bf449890fbe987",
-    "corpusfm/extensions/export/explorer.py": "131291b8b100dc4199a1c2386400f875df8f9aab2533a11336fb0bc57a8329ad",
+    "corpusfm/extensions/export/explorer.py": "bdebba6b0d6da0c00e580256cb8e68e2fafb32cd8d294773abb5a709129cd767",
     "corpusfm/extensions/export/patch_build.py": "a4c3da2487163af23a332825fe81a1241b79839aee788de6143b321fa33c863d",
     "corpusfm/extensions/export/patch_capabilities.yaml": "493bb4ee47af57ed23469495e23fbece29c8fd2d8ca25530ee1b3f1432040600",
     "corpusfm/extensions/export/patch_coherence.py": "16122822f897fefafd3e9fcc13b82e2a67afd4b1643194fc5f0a2398b1ba1637",
@@ -281,9 +281,10 @@
     "corpusfm/extensions/export/patch_verify.py": "9642a6cd23801ad9f9e1cc1229da689ad7c5f4530abc66fa560337d6f72b2df7",
     "corpusfm/extensions/export/resources/cfm_delete_from_documents.xml": "be2ea725a750f9ae2b889249c58e72c44d4a90310887e690549d33655a2a4a9b",
     "corpusfm/extensions/export/resources/cfm_save_to_documents.xml": "50dda13d06c4f677e06582b249b5db313fa12079be5e5df19335ad04deb7a65e",
+    "corpusfm/extensions/export/statistics.py": "a698d4d67c81d90f7eab1a9a266108e4a3d3895eae489cc4da972c2976237f32",
     "corpusfm/extensions/export/syntax_palettes.py": "d0109a0eee6c32a9720da40929a6c89c9501a059c93f9d1c475859cf8f58032b",
-    "corpusfm/extensions/export/templates/explorer.css": "c1856d7ed798ef97dbe7e1020caf416bf58c27a32f556aa47f9da5c3ed4e75d1",
-    "corpusfm/extensions/export/templates/explorer.html": "a56a874a14ddb224f63f66bb8bac75fb13a42c2d82fd414adbf2fb9e4572edc5",
+    "corpusfm/extensions/export/templates/explorer.css": "fe9574aaa88a8764d91e4c92b643e1f0e73f4217540edf69497fad7cc631641f",
+    "corpusfm/extensions/export/templates/explorer.html": "e47828a4ba4447aee4a94e13f98268373a119c2352e24e0b74941713f02639e2",
     "corpusfm/extensions/export/templates/explorer_graph.js": "b6ba16235725c6d6c7dab4994fa99a4d0614eea2d4e61b709a985e4baf80eda5",
     "corpusfm/extensions/export/templates/explorer_highlight.js": "8121d8b9bee1790e6e519ea594f622480f5cdf4fe9b81fe4a73c0b0eae0c992f",
     "corpusfm/extensions/export/vendor/alpine.min.js": "689f513978d11d69f4d33794f7296c9a586a2e55de79bb447cddbc3f474f9f07",
@@ -297,7 +298,7 @@
     "corpusfm/generation_jobs.py": "59b59d4a6e9c13da1244a8c96d3d3109cd193a7110f1e74deb02feaf0b7cf928",
     "corpusfm/ingestion/__init__.py": "94782b40689ea6c43623ea28e2ffc7234670d7996e8de90ae128eb0266941c6c",
     "corpusfm/ingestion/clip.py": "49c43be5f4b495d84a27306f17d2e98118b2e465531d37d83f66501cdd912193",
-    "corpusfm/ingestion/pipeline.py": "6714754363de0fe2a1ac859be1b14de821dc00553fdf0f2cb9cedc32d8357006",
+    "corpusfm/ingestion/pipeline.py": "bcf9e1d0d19399a59acdd58894691f9a3c35bcc1ab45e110701059a9ff116cca",
     "corpusfm/ingestion/reabsorb.py": "65a9b42234570b6bea35d3c01b0793e9b60f6b61772666e4625d7a1e7b699f75",
     "corpusfm/install.py": "4595573600cab60305f5cdb87ab65c494bf0f71ce2b18fffd9fc7d01d9cb0689",
     "corpusfm/lifecycle/__init__.py": "26ab965c00041c0e8492d8a633b08261e3fd4384bed5bcfc5cf64f528ab90767",
@@ -529,7 +530,7 @@
     "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
     "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
     "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
-    "release-build.txt": "de18e92f824210786d651eda725e0ecbda166d0424355eb9316fb2e79163620f",
+    "release-build.txt": "d070efe0cd3fa9d5dda55b725c2a06ca5fde198d5f4dd126553bc57ea587a8bb",
     "requirements.txt": "de35ad4921dbea3081d2ecf6a9b214bf801806c4103c9c9b6dd0fb6fdea1c08b",
     "scripts/_release_gate_live.py": "335454a6e3e43c5e0375f7524a33a60647a862637e41dcba453cd474ab7d15b5",
     "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
@@ -1772,6 +1773,10 @@
     "corpusfm/extensions/export/resources/cfm_save_to_documents.xml": {
       "class": "exact-copy",
       "owner": "application:corpusfm/extensions/export/resources/cfm_save_to_documents.xml"
+    },
+    "corpusfm/extensions/export/statistics.py": {
+      "class": "exact-copy",
+      "owner": "application:corpusfm/extensions/export/statistics.py"
     },
     "corpusfm/extensions/export/syntax_palettes.py": {
       "class": "exact-copy",
@@ -3258,10 +3263,10 @@
     "profile_sha256": "06202387046b1750fb47d336abdbaf39b707e54300c04a9a63a3ad91f4e58d59",
     "profile_version": 1
   },
-  "release_build": 3154,
+  "release_build": 3158,
   "schema_version": 2,
   "source_commits": {
-    "application": "a45ebe62e970dd7a61aac7d7dc144aa23d70068f",
+    "application": "a27a7d54d8aa2f48cf213fec5fa58394f641dc57",
     "installer": "8525cf6522d2251efa552c3680993cf69ae498a4"
   }
 }

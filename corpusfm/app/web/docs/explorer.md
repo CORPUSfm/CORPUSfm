@@ -66,6 +66,40 @@ Choosing a result opens that object; it doesn't jump to the matching line.
 The list shows at most 200 results. Exact tells you the full count when there are more. Fuzzy stops
 early, so it says more may exist; narrow the search or use Exact to see them.
 
+## Statistics
+
+The chart icon beside the Explorer title opens **Statistics** for the selected file; switching file
+tabs switches the report, and a combined Explorer never adds its files together. Each summary leads
+to a ranked list you can sort and filter, and each row opens the object. **Back** returns to the
+report as you left it. Choosing an object doesn't jump to its step or calculation; the row names it.
+
+These are facts, not judgements: nothing here says a script is too long or an object is a problem.
+
+- **Script length** — every stored step, matching the line numbers on a script, beside the
+  non-comment count. Comments, blank and disabled steps overlap, so they don't add up to the total.
+- **Step size** — characters in each step as fully rendered, including its labels. It isn't raw XML
+  or bytes, and values the renderer hides, such as passwords, aren't counted.
+- **Calculations** — every stored calculation in any object, with where it sits. That includes
+  small ones such as a default repetition of 1, and each one counts even if its text matches another.
+- **Layout objects** — every stored entry, including groups, tab controls, what's inside them and
+  Table View columns, with a breakdown by type.
+- **Relationships** — connected groups of table occurrences, and the fewest jumps between any two you
+  choose. One jump is one relationship, followed in either direction. A table occurrence reaches
+  itself in 0 jumps; two that aren't connected have no path.
+- **References** — targets a reference points at, grouped, with every place that refers to them.
+
+**Reading the References list.** *Not found in snapshot* means this export offered an identity no
+catalog item carries; it doesn't prove the live file lacks it. *Marked Missing* means FileMaker
+itself wrote a Missing marker into a calculation. The rest aren't proof of anything broken: a target
+can be *ambiguous*, have *no target set* (FileMaker stores that for a blank setting too), be *in
+another file* (not checked there) or have a *catalog incomplete*, as in an add-on. Only script, layout,
+value list, table occurrence, field and custom menu references are examined; names inside formulas are
+checked only through FileMaker's own markers, and a reference built at runtime can't be seen. So an
+empty list isn't proof of a clean file, and **Unused** is a different thing and isn't listed here.
+
+Anything that couldn't be read is reported as not measured, never as zero. Statistics come from the
+stored export, so generate a new Explorer to see them; re-ingesting isn't needed.
+
 ## Cross-references
 
 Every object carries its **XRef** — what it uses and what uses it. A script shows the scripts

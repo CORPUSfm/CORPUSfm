@@ -25,6 +25,7 @@ from corpusfm.app.sections import SECTION_ORDER
 from corpusfm.core.filenames import ensure_fmp12
 from corpusfm.core.git_formatter._renderer import DEFAULT_LARGE_THRESHOLD, large_marker
 from corpusfm.core.layout_objects import extract_layout_objects
+from corpusfm.extensions.export.statistics import explorer_statistics, step_facts
 
 if TYPE_CHECKING:
     from corpusfm.artifact import Artifact
@@ -1278,6 +1279,7 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
     # carries its own map but no sidecar was injected.
     _nm: dict = getattr(artifact, "_name_map", None) or getattr(artifact, "name_map", None) or {}
     _schema_ver: str = provenance.catalog_version
+    stat_step_facts: dict = {}
 
     ingested_at = provenance.ingested_at or ""
     generated = datetime.now(timezone.utc)   # ONE instant for both generated_at fields (packet 1418)
@@ -1620,6 +1622,7 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
                             if "com.fmi." in ol:
                                 ol = _s["full_text"].replace("\r\n", "\n").replace("\r", "\n").replace("\n", "¶")
                             _s["one_line"] = ol
+                    stat_step_facts[_item.item_id] = step_facts(steps_list)
                     step_lines: list[str] = []
                     bounded_steps_body = _pool_long_step_parameters(steps_list, long_values, step_lines)
                     # Oversize presentation cap (packet 1282) — annotated AFTER every full_text
@@ -1754,6 +1757,7 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
         "graph":           _build_graph_data_from_artifact(artifact),
         "artifact_type":   artifact.type.value,
         "about":           _about,
+        "statistics":      explorer_statistics(artifact, stat_step_facts),
     }
 
 

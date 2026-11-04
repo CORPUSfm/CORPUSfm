@@ -35,7 +35,7 @@ from corpusfm.artifact import (
     XRefRecord,
     make_item_id,
 )
-from corpusfm.core.identity import (
+from corpusfm.core.identity import (field_context_index,
     ID_KIND, UUID_KIND, CatalogIdentity, build_indexes, identity_key, owner_identity,
     owner_identity_from_xml, reference_identity,
 )
@@ -673,18 +673,9 @@ def _stage_assemble_items(state: PipelineState) -> None:
     #: (section, display name) → item id, ONLY where exactly one logical item owns
     #: that name. For the formula boundary, where FM supplies no identity — never a
     #: last-write-wins dictionary.
-    # (base table, field id) -> field item. A field id is unique only WITHIN its base
-    # table — 108 duplicated field-id groups in MicroK12_dev, 7 in CMP — so a bare
-    # (FieldsForTables, id) lookup is invalid and this is the only id route a
-    # structured field reference may take.
-    _field_by_context: dict = {}
-    for iid, it in items.items():
-        if it.section != "FieldsForTables" or it.is_folder or "::" not in it.xml_key:
-            continue
-        fid = (it.attributes or {}).get("id", "")
-        if fid:
-            _field_by_context.setdefault((it.xml_key.split("::", 1)[0], fid), []).append(iid)
-    _field_by_context = {k: v[0] for k, v in _field_by_context.items() if len(v) == 1}
+    # (base table, field id) -> field item; see `field_context_index`. Measured: 108 duplicated
+    # field-id groups in MicroK12_dev, 7 in CMP.
+    _field_by_context = {k: v[0] for k, v in field_context_index(items).items() if len(v) == 1}
 
     _unique_name_to_id: dict = {}
     for iid, it in items.items():

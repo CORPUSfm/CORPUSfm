@@ -23,6 +23,10 @@
   <div id="hdr-wordmark-dark">__CORPUSFM_NODE_ICON__</div>
   <div id="hdr-wordmark-light">__CORPUSFM_HDR_WM_LIGHT__</div>
   <h1>Explorer</h1>
+  <button id="stats-btn" class="icon-btn" type="button" @click="toggleStatistics()" title="Statistics" aria-label="Statistics"
+          :class="{active: statsOpen && !isSearching}" :aria-pressed="(statsOpen && !isSearching) ? 'true' : 'false'">
+    <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M8 17v-5"/><path d="M13 17V7"/><path d="M18 17v-8"/></svg>
+  </button>
   <div class="meta" x-text="currentFileMeta"></div>
   <div id="nav-btns">
     <button class="nav-btn" type="button" x-show="canGoBack" @click="goBack()" title="Go back (Alt+←)">
@@ -207,8 +211,174 @@
       </div>
     </div>
 
+    <!-- Statistics page (packet 1446): facts for the selected file, from summaries to ranked detail to
+         the object. Nothing here grades an object; unknowns are stated rather than counted as zero. -->
+    <div id="stats-page" x-show="statsOpen && !isSearching" x-cloak>
+      <h2 id="stats-title" tabindex="-1">Statistics <span class="stats-file" x-text="currentFileObj.file_key"></span></h2>
+      <nav class="stats-tabs" aria-label="Statistics categories">
+        <template x-for="t in statsTabs" :key="t[0]">
+          <button type="button" class="stats-tab" :id="'stats-tab-' + t[0]" :class="{active: stats.tab === t[0]}"
+                  :aria-current="stats.tab === t[0] ? 'page' : null" @click="setStatsTab(t[0])" x-text="t[1]"></button>
+        </template>
+      </nav>
+
+      <template x-if="stats.tab === 'overview'">
+        <div class="stats-cards">
+          <template x-for="card in statsOverview" :key="card.tab">
+            <section class="stats-card">
+              <h3><button type="button" class="stats-card-title" @click="setStatsTab(card.tab)" x-text="card.title + ' ›'"></button></h3>
+              <template x-for="line in card.lines" :key="line"><div class="stats-line" x-text="line"></div></template>
+              <template x-if="card.top !== undefined && card.top !== null && statsHasObject(card.top)">
+                <a href="#" class="stats-link" @click.prevent="statsOpenOwner(card.top)" x-text="card.topLabel + ': ' + statsOwnerName(card.top)"></a>
+              </template>
+              <div class="stats-note" x-show="!!card.note" x-text="card.note"></div>
+            </section>
+          </template>
+        </div>
+      </template>
+
+      <template x-if="statsIsTable">
+        <div>
+          <p class="stats-note" x-text="statsDefinition"></p>
+          <template x-for="line in statsCoverage" :key="line"><p class="stats-note stats-coverage" x-text="line"></p></template>
+          <template x-if="statsError"><p class="stats-coverage" x-text="'This category could not be computed: ' + statsError"></p></template>
+          <div x-show="!statsError">
+          <div class="stats-filter">
+            <input type="text" id="stats-filter" placeholder="Filter this list…" aria-label="Filter this list"
+                   :value="stats.filter" @input="setStatsFilter($event.target.value)">
+            <span class="stats-count" role="status" x-text="statsCountLabel"></span>
+          </div>
+          <div class="stats-table-wrap">
+            <table class="stats-table">
+              <thead><tr>
+                <template x-for="c in statsColumns" :key="c.key">
+                  <th scope="col" :class="{num: c.num}" :aria-sort="statsAriaSort(c.key)">
+                    <button type="button" class="stats-sort" @click="setStatsSort(c.key)" x-text="c.label + statsSortMark(c.key)"></button>
+                  </th>
+                </template>
+              </tr></thead>
+              <tbody>
+                <template x-for="row in statsPageRows" :key="row.key">
+                  <tr>
+                    <template x-for="(c, ci) in statsColumns" :key="c.key">
+                      <td :class="{num: c.num}">
+                        <template x-if="ci === 0 && statsHasObject(row.owner)"><a href="#" class="stats-link" @click.prevent="statsOpenOwner(row.owner)" x-text="row.name"></a></template>
+                        <template x-if="ci === 0 && !statsHasObject(row.owner)"><span x-text="row.name"></span></template>
+                        <template x-if="ci !== 0"><span x-text="statsCell(row, c)"></span></template>
+                      </td>
+                    </template>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+          <div class="stats-more" x-show="statsVisibleRows.length > stats.shown">
+            <button type="button" class="stats-more-btn" @click="stats.shown += 100">Show next 100</button>
+            <button type="button" class="stats-more-btn" @click="stats.shown += 1000">Show next 1,000</button>
+          </div>
+          </div>
+        </div>
+      </template>
+
+      <template x-if="stats.tab === 'relationships'">
+        <div>
+          <template x-if="statsRel.error"><p class="stats-coverage" x-text="'This category could not be computed: ' + statsRel.error"></p></template>
+          <div x-show="!statsRel.error">
+          <p class="stats-note">One jump is one relationship between two table occurrences, followed in either direction. Each table occurrence belongs to this file; other files aren't joined in.</p>
+          <div class="stats-line" x-text="statsCount(statsRel.tos, 'table occurrence') + ' · ' + statsCount(statsRel.relationships, 'relationship') + ' · ' + statsCount((statsRel.components || []).length, 'connected group')"></div>
+          <p class="stats-coverage" x-show="statsRel.unresolved_relationships > 0" x-text="statsCount(statsRel.unresolved_relationships, 'relationship') + ' could not be included: an end could not be identified.'"></p>
+          <h3 class="stats-h3">Jumps between two table occurrences</h3>
+          <datalist id="stats-to-list"><template x-for="(n, ni) in statsToNames" :key="ni"><option :value="n"></option></template></datalist>
+          <div class="stats-picker">
+            <label>From <input type="text" id="stats-to-a" list="stats-to-list" :value="stats.pairA" @input="stats.pairA = $event.target.value"></label>
+            <label>To <input type="text" id="stats-to-b" list="stats-to-list" :value="stats.pairB" @input="stats.pairB = $event.target.value"></label>
+          </div>
+          <div id="stats-pair-result" role="status" class="stats-line" x-text="statsPair.message"></div>
+          <div class="stats-path" x-show="statsPair.path.length > 1">
+            <template x-for="(at, pi) in statsPair.path" :key="at">
+              <span><span x-show="pi > 0" aria-hidden="true"> → </span><a href="#" class="stats-link" @click.prevent="statsOpenOwner(at)" x-text="statsOwnerName(at)"></a></span>
+            </template>
+          </div>
+          <h3 class="stats-h3">Connected groups</h3>
+          <div class="stats-table-wrap"><table class="stats-table">
+            <thead><tr><th scope="col" class="num">Table occurrences</th><th scope="col" class="num">Joined pairs</th><th scope="col" class="num">Most jumps between two</th><th scope="col">Members</th></tr></thead>
+            <tbody>
+              <template x-for="(c, gi) in (statsRel.components || [])" :key="gi">
+                <tr x-show="gi < stats.shown">
+                  <td class="num" x-text="statsNum(c.size)"></td><td class="num" x-text="statsNum(c.links)"></td><td class="num" x-text="statsNum(c.max_distance)"></td>
+                  <td>
+                    <details :open="!!stats.open['g' + gi]" @toggle="setStatsOpen('g' + gi, $event.target.open)">
+                      <summary x-text="statsOwnerName(c.members[0]) + (c.size > 1 ? ' and ' + statsNum(c.size - 1) + ' more' : '')"></summary>
+                      <template x-if="stats.open['g' + gi]"><ul class="stats-list">
+                        <template x-for="m in c.members" :key="m"><li><a href="#" class="stats-link" @click.prevent="statsOpenOwner(m)" x-text="statsOwnerName(m)"></a></li></template>
+                      </ul></template>
+                    </details>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table></div>
+          <div class="stats-more" x-show="(statsRel.components || []).length > stats.shown">
+            <button type="button" class="stats-more-btn" @click="stats.shown += 100">Show next 100</button>
+          </div>
+          </div>
+        </div>
+      </template>
+
+      <template x-if="stats.tab === 'references'">
+        <div>
+          <template x-if="statsRefs.error"><p class="stats-coverage" x-text="'This category could not be computed: ' + statsRefs.error"></p></template>
+          <div x-show="!statsRefs.error">
+          <p class="stats-note">“Not found in snapshot” means this export offered an identity no catalog item carries. It doesn't prove the live file lacks it, and unused objects are a different thing, not listed here. An empty list covers only the reference kinds examined: <span x-text="(statsRefs.kinds_examined || []).join(', ')"></span>. Formula names are checked only through FileMaker's own Missing markers, and runtime-built references can't be seen.</p>
+          <p class="stats-coverage" x-show="statsRefs.partial_catalogs">This artifact may hold partial catalogs, so an absent target is reported as “catalog incomplete” rather than not found.</p>
+          <template x-if="(statsRefs.unexamined || []).length > 0">
+            <details class="stats-coverage" id="stats-unexamined">
+              <summary x-text="statsCount(statsRefs.unexamined.length, 'stored fragment') + ' could not be read and not examined.'"></summary>
+              <ul class="stats-list"><template x-for="(u, ui) in statsRefs.unexamined" :key="ui">
+                <li><a href="#" class="stats-link" x-show="statsHasObject(u[0])" @click.prevent="statsOpenOwner(u[0])" x-text="statsOwnerName(u[0])"></a>
+                  <span x-show="!statsHasObject(u[0])" x-text="statsOwnerName(u[0])"></span>
+                  <span class="stats-dim" x-text="statsSectionOf(u[0]) + ' · ' + u[1]"></span></li>
+              </template></ul>
+            </details>
+          </template>
+          <div class="stats-line" x-text="statsNum((statsRefs.counts || {}).resolved || 0) + ' references resolved to an object in this file.'"></div>
+          <template x-for="group in statsRefGroups" :key="group.title">
+            <div>
+              <h3 class="stats-h3" x-text="group.title"></h3>
+              <div class="stats-states">
+                <template x-for="st in group.states" :key="st.state">
+                  <button type="button" class="stats-tab" :id="'stats-state-' + st.state" :class="{active: stats.refState === st.state}"
+                          :aria-pressed="stats.refState === st.state ? 'true' : 'false'" @click="setStatsRefState(st.state)"
+                          x-text="st.label + ' · ' + statsCount(st.targets, 'target') + ', ' + statsCount(st.occurrences, 'place')"></button>
+                </template>
+              </div>
+            </div>
+          </template>
+          <p class="stats-note" x-text="statsRefStateNote"></p>
+          <div class="stats-count" role="status" x-text="statsRefCount"></div>
+          <template x-for="f in statsRefPage" :key="f.key">
+            <details class="stats-finding" :open="!!stats.open[f.key]" @toggle="setStatsOpen(f.key, $event.target.open)">
+              <summary><span class="stats-target" x-text="f.label"></span> <span class="stats-dim" x-text="f.detail"></span></summary>
+              <template x-if="stats.open[f.key]"><ul class="stats-list">
+                <template x-for="(r, ri) in f.referrers" :key="ri">
+                  <li><a href="#" class="stats-link" x-show="statsHasObject(r[0])" @click.prevent="statsOpenOwner(r[0])" x-text="statsOwnerName(r[0])"></a>
+                    <span x-show="!statsHasObject(r[0])" x-text="statsOwnerName(r[0])"></span>
+                    <span class="stats-dim" x-text="statsSectionOf(r[0]) + ' · ' + statsLabel(r[1])"></span>
+                    <span class="stats-tag" x-show="r[2]">disabled step</span></li>
+                </template>
+              </ul></template>
+            </details>
+          </template>
+          <div class="stats-more" x-show="statsRefFindings.length > stats.shown">
+            <button type="button" class="stats-more-btn" @click="stats.shown += 100">Show next 100</button>
+          </div>
+          </div>
+        </div>
+      </template>
+    </div>
+
     <!-- Detail panel -->
-    <div id="detail" x-show="!isSearching" :class="{'graph-active': detailTab==='graph'}">
+    <div id="detail" x-show="!isSearching && !statsOpen" :class="{'graph-active': detailTab==='graph'}">
 
       <!-- XRef left-edge tab (packet 1286): panel-toggle icon + vertical References·count label -->
       <div id="xref-tab"
@@ -718,7 +888,7 @@
           <tr><td><kbd>u</kbd></td><td>Toggle unused / dead-end mode</td></tr>
           <tr><td><kbd>1</kbd> – <kbd>5</kbd></td><td>Switch detail tab (Rendered · Tree · Attrs · Raw · Wireframe/Graph)</td></tr>
           <tr><td><kbd>g</kbd></td><td>Toggle graph full-screen (when graph tab active)</td></tr>
-          <tr><td><kbd>Esc</kbd></td><td>Close overlay · clear filter · exit full-screen</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>Close overlay · clear filter · exit full-screen · close Statistics</td></tr>
           <tr><td><kbd>?</kbd></td><td>Show / hide this reference</td></tr>
         </tbody>
       </table>
@@ -964,6 +1134,8 @@ function _xmlTree(xmlStr) {
 __CORPUSFM_FMHL_JS__
 __CORPUSFM_GRAPH_JS__
 document.addEventListener('alpine:init', () => {
+  const _statsRowCache = new Map();
+  const _statsVisibleCache = {key: null, rows: []};
   Alpine.data('fmExplorer', () => ({
     currentFileIdx: 0,
     currentSection: (appData.files[0].section_order[0] || [''])[0],
@@ -976,6 +1148,10 @@ document.addEventListener('alpine:init', () => {
     // always starts lightweight: names and text, comments on, script steps off.
     searchOpts: {comments: true, steps: false},
     searchMode: 'exact',
+    statsOpen: false,
+    stats: {tab: 'overview', sort: {}, filter: '', shown: 100, refState: 'not_found_in_snapshot', pairA: '', pairB: '', open: {}},
+    statsTabs: [['overview', 'Overview'], ['scripts', 'Script length'], ['steps', 'Step size'], ['calculations', 'Calculations'],
+                ['layouts', 'Layout objects'], ['relationships', 'Relationships'], ['references', 'References']],
     searchTotal: 0,
     searchCapped: false,
     searchOptsOpen: false,
@@ -1627,11 +1803,15 @@ document.addEventListener('alpine:init', () => {
     },
 
     _addHist(fileIdx, section, item) {
-      if (!item) return;
+      if (!item && !this.statsOpen) return;
       const last = this._history[this._histIdx];
-      if (last && last.fileIdx === fileIdx && last.section === section && last.item === item && last.deadEndMode === this.deadEndMode) return;
+      const stats = this.statsOpen ? this._statsSnapshot() : null;
+      if (last && last.fileIdx === fileIdx && last.section === section && last.item === item && last.deadEndMode === this.deadEndMode && !!last.stats === !!stats) {
+        last.stats = stats;
+        return;
+      }
       this._history = this._history.slice(0, this._histIdx + 1);
-      this._history.push({fileIdx, section, item, deadEndMode: this.deadEndMode});
+      this._history.push({fileIdx, section, item, deadEndMode: this.deadEndMode, stats});
       if (this._history.length > 50) this._history = this._history.slice(-50);
       this._histIdx = this._history.length - 1;
     },
@@ -1640,6 +1820,7 @@ document.addEventListener('alpine:init', () => {
     },
 
     _navigateNoHistory(fileIdx, section, item, noRecord=false) {
+      this.statsOpen = false;
       if (fileIdx !== this.currentFileIdx) {
         this.currentFileIdx = fileIdx;
         this.filterQuery = '';
@@ -1684,6 +1865,7 @@ document.addEventListener('alpine:init', () => {
       this.searchResults = [];
       this.deadEndMode = !!h.deadEndMode;
       this._navigateNoHistory(h.fileIdx, h.section, h.item, true);
+      if (h.stats) this._statsRestore(h.stats);
     },
 
     get canGoBack() {
@@ -1695,7 +1877,7 @@ document.addEventListener('alpine:init', () => {
       const result = [];
       for (let i = this._history.length - 1; i >= 0; i--) {
         const h = this._history[i];
-        if (!h.item) continue;
+        if (!h.item || h.stats) continue;
         const key = h.fileIdx + '|' + h.section + '|' + h.item;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -1773,11 +1955,14 @@ document.addEventListener('alpine:init', () => {
       this.sortMode = this._defaultSort(this.currentSection);
       this.flipAll = false;
       this.currentItem = this._firstSelectableItem(this.currentSection);
+      if (this.statsOpen) this._statsResetForFile();
       this._addHist(this.currentFileIdx, this.currentSection, this.currentItem);
     },
 
     selectSection(key) {
       this.graphFullscreen = false;
+      const leavingStats = this.statsOpen;
+      if (leavingStats) { this._pushHistory(); this.statsOpen = false; }
       if ((this.detailTab === 'wireframe' || this.detailTab === 'objects') && key !== 'LayoutCatalog') this.detailTab = 'rendered';
       if (this.detailTab === 'graph' && key !== 'RelationshipCatalog') this.detailTab = 'rendered';
       this.currentSection = key;
@@ -1786,6 +1971,7 @@ document.addEventListener('alpine:init', () => {
       this.filterQuery = '';
       this.deadEndMode = false;
       this.currentItem = this._firstSelectableItem(key);
+      if (leavingStats) this._addHist(this.currentFileIdx, key, this.currentItem);
       this.$nextTick(() => {
         const btn = document.querySelector('#sec-tabs .sec-btn.active');
         if (btn) btn.scrollIntoView({ block: 'nearest' });
@@ -1795,6 +1981,7 @@ document.addEventListener('alpine:init', () => {
     selectItem(name) {
       this.graphFullscreen = false;
       this._pushHistory();
+      this.statsOpen = false;
       this.currentItem = name;
       // Objects supersedes the wireframe as the legible layout view — default to it
       // for layouts (only auto-upgrading from the generic 'rendered' tab).
@@ -2048,6 +2235,313 @@ document.addEventListener('alpine:init', () => {
         .sort((a, b) => (a.score - b.score) || (a.fileIdx - b.fileIdx))
         .slice(0, 200);
     },
+    // ── Statistics page (packet 1446) ─────────────────────────────────────────
+    // The data is owners, labels and numbers; rows are built once per file and tab and live outside
+    // Alpine's reactivity, because a large file has tens of thousands of them.
+    toggleStatistics() {
+      if (this.statsOpen && !this.isSearching) { this.closeStatistics(); return; }
+      this.graphFullscreen = false;
+      if (this.isSearching) this.clearSearch();
+      if (this.statsOpen) return;
+      this._pushHistory();
+      this.statsOpen = true;
+      this._pushHistory();
+      this.$nextTick(() => document.getElementById('stats-title')?.focus());
+    },
+    closeStatistics() {
+      this._pushHistory();
+      this.statsOpen = false;
+      this._pushHistory();
+      this.$nextTick(() => document.getElementById('stats-btn')?.focus());
+    },
+    _statsSnapshot() {
+      const page = document.getElementById('stats-page');
+      return {...this.stats, sort: {...this.stats.sort}, open: {...this.stats.open}, scroll: page ? page.scrollTop : 0};
+    },
+    _statsRestore(snap) {
+      const {scroll, ...state} = snap;
+      this.stats = {...state, sort: {...state.sort}, open: {...state.open}};
+      this.statsOpen = true;
+      this.$nextTick(() => {
+        const page = document.getElementById('stats-page');
+        if (page) page.scrollTop = scroll || 0;
+        document.getElementById('stats-title')?.focus({preventScroll: true});
+      });
+    },
+    _statsResetForFile() {
+      this.stats = {...this.stats, filter: '', shown: 100, pairA: '', pairB: '', open: {}};
+    },
+    setStatsTab(tab) {
+      this.stats = {...this.stats, tab, filter: '', shown: 100};
+      this.$nextTick(() => document.getElementById('stats-tab-' + tab)?.focus());
+    },
+    setStatsFilter(value) {
+      this.stats = {...this.stats, filter: value, shown: 100};
+    },
+    setStatsSort(key) {
+      const current = this.stats.sort[this.stats.tab];
+      const column = this.statsColumns.find(c => c.key === key);
+      const dir = current && current.key === key ? -current.dir : (column.num ? -1 : 1);
+      this.stats = {...this.stats, sort: {...this.stats.sort, [this.stats.tab]: {key, dir}}, shown: 100};
+    },
+    setStatsOpen(key, open) {
+      if (!!this.stats.open[key] !== !!open) this.stats.open = {...this.stats.open, [key]: !!open};
+    },
+    setStatsRefState(state) {
+      this.stats = {...this.stats, refState: state, shown: 100};
+    },
+    get statsData() {
+      return this.currentFileObj.statistics || {};
+    },
+    statsNum(n) {
+      return n === null || n === undefined ? '—' : Number(n).toLocaleString();
+    },
+    statsCount(n, one, many) {
+      return this.statsNum(n) + ' ' + (n === 1 ? one : (many || one + 's'));
+    },
+    statsOwnerName(at) {
+      const owner = (this.statsData.owners || [])[at];
+      return owner ? owner[2] : '';
+    },
+    statsSectionOf(at) {
+      const owner = (this.statsData.owners || [])[at];
+      return owner ? this.sectionLabelIn(this.currentFileIdx, owner[0]).replace(/Catalog$/, '') : '';
+    },
+    // Some catalogs are examined but not browsable here, so a referrer there is named without a link.
+    statsHasObject(at) {
+      const owner = (this.statsData.owners || [])[at];
+      const data = owner && ((this.currentFileObj.sections || {})[owner[0]] || {}).item_data;
+      return !!data && Object.prototype.hasOwnProperty.call(data, owner[1]);
+    },
+    statsLabel(at) {
+      return (this.statsData.labels || [])[at] || '';
+    },
+    statsOpenOwner(at) {
+      const owner = (this.statsData.owners || [])[at];
+      if (owner) this.navigateExact(this.currentFileIdx, owner[0], owner[1]);
+    },
+    get statsIsTable() {
+      return ['scripts', 'steps', 'calculations', 'layouts'].includes(this.stats.tab);
+    },
+    get statsColumns() {
+      return {
+        scripts: [{key: 'name', label: 'Script'}, {key: 'steps', label: 'Steps', num: true}, {key: 'nonComment', label: 'Non-comment', num: true},
+                  {key: 'comments', label: 'Comments', num: true}, {key: 'blank', label: 'Blank', num: true}, {key: 'disabled', label: 'Disabled', num: true},
+                  {key: 'status', label: 'Measured'}],
+        steps: [{key: 'name', label: 'Script'}, {key: 'step', label: 'Step', num: true}, {key: 'stepName', label: 'Step type'}, {key: 'chars', label: 'Characters', num: true}],
+        calculations: [{key: 'name', label: 'Object'}, {key: 'kind', label: 'Type'}, {key: 'slot', label: 'Where'}, {key: 'chars', label: 'Characters', num: true}],
+        layouts: [{key: 'name', label: 'Layout'}, {key: 'objects', label: 'Entries', num: true}, {key: 'types', label: 'By type'}],
+      }[this.stats.tab] || [];
+    },
+    statsCell(row, column) {
+      const value = row[column.key];
+      return column.num ? this.statsNum(value) : (value === null || value === undefined ? '' : value);
+    },
+    _statsSource(tab) {
+      const d = this.statsData;
+      return {scripts: d.scripts, steps: d.scripts, calculations: d.calculations, layouts: d.layouts}[tab] || {};
+    },
+    get statsError() {
+      return this._statsSource(this.stats.tab).error || '';
+    },
+    _statsRows(tab) {
+      const cacheKey = this.currentFileIdx + ':' + tab;
+      if (_statsRowCache.has(cacheKey)) return _statsRowCache.get(cacheKey);
+      const source = this._statsSource(tab);
+      const name = at => this.statsOwnerName(at);
+      const label = at => this.statsLabel(at);
+      const statusText = {measured: 'Yes', no_step_source: 'No: no step data in this export', unparseable: 'No: could not be read', render_error: 'No: could not be rendered'};
+      const build = {
+        scripts: () => (source.rows || []).map((r, i) => r[6] === 'measured'
+          ? {key: i, owner: r[0], name: name(r[0]), steps: r[1], nonComment: r[1] - r[2], comments: r[2], blank: r[3], disabled: r[4],
+             status: r[5] ? 'Yes; ' + this.statsNum(r[5]) + ' partly rendered' : 'Yes'}
+          : {key: i, owner: r[0], name: name(r[0]), steps: null, nonComment: null, comments: null, blank: null, disabled: null, status: statusText[r[6]] || r[6]}),
+        steps: () => (source.step_rows || []).map((r, i) => ({key: i, owner: r[0], name: name(r[0]), step: r[1], stepName: label(r[2]), chars: r[3]})),
+        calculations: () => (source.rows || []).map((r, i) => ({key: i, owner: r[0], name: name(r[0]), kind: this.statsSectionOf(r[0]),
+          slot: r[3] === null ? 'Stored source could not be read: ' + label(r[1]) : (r[2] ? 'Step ' + r[2] + ' · ' : '') + label(r[1]), chars: r[3]})),
+        layouts: () => (source.rows || []).map((r, i) => ({key: i, owner: r[0], name: name(r[0]), objects: (r[4] || r[5]) ? null : r[1],
+          types: r[5] ? 'No stored layout source' : r[4] ? 'Could not be read' : Object.entries(r[2]).sort((a, b) => b[1] - a[1]).map(e => e[0] + ' ' + e[1]).join(' · ')
+                 + (r[3] ? ' · ' + r[3] + ' unrecognized' : '')})),
+      }[tab];
+      const rows = build ? build() : [];
+      _statsRowCache.set(cacheKey, rows);
+      return rows;
+    },
+    get statsVisibleRows() {
+      const tab = this.stats.tab;
+      const sort = this.stats.sort[tab];
+      const needle = this.stats.filter.trim().toLowerCase();
+      const cacheKey = [this.currentFileIdx, tab, needle, sort ? sort.key + sort.dir : ''].join('\u0000');
+      if (_statsVisibleCache.key === cacheKey) return _statsVisibleCache.rows;
+      let rows = this._statsRows(tab);
+      if (needle) {
+        rows = rows.filter(r => Object.values(r).some(v => typeof v === 'string' && v.toLowerCase().includes(needle)));
+      }
+      if (sort) {
+        // An unmeasured value sorts last in both directions: it isn't small, it is unknown.
+        rows = [...rows].sort((a, b) => {
+          const x = a[sort.key], y = b[sort.key];
+          if (x === null || x === undefined) return (y === null || y === undefined) ? 0 : 1;
+          if (y === null || y === undefined) return -1;
+          return (typeof x === 'number' ? x - y : String(x).localeCompare(String(y))) * sort.dir;
+        });
+      }
+      _statsVisibleCache.key = cacheKey;
+      _statsVisibleCache.rows = rows;
+      return rows;
+    },
+    get statsPageRows() {
+      return this.statsVisibleRows.slice(0, this.stats.shown);
+    },
+    get statsCountLabel() {
+      const total = this._statsRows(this.stats.tab).length;
+      const visible = this.statsVisibleRows.length;
+      const shown = Math.min(visible, this.stats.shown);
+      const unit = {scripts: 'scripts', steps: 'steps', calculations: 'calculations', layouts: 'layouts'}[this.stats.tab] || 'rows';
+      return 'Showing ' + this.statsNum(shown) + ' of ' + this.statsNum(visible) + ' ' + unit + (visible !== total ? ' (' + this.statsNum(total) + ' before filtering)' : '');
+    },
+    statsAriaSort(key) {
+      const sort = this.stats.sort[this.stats.tab];
+      if (!sort || sort.key !== key) return 'none';
+      return sort.dir < 0 ? 'descending' : 'ascending';
+    },
+    statsSortMark(key) {
+      const sort = this.stats.sort[this.stats.tab];
+      return sort && sort.key === key ? (sort.dir < 0 ? ' ▼' : ' ▲') : '';
+    },
+    get statsDefinition() {
+      return {
+        scripts: 'Steps are every stored step, matching the line numbers shown on a script. A step can be more than one kind, so comments, blank and disabled overlap and don\'t add up to the total.',
+        steps: 'Characters in the step as fully rendered, before any shortening for display. That includes its name, labels and punctuation. Values the renderer deliberately hides, such as passwords, are not counted. This is not the raw XML length or a byte count.',
+        calculations: 'Characters in each stored calculation in any object in this file. Each slot is listed even when its text matches another, and small ones such as a default repetition of 1 are included. A wrapper counts once; empty calculations are not listed.',
+        layouts: 'Entries are every stored layout object, each counted once. That includes containers such as groups and tab controls, the objects inside them, and Table View columns.',
+      }[this.stats.tab] || '';
+    },
+    get statsCoverage() {
+      const src = this._statsSource(this.stats.tab);
+      const out = [];
+      if (this.stats.tab === 'scripts' || this.stats.tab === 'steps') {
+        const notes = {no_step_source: 'no step data in this export', unparseable: 'could not be read', render_error: 'could not be rendered'};
+        for (const [state, n] of Object.entries(src.status || {})) {
+          if (state !== 'measured') out.push(this.statsCount(n, 'script') + ': ' + (notes[state] || state) + '. Not measured, rather than counted as zero.');
+        }
+        if ((src.totals || {}).partial) out.push(this.statsCount(src.totals.partial, 'step') + ' rendered only partly, so character counts there may be short.');
+      }
+      if (this.stats.tab === 'calculations' && src.unparsed_sources) out.push(this.statsCount(src.unparsed_sources, 'stored source') + ' could not be read, so calculations there are not measured.');
+      if (this.stats.tab === 'layouts') {
+        if (src.unexamined) out.push(this.statsCount(src.unexamined, 'stored object') + ' of a form not recognized, so counts for those layouts are low.');
+        if (src.parse_errors) out.push(this.statsCount(src.parse_errors, 'layout') + ' could not be read and not counted.');
+        if (src.no_source) out.push(this.statsCount(src.no_source, 'layout') + ' with no stored source, not counted.');
+      }
+      return out;
+    },
+    get statsOverview() {
+      const d = this.statsData;
+      const n = v => this.statsNum(v);
+      const failed = s => s && s.error ? 'This category could not be computed: ' + s.error : '';
+      const sc = d.scripts || {}, ca = d.calculations || {}, la = d.layouts || {}, re = d.relationships || {}, rf = d.references || {};
+      const t = sc.totals || {};
+      const unmeasured = Object.entries(sc.status || {}).filter(e => e[0] !== 'measured').reduce((a, e) => a + e[1], 0);
+      const counts = rf.counts || {};
+      const groups = rf.findings || [];
+      const targets = state => groups.filter(f => f.state === state).length;
+      const others = ['ambiguous', 'no_target_identity', 'external_file', 'catalog_incomplete'].reduce((a, s) => a + (counts[s] || 0), 0);
+      const mostJumps = (re.components || []).reduce((a, c) => Math.max(a, c.max_distance), 0);
+      const measuredTop = (sc.rows || [])[0] && sc.rows[0][6] === 'measured' && sc.rows[0][1] > 0 ? sc.rows[0][0] : null;
+      const cards = [
+        {tab: 'scripts', title: 'Script length', lines: [this.statsCount((sc.rows || []).length, 'script') + ' · ' + this.statsCount(t.steps, 'step'), n(t.steps - t.comments) + ' non-comment · ' + n(t.comments) + ' comments', n(t.blank) + ' blank · ' + n(t.disabled) + ' disabled (these overlap)', 'Median ' + n((sc.steps || {}).median) + ' · longest ' + n((sc.steps || {}).max) + ' steps'],
+         top: measuredTop, topLabel: 'Longest', note: failed(sc) || (unmeasured ? this.statsCount(unmeasured, 'script') + ' not measured' : '')},
+        {tab: 'steps', title: 'Step size', lines: [this.statsCount((sc.chars || {}).count, 'step'), 'Median ' + n((sc.chars || {}).median) + ' · largest ' + n((sc.chars || {}).max) + ' characters'],
+         top: (sc.step_rows || [])[0] ? sc.step_rows[0][0] : null, topLabel: 'Largest step is in', note: failed(sc)},
+        {tab: 'calculations', title: 'Calculations', lines: [this.statsCount((ca.chars || {}).count, 'calculation'), 'Median ' + n((ca.chars || {}).median) + ' · longest ' + n((ca.chars || {}).max) + ' characters'],
+         top: (ca.rows || [])[0] && ca.rows[0][3] !== null ? ca.rows[0][0] : null, topLabel: 'Longest is in', note: failed(ca) || (ca.unparsed_sources ? this.statsCount(ca.unparsed_sources, 'stored source') + ' not read' : '')},
+        {tab: 'layouts', title: 'Layout objects', lines: [this.statsCount((la.rows || []).length, 'layout') + ' · ' + this.statsCount(la.total, 'entry', 'entries'), 'Median ' + n((la.objects || {}).median) + ' · most ' + n((la.objects || {}).max) + ' on one layout'],
+         top: (la.rows || [])[0] && la.rows[0][1] > 0 ? la.rows[0][0] : null, topLabel: 'Most on', note: failed(la) || ((la.unexamined || la.parse_errors || la.no_source) ? 'Some layouts not fully counted' : '')},
+        {tab: 'relationships', title: 'Relationships', lines: [this.statsCount(re.tos, 'table occurrence') + ' · ' + this.statsCount(re.relationships, 'relationship'), this.statsCount((re.components || []).length, 'connected group') + ' · largest ' + n(((re.components || [])[0] || {}).size), 'Most jumps between two: ' + n(mostJumps)],
+         note: failed(re) || (re.unresolved_relationships ? this.statsCount(re.unresolved_relationships, 'relationship') + ' not included' : '')},
+        {tab: 'references', title: 'References', lines: ['Not found in snapshot: ' + this.statsCount(targets('not_found_in_snapshot'), 'target') + ', ' + this.statsCount(counts.not_found_in_snapshot || 0, 'place'), 'Marked Missing by FileMaker: ' + this.statsCount(targets('marked_missing_in_formula'), 'marker') + ', ' + this.statsCount(counts.marked_missing_in_formula || 0, 'place'), 'Other states: ' + this.statsCount(others, 'place')],
+         note: failed(rf) || ((rf.unexamined || []).length ? this.statsCount(rf.unexamined.length, 'fragment') + ' not examined' : '')},
+      ];
+      // A category that failed shows that alone: every derived number above would read as a zero.
+      const source = {scripts: sc, steps: sc, calculations: ca, layouts: la, relationships: re, references: rf};
+      return cards.map(card => source[card.tab].error ? {...card, lines: [], top: null} : card);
+    },
+    get statsRel() {
+      return this.statsData.relationships || {};
+    },
+    get statsToNames() {
+      return Object.keys(this.statsRel.adjacency || {}).map(at => this.statsOwnerName(Number(at))).sort((a, b) => a.localeCompare(b));
+    },
+    _statsToByName(name) {
+      const wanted = (name || '').trim().toLowerCase();
+      return Object.keys(this.statsRel.adjacency || {}).filter(at => this.statsOwnerName(Number(at)).toLowerCase() === wanted);
+    },
+    get statsPair() {
+      const none = {message: 'Choose two table occurrences to see the fewest jumps between them.', path: []};
+      const {pairA, pairB} = this.stats;
+      if (!pairA.trim() || !pairB.trim()) return none;
+      const as = this._statsToByName(pairA), bs = this._statsToByName(pairB);
+      if (!as.length || !bs.length) return {message: 'Not a table occurrence in this file: ' + (as.length ? pairB : pairA), path: []};
+      if (as.length > 1 || bs.length > 1) return {message: 'More than one table occurrence has that name: ' + (as.length > 1 ? pairA : pairB), path: []};
+      const a = as[0], b = bs[0];
+      if (a === b) return {message: '0 jumps: the same table occurrence.', path: []};
+      const adjacency = this.statsRel.adjacency;
+      const previous = {[a]: null};
+      const queue = [a];
+      for (let i = 0; i < queue.length; i++) {
+        const node = queue[i];
+        if (node === b) break;
+        for (const next of adjacency[node].map(String)) {
+          if (!Object.prototype.hasOwnProperty.call(previous, next)) { previous[next] = node; queue.push(next); }
+        }
+      }
+      if (!Object.prototype.hasOwnProperty.call(previous, b)) return {message: 'No path: these two are not connected in this file.', path: []};
+      const path = [];
+      for (let at = b; at !== null; at = previous[at]) path.unshift(Number(at));
+      const jumps = path.length - 1;
+      return {message: jumps + (jumps === 1 ? ' jump' : ' jumps'), path};
+    },
+    get statsRefs() {
+      return this.statsData.references || {};
+    },
+    get statsRefGroups() {
+      const counts = this.statsRefs.counts || {};
+      const findings = this.statsRefs.findings || [];
+      const state = (id, label) => ({state: id, label, occurrences: counts[id] || 0, targets: findings.filter(f => f.state === id).length});
+      return [
+        {title: 'Missing', states: [state('not_found_in_snapshot', 'Not found in snapshot'), state('marked_missing_in_formula', 'Marked Missing by FileMaker')]},
+        {title: 'Not proved either way', states: [state('ambiguous', 'Ambiguous'), state('no_target_identity', 'No target set'), state('external_file', 'In another file'), state('catalog_incomplete', 'Catalog incomplete')]},
+      ];
+    },
+    get statsRefStateNote() {
+      return {
+        not_found_in_snapshot: 'The reference offers an identity, the catalog was fully read, and no item carries that identity.',
+        marked_missing_in_formula: 'FileMaker wrote a Missing marker into the stored calculation or reference.',
+        ambiguous: 'More than one catalog item carries the identity offered, so the target can\'t be told.',
+        no_target_identity: 'The reference offers no usable identity. FileMaker stores this for a blank setting as well as for a lost target, so it isn\'t proof of damage.',
+        external_file: 'The target lives in another file. This report does not check whether it exists there.',
+        catalog_incomplete: 'The catalog needed to decide is absent, unreadable or possibly partial.',
+      }[this.stats.refState] || '';
+    },
+    get statsRefFindings() {
+      const sectionName = s => s === 'Formula' ? 'Formula text' : this.sectionLabelIn(this.currentFileIdx, s);
+      return (this.statsRefs.findings || []).filter(f => f.state === this.stats.refState).map(f => {
+        const offered = f.offered || {};
+        const places = f.referrers.length;
+        const ids = [offered.file ? 'file ' + offered.file : '', offered.via ? 'through ' + offered.via : '', offered.id ? 'id ' + offered.id : '', offered.uuid ? 'UUID ' + offered.uuid : ''].filter(Boolean).join(' · ');
+        return {key: [f.state, f.section, offered.uuid || '', offered.id || '', offered.name || '', offered.via || '', offered.file || ''].join('|'), referrers: f.referrers,
+                label: offered.name || '(no name given)',
+                detail: [sectionName(f.section), ids, places + (places === 1 ? ' place' : ' places')].filter(Boolean).join(' · ')};
+      });
+    },
+    get statsRefPage() {
+      return this.statsRefFindings.slice(0, this.stats.shown);
+    },
+    get statsRefCount() {
+      const total = this.statsRefFindings.length;
+      if (!total) return 'None observed among the kinds examined.';
+      return 'Showing ' + this.statsNum(Math.min(total, this.stats.shown)) + ' of ' + this.statsNum(total) + ' targets';
+    },
     setSearchMode(mode) {
       this.searchMode = mode;
       if (this.searchQuery) this.doSearch();
@@ -2088,6 +2582,17 @@ document.addEventListener('alpine:init', () => {
         if (this.showAbout) { this.showAbout = false; return; }
         if (this.graphFullscreen) { this.graphFullscreen = false; return; }
         if (this.showRecent) { this.showRecent = false; return; }
+        if (this.statsOpen && !this.isSearching) {
+          if (isInput && e.target.closest('#stats-page')) {
+            if (e.target.id === 'stats-filter' && this.stats.filter) this.setStatsFilter('');
+            else e.target.blur();
+            return;
+          }
+          if (!isInput) {
+            this.closeStatistics();
+            return;
+          }
+        }
         if (this.filterQuery) {
           this.filterQuery = '';
           this.$refs.filterInput?.focus();
@@ -2104,6 +2609,8 @@ document.addEventListener('alpine:init', () => {
         this.goBack();
         return;
       }
+      // List shortcuts act on the object list behind the page, so they would silently leave Statistics.
+      if (this.statsOpen && e.key !== '?') return;
       if (e.key === '/') {
         e.preventDefault();
         this.$refs.filterInput?.focus();
