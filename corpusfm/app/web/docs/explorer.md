@@ -68,7 +68,7 @@ early, so it says more may exist; narrow the search or use Exact to see them.
 
 ## Statistics
 
-The chart icon beside the Explorer title opens **Statistics** for the selected file; switching file
+The chart icon at the top right, just after the search box, opens **Statistics** for the selected file; switching file
 tabs switches the report, and a combined Explorer never adds its files together. Each summary leads
 to a ranked list you can sort and filter, and each row opens the object. **Back** returns to the
 report as you left it. Choosing an object doesn't jump to its step or calculation; the row names it.

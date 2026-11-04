@@ -23,10 +23,6 @@
   <div id="hdr-wordmark-dark">__CORPUSFM_NODE_ICON__</div>
   <div id="hdr-wordmark-light">__CORPUSFM_HDR_WM_LIGHT__</div>
   <h1>Explorer</h1>
-  <button id="stats-btn" class="icon-btn" type="button" @click="toggleStatistics()" title="Statistics" aria-label="Statistics"
-          :class="{active: statsOpen && !isSearching}" :aria-pressed="(statsOpen && !isSearching) ? 'true' : 'false'">
-    <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M8 17v-5"/><path d="M13 17V7"/><path d="M18 17v-8"/></svg>
-  </button>
   <div class="meta" x-text="currentFileMeta"></div>
   <div id="nav-btns">
     <button class="nav-btn" type="button" x-show="canGoBack" @click="goBack()" title="Go back (Alt+←)">
@@ -90,6 +86,10 @@
     </div>
     <button id="search-btn" x-show="searchQuery" @click="clearSearch()">✕ Clear</button>
   </div>
+  <button id="stats-btn" class="icon-btn" type="button" @click="toggleStatistics()" title="Statistics" aria-label="Statistics"
+          :class="{active: statsOpen && !isSearching}" :aria-pressed="(statsOpen && !isSearching) ? 'true' : 'false'">
+    <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M8 17v-5"/><path d="M13 17V7"/><path d="M18 17v-8"/></svg>
+  </button>
   <button class="icon-btn" type="button" @click="toggleTheme()"
           :title="darkMode ? 'Switch to light mode' : 'Switch to dark mode'"
           aria-label="Toggle light/dark mode">
