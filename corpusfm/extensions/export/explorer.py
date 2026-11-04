@@ -738,14 +738,41 @@ _GRAPH_PALETTE = [
 ]
 
 
+def _relationship_side_settings(side, name_map: dict | None) -> dict:
+    """One endpoint's settings, for that endpoint's card. A setting absent from the XML stays None."""
+    def flag(attr):
+        value = side.get(attr)
+        return None if value is None else value == "True"
+
+    def named(name):
+        return name_map.get(name, name) if name_map else name
+
+    sort: list = []
+    spec = side.find("SortSpecification")
+    if spec is not None and spec.get("value", "False") == "True":
+        for s in spec.findall("SortList/Sort"):
+            field = s.find("./PrimaryField/FieldReference")
+            value_list = s.find("ValueListReference")
+            sort.append({"field": named(field.get("name", "")) if field is not None else None,
+                         "order": s.get("type", ""),
+                         "value_list": named(value_list.get("name", "")) if value_list is not None else None})
+    return {"cascade_create": flag("cascadeCreate"), "cascade_delete": flag("cascadeDelete"), "sort": sort,
+            "maintain_sort": spec is not None and spec.get("maintain", "False") == "True"}
+
+
 def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
     """Extract TO positions and relationship edges from artifact items."""
+    name_map: dict = getattr(artifact, "_name_map", None) or getattr(artifact, "name_map", None) or {}
+
+    def named(name):
+        return name_map.get(name, name) if name else name
+
     to_items = [
-        item for item in artifact.items.values()
+        (key, item) for key, item in artifact.items.items()
         if item.section == "TableOccurrenceCatalog" and not item.is_folder and item.xml_sources
     ]
     rel_items = [
-        item for item in artifact.items.values()
+        (key, item) for key, item in artifact.items.items()
         if item.section == "RelationshipCatalog" and not item.is_folder and item.xml_sources
     ]
     if not to_items:
@@ -754,40 +781,52 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
     nodes: list = []
     node_id_map: dict = {}
 
-    for item in to_items:
+    for item_key, item in to_items:
         try:
             elem = ET.fromstring(item.xml_sources[0].xml)
         except ET.ParseError:
             continue
         to_id   = elem.get("id", "")
         to_name = elem.get("name", item.name)
+        # CoordRect is the rectangle FileMaker draws; a collapsed occurrence's separate `height`
+        # attribute is its expanded height, so it must not replace these bounds (packet 1448).
+        # An occurrence with no usable rectangle stays in the payload with no position: its cards
+        # still work, and As Built leaves it off the map rather than inventing a place for it.
         coord = elem.find("CoordRect")
-        if coord is None:
-            continue
-        try:
-            top    = int(float(coord.get("top",    "0")))
-            left   = int(float(coord.get("left",   "0")))
-            bottom = int(float(coord.get("bottom", "60")))
-            right  = int(float(coord.get("right",  "120")))
-        except ValueError:
-            continue
+        rect = None
+        if coord is not None:
+            try:
+                rect = tuple(int(float(coord.get(k))) for k in ("top", "left", "bottom", "right"))
+            except (TypeError, ValueError):
+                rect = None
         src_ref    = elem.find("BaseTableSourceReference")
         external   = False
         base_table = to_name
+        source: dict = {"kind": "unknown"}
         if src_ref is not None:
             ref_type = src_ref.get("type", "")
             if ref_type == "BaseTableReference":
                 bt_ref = src_ref.find("BaseTableReference")
+                source = {"kind": "local", "table": named(bt_ref.get("name")) if bt_ref is not None else None}
                 if bt_ref is not None:
                     base_table = bt_ref.get("name", to_name)
             elif ref_type == "ExternalDataSourceReference":
                 external = True
                 ds_ref = src_ref.find("DataSourceReference")
+                bt_ref = src_ref.find("BaseTableReference")
+                source = {"kind": "external",
+                          "data_source": named(ds_ref.get("name")) if ds_ref is not None else None,
+                          "table": named(bt_ref.get("name")) if bt_ref is not None else None}
                 if ds_ref is not None:
                     base_table = ds_ref.get("name", to_name)
             elif ref_type == "ODBCDataSourceReference":   # External SQL Source (ESS) — SQL table target
                 external = True
                 sql_src = src_ref.find("Source")
+                odbc = src_ref.find("ODBCDataSourceReference")
+                target = ".".join(v for v in (sql_src.get(k) for k in ("catalogName", "schemaName", "tableName")) if v) if sql_src is not None else ""
+                source = {"kind": "sql", "table": target or None,
+                          "data_source": named(odbc.get("name")) if odbc is not None else None,
+                          "dsn": odbc.get("dsn") if odbc is not None else None}
                 if sql_src is not None and sql_src.get("tableName"):
                     base_table = sql_src.get("tableName")
         col_elem = elem.find("Color")
@@ -803,18 +842,19 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
             color = _GRAPH_PALETTE[hash(base_table) % len(_GRAPH_PALETTE)]
         else:
             color = fm_color
+        top, left, bottom, right = rect if rect else (None, None, None, None)
         node = {
-            "id": to_id, "name": to_name, "base_table": base_table,
-            "external": external,
+            "id": to_id, "item": item_key, "name": to_name, "base_table": base_table,
+            "external": external, "source": source,
             "x": left, "y": top,
-            "w": max(1, right - left), "h": max(1, bottom - top),
+            "w": max(1, right - left) if rect else None, "h": max(1, bottom - top) if rect else None,
             "color": color,
         }
         nodes.append(node)
         node_id_map[to_id] = node
 
     edges: list = []
-    for item in rel_items:
+    for item_key, item in rel_items:
         try:
             elem = ET.fromstring(item.xml_sources[0].xml)
         except ET.ParseError:
@@ -848,10 +888,9 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
                     predicates.append(f"{from_name}::{lf_name} = {to_name}::{rf_name}")
                 else:
                     predicates.append(pred_type)
-        if from_id not in node_id_map or to_id not in node_id_map:
-            continue
+        # An endpoint missing from the catalog keeps the edge: the cards name it and the map leaves it off.
         edges.append({
-            "from_id": from_id, "to_id": to_id,
+            "item": item_key, "from_id": from_id, "to_id": to_id,
             "type": edge_type, "predicates": predicates,
         })
 
@@ -859,7 +898,8 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
     degree: dict = {}
     for e in edges:
         degree[e["from_id"]] = degree.get(e["from_id"], 0) + 1
-        degree[e["to_id"]] = degree.get(e["to_id"], 0) + 1
+        if e["to_id"] != e["from_id"]:
+            degree[e["to_id"]] = degree.get(e["to_id"], 0) + 1
     for n in nodes:
         n["degree"] = degree.get(n["id"], 0)
 
@@ -1670,7 +1710,9 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
                                     _preds.append({"lf": _lfn,
                                                    "op": "=" if _pt == "Equal" else _pt,
                                                    "rf": _rfn})
-                            entry["rel"] = {"l": _ln, "r": _rn, "preds": _preds}
+                            entry["rel"] = {"l": _ln, "r": _rn, "preds": _preds,
+                                            "lset": _relationship_side_settings(_rel_elem.find("LeftTable"), _nm),
+                                            "rset": _relationship_side_settings(_rel_elem.find("RightTable"), _nm)}
                 except ET.ParseError:
                     pass
 

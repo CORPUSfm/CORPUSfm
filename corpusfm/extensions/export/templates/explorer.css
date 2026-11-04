@@ -350,7 +350,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,.sr-item:focus-visible,
   padding:.25rem .55rem;font-size:.8rem;cursor:pointer;white-space:nowrap}
 .graph-btn:hover{border-color:var(--primary);color:var(--primary)}
 #graph-canvas-wrap{position:relative;flex:1;min-height:300px;border:1px solid var(--border);border-radius:4px;overflow:hidden}
-#rel-graph{position:absolute;inset:0;width:100%;height:100%;background:var(--bg);cursor:grab;display:block}
+#rel-graph{position:absolute;inset:0;width:100%;height:100%;background:var(--bg);cursor:grab;display:block;touch-action:none}
 .graph-info{flex:1;font-size:.72rem;color:var(--text-dim)}
 #detail.graph-active #detail-scroll{overflow:hidden;display:flex;flex-direction:column}
 #detail.graph-active #detail-main{flex:1;min-height:0;display:flex;flex-direction:column}
@@ -510,6 +510,36 @@ kbd{display:inline-block;background:var(--surface-2);border:1px solid var(--bord
   border-radius:3px;padding:.05rem .35rem;font-size:.75rem;font-family:'SFMono-Regular',Consolas,monospace;
   color:var(--text-2);line-height:1.4}
 
+/* Occurrence and relationship cards, and map selection (packet 1448) */
+#rel-cards{margin:.2rem 0 .9rem;min-width:0}
+.rel-card-grid{display:grid;gap:.6rem;align-items:start;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.rel-card-grid--rel{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+.rel-card{border:1px solid var(--border);border-radius:6px;padding:.6rem .7rem;background:var(--surface);min-width:0;font-size:.8rem}
+.rel-card-main{border-color:var(--primary)}
+.rel-card h3{font-size:.9rem;font-weight:600;color:var(--text);margin:.1rem 0 .4rem;overflow-wrap:anywhere}
+.rel-kicker{font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.2rem}
+.rel-kicker-row{display:flex;align-items:center;justify-content:space-between;gap:.5rem;text-transform:none;letter-spacing:0;font-size:.76rem}
+.rel-row{display:flex;flex-wrap:wrap;justify-content:space-between;gap:0 .75rem;padding:.12rem 0;color:var(--text)}
+.rel-row>span:first-child{color:var(--text-dim)}
+.rel-row>span:last-child{margin-left:auto;text-align:right;overflow-wrap:break-word;min-width:0;max-width:100%}
+.rel-pred{padding:.2rem 0;color:var(--text);overflow-wrap:anywhere;border-top:1px solid var(--border)}
+.rel-pred strong{color:var(--primary);padding:0 .2rem}
+.rel-conn{display:flex;flex-direction:column;gap:.05rem;padding:.3rem 0;border-top:1px solid var(--border);min-width:0}
+.rel-link{background:none;border:none;padding:0;color:var(--link);font:inherit;text-align:left;cursor:pointer;overflow-wrap:anywhere}
+.rel-link:hover{text-decoration:underline}
+.rel-via{color:var(--text-dim);font-size:.74rem}
+.rel-note,.rel-dim{font-size:.76rem;color:var(--text-dim)}
+#detail.graph-active #rel-cards{order:2;flex:none;max-height:30vh;overflow-y:auto;margin:.5rem 0 0}
+#rel-graph .rg-dim{opacity:.22}
+#rel-graph .rg-sel .rg-nr{stroke:var(--primary);stroke-width:3}
+#rel-graph line.rg-on{stroke-opacity:1;stroke-width:2.5}
+#rel-graph line.rg-picked{stroke:var(--primary);stroke-width:3.5}
+#rel-graph .rg-hit{stroke:transparent;stroke-width:14;pointer-events:stroke;cursor:pointer;opacity:1}
+#rel-graph .rg-hit.rg-on,#rel-graph .rg-hit.rg-picked{stroke:transparent;stroke-width:14}
+#rel-graph .rg-hit:focus{outline:none;stroke:var(--focus-ring);stroke-opacity:.45}
+#rel-graph g[data-nid]{outline:none}
+#rel-graph g[data-nid]:focus .rg-nr{stroke:var(--focus-ring);stroke-width:3}
+
 /* Window tiers (packet 1449). body.compact and body.narrow come from isCompact/isNarrow, the one authority.
    body clips overflow, so a header wider than the window would strand its right-hand controls. */
 #browse-bar,#drawer-hdr,#more-btn,.util-label{display:none}
@@ -553,6 +583,8 @@ body.compact .xref-tab-label{writing-mode:horizontal-tb;font-size:.8rem}
 body.compact #detail-xref{width:auto!important;max-height:38vh;border-right:none;border-bottom:1px solid var(--border)}
 body.compact #detail-scroll{min-height:0;padding:.6rem .75rem}
 body.compact #detail-tabs,body.compact #graph-toolbar{flex-wrap:wrap}
+body.compact #graph-canvas-wrap{min-height:220px}
+body.narrow .rel-card-grid{grid-template-columns:minmax(0,1fr)}
 /* A wide table or block scrolls in its own frame; the title and tabs stay put. */
 body.compact #detail-code>*,body.compact #detail-header{min-width:0;overflow-x:auto}
 body.compact #detail-tabs{overflow-x:visible}

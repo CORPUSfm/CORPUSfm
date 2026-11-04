@@ -1,6 +1,7 @@
 (function() {
 var NS = 'http://www.w3.org/2000/svg';
-var CL_W = 150, CL_H = 28;  // normalized node size for Cluster / Force views
+var CL_W = 150, CL_H = 28;  // normalized node size for the By Table view
+var READABLE = 0.8;  // screen pixels per map unit when first centering; node labels are 9 units high
 
 function _el(tag, attrs) {
   var e = document.createElementNS(NS, tag);
@@ -30,7 +31,7 @@ window._rgBuild = function(gd, svgEl, navigateFn) {
   for (var n of nodes) {
     var cp = _el('clipPath',{id:'rgcp'+n.id});
     var cpr = _el('rect',{id:'rgcpr'+n.id, x:2, y:2,
-      width:Math.max(0,n.w-4), height:Math.max(0,n.h-4)});
+      width:Math.max(0,(n.w||0)-4), height:Math.max(0,(n.h||0)-4)});
     cp.appendChild(cpr); defs.appendChild(cp);
   }
   svgEl.appendChild(defs);
@@ -47,35 +48,47 @@ window._rgBuild = function(gd, svgEl, navigateFn) {
       'data-fid':e.from_id, 'data-tid':e.to_id,
       stroke:isCart?cartStroke:'#4e9eff', 'stroke-width':'1.5',
       'stroke-opacity':isCart?'0.4':'0.6',
-      'data-preds':JSON.stringify(e.predicates||[])
+      'data-item':e.item||''
     });
     if (isCart) ln.setAttribute('stroke-dasharray','5 3');
     eg.appendChild(ln);
   }
   svgEl.appendChild(eg);
 
+  // A hairline can't be clicked, focused or tapped, so each relationship gets a wide invisible target.
+  var hg = _el('g',{'class':'rg-hits'});
+  var nameOf = {}; for (var n of nodes) nameOf[n.id]=n.name;
+  for (var e of edges) {
+    var hit = _el('line',{'class':'rg-hit','data-fid':e.from_id,'data-tid':e.to_id,'data-item':e.item||'',
+      'data-preds':JSON.stringify(e.predicates||[]),tabindex:'0',role:'button',
+      'aria-label':'Relationship: '+(nameOf[e.from_id]||'?')+' to '+(nameOf[e.to_id]||'?')});
+    hg.appendChild(hit);
+  }
+  svgEl.appendChild(hg);
+
   // Nodes
   var ng = _el('g',{'class':'rg-nodes'});
   for (var n of nodes) {
     var deg = n.degree||0, isHub = deg >= 5;  // relational hub: many relationships meet here
-    var g = _el('g',{'data-nid':n.id,'data-to-name':n.name,
-      'data-bt':n.base_table||'','data-ext':n.external?'1':'','data-deg':deg});
+    var g = _el('g',{'data-nid':n.id,'data-to-name':n.name,'data-item':n.item||'',
+      'data-bt':n.base_table||'','data-ext':n.external?'1':'','data-deg':deg,
+      tabindex:'0',role:'button','aria-label':'Occurrence: '+n.name});
     g.style.cursor='pointer';
     var ttl = _el('title',{}); ttl.textContent = n.name + ' · ' + deg + ' relationship' + (deg===1?'':'s');
     g.appendChild(ttl);
-    var rect = _el('rect',{'class':'rg-nr', x:0, y:0, width:n.w, height:n.h,
+    var rect = _el('rect',{'class':'rg-nr', x:0, y:0, width:n.w||0, height:n.h||0,
       fill:n.color,'fill-opacity':'0.9',
       stroke:isHub?'#f0a000':'#888','stroke-width':isHub?'2.5':'1',rx:3});
-    var txt = _el('text',{'class':'rg-nt', x:n.w/2, y:n.h/2,
+    var txt = _el('text',{'class':'rg-nt', x:(n.w||0)/2, y:(n.h||0)/2,
       'text-anchor':'middle','dominant-baseline':'middle',fill:nodeTxt,
       'font-size':'9','font-family':'SFMono-Regular,Consolas,monospace',
       'clip-path':'url(#rgcp'+n.id+')','pointer-events':'none'});
     txt.textContent = n.name;
     g.appendChild(rect); g.appendChild(txt);
     if (n.external) {
-      var bk=_el('rect',{'class':'rg-ext',x:n.w-14,y:2,width:12,height:10,
+      var bk=_el('rect',{'class':'rg-ext',x:(n.w||0)-14,y:2,width:12,height:10,
         fill:'#f0a000',rx:2,'pointer-events':'none'});
-      var bt=_el('text',{'class':'rg-ext-t',x:n.w-8,y:7,
+      var bt=_el('text',{'class':'rg-ext-t',x:(n.w||0)-8,y:7,
         'text-anchor':'middle','dominant-baseline':'middle',fill:'#000',
         'font-size':'6','pointer-events':'none'});
       bt.textContent='ext';
@@ -87,16 +100,17 @@ window._rgBuild = function(gd, svgEl, navigateFn) {
 
   // Index node elements by id
   svgEl._rgNodeEls = new Map(Array.from(ng.children).map(g=>[g.getAttribute('data-nid'),g]));
-  svgEl._rgEdgeEls = Array.from(eg.children);
+  svgEl._rgEdgeEls = Array.from(eg.children).concat(Array.from(hg.children));
   svgEl._rgOv = ov;
 
   // ── Pan / zoom ───────────────────────────────────────────────────────────────
-  var vb={x:0,y:0,w:1000,h:1000}, pan=false, px=0, py=0;
+  var vb={x:0,y:0,w:1000,h:1000}, pan=false, px=0, py=0, sx=0, sy=0, dragged=false;
   svgEl._rgVb = vb;
   function setVb(){svgEl.setAttribute('viewBox',vb.x+' '+vb.y+' '+vb.w+' '+vb.h);}
-  function onDown(e){if(e.button!==0)return;pan=true;px=e.clientX;py=e.clientY;svgEl.style.cursor='grabbing';e.preventDefault();}
+  function onDown(e){if(e.button!==0)return;pan=true;dragged=false;px=sx=e.clientX;py=sy=e.clientY;svgEl.style.cursor='grabbing';e.preventDefault();}
   function onMove(e){
     if(!pan)return;
+    if(Math.abs(e.clientX-sx)+Math.abs(e.clientY-sy)>4)dragged=true;
     var r=svgEl.getBoundingClientRect();if(!r.width||!r.height)return;
     vb.x-=(e.clientX-px)*(vb.w/r.width); vb.y-=(e.clientY-py)*(vb.h/r.height);
     px=e.clientX;py=e.clientY;setVb();
@@ -113,9 +127,10 @@ window._rgBuild = function(gd, svgEl, navigateFn) {
     vb.y=wy-(e.clientY-r.top)/r.height*vb.h;
     setVb();
   }
-  svgEl.addEventListener('mousedown',onDown);
-  document.addEventListener('mousemove',onMove);
-  document.addEventListener('mouseup',onUp);
+  svgEl.addEventListener('pointerdown',onDown);
+  document.addEventListener('pointermove',onMove);
+  document.addEventListener('pointerup',onUp);
+  document.addEventListener('pointercancel',onUp);
   svgEl.addEventListener('wheel',onWheel,{passive:false});
 
   // ── Tooltip ──────────────────────────────────────────────────────────────────
@@ -134,19 +149,31 @@ window._rgBuild = function(gd, svgEl, navigateFn) {
     showTip(e,preds.length?preds.map(p=>'<div>'+p+'</div>').join(''):'(no predicates)');
   }
   ng.addEventListener('mousemove',onNMove); ng.addEventListener('mouseleave',hideTip);
-  eg.addEventListener('mousemove',onEMove); eg.addEventListener('mouseleave',hideTip);
-  ng.addEventListener('click',function(e){
-    var g=e.target.closest&&e.target.closest('[data-to-name]');
-    if(g) navigateFn('TableOccurrenceCatalog',g.getAttribute('data-to-name'));
-  });
+  hg.addEventListener('mousemove',onEMove); hg.addEventListener('mouseleave',hideTip);
+  function targetOf(e){
+    var t=e.target.closest&&e.target.closest('[data-item]');
+    if(!t||!t.getAttribute('data-item'))return null;
+    return {section:t.hasAttribute('data-nid')?'TableOccurrenceCatalog':'RelationshipCatalog',item:t.getAttribute('data-item')};
+  }
+  function onPick(e){
+    if(dragged){dragged=false;return;}
+    var t=targetOf(e); if(t){hideTip();navigateFn(t.section,t.item);}
+  }
+  function onKey(e){
+    if(e.key!=='Enter'&&e.key!==' ')return;
+    var t=targetOf(e); if(t){e.preventDefault();navigateFn(t.section,t.item);}
+  }
+  ng.addEventListener('click',onPick); hg.addEventListener('click',onPick);
+  ng.addEventListener('keydown',onKey); hg.addEventListener('keydown',onKey);
 
   svgEl._rgCleanup = function(){
-    svgEl.removeEventListener('mousedown',onDown);
-    document.removeEventListener('mousemove',onMove);
-    document.removeEventListener('mouseup',onUp);
+    svgEl.removeEventListener('pointerdown',onDown);
+    document.removeEventListener('pointermove',onMove);
+    document.removeEventListener('pointerup',onUp);
+    document.removeEventListener('pointercancel',onUp);
     svgEl.removeEventListener('wheel',onWheel);
     ng.removeEventListener('mousemove',onNMove); ng.removeEventListener('mouseleave',hideTip);
-    eg.removeEventListener('mousemove',onEMove); eg.removeEventListener('mouseleave',hideTip);
+    hg.removeEventListener('mousemove',onEMove); hg.removeEventListener('mouseleave',hideTip);
   };
 };
 
@@ -154,8 +181,12 @@ window._rgBuild = function(gd, svgEl, navigateFn) {
 window._rgApply = function(svgEl, posMap) {
   var nodeEls=svgEl._rgNodeEls, edgeEls=svgEl._rgEdgeEls;
   if(!nodeEls||!edgeEls) return;
+  svgEl._rgPos = posMap;
   for (var [id,g] of nodeEls) {
-    var p=posMap[id]; if(!p)continue;
+    var p=posMap[id];
+    g.style.display = p ? '' : 'none';   // no captured position: off the map, never placed by guesswork
+    if(g.tabIndex!==undefined) g.setAttribute('tabindex', p ? '0' : '-1');
+    if(!p)continue;
     g.setAttribute('transform','translate('+p.x+','+p.y+')');
     var rect=g.querySelector('.rg-nr');
     if(rect){rect.setAttribute('width',p.w);rect.setAttribute('height',p.h);}
@@ -168,7 +199,9 @@ window._rgApply = function(svgEl, posMap) {
   }
   for (var ln of edgeEls) {
     var fid=ln.getAttribute('data-fid'),tid=ln.getAttribute('data-tid');
-    var fp=posMap[fid],tp=posMap[tid]; if(!fp||!tp)continue;
+    var fp=posMap[fid],tp=posMap[tid];
+    ln.style.display = (fp&&tp) ? '' : 'none';
+    if(!fp||!tp)continue;
     ln.setAttribute('x1',fp.x+fp.w/2); ln.setAttribute('y1',fp.y+fp.h/2);
     ln.setAttribute('x2',tp.x+tp.w/2); ln.setAttribute('y2',tp.y+tp.h/2);
   }
@@ -185,7 +218,7 @@ window._rgFit = function(svgEl, bounds) {
 // ── Layout: As Built (FM CoordRect) ──────────────────────────────────────────
 window._rgLayoutFM = function(gd) {
   var pos={};
-  for (var n of gd.nodes) pos[n.id]={x:n.x,y:n.y,w:n.w,h:n.h};
+  for (var n of gd.nodes) if (n.x !== null && n.x !== undefined) pos[n.id]={x:n.x,y:n.y,w:n.w,h:n.h};
   return {positions:pos, bounds:_bounds(pos)};
 };
 
@@ -227,58 +260,47 @@ window._rgBuildOverlay = function(svgEl, ovData) {
 };
 window._rgClearOverlay = function(svgEl){var ov=svgEl._rgOv;if(ov)ov.innerHTML='';};
 
-// ── Layout: Discover (force-directed) ────────────────────────────────────────
-window._rgLayoutForce = function(gd, startPos, onFrame, onSettle) {
-  var REPEL=1400,ATTRACT=0.04,CLUST=0.006,DAMP=0.82,REST=220,MAX=180;
-  var sim=gd.nodes.map(n=>{
-    var sp=startPos[n.id]||{x:n.x,y:n.y,w:CL_W,h:CL_H};
-    // Hub emphasis: node size grows with degree (capped). The free-form Discover
-    // layout is where size variation reads cleanly — hubs pull central and large.
-    var sc=Math.min(1.9, 1 + 0.1*(n.degree||0));
-    return {id:n.id,bt:n.base_table,w:CL_W*sc,h:CL_H*sc,
-            x:sp.x+sp.w/2+(Math.random()-.5)*40,
-            y:sp.y+sp.h/2+(Math.random()-.5)*40,
-            vx:0,vy:0};
-  });
-  var niMap=new Map(sim.map((n,i)=>[n.id,i]));
-  var adj=[];
-  for (var e of gd.edges){
-    var fi=niMap.get(e.from_id),ti=niMap.get(e.to_id);
-    if(fi!==undefined&&ti!==undefined)adj.push([fi,ti]);
+// ── Selection: emphasis only; positions never change ─────────────────────────
+window._rgSelect = function(svgEl, sel) {
+  var nodeEls=svgEl._rgNodeEls, edgeEls=svgEl._rgEdgeEls;
+  if(!nodeEls||!edgeEls) return;
+  for (var [id,g] of nodeEls) {
+    g.classList.toggle('rg-sel', !!sel && sel.main.includes(id));
+    g.classList.toggle('rg-dim', !!sel && !sel.main.includes(id) && !sel.near.includes(id));
+    if (sel && sel.main.includes(id)) g.setAttribute('aria-current','true'); else g.removeAttribute('aria-current');
   }
-  var frame=0,raf=null;
-  function tick(){
-    for(var n of sim){n.fx=0;n.fy=0;}
-    for(var i=0;i<sim.length;i++) for(var j=i+1;j<sim.length;j++){
-      var dx=sim[j].x-sim[i].x,dy=sim[j].y-sim[i].y;
-      var d2=dx*dx+dy*dy||1,d=Math.sqrt(d2),f=REPEL/d2;
-      sim[i].fx-=f*dx/d;sim[i].fy-=f*dy/d;
-      sim[j].fx+=f*dx/d;sim[j].fy+=f*dy/d;
-    }
-    for(var [ai,bi] of adj){
-      var dx=sim[bi].x-sim[ai].x,dy=sim[bi].y-sim[ai].y;
-      var d=Math.sqrt(dx*dx+dy*dy)||1,f=ATTRACT*(d-REST);
-      sim[ai].fx+=f*dx/d;sim[ai].fy+=f*dy/d;
-      sim[bi].fx-=f*dx/d;sim[bi].fy-=f*dy/d;
-    }
-    var cc={};
-    for(var n of sim){if(!cc[n.bt])cc[n.bt]={x:0,y:0,c:0};cc[n.bt].x+=n.x;cc[n.bt].y+=n.y;cc[n.bt].c++;}
-    for(var bt in cc){cc[bt].x/=cc[bt].c;cc[bt].y/=cc[bt].c;}
-    for(var n of sim){var c=cc[n.bt];n.fx+=CLUST*(c.x-n.x);n.fy+=CLUST*(c.y-n.y);}
-    var energy=0;
-    for(var n of sim){
-      n.vx=(n.vx+n.fx)*DAMP;n.vy=(n.vy+n.fy)*DAMP;
-      n.x+=n.vx;n.y+=n.vy;energy+=n.vx*n.vx+n.vy*n.vy;
-    }
-    var pm={};
-    for(var n of sim) pm[n.id]={x:n.x-n.w/2,y:n.y-n.h/2,w:n.w,h:n.h};
-    onFrame(pm);
-    frame++;
-    if(energy<0.5||frame>=MAX){raf=null;onSettle({positions:pm,bounds:_bounds(pm)});}
-    else raf=requestAnimationFrame(tick);
+  for (var ln of edgeEls) {
+    var item=ln.getAttribute('data-item');
+    var on=!!sel && sel.edges.includes(item);
+    ln.classList.toggle('rg-on', on);
+    ln.classList.toggle('rg-picked', !!sel && sel.edge===item);
+    ln.classList.toggle('rg-dim', !!sel && !on);
   }
-  raf=requestAnimationFrame(tick);
-  return function(){if(raf){cancelAnimationFrame(raf);raf=null;}};
+};
+
+// ── Center ids in the view by moving the viewBox; widen it only if they don't fit ──
+// readable: the view is still the whole-map fit, which on a large file makes every label too small to read.
+window._rgCenter = function(svgEl, ids, readable) {
+  var pos=svgEl._rgPos, v=svgEl._rgVb; if(!pos||!v) return false;
+  var x0=1e9,y0=1e9,x1=-1e9,y1=-1e9,found=false;
+  for (var id of ids) {
+    var p=pos[id]; if(!p)continue; found=true;
+    if(p.x<x0)x0=p.x; if(p.y<y0)y0=p.y;
+    if(p.x+p.w>x1)x1=p.x+p.w; if(p.y+p.h>y1)y1=p.y+p.h;
+  }
+  if(!found) return false;
+  var r=svgEl.getBoundingClientRect();
+  if(readable&&r.width&&r.height&&Math.min(r.width/v.w,r.height/v.h)<READABLE){v.w=r.width/READABLE;v.h=r.height/READABLE;}
+  var scale=Math.max(1,(x1-x0)*1.25/v.w,(y1-y0)*1.25/v.h);
+  v.w*=scale; v.h*=scale;
+  v.x=(x0+x1)/2-v.w/2; v.y=(y0+y1)/2-v.h/2;
+  svgEl.setAttribute('viewBox',v.x+' '+v.y+' '+v.w+' '+v.h);
+  return true;
+};
+window._rgSetView = function(svgEl, view) {
+  var v=svgEl._rgVb; if(!v||!view)return;
+  v.x=view.x; v.y=view.y; v.w=view.w; v.h=view.h;
+  svgEl.setAttribute('viewBox',v.x+' '+v.y+' '+v.w+' '+v.h);
 };
 
 })(); // end graph module

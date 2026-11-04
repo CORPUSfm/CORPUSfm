@@ -30,7 +30,7 @@ artifact (workflows, security reach, the data model, AI usage) are served throug
   - **Rendered** — a readable rendering: script steps with line numbers and syntax
     highlighting, field calculations, custom-function formulas, privilege detail.
   - **Tree / Attributes / Raw** — the underlying structure and the original FileMaker XML.
-  - **Graph** (relationships) / **Wireframe** (layouts) where they apply.
+  - **Graph** (table occurrences and relationships) / **Wireframe** (layouts) where they apply.
 
 ## Searching
 
@@ -136,9 +136,14 @@ re-ingest an older artifact and generate a new Explorer to pick up script calls.
 
 ## The relationship graph
 
-The relationship tab draws the graph three ways — **By Table**, **As Built**, and **Discover**
-(a force layout that pulls hub table-occurrences to the center and sizes nodes by how many
-relationships touch them). Use it to find the spine of a solution and its isolated corners.
+Open a table occurrence or a relationship and Explorer shows cards with the item and its immediate
+connections: which base table or external source an occurrence uses, and every condition and each side's
+settings for a relationship. Choose a neighbour to step to it. **Flip sides** swaps the view without changing what the relationship means.
+
+The **Graph** tab shows the same selection on **As Built**, FileMaker's own positions, or **By Table**. Choosing a
+box or a line selects it and centers it, without moving anything on the map; an occurrence with no captured
+position is left off and counted. Drag to pan, use the wheel to zoom, and **Fit** to see everything. Back and
+`Alt`+`→` return to the same view.
 
 ## Keyboard shortcuts
 
