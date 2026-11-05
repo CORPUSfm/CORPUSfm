@@ -142,6 +142,9 @@ The **Runs** page lists **successful** runs. Each row carries its own actions: *
 job that produced it), **Explore** (its artifact), **Diff** (against the previous artifact from
 that same job — disabled on a job's first run), and **Filter** (narrow the page to that job).
 
+If the history can't be read, the page says **Unable to load run history** and offers **Retry**. Any
+runs already on screen stay there, marked as possibly outdated, with the job and page they belong to.
+
 Failures are not listed here, because a failure is something to fix rather than to keep: a failing
 job turns its file card red on the [Jobs](/docs/jobs) page with its error, and the failed work
 parks on the [Queue](/docs/queue) for a **Restart** or **Delete**. Failed runs *are* still

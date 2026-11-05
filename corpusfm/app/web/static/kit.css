@@ -276,6 +276,12 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
   background: var(--surface); color: var(--text); font-size: 13px;
 }
 .cfm-tier-banner .cfm-btn { margin-left: auto; }
+.cfm-load-failed {
+  display: flex; align-items: center; gap: 10px; margin: 0 0 16px;
+  padding: 10px 14px; border: 1px solid var(--border-2); border-left: 3px solid var(--health-broken);
+  border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: 13px;
+}
+.cfm-load-failed .cfm-btn { margin-left: auto; flex: none; }
 .cfm-tier-notice {
   display: flex; align-items: flex-start; gap: 10px;
   padding: 14px 16px; border: 1px solid var(--border-2); border-radius: var(--radius);

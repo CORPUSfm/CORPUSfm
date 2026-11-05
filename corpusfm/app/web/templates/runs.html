@@ -43,9 +43,19 @@
 
   <div x-show="taskError" class="cfm-inline-error" x-text="taskError"></div>
 
+  {# A failed load is said out loud, and never as an empty history. Rows, filter, page and total all
+     stay on the last load that succeeded, so what is on screen is one consistent older answer. #}
+  <div class="cfm-load-failed" role="alert" x-show="loadFailed" x-cloak>
+    <span>
+      <strong>Unable to load run history.</strong>
+      <span x-show="runs.length > 0" x-text="staleNote()"></span>
+    </span>
+    <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!loading" @click="retry()">Retry</button>
+  </div>
+
   {# ── Ledger: one list-card per successful run, actions on the row ────────────── #}
-  <template x-if="!loading && runs.length === 0">
-    <p class="cfm-list-empty">No runs yet. Jobs record a run entry after each execution.</p>
+  <template x-if="loaded && !loadFailed && runs.length === 0">
+    <p class="cfm-list-empty">No runs found. Jobs record a run entry after each execution.</p>
   </template>
 
   <div x-show="runs.length > 0">
@@ -95,6 +105,7 @@ function runsPage() {
   return {
     runs: [], jobs: [], total: 0, page: 1, pages: 1, loading: false,
     filterJobUuid: '', filterLabel: '',
+    loaded: false, loadFailed: false, failedView: null, loadSeq: 0,
     taskError: '', openDD: '',
 
     async init() {
@@ -106,25 +117,52 @@ function runsPage() {
       await this.load();
     },
 
-    async _fetch(n) {
+    async _fetch(view) {
       // status=ok is not a filter the user can change — this page lists successes only.
-      const p = new URLSearchParams({ page: n, per_page: 50, status: 'ok',
-                                      job_uuid: this.filterJobUuid,
-                                      job: this.filterJobUuid ? '' : this.filterLabel });
+      const p = new URLSearchParams({ page: view.page, per_page: 50, status: 'ok',
+                                      job_uuid: view.uuid,
+                                      job: view.uuid ? '' : view.label });
       const r = await fetch('/api/runs/list?' + p);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
       const d = await r.json();
-      this.runs = d.runs || []; this.total = d.total || 0; this.pages = d.pages || 1;
-      if (d.jobs) this.jobs = d.jobs;
-      if (this.filterJobUuid && !this.filterLabel) {
-        const j = this.jobs.find(x => x.uuid === this.filterJobUuid);
-        if (j) this.filterLabel = j.name;
-      }
-      this.page = n;
+      if (!d || d.error || !Array.isArray(d.runs)) throw new Error('unusable response');
+      return d;
     },
-    async load()  { this.loading = true; try { await this._fetch(1); } catch (_) {} finally { this.loading = false; } },
-    async goPage(n) { this.loading = true; try { await this._fetch(n); } catch (_) {} finally { this.loading = false; } },
 
-    setFilter(uuid, label) { this.filterJobUuid = uuid; this.filterLabel = label; this.load(); },
+    // Page state changes only on success, so a failed request leaves no half-applied filter or page.
+    // A superseded response is dropped: an older reply must not overwrite or fail a newer view.
+    async _show(view) {
+      const seq = ++this.loadSeq;
+      this.loading = true;
+      try {
+        const d = await this._fetch(view);
+        if (seq !== this.loadSeq) return;
+        this.runs = d.runs; this.total = d.total || 0; this.pages = d.pages || 1;
+        if (d.jobs) this.jobs = d.jobs;
+        this.filterJobUuid = view.uuid;
+        const j = view.uuid && !view.label && this.jobs.find(x => x.uuid === view.uuid);
+        this.filterLabel = j ? j.name : view.label;
+        this.page = view.page;
+        this.loaded = true; this.loadFailed = false; this.failedView = null;
+      } catch (_) {
+        if (seq !== this.loadSeq) return;
+        this.loadFailed = true; this.failedView = view;
+      } finally {
+        if (seq === this.loadSeq) this.loading = false;
+      }
+    },
+
+    _view(page) { return { uuid: this.filterJobUuid, label: this.filterLabel, page }; },
+    load()      { return this._show(this._view(1)); },
+    goPage(n)   { return this._show(this._view(n)); },
+    retry()     { return this._show(this.failedView || this._view(this.page)); },
+
+    staleNote() {
+      const where = (this.filterLabel || 'All jobs') + ', page ' + this.page;
+      return 'Showing the last runs that loaded (' + where + '). They may be outdated.';
+    },
+
+    setFilter(uuid, label) { return this._show({ uuid, label, page: 1 }); },
     filterBy(r) { this.setFilter(r.job_uuid || '', r.job_name || ''); },
 
     // The run's OWN job, by uuid. A name is mutable and a deleted-then-recreated job reuses it,

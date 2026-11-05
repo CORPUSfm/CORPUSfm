@@ -305,21 +305,35 @@ def list_run_records(backend, job_uuid: str, limit: int = 50) -> list:
     return out[: max(0, limit)] if limit else out
 
 
-def list_all_runs(backend, limit: int = 500) -> list:
+class RunHistoryUnavailable(RuntimeError):
+    """The run history could not be read — raised only for a caller that asked to hear about it.
+
+    "No runs" and "could not ask" are different facts. The default `[]` stays for the alert feed,
+    which prefers a degraded render; a surface that PAINTS the history cannot make that trade.
+    """
+
+
+def list_all_runs(backend, limit: int = 500, *, strict: bool = False) -> list:
     """Every Type=Run row, newest first — regardless of whether its job still exists (packet 1149).
 
     The per-job reader above answers "this job's runs"; this one answers "what has run", which is a
     different question and the one a history page must ask. Enumerating live job configs instead drops
     the runs of a DELETED job even though their HISTORY rows are intact — history that exists but
     cannot be reached is the failure this packet is about. Each row carries its own frozen job label,
-    so nothing here needs the job to be alive."""
+    so nothing here needs the job to be alive.
+
+    ``strict=True`` raises `RunHistoryUnavailable` rather than degrading an unreadable store to `[]`."""
     eng = _engine(backend)
     if eng is None:
+        if strict:
+            raise RunHistoryUnavailable("this backend has no storage engine to read history from")
         return []
     try:
         rows, _ = eng.page(_HISTORY, eq={"Type": RUN}, orderby="Timestamp", desc=True,
                            page=1, per_page=(limit or 500), count=False)
-    except Exception:
+    except Exception as exc:
+        if strict:
+            raise RunHistoryUnavailable(f"the HISTORY read failed ({type(exc).__name__})") from exc
         logger.debug("history: list_all_runs failed", exc_info=True)
         return []
     from corpusfm.server.jobs.history import RunRecord

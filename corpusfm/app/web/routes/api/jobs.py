@@ -8,12 +8,17 @@ serves only the run-history ledger that the Runs page reads.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from corpusfm.app.web.auth import require_auth
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+_RUNS_UNAVAILABLE = "Unable to load run history"
 
 
 @router.get("/runs/list", dependencies=[Depends(require_auth)])
@@ -25,6 +30,12 @@ def runs_list(
     status: str = "",
     trigger: str = "",
 ) -> JSONResponse:
+    """A failure is an error status, never an empty 200: the page cannot tell an empty list from one
+    it could not read. A storage read answers 503 and anything else 500, with the detail in the server
+    log. No outage header: a real outage reaches the shell through its own poll, and one unreadable
+    table must not tell the whole app it can't reach CORPUSfm."""
+    from corpusfm.server.history import RunHistoryUnavailable
+    from corpusfm.server.jobs.store import JobsStoreUnavailable
     try:
         from corpusfm.server.jobs.store import list_jobs
         from corpusfm.server.history import list_all_runs
@@ -38,7 +49,7 @@ def runs_list(
         # history of a deleted job even though its HISTORY rows were intact — and a deleted job's
         # failures are exactly what someone comes here to find. Each run carries its own frozen
         # job_name, so no run needs its job to still exist in order to render.
-        runs = list_all_runs(backend, limit=2000)
+        runs = list_all_runs(backend, limit=2000, strict=True)
 
         # Record UUIDs whose artifact is actually present (packet 085 U3f — a run's archive_path
         # is now the produced record's UUID), backend-agnostic: on the FM backend artifacts live
@@ -143,9 +154,12 @@ def runs_list(
             "jobs": sorted(({"uuid": u, "name": n} for u, n in job_opts.items() if u and n),
                            key=lambda j: j["name"].lower()),
         })
-    except Exception as exc:
-        return JSONResponse({"runs": [], "total": 0, "page": 1, "pages": 1,
-                             "job_names": [], "error": str(exc)})
+    except (RunHistoryUnavailable, JobsStoreUnavailable):
+        logger.error("Run history could not be read from storage", exc_info=True)
+        return JSONResponse({"error": _RUNS_UNAVAILABLE}, status_code=503)
+    except Exception:
+        logger.error("Run history could not be built", exc_info=True)
+        return JSONResponse({"error": _RUNS_UNAVAILABLE}, status_code=500)
 
 
 @router.get("/jobs/running", dependencies=[Depends(require_auth)])
