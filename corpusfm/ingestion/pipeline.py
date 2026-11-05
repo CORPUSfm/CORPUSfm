@@ -1602,6 +1602,7 @@ def _stage_build_artifact(state: PipelineState) -> Artifact:
         completeness_profile=profile,
         structure_catalog=sc_snapshot,
         has_corpusfm_export=has_export,
+        graph_notes=list(result.graph_notes_xml),
         # rendered_text was just produced by the current renderer; stamp it current.
         render_version=RENDER_VERSION,
         # Carry the name_map so addon artifacts are self-contained (no sidecar dependency).

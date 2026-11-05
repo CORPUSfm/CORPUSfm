@@ -27,7 +27,10 @@ Every Job Run is ONE unified record (packet 1142 — the run IS the acquire):
 from __future__ import annotations
 
 import logging
+import threading
+import time
 import uuid as _uuidlib
+from datetime import datetime, timezone
 
 from corpusfm.core.filenames import primary_name_from_filename
 from corpusfm.server import enrichment
@@ -83,7 +86,16 @@ def _in_flight(repo, step_type: str, uuid: str) -> bool:
     dedup so a double-click / re-request doesn't stack redundant multi-minute work. (The rare
     import-tail race — a fresh Index while the import is still landing — is idempotent upsert, so it's
     left uncaught.)"""
-    return any(r.jor.get("UUIDStorage", "") == uuid for r in repo.list_by_type(step_type))
+    if any(r.jor.get("UUIDStorage", "") == uuid for r in repo.list_by_type(step_type)):
+        return True
+    # A live record that still plans this step for the target, such as a re-ingest's later stages.
+    for r in repo.list_all():
+        steps = r.jor.get("Steps") or []
+        cursor = r.jor.get("Type", "")
+        if (r.jor.get("UUIDStorage", "") == uuid and not Q.is_failed(r.jor) and cursor in steps
+                and step_type in steps[steps.index(cursor) + 1:]):
+            return True
+    return False
 
 
 def enqueue_enrichment_steps(backend, uuid: str, steps, *, owner: str = "") -> str:
@@ -580,6 +592,9 @@ def enqueue_reingest(backend, uuid: str, *, owner: str = "", was_indexed=None) -
     re-ingest for the same target; returns the record UUID, or ``""`` if deduped. Blocking — call off
     the event loop.
 
+    The whole plan is on this ONE record (packet 1452), so the Queue shows the operation rather than a
+    row per stage. Index comes before summarize: a slow summary mustn't hold up search (packet 1170).
+
     ``was_indexed`` may be passed explicitly by a caller that already measured the artifact's index
     state; when None, it is read from the live index here."""
     repo = _repo(backend)
@@ -594,7 +609,9 @@ def enqueue_reingest(backend, uuid: str, *, owner: str = "", was_indexed=None) -
         was_summarized = bool(getattr(m, "has_summaries", False))
     except Exception:
         pass
-    qid = repo.enqueue([Q.REINGEST],
+    tail = ([Q.INDEX] if was_indexed and enrichment.embedder_ready() else []) + \
+           ([Q.SUMMARIZE] if was_summarized and enrichment.provider_ready() else [])
+    qid = repo.enqueue([Q.REINGEST] + tail,
                        payload={"was_indexed": was_indexed, "was_summarized": was_summarized},
                        owner=owner or "", uuid_storage=uuid)
     W.poke(Q.REINGEST)
@@ -867,8 +884,9 @@ def summarize_handler(repo, row) -> W.StepResult:
                              should_cancel=_should_cancel)
     # Summaries never change raw index membership, and the `summarized` badge is per-record.
     if stopped_early["v"]:
-        return W.fail("Interrupted by user.")   # partial summaries kept; no summary-layer index chained
-    _maybe_index_summary_layer(be, row)
+        return W.fail(_INTERRUPTED)   # partial summaries kept; no summary-layer index chained
+    if row.key not in _whole_cancels:     # a stop that landed after the last object still means no more work
+        _maybe_index_summary_layer(be, row)
     return W.ok()
 
 
@@ -924,16 +942,12 @@ def index_handler(repo, row) -> W.StepResult:
 
 
 def reingest_handler(repo, row) -> W.StepResult:
-    """Re-ingest one artifact IN PLACE from its retained source XML (packet 1062), then re-enqueue only
-    the enrichment it originally had. Target = ``UUIDStorage``; the payload carries the captured
-    ``was_indexed``/``was_summarized`` flags.
+    """Re-ingest one artifact IN PLACE from its retained source XML (packet 1062). Target = ``UUIDStorage``.
 
     On a re-ingest failure the OLD record is left untouched (the atomic op guarantees it) and the step
-    parks (Restartable). On success:
-      - was_indexed + an embedder configured → DEINDEX (stale same-UUID vectors) then enqueue a fresh
-        INDEX (content changed → vectors must be rebuilt, never left pointing at old text);
-      - was_summarized + a provider configured → enqueue SUMMARIZE (the fresh blob carries no summaries).
-    Enrichment the artifact never had is left off (respect the user's choice)."""
+    parks (Restartable). On success, its planned enrichment stages stay on this record (packet 1452), minus
+    any whose provider has since gone; an index stage first DEINDEXES the stale same-UUID vectors.
+    """
     from corpusfm.storage import get_backend
     from corpusfm.storage.artifact_store import reingest_artifact
     from corpusfm.app.app_config import load_app_config
@@ -946,6 +960,25 @@ def reingest_handler(repo, row) -> W.StepResult:
     res = reingest_artifact(be, uuid, keep_source_xml=cfg.keep_source_xml)
     if not res.ok:
         return W.fail(res.error or "re-ingest failed.")
+    steps = row.jor.get("Steps") or [Q.REINGEST]
+    if len(steps) == 1:
+        _note_reingest_committed(be, row, steps)
+    else:
+        # A provider removed since this was queued means that stage is no longer planned, not failed.
+        tail = [s for s in steps[1:] if (enrichment.embedder_ready() if s == _INDEX else enrichment.provider_ready())]
+        if len(tail) != len(steps) - 1:
+            repo.retain_steps(row.key, [Q.REINGEST] + tail)
+        _note_reingest_committed(be, row, [Q.REINGEST] + tail)
+        if _INDEX in tail:
+            # Same-UUID content changed → the old vectors MUST be cleared before re-indexing, or search
+            # is polluted with stale text.
+            try:
+                enrichment.deindex_artifact_one(uuid)
+            except Exception:
+                log.debug("reingest: pre-index deindex failed for %s", uuid, exc_info=True)
+        return W.ok()
+    # A one-step record: queued before the update, or with no provider ready when it was queued. Any
+    # enrichment it should have follows as its own records.
     p = row.jor.get("Payload", {}) or {}
     owner = row.jor.get("owner", "") or "reingest"
     if p.get("was_indexed") and enrichment.embedder_ready():
@@ -959,6 +992,209 @@ def reingest_handler(repo, row) -> W.StepResult:
     if p.get("was_summarized") and enrichment.provider_ready():
         enqueue_enrichment_steps(be, uuid, [_SUMMARIZE], owner=owner)
     return W.ok()
+
+
+# ── Finished re-ingests ───────────────────────────────────────────────────────────────────────────────
+# A record that finishes is deleted, so nothing durable says it succeeded. This keeps a short, in-memory
+# account for the Queue and artifact detail: lost on restart, and never a source of truth about the artifact.
+_RECENT_REINGEST_SECONDS = 3600
+_RECENT_REINGEST_MAX = 50
+_recent_reingests: dict = {}
+_recent_lock = threading.Lock()
+
+
+def _note_reingest_committed(backend, row, steps: list) -> None:
+    target = _target_name(backend, row.jor.get("UUIDStorage", "")) or "artifact"
+    with _recent_lock:
+        _recent_reingests[row.key] = {
+            "id": row.key, "uuid": row.jor.get("UUIDStorage", ""), "owner": row.jor.get("owner", "unknown"),
+            "target": target, "steps": list(steps),
+            "committed_at": datetime.now(timezone.utc).isoformat(), "finished_at": "", "_at": time.monotonic()}
+        # Only ever a finished account: one still running must be there when it finishes.
+        finished = [k for k, e in _recent_reingests.items() if e["finished_at"]]
+        for key in sorted(finished, key=lambda k: _recent_reingests[k]["_at"])[:max(0, len(_recent_reingests) - _RECENT_REINGEST_MAX)]:
+            del _recent_reingests[key]
+
+
+def _summaries_missing(uuid: str) -> bool:
+    # A provider error for every object still ends the step well, with nothing stored.
+    from corpusfm.storage import get_backend
+    try:
+        return not getattr(get_backend().get_artifact_meta(uuid), "has_summaries", True)
+    except Exception:
+        return False
+
+
+def _reingest_record_finished(row) -> None:
+    with _recent_lock:
+        entry = _recent_reingests.get(row.key)
+    if entry is None:
+        return
+    _whole_cancels.discard(row.key)
+    _stage_skips.discard(row.key)
+    skipped = list((row.jor.get("Payload") or {}).get("stage_skipped") or [])
+    cancelled = bool(entry.get("cancelled"))
+    summary_empty = (Q.SUMMARIZE in entry["steps"] and Q.SUMMARIZE not in skipped and not cancelled
+                     and _summaries_missing(entry["uuid"]))
+    with _recent_lock:
+        entry["skipped"] = skipped
+        if summary_empty:
+            entry["summaries_empty"] = True
+        if summary_empty or skipped or cancelled:
+            entry["finished_at"] = ""
+            entry["ended"] = True
+        else:
+            entry["finished_at"] = datetime.now(timezone.utc).isoformat()
+        entry["_at"] = time.monotonic()
+
+
+# ── A re-ingest's optional stages run independently (packet 1453) ─────────────────────────────────────
+# One record carries the operation, but one optional stage's failure mustn't cost the others. A failure is
+# noted and the record moves on; when the last stage ends, completed stages sort first and the record parks
+# on the first failed one, so Restart repeats only what failed. Cancel means the whole operation: nothing
+# further starts. Skip means this stage: the next one still runs. These two sets say which a stop was; they
+# live only as long as the running step that reads them.
+_INTERRUPTED = "Interrupted by user."
+_whole_cancels: set = set()
+_stage_skips: set = set()
+
+
+def _run_optional_stage(repo, row, handler) -> W.StepResult:
+    qid, step = row.key, row.jor.get("Type", "")
+    # A stop that landed after the previous stage had finished was meant for what comes next.
+    _stage_skips.discard(qid)
+    if qid in _whole_cancels:
+        _whole_cancels.discard(qid)
+        return W.fail(_INTERRUPTED)
+    try:
+        result = handler(repo, row)
+    except Exception as exc:
+        log.warning("queue: re-ingest stage '%s' raised on %s: %s", step, qid, exc, exc_info=True)
+        result = W.fail(f"{step} failed: {exc}")
+    whole, skip = qid in _whole_cancels, qid in _stage_skips
+    _whole_cancels.discard(qid)
+    _stage_skips.discard(qid)
+    fresh = repo.get(qid)
+    if fresh is None or fresh.jor.get("Type") != step:
+        return W.StepResult(ok=result.ok, outcome=result.outcome, settled=True)   # cancelled or skipped while claimed
+    jor = fresh.jor
+    steps = list(jor.get("Steps") or [])
+    later = steps[steps.index(step) + 1:]
+    if whole:
+        if not result.ok:
+            return result
+        if later:       # it finished before the stop landed; the remaining stages still don't start
+            steps = steps[:steps.index(step) + 1]
+            later = []
+            with _recent_lock:
+                if qid in _recent_reingests:
+                    _recent_reingests[qid]["cancelled"] = True
+    payload = dict(jor.get("Payload") or {})
+    failures = dict(payload.get("stage_failures") or {})
+    skipped = list(payload.get("stage_skipped") or [])
+    if result.ok:
+        failures.pop(step, None)
+    elif skip and later and result.outcome == _INTERRUPTED:
+        failures.pop(step, None)
+        skipped.append(step)
+    else:
+        failures[step] = result.outcome or f"{step} failed"
+    payload.update(stage_failures=failures, stage_skipped=skipped)
+    if later or not failures:
+        repo.rewrite(qid, {**jor, "Steps": steps, "Payload": payload})
+        return W.ok()
+    held = [s for s in steps[1:] if s in failures]
+    # In one write: a record resting on a stage with no failure mark would be claimable by that stage's lane.
+    repo.rewrite(qid, Q.failed({**jor, "Payload": payload, "Type": held[0],
+                                "Steps": steps[:1] + [s for s in steps[1:] if s not in failures] + held},
+                               failures[held[0]]))
+    return W.StepResult(ok=False, outcome=failures[held[0]], settled=True)
+
+
+def _stuck_optional_stage(repo, qid: str, outcome: str) -> bool:
+    """A timed-out optional stage doesn't hold back the next one: the process restarts into it."""
+    row = repo.get(qid)
+    if row is None or Q.REINGEST not in (row.jor.get("Steps") or []) or row.jor.get("Type") == Q.REINGEST \
+            or not _later_stages(row.jor):
+        return False
+    payload = dict(row.jor.get("Payload") or {})
+    payload["stage_failures"] = {**(payload.get("stage_failures") or {}), row.jor["Type"]: outcome}
+    repo.rewrite(qid, {**row.jor, "Payload": payload})
+    repo.advance_or_delete(qid)
+    return True
+
+
+def _optional_stage(handler):
+    def run(repo, row) -> W.StepResult:
+        if Q.REINGEST in (row.jor.get("Steps") or []):
+            return _run_optional_stage(repo, row, handler)
+        return handler(repo, row)
+    return run
+
+
+def _later_stages(jor) -> list:
+    steps = jor.get("Steps") or []
+    cursor = jor.get("Type", "")
+    return steps[steps.index(cursor) + 1:] if cursor in steps else []
+
+
+def _can_skip_stage(jor, running: bool) -> bool:
+    if Q.REINGEST not in (jor.get("Steps") or []) or jor.get("Type") == Q.REINGEST or not _later_stages(jor):
+        return False
+    return _is_cancelable_step(jor) if running else True
+
+
+def skip_stage_record(backend, qid: str, actor: str, is_admin: bool) -> "tuple[bool, int, str]":
+    """Skip a re-ingest's current optional stage and carry on with the next (owner-or-admin)."""
+    repo = _repo_or_none(backend)
+    if repo is None:
+        return False, 500, "No storage engine."
+    row = repo.get(qid)
+    if row is None:
+        return False, 404, "No such queued job."
+    if not _authorized(row, actor, is_admin):
+        return False, 403, "Only the owner or an admin can skip this stage."
+    running = qid in W.current_ids()
+    if not _can_skip_stage(row.jor, running):
+        return False, 409, "This stage can't be skipped."
+    if running:
+        _stage_skips.add(qid)
+        if W.request_cancel(qid):
+            return True, 200, "Skipping this stage…"
+        _stage_skips.discard(qid)
+        return False, 409, "This stage just finished — nothing to skip."
+    step = row.jor.get("Type", "")
+    payload = dict(row.jor.get("Payload") or {})
+    failures = dict(payload.get("stage_failures") or {})
+    failures.pop(step, None)
+    payload.update(stage_failures=failures, stage_skipped=list(payload.get("stage_skipped") or []) + [step])
+    repo.rewrite(qid, {**row.jor, "Payload": payload})
+    nxt = repo.advance_or_delete(qid)
+    if nxt:
+        W.poke(nxt)
+    return True, 200, "Skipped."
+
+
+def recent_reingests(live_records: list, *, observed: bool = True) -> list:
+    """Re-ingests that committed and have no live Queue row, newest first. ``state`` is ``done`` when every
+    planned stage ran; ``partial`` when the record left the Queue before its optional stages finished.
+
+    ``observed`` False means the Queue read failed, so an absent row says nothing: only an account already
+    known to have ended is reported, and none expires. A record still live never expires."""
+    live = {r.get("id") for r in live_records}
+    now = time.monotonic()
+    with _recent_lock:
+        if observed:
+            for key in [k for k, e in _recent_reingests.items()
+                        if k not in live and now - e["_at"] > _RECENT_REINGEST_SECONDS]:
+                del _recent_reingests[key]
+        rows = [dict(e) for k, e in _recent_reingests.items()
+                if k not in live and (observed or e["finished_at"] or e.get("ended"))]
+    rows.sort(key=lambda e: e.pop("_at"), reverse=True)
+    for entry in rows:
+        entry["state"] = "done" if entry["finished_at"] else "partial"
+        entry.pop("ended", None)
+    return rows
 
 
 def _maybe_index_summary_layer(be, row) -> None:
@@ -1076,6 +1312,10 @@ def workspace_view(backend) -> list:
             "uuid": j.get("UUIDStorage", ""),
             "owner": j.get("owner", "unknown"),
             "error": j.get("Outcome", "") if status == "failed" else "",
+            # A re-ingest's optional stages (packet 1453): what failed or was skipped along the way.
+            "stage_failures": p.get("stage_failures") or {},
+            "stage_skipped": p.get("stage_skipped") or [],
+            "can_skip_stage": _can_skip_stage(j, status == "running"),
             "created_at": j.get("created_at", ""),
             # JobRun fold (packet 1136 Stage 1, R4): the running-badge data (job identity + FM file)
             # rides the ONE row so the unified activity feed makes /api/jobs/running a redundant
@@ -1134,8 +1374,10 @@ def cancel_record(backend, qid: str, actor: str, is_admin: bool) -> "tuple[bool,
     if qid in W.current_ids():
         if not _is_cancelable_step(row.jor):
             return False, 409, "This job is processing and can't be cancelled mid-run."
+        _whole_cancels.add(qid)
         if W.request_cancel(qid):
             return True, 200, "Cancelling the running step…"
+        _whole_cancels.discard(qid)
         return False, 409, "This job just finished — nothing to cancel."
     repo.delete(qid)
     return True, 200, "Removed from the queue."
@@ -1154,6 +1396,8 @@ def restart_record(backend, qid: str, actor: str, is_admin: bool) -> "tuple[bool
         return False, 409, "That job is not in a failed state."
     if not _authorized(row, actor, is_admin):
         return False, 403, "Only the owner or an admin can restart this job."
+    _whole_cancels.discard(qid)
+    _stage_skips.discard(qid)
     repo.restart(qid)
     W.poke(row.jor.get("Type", ""))
     return True, 200, "Re-queued."
@@ -1183,7 +1427,9 @@ def register_all() -> None:
     """Wire the producer handlers into the framework. Idempotent."""
     W.register(Q.ACQUIRE, acquire_handler)
     W.register(Q.INGEST, ingest_handler)
-    W.register(Q.SUMMARIZE, summarize_handler)
-    W.register(Q.INDEX, index_handler)
+    W.register(Q.SUMMARIZE, _optional_stage(summarize_handler))
+    W.register(Q.INDEX, _optional_stage(index_handler))
     W.register(Q.GIT_EXPORT, git_export_handler)
     W.register(Q.REINGEST, reingest_handler)
+    W.on_record_finished("reingest", _reingest_record_finished)
+    W.on_step_stuck(_stuck_optional_stage)

@@ -46,6 +46,9 @@ class ParseResult:
     field_names: dict = field(default_factory=dict)  # {table_name: [field_name, ...]} for display
     options: dict = field(default_factory=dict)      # {vl_name: fingerprint} from OptionsForValueLists
     options_xml: dict = field(default_factory=dict)  # {vl_name: xml_str}
+    # The relationship graph's own note objects, document order. They live beside the occurrences
+    # in TableOccurrenceCatalog/TableOccurrenceNotes and aren't catalog items (packet 1448).
+    graph_notes_xml: list = field(default_factory=list)
     # {identity_key: [xml_str, ...]} — the ModifyAction LAYOUT projections, kept beside
     # section_xml instead of overwriting it (packet 1353). The AddAction <Layout> is the
     # authoritative content; this projection is supplemental navigation evidence. Measured:
@@ -676,7 +679,10 @@ def load_file(xml_path_or_bytes, label: str) -> ParseResult:
     options: dict[str, str] = {}
     options_xml: dict[str, str] = {}
 
+    graph_notes_xml: list[str] = []
     for action_node in root.findall(config.get("structure_path", "./Structure/")):
+        graph_notes_xml += [ET.tostring(note, encoding="unicode")
+                            for note in action_node.findall("TableOccurrenceCatalog/TableOccurrenceNotes/ObjectList/LayoutObject")]
         secs, sxmls, smeta = _extract_catalogs(action_node, catalog_configs, noise_attrs, noise_tags)
         _merge(sections, secs)
         _merge_catalog_xml(section_xml, section_meta, sxmls, smeta, layout_nav_xml)
@@ -707,6 +713,7 @@ def load_file(xml_path_or_bytes, label: str) -> ParseResult:
             options_xml.update(xmls)
 
     return ParseResult(
+        graph_notes_xml=graph_notes_xml,
         label=label,
         sections=sections,
         fields=fields,

@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 import corpusfm
 from corpusfm.app.sections import SECTION_ORDER
 from corpusfm.core.filenames import ensure_fmp12
+from corpusfm.core.graph_notes import css_color as _note_css_color, read_note  # noqa: F401
+from corpusfm.extensions.export.script_embed import script_json
 from corpusfm.core.git_formatter._renderer import DEFAULT_LARGE_THRESHOLD, large_marker
 from corpusfm.core.layout_objects import extract_layout_objects
 from corpusfm.extensions.export.statistics import explorer_statistics, step_facts
@@ -215,7 +217,8 @@ def _pretty_xml(xml_str: str) -> str:
         elem = ET.fromstring(xml_str)
         ET.indent(elem, space="  ")
         pretty = ET.tostring(elem, encoding="unicode")
-        return "\n".join(l for l in pretty.splitlines() if l.strip())
+        # Only real newlines: str.splitlines would turn a captured U+2028 into a line break.
+        return "\n".join(l for l in pretty.split("\n") if l.strip())
     except Exception:
         return xml_str
 
@@ -738,6 +741,11 @@ _GRAPH_PALETTE = [
 ]
 
 
+_TO_COLLAPSED_HEIGHT = 18
+_TO_HEADER_HEIGHT = 26
+_TO_ROW_HEIGHT = 12
+
+
 def _relationship_side_settings(side, name_map: dict | None) -> dict:
     """One endpoint's settings, for that endpoint's card. A setting absent from the XML stays None."""
     def flag(attr):
@@ -760,6 +768,31 @@ def _relationship_side_settings(side, name_map: dict | None) -> dict:
             "maintain_sort": spec is not None and spec.get("maintain", "False") == "True"}
 
 
+def _graph_note(xml: str) -> dict | None:
+    """A captured note for the map. One with no readable position can't be drawn."""
+    note = read_note(xml)
+    if note["x"] is None:
+        return None
+    return {k: note[k] for k in ("id", "text", "x", "y", "w", "h", "options", "collapsed", "background", "color")}
+
+
+def _as_built_height(view: str | None, captured: int, fields: int, identity_gap: bool) -> tuple[int, str]:
+    """The drawn height of an occurrence on As Built, and what that height rests on.
+
+    In a current capture CoordRect is the occurrence's full-view rectangle whatever its View, so a
+    collapsed or related-only occurrence can't be drawn from it. The constants below are estimates
+    from paired FileMaker screenshots (packet 1448), not format facts. What the XML itself confirms
+    is the row count, distinct field ids across every predicate including Cartesian ones: for all 148
+    Related occurrences in the reference capture, CoordRect height minus the `height` attribute is
+    12 per row plus 29-34. A smaller captured rectangle always wins.
+    """
+    if view == "Collapse":
+        return min(_TO_COLLAPSED_HEIGHT, captured), "collapse"
+    if view == "Related" and fields and not identity_gap:
+        return min(_TO_HEADER_HEIGHT + _TO_ROW_HEIGHT * fields, captured), "related"
+    return captured, "captured" if view != "Full" else "full"
+
+
 def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
     """Extract TO positions and relationship edges from artifact items."""
     name_map: dict = getattr(artifact, "_name_map", None) or getattr(artifact, "name_map", None) or {}
@@ -775,8 +808,22 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
         (key, item) for key, item in artifact.items.items()
         if item.section == "RelationshipCatalog" and not item.is_folder and item.xml_sources
     ]
+    notes_state = "absent" if artifact.graph_notes is None else "captured"
+    notes = [n for n in (_graph_note(x) for x in artifact.graph_notes or []) if n]
     if not to_items:
-        return {"nodes": [], "edges": []}
+        return {"nodes": [], "edges": [], "notes": notes, "notes_state": notes_state}
+
+    # Each base table's fields, in the order the retained catalog holds them.
+    catalog_fields: dict = {}
+    for item in artifact.items.values():
+        if item.section != "FieldsForTables" or item.is_folder or not item.xml_sources or "::" not in item.name:
+            continue
+        try:
+            field_elem = ET.fromstring(item.xml_sources[0].xml)
+        except ET.ParseError:
+            continue
+        catalog_fields.setdefault(item.name.split("::", 1)[0], []).append(
+            {"id": field_elem.get("id"), "name": named(field_elem.get("name", ""))})
 
     nodes: list = []
     node_id_map: dict = {}
@@ -788,8 +835,6 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
             continue
         to_id   = elem.get("id", "")
         to_name = elem.get("name", item.name)
-        # CoordRect is the rectangle FileMaker draws; a collapsed occurrence's separate `height`
-        # attribute is its expanded height, so it must not replace these bounds (packet 1448).
         # An occurrence with no usable rectangle stays in the payload with no position: its cards
         # still work, and As Built leaves it off the map rather than inventing a place for it.
         coord = elem.find("CoordRect")
@@ -797,7 +842,7 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
         if coord is not None:
             try:
                 rect = tuple(int(float(coord.get(k))) for k in ("top", "left", "bottom", "right"))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 rect = None
         src_ref    = elem.find("BaseTableSourceReference")
         external   = False
@@ -830,14 +875,18 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
                 if sql_src is not None and sql_src.get("tableName"):
                     base_table = sql_src.get("tableName")
         col_elem = elem.find("Color")
+        source_color = source_alpha = None
+        r = g = b = 120
+        fm_color = "#787878"
         if col_elem is not None:
-            r = min(255, max(0, int(float(col_elem.get("red",   "120")))))
-            g = min(255, max(0, int(float(col_elem.get("green", "120")))))
-            b = min(255, max(0, int(float(col_elem.get("blue",  "120")))))
-            fm_color = f"#{r:02x}{g:02x}{b:02x}"
-        else:
-            r = g = b = 120
-            fm_color = "#787878"
+            try:
+                r, g, b = (min(255, max(0, int(float(col_elem.get(c))))) for c in ("red", "green", "blue"))
+                fm_color = source_color = f"#{r:02x}{g:02x}{b:02x}"
+                source_alpha = min(1.0, max(0.0, float(col_elem.get("alpha", "1"))))
+            except (TypeError, ValueError, OverflowError):
+                r = g = b = 120
+                fm_color, source_color, source_alpha = "#787878", None, None
+        # `color` is By Table's grouping palette. As Built draws source_color, gray included.
         if r == g == b:
             color = _GRAPH_PALETTE[hash(base_table) % len(_GRAPH_PALETTE)]
         else:
@@ -849,11 +898,27 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
             "x": left, "y": top,
             "w": max(1, right - left) if rect else None, "h": max(1, bottom - top) if rect else None,
             "color": color,
+            "view": elem.get("View"), "height_attr": elem.get("height"),
+            "captured_h": max(1, bottom - top) if rect else None,
+            "source_color": source_color, "source_alpha": source_alpha,
         }
         nodes.append(node)
         node_id_map[to_id] = node
 
     edges: list = []
+    # What each occurrence displays in Related view, by field identity: a field used by several
+    # relationships is one row. A missing reference or predicate leaves the count unknown.
+    shown_fields: dict = {}
+    identity_gaps: set = set()
+
+    def note_field(to_key, field_elem):
+        field_id = field_elem.get("id") if field_elem is not None else None
+        if not field_id or field_id == "0":
+            identity_gaps.add(to_key)
+            return None
+        shown_fields.setdefault(to_key, {}).setdefault(field_id, named(field_elem.get("name", "")))
+        return field_id
+
     for item_key, item in rel_items:
         try:
             elem = ET.fromstring(item.xml_sources[0].xml)
@@ -874,24 +939,28 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
         jp_list    = elem.find("JoinPredicateList")
         predicates: list = []
         edge_type  = "equal"
-        if jp_list is not None:
-            for jp in jp_list.findall("JoinPredicate"):
-                pred_type = jp.get("type", "")
-                if pred_type == "CartesianProduct":
-                    edge_type = "cartesian"
-                    predicates.append("× Cartesian product")
-                elif pred_type == "Equal":
-                    lf = jp.find(".//LeftField/FieldReference")
-                    rf = jp.find(".//RightField/FieldReference")
-                    lf_name = lf.get("name", "?") if lf is not None else "?"
-                    rf_name = rf.get("name", "?") if rf is not None else "?"
-                    predicates.append(f"{from_name}::{lf_name} = {to_name}::{rf_name}")
-                else:
-                    predicates.append(pred_type)
+        join_predicates = jp_list.findall("JoinPredicate") if jp_list is not None else []
+        if not join_predicates:
+            identity_gaps.update((from_id, to_id))
+        pairs: list = []
+        for jp in join_predicates:
+            pred_type = jp.get("type", "")
+            lf = jp.find(".//LeftField/FieldReference")
+            rf = jp.find(".//RightField/FieldReference")
+            pairs.append({"lf": note_field(from_id, lf), "rf": note_field(to_id, rf), "op": pred_type})
+            if pred_type == "CartesianProduct":
+                edge_type = "cartesian"
+                predicates.append("× Cartesian product")
+            elif pred_type == "Equal":
+                lf_name = lf.get("name", "?") if lf is not None else "?"
+                rf_name = rf.get("name", "?") if rf is not None else "?"
+                predicates.append(f"{from_name}::{lf_name} = {to_name}::{rf_name}")
+            else:
+                predicates.append(pred_type)
         # An endpoint missing from the catalog keeps the edge: the cards name it and the map leaves it off.
         edges.append({
             "item": item_key, "from_id": from_id, "to_id": to_id,
-            "type": edge_type, "predicates": predicates,
+            "type": edge_type, "predicates": predicates, "pairs": pairs,
         })
 
     # Degree = relationships touching each TO; drives hub emphasis in the graph.
@@ -902,8 +971,22 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
             degree[e["to_id"]] = degree.get(e["to_id"], 0) + 1
     for n in nodes:
         n["degree"] = degree.get(n["id"], 0)
+        if n["captured_h"] is not None:
+            n["h"], n["h_basis"] = _as_built_height(n["view"], n["captured_h"], len(shown_fields.get(n["id"], ())),
+                                                    n["id"] in identity_gaps)
+        table = (n["source"].get("table") if n["source"].get("kind") == "local" else None)
+        catalog = catalog_fields.get(table) if table else None
+        shown = shown_fields.get(n["id"], {})
+        # Catalog order where the field is in the catalog, then any the catalog doesn't hold, first-seen.
+        order = {f["id"]: i for i, f in enumerate(catalog or [])}
+        n["rows"] = [{"id": fid, "name": name} for fid, name in
+                     sorted(shown.items(), key=lambda kv: order.get(kv[0], len(order)))]
+        n["rows_incomplete"] = n["id"] in identity_gaps
+        if n["view"] == "Full":
+            n["fields"] = catalog or []
+            n["fields_state"] = "captured" if catalog else "unavailable"
 
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": nodes, "edges": edges, "notes": notes, "notes_state": notes_state}
 
 
 # A field's inbound reference is categorised by the SOURCE object's section, NOT by
@@ -1853,13 +1936,6 @@ def _load_template(name: str) -> str:
 _APPDATA_MARKER = "__CORPUSFM_APPDATA__"
 
 
-def _js_str(value: str) -> str:
-    """A safe JS string literal for embedding in a <script> block: JSON-encode (neutralizes quotes,
-    backslashes, newlines) and split any `</` so an FM-object name containing `</script>` can't close
-    the element. The FM `File=` attribute reaches these sinks unsanitized — never interpolate it raw."""
-    return json.dumps(value).replace("</", "<\\/")
-
-
 def _render_template(template: str, **kwargs: str) -> str:
     # Fail-loud (packet 073-G): every __CORPUSFM_<KEY>__ placeholder in the template must have a
     # matching kwarg — EXCEPT the APPDATA save marker. A renamed/typo'd/new placeholder with no
@@ -1869,9 +1945,9 @@ def _render_template(template: str, **kwargs: str) -> str:
     unfilled = present - provided - {_APPDATA_MARKER}
     if unfilled:
         raise AssertionError(f"Explorer template placeholder(s) with no value: {sorted(unfilled)}")
-    for key, value in kwargs.items():
-        template = template.replace(f"__CORPUSFM_{key.upper()}__", value)
-    return template
+    # One pass: captured text inside a value may look like a placeholder, and must stay as it is.
+    return _re.sub(r"__CORPUSFM_[A-Z0-9_]+__",
+                   lambda m: kwargs.get(m.group(0)[len("__CORPUSFM_"):-2].lower(), m.group(0)), template)
 
 
 
@@ -1901,7 +1977,7 @@ def generate_explorer_html(inputs: "list[Artifact]", syntax_palettes: object = N
         title = f"CorpusFM Explorer — {first_meta['fm_key']}"
 
     import base64 as _base64
-    data_json_str = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    data_json_str = script_json(data)
 
     # Build a save template: full HTML with appData replaced by a sentinel.
     # _savePage decodes this and re-injects JSON.stringify(appData) at save time,
@@ -1915,11 +1991,13 @@ def generate_explorer_html(inputs: "list[Artifact]", syntax_palettes: object = N
     _common = dict(
         # title lands in <title>…</title> (HTML), filename in `var filename = …;` (JS in <script>).
         # Both derive from the FM `File=` attribute — escape per-context or a crafted name is stored XSS.
-        title=_html.escape(title),
+        # _savePage replaces the first `var appData = <marker>;`, and the title comes before the real one,
+        # so a file name holding that text must not carry the marker literally. It decodes the same.
+        title=_html.escape(title).replace("__CORPUSFM_", "&#95;_CORPUSFM_"),
         css=_css,
         alpine_js=_load_vendor("alpine.min.js"),
         fuse_js=_load_vendor("fuse.min.js"),
-        filename=_js_str(out_name),
+        filename=script_json(out_name),
         fmhl_js=_fmhl_js,
         graph_js=_graph_js,
         time_js=browser_time_js(),

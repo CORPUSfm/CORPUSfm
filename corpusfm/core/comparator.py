@@ -45,6 +45,9 @@ class CompareResult:
     steps: SectionResult
     calcs: SectionResult
     options: SectionResult  # value list content (OptionsForValueLists)
+    # Apart from `sections`: patch building and verification walk those, and a note can't be patched.
+    graph_notes: SectionResult = field(default_factory=lambda: SectionResult(label="Relationship Graph Notes"))
+    graph_notes_incomplete: "str | None" = None   # why they could not be compared; not a "no differences"
 
     @property
     def total_real(self) -> int:
@@ -53,6 +56,7 @@ class CompareResult:
         total += self.steps.total
         total += self.calcs.total
         total += self.options.total
+        total += self.graph_notes.total
         return total
 
 
@@ -123,6 +127,8 @@ def serialize_compare_result(cr: "CompareResult") -> dict:
         "steps":    _sr(cr.steps),
         "calcs":    _sr(cr.calcs),
         "options":  _sr(cr.options),
+        "graph_notes": _sr(cr.graph_notes),
+        "graph_notes_incomplete": cr.graph_notes_incomplete,
     }
 
 
@@ -140,7 +146,20 @@ def deserialize_compare_result(data: dict) -> "CompareResult":
         steps=_sr(data["steps"]),
         calcs=_sr(data["calcs"]),
         options=_sr(data["options"]),
+        graph_notes=_sr(data["graph_notes"]) if "graph_notes" in data else SectionResult(label="Relationship Graph Notes"),
+        graph_notes_incomplete=data.get("graph_notes_incomplete"),
     )
+
+
+_SCHEMA_TYPES = frozenset({"SaveAsXML", "AddonXML", "MergedXML"})
+
+
+def _note_section(graph_a, graph_b) -> "tuple[SectionResult, str | None]":
+    from corpusfm.core.graph_notes import compare_notes
+    notes = compare_notes(graph_a, graph_b)
+    return SectionResult(label="Relationship Graph Notes", added=[n.label for n in notes.added],
+                         removed=[n.label for n in notes.removed],
+                         changed=[n.label for n in notes.changed]), notes.incomplete
 
 
 def compare_artifacts(art_a: "object", art_b: "object") -> CompareResult:
@@ -186,6 +205,11 @@ def compare_artifacts(art_a: "object", art_b: "object") -> CompareResult:
         sections[key] = compare_dicts(a, b, key)
 
     fields = compare_fields(_fields_by_table(art_a), _fields_by_table(art_b))
+    # A clip or other deliverable has no relationship graph, so its None isn't a coverage gap.
+    if all(getattr(art.type, "value", art.type) in _SCHEMA_TYPES for art in (art_a, art_b)):
+        notes, incomplete = _note_section(art_a.graph_notes, art_b.graph_notes)
+    else:
+        notes, incomplete = SectionResult(label="Relationship Graph Notes"), None
 
     return CompareResult(
         label_a=art_a.identity.file_name or "",
@@ -195,6 +219,8 @@ def compare_artifacts(art_a: "object", art_b: "object") -> CompareResult:
         steps=SectionResult(label="Script Steps (body)"),
         calcs=SectionResult(label="Custom Function Bodies"),
         options=SectionResult(label="Value List Options"),
+        graph_notes=notes,
+        graph_notes_incomplete=incomplete,
     )
 
 
@@ -214,6 +240,7 @@ def compare_all(result_a: ParseResult, result_b: ParseResult) -> CompareResult:
     calcs    = compare_calcs(result_a.calcs, result_b.calcs)
     options  = compare_options(result_a.options, result_b.options)
 
+    notes, incomplete = _note_section(result_a.graph_notes_xml, result_b.graph_notes_xml)
     return CompareResult(
         label_a=result_a.label,
         label_b=result_b.label,
@@ -222,6 +249,8 @@ def compare_all(result_a: ParseResult, result_b: ParseResult) -> CompareResult:
         steps=steps,
         calcs=calcs,
         options=options,
+        graph_notes=notes,
+        graph_notes_incomplete=incomplete,
     )
 
 

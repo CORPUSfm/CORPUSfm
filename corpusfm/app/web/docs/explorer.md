@@ -142,7 +142,12 @@ settings for a relationship. Choose a neighbour to step to it. **Flip sides** sw
 
 The **Graph** tab shows the same selection on **As Built**, FileMaker's own positions, or **By Table**. Choosing a
 box or a line selects it and centers it, without moving anything on the map; an occurrence with no captured
-position is left off and counted. Drag to pan, use the wheel to zoom, and **Fit** to see everything. Back and
+position is left off and counted. Boxes use FileMaker's saved colors and view, collapsed, related fields or full, at sizes
+that approximate FileMaker's, with lines meeting their field rows and showing each operator. Notes from the graph
+appear behind the boxes. Hover over or tab to a box or line to see its full name and details.
+
+On As Built you can drag a box or note to try a different arrangement. **Reset graph** puts everything back, and closing or
+reloading the page does too; nothing is saved to the file or to Save As. Drag the background to pan, use the wheel to zoom, and **Fit** to see everything. Back and
 `Alt`+`→` return to the same view.
 
 ## Keyboard shortcuts

@@ -440,6 +440,17 @@ class QueueRepo:
         self._e.update(_QUEUE, queue_id, nxt)
         return nxt["Type"]
 
+    def rewrite(self, queue_id: str, jor: dict) -> None:
+        """Replace a live record's plan and payload. No-op if the record is gone."""
+        if self.get(queue_id) is not None:
+            self._e.update(_QUEUE, queue_id, jor)
+
+    def retain_steps(self, queue_id: str, steps: list) -> None:
+        """Narrow a live record's remaining plan, keeping its cursor. No-op if the record is gone."""
+        row = self.get(queue_id)
+        if row is not None:
+            self._e.update(_QUEUE, queue_id, {**row.jor, "Steps": list(steps)})
+
     def set_push_token(self, queue_id: str, push_token_hash: str) -> None:
         """Stamp the one-time push-token HASH onto a record already in flight (packet 1142): the acquire
         handler mints the token, records its hash here, THEN fires the trigger — so a push arriving at

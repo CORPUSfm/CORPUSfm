@@ -3134,6 +3134,7 @@ def compare(
             f"No differences between:\n"
             f"  A: {label_a_str}\n"
             f"  B: {label_b_str}"
+            + (f"\n{cr.graph_notes_incomplete}" if cr.graph_notes_incomplete else "")
         )
     return format_report(cr, section_cap=_COMPARE_SECTION_CAP)
 
@@ -4634,6 +4635,7 @@ def temporal_diff(
     if cr.total_real == 0:
         return (
             f"No changes in '{job_name}' between {oldest_run.ts[:10]} and {newest_run.ts[:10]}."
+            + (f" {cr.graph_notes_incomplete}" if cr.graph_notes_incomplete else "")
         )
 
     result_lines = [
@@ -4659,6 +4661,9 @@ def temporal_diff(
     for table_name, sr in cr.fields.items():
         if sr.total:
             result_lines.extend(_section_lines(f"Fields [{table_name}]", sr))
+    result_lines.extend(_section_lines("Relationship Graph Notes", cr.graph_notes))
+    if cr.graph_notes_incomplete:
+        result_lines.append(cr.graph_notes_incomplete)
 
     return "\n".join(result_lines)
 

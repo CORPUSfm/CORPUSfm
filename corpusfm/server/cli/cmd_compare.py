@@ -85,6 +85,8 @@ def run(args: argparse.Namespace) -> int:
                 }
                 for key, sr in cr.sections.items()
             },
+            "graph_notes": {"added": cr.graph_notes.added, "removed": cr.graph_notes.removed, "changed": cr.graph_notes.changed},
+            "graph_notes_incomplete": cr.graph_notes_incomplete,
         }
         print(json.dumps(out, indent=2))
     else:

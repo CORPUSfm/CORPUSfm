@@ -5,6 +5,7 @@
   --border:#30353a;--border-2:#383d42;
   --control-fill:#59636c;--interactive:#b3bac1;--interactive-tint:rgba(179,186,193,.12);
   --focus-ring:#b3bac1;--primary:var(--interactive);--primary-tint:var(--interactive-tint);
+  --graph-canvas:#111315;--graph-line:#8fa3bc;--graph-line-quiet:#4a5563;--graph-select:#ffd166;--graph-op-bg:#232730;--graph-note-fallback:#3a3f48;
   --link:#4e9eff;--link-hover:#3a8ae0;
   --text:#d2d6da;--text-2:#b9bec3;--text-3:#9ea4aa;--text-dim:#7c838a;--text-muted:#666d73;
   --code-text:#d4d4d4;
@@ -18,6 +19,7 @@
   --border:#d1d5d8;--border-2:#b9bec3;
   --control-fill:#4f5962;--interactive:#47515a;--interactive-tint:rgba(79,89,98,.10);
   --focus-ring:#59636c;--primary:var(--interactive);--primary-tint:var(--interactive-tint);
+  --graph-canvas:#f4f5f6;--graph-line:#4d5b6c;--graph-line-quiet:#b4bcc6;--graph-select:#0b5ed7;--graph-op-bg:#fff;--graph-note-fallback:#e2e4e8;
   --link:#2a7ae4;--link-hover:#1a5cb8;
   --text:#1a1a1a;--text-2:#3a3a3a;--text-3:#6b6b6b;--text-dim:#6b6b6b;--text-muted:#9898a8;
   --code-text:#383a42;
@@ -350,7 +352,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,.sr-item:focus-visible,
   padding:.25rem .55rem;font-size:.8rem;cursor:pointer;white-space:nowrap}
 .graph-btn:hover{border-color:var(--primary);color:var(--primary)}
 #graph-canvas-wrap{position:relative;flex:1;min-height:300px;border:1px solid var(--border);border-radius:4px;overflow:hidden}
-#rel-graph{position:absolute;inset:0;width:100%;height:100%;background:var(--bg);cursor:grab;display:block;touch-action:none}
+#rel-graph{position:absolute;inset:0;width:100%;height:100%;background:var(--graph-canvas);cursor:grab;display:block;touch-action:none}
 .graph-info{flex:1;font-size:.72rem;color:var(--text-dim)}
 #detail.graph-active #detail-scroll{overflow:hidden;display:flex;flex-direction:column}
 #detail.graph-active #detail-main{flex:1;min-height:0;display:flex;flex-direction:column}
@@ -359,7 +361,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,.sr-item:focus-visible,
 #detail.graph-active #graph-tab-content{flex:1;display:flex;flex-direction:column;min-height:0}
 #graph-tooltip{position:fixed;background:var(--surface);border:1px solid var(--border-2);border-radius:4px;
   padding:.35rem .6rem;font-size:.75rem;color:var(--text-2);pointer-events:none;z-index:500;
-  max-width:320px;display:none;font-family:'SFMono-Regular',Consolas,monospace;line-height:1.5}
+  max-width:min(420px,calc(100vw - 8px));max-height:calc(100vh - 8px);overflow:hidden;overflow-wrap:anywhere;display:none;font-family:'SFMono-Regular',Consolas,monospace;line-height:1.5}
 #splash{position:fixed;inset:0;background:#141414;display:flex;flex-direction:column;
   align-items:center;justify-content:center;z-index:9999;transition:opacity .3s}
 #splash-wordmark{width:320px;margin-bottom:.6rem}
@@ -530,10 +532,21 @@ kbd{display:inline-block;background:var(--surface-2);border:1px solid var(--bord
 .rel-via{color:var(--text-dim);font-size:.74rem}
 .rel-note,.rel-dim{font-size:.76rem;color:var(--text-dim)}
 #detail.graph-active #rel-cards{order:2;flex:none;max-height:30vh;overflow-y:auto;margin:.5rem 0 0}
-#rel-graph .rg-dim{opacity:.22}
-#rel-graph .rg-sel .rg-nr{stroke:var(--primary);stroke-width:3}
-#rel-graph line.rg-on{stroke-opacity:1;stroke-width:2.5}
-#rel-graph line.rg-picked{stroke:var(--primary);stroke-width:3.5}
+#rel-graph .rg-edges line{stroke:var(--graph-line);stroke-width:1.25}
+#rel-graph .rg-edges line.rg-quiet{stroke:var(--graph-line-quiet);stroke-width:1}
+#rel-graph .rg-edges line.rg-on{stroke-width:2.25}
+#rel-graph .rg-near .rg-nr{stroke:var(--graph-select);stroke-width:1.5}
+#rel-graph .rg-op.rg-quiet rect{stroke:var(--graph-line-quiet)}
+#rel-graph .rg-edges line.rg-picked{stroke:var(--graph-select);stroke-width:2.75}
+#rel-graph .rg-sel .rg-nr{stroke:var(--graph-select);stroke-width:3}
+#rel-graph .rg-op{pointer-events:none}
+#rel-graph .rg-op rect{fill:var(--graph-op-bg);stroke:var(--graph-line);stroke-width:.75}
+#rel-graph .rg-op text{fill:var(--text);font-family:'SFMono-Regular',Consolas,monospace}
+#rel-graph .rg-op.rg-picked rect{stroke:var(--graph-select)}
+#rel-graph .rg-note{overflow:hidden;cursor:move}
+.rg-note-body{-webkit-user-select:none;user-select:none;width:100%;height:100%;overflow:hidden;box-sizing:border-box;padding:3px 6px;font-size:10px;line-height:1.3;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--graph-note-fallback);color:var(--text);border-radius:2px}
+.rg-note-collapsed{white-space:nowrap;text-overflow:ellipsis;line-height:12px}
+.graph-info-flag{font-size:.72rem;color:var(--text);white-space:nowrap}
 #rel-graph .rg-hit{stroke:transparent;stroke-width:14;pointer-events:stroke;cursor:pointer;opacity:1}
 #rel-graph .rg-hit.rg-on,#rel-graph .rg-hit.rg-picked{stroke:transparent;stroke-width:14}
 #rel-graph .rg-hit:focus{outline:none;stroke:var(--focus-ring);stroke-opacity:.45}

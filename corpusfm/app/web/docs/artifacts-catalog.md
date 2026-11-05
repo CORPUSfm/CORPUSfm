@@ -115,7 +115,9 @@ The catalog is the launch point for the rest of CORPUSfm:
   artifact already was. Available per-artifact in the detail pop-over and in bulk from the selection
   toolbar; shown only for schema artifacts that **retained their source** (a deliverable, or one whose
   source was deleted to reclaim space, is skipped — re-upload it to refresh). Distinct from **Reindex**,
-  which only re-embeds the existing text. It's queued — watch progress on the Queue.
+  which only re-embeds the existing text. It's queued: the Queue shows every planned stage as one row,
+  and both the Queue and the detail pop-over say when it's done. **A new Explorer can be generated as soon as
+  the re-ingest stage has committed**; indexing and summaries are optional and may still be running.
 
 ## Paste a clip
 

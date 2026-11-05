@@ -870,6 +870,8 @@
                     title="Re-run the full pipeline from the stored source XML and refresh this artifact in place (same identity). Preserves your notes; re-indexes/re-summarizes only if it already was."
                     @click="detailReingest()" x-text="detailReingestBusy ? 'Queuing…' : 'Re-ingest'"></button>
             <span class="cfm-spacer"></span>
+            <span id="detail-reingest-status" role="status" x-show="!!detailReingestStatus" x-text="detailReingestStatus"
+                  :class="detailReingestFailed ? 'cfm-inline-error' : 'cfm-muted'"></span>
             <button type="button" class="cfm-btn cfm-btn--sm" @click="closeDetail()">Close</button>
             <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" :disabled="!detailDirty" @click="saveAll()">Save</button>
           </div>
@@ -2222,6 +2224,44 @@ function libraryPage() {
       await this._kickBatch('/api/indexed/summarize-batch', { uuids: [this.detailUuid] }, 'summarize', 1);
     },
 
+    // This artifact's re-ingest, from the ONE queue poll (packet 1452): matched by record UUID, never by name.
+    get _detailReingestRow() {
+      const d = (this.$store.queue && this.$store.queue.data) || {};
+      return (d.records || []).find(r => r.uuid === this.detailUuid && (r.steps || []).includes('reingest')) || null;
+    },
+    // A parked row stays until someone clears it, so a newer re-ingest that did commit outranks it.
+    get _detailReingestDone() {
+      const d = (this.$store.queue && this.$store.queue.data) || {};
+      return (d.recent_reingests || []).find(e => e.uuid === this.detailUuid) || null;
+    },
+    get _detailReingestCurrent() {
+      const r = this._detailReingestRow, f = this._detailReingestDone;
+      if (r && r.status === 'failed' && f && window.cfmTime.parse(f.committed_at) > window.cfmTime.parse(r.created_at)) return null;
+      return r;
+    },
+    get detailReingestFailed() { return (this._detailReingestCurrent || {}).status === 'failed'; },
+    get detailReingestStatus() {
+      const r = this._detailReingestCurrent;
+      if (r) {
+        if (r.current === 'reingest') {
+          return r.status === 'failed' ? 'Re-ingest did not complete; see Queue.'
+                                       : 'Re-ingest in progress; see Queue.';
+        }
+        const failed = Object.keys(r.stage_failures || {}).filter(s => s !== r.current);
+        if (r.status === 'failed') {
+          const what = r.error === 'Interrupted by user.' ? 'The operation was stopped at ' + r.current : 'Optional ' + [r.current].concat(failed).join(', ') + ' failed';
+          return 'Re-ingest committed: a new Explorer can be generated. ' + what + '; see Queue.';
+        }
+        return 'Re-ingest committed: a new Explorer can be generated. '
+          + (failed.length ? 'Optional ' + failed.join(', ') + ' failed; ' + r.current + ' is continuing.' : 'Optional ' + r.current + ' is continuing.');
+      }
+      const f = this._detailReingestDone;
+      if (!f) return '';
+      if (f.state === 'done') return 'Re-ingest finished: a new Explorer can be generated.';
+      return 'Re-ingest committed: a new Explorer can be generated. '
+        + ((f.skipped || []).length ? 'Skipped: ' + f.skipped.join(', ') + '.' : 'Optional stages were not all completed.');
+    },
+
     // Re-ingest ONE artifact (packet 1062/1063 B): atomic re-ingest-and-replace from stored source,
     // queued. Non-blocking; the Queue shows progress.
     async detailReingest() {
@@ -2234,6 +2274,7 @@ function libraryPage() {
         if (!r.ok || d.ok === false) { window.cfmNotify.error(d.error || 'Re-ingest failed.'); return; }
         window.cfmNotify.success(d.message || (d.queued ? 'Re-ingest queued — see Queue.'
                                                : 'A re-ingest is already queued.'));
+        this.$store.queue.refresh && this.$store.queue.refresh();
       } catch (e) { window.cfmNotify.error(String(e)); }
       finally { this.detailReingestBusy = false; }
     },

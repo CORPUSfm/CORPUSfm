@@ -62,10 +62,11 @@ def _walk(
     elif isinstance(node, VarRef):
         # Bare name (scope == "") that is not let-bound may be a same-table field
         # reference when a TableOccurrenceReference supplies the implicit TO context.
-        if implicit_to and node.scope == "" and node.name not in let_bound:
-            refs.field_refs.append(FieldRef(implicit_to, node.name))
         # FileMaker names are case-insensitive, so a binding shadows every casing of its name.
-        if node.scope == "" and node.name.lower() not in {b.lower() for b in let_bound}:
+        bound = node.name.lower() in {b.lower() for b in let_bound}
+        if implicit_to and node.scope == "" and not bound:
+            refs.field_refs.append(FieldRef(implicit_to, node.name))
+        if node.scope == "" and not bound:
             refs.bare_names.append(node.name)
 
     elif isinstance(node, (StrLit, NumLit, BoolLit, PilcrowLit)):

@@ -29,6 +29,20 @@ trail of chips, with the **highlighted chip** marking the step it's on right now
 A job stays a **single row** for its whole life — as it finishes one step and moves to the next, the
 highlight advances along its trail. It leaves the queue only when the whole pipeline is done.
 
+## Re-ingest
+
+A re-ingest is one row with every stage it plans: re-ingest, then indexing or summaries if the artifact had them
+and they're configured. Completed stages carry a check mark; a stage that hasn't started is plain. **A new Explorer
+can be generated as soon as the re-ingest stage has committed**: indexing and summaries are optional and don't
+affect it.
+
+Optional stages don't depend on each other. If indexing fails, summaries still run; when the rest is done the row
+rests on what failed, and **Restart** repeats only that. **Skip** stops the current optional stage and carries on with
+the next. **Cancel** is for the whole operation: nothing further starts.
+
+When the row leaves the queue, the result stays under **Recently finished re-ingests** for an hour, and on the
+artifact's detail. This list isn't kept across a server restart. Summaries can add a summary index as a row of its own.
+
 ## Why a queue
 
 The slow work — one AI call per object when summarizing, thousands per file — runs **one at a time per

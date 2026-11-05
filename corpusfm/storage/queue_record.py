@@ -51,7 +51,7 @@ GIT_EXPORT = "git_export"
 # REINGEST (packet 1062): re-run the canonical ingest pipeline on a stored artifact's RETAINED source
 # XML and replace the record IN PLACE (same UUID/identity) with fresh derived layers. Its own worker
 # (heavy: parse + mine + render), and the standard way a stored artifact picks up code improvements
-# (retiring lazy self-heal). Enrichment follow-ups are re-enqueued by the handler, not baked as steps.
+# (retiring lazy self-heal). Its enrichment stages are planned on the same record (packet 1452).
 REINGEST = "reingest"
 STEP_TYPES: tuple[str, ...] = (UPLOAD, ACQUIRE, INGEST, SUMMARIZE, INDEX, GIT_EXPORT, REINGEST)
 

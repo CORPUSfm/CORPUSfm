@@ -144,6 +144,7 @@ def merge_artifacts(saveas: Artifact, addon: Artifact) -> Artifact:
             catalog_version=saveas.provenance.catalog_version,
             source="manual",
         ),
+        graph_notes=saveas.graph_notes,
         sections=saveas.sections,
         items=merged_items,
         xref_map=merged_xrefs,

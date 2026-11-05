@@ -23,6 +23,24 @@
     <p class="cfm-list-empty">The queue is empty.</p>
   </template>
 
+  {# Packet 1452: a finished record is deleted, so this is where its result stays visible. #}
+  <div class="cfm-panel cfm-mb-12" id="recent-reingests" x-show="recent.length" x-cloak>
+    <p class="cfm-muted">Recently finished re-ingests</p>
+    <template x-for="f in recent" :key="f.id">
+      <div class="cfm-qrow" role="status">
+        <div class="cfm-qrow-main">
+          <div class="cfm-qrow-hd">
+            <span class="cfm-badge" :class="f.state === 'done' ? 'cfm-badge--ok' : 'cfm-badge--muted'" x-text="f.state === 'done' ? 'Finished' : 'Committed'"></span>
+            <strong x-text="f.target"></strong>
+            <span class="cfm-spacer"></span>
+            <time class="cfm-muted" x-cfm-time="f.finished_at || f.committed_at"></time>
+          </div>
+          <div class="cfm-mt-6" x-text="finishedNote(f)"></div>
+        </div>
+      </div>
+    </template>
+  </div>
+
   <div class="cfm-panel" x-show="records.length" x-cloak>
     <template x-for="r in records" :key="r.id">
       <div class="cfm-qrow">
@@ -38,12 +56,19 @@
              A single-step record shows its one action; a multi-step record shows its progress. #}
           <div class="cfm-steptrail cfm-mt-6">
             <template x-for="(s, i) in r.steps" :key="i">
-              <span class="cfm-badge" :class="stepClass(r, s)" x-text="stepLabel(r, s)"></span>
+              <span class="cfm-badge" :class="stepClass(r, i)" :data-stage="stepState(r, i)"
+                    :title="stepLabel(r, s) + ': ' + stepState(r, i)" :aria-label="stepLabel(r, s) + ': ' + stepState(r, i)"
+                    x-text="(stepState(r, i) === 'completed' ? '✓ ' : '') + stepLabel(r, s)"></span>
             </template>
           </div>
+          <div class="cfm-mt-6" x-show="!!reingestNote(r)" x-text="reingestNote(r)"></div>
+          <template x-for="note in stageNotes(r)" :key="note">
+            <div class="cfm-inline-error cfm-mt-6" x-text="note"></div>
+          </template>
           <div class="cfm-inline-error cfm-mt-6" x-show="r.status === 'failed' && r.error" x-text="r.error"></div>
         </div>
         <div class="cfm-qrow-act">
+          <button type="button" class="cfm-btn cfm-btn--sm" x-show="canMutate(r) && r.can_skip_stage" @click="skipStage(r)" :title="'Stop ' + stepLabel(r, r.current) + ' and carry on with the next stage'" x-text="'Skip ' + stepLabel(r, r.current)"></button>
           <button type="button" class="cfm-btn cfm-btn--sm" x-show="canMutate(r) && (r.status === 'queued' || (r.status === 'running' && r.cancelable))" @click="cancel(r)" x-text="r.status === 'running' ? 'Cancel run' : 'Cancel'"></button>
           <button type="button" class="cfm-btn cfm-btn--sm" x-show="canMutate(r) && r.status === 'failed'" @click="restart(r)">Restart</button>
           <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--danger" x-show="canMutate(r) && r.status === 'failed'" @click="del(r)">Delete</button>
@@ -67,12 +92,13 @@ function queuePage() {
   // Display labels for the internal step keys. The `land` step is SHOWN as "ingest" (packet 1040) —
   // it parses+stores the file (calls ingest()); the internal step string / LAND state stays `land`
   // (storage/queue_record.py). Do NOT "fix" the apparent key/label mismatch.
-  const STEP = { upload: 'upload', pull: 'pull', land: 'ingest', summarize: 'summarize',
+  const STEP = { upload: 'upload', pull: 'pull', land: 'ingest', summarize: 'summarize', reingest: 're-ingest',
                  index: 'index', git_export: 'git export', verify: 'verify' };
   return {
     // Binds to the app-wide $store.queue payload (ONE /api/queue poll loop app-wide) — no second poller.
     get _d() { return (this.$store.queue && this.$store.queue.data) || {}; },
     get records() { return this._d.records || []; },
+    get recent() { return this._d.recent_reingests || []; },
     get failedCount() { return this._d.failed_count || 0; },
     get me() { return this._d.me || ''; },
     get isAdmin() { return !!this._d.is_admin; },
@@ -92,14 +118,55 @@ function queuePage() {
       }
       return STEP[s] || s;
     },
-    // Step chips render in the artifact system-tag format (cfm-badge). Only the ACTIVE step (the cursor,
-    // r.current) is highlighted; done/pending steps are muted, a parked step is red, a running one pulses.
-    stepClass(r, s) {
-      if (s !== r.current) return 'cfm-badge--muted';
-      if (r.status === 'failed')  return 'cfm-badge--broken';
-      if (r.status === 'running') return 'cfm-badge--pending';
-      return 'cfm-step-on';
+    // By position, not name: a step's state is where it stands relative to the record's cursor.
+    stepState(r, i) {
+      const at = (r.steps || []).indexOf(r.current);
+      const s = (r.steps || [])[i];
+      if (s !== r.current) {
+        if ((r.stage_failures || {})[s] !== undefined) return 'failed';
+        if ((r.stage_skipped || []).includes(s)) return 'skipped';
+      }
+      if (at < 0 || i > at) return 'pending';
+      if (i < at) return 'completed';
+      return r.status === 'failed' ? 'failed' : (r.status === 'running' ? 'running' : 'waiting');
     },
+    // Step chips render in the artifact system-tag format (cfm-badge).
+    stepClass(r, i) {
+      const state = this.stepState(r, i);
+      if (state === 'completed') return 'cfm-badge--ok';
+      if (state === 'failed')  return 'cfm-badge--broken';
+      if (state === 'running') return 'cfm-badge--pending';
+      return state === 'waiting' ? 'cfm-step-on' : 'cfm-badge--muted';
+    },
+    // Stages other than the one this row rests on, which already shows its own error.
+    stageNotes(r) {
+      const notes = Object.entries(r.stage_failures || {})
+        .filter(([s]) => s !== r.current)
+        .map(([s, why]) => (STEP[s] || s) + ' failed: ' + why);
+      return notes.concat((r.stage_skipped || []).map(s => (STEP[s] || s) + ' was skipped.'));
+    },
+    // What this means for generating an Explorer, which needs the re-ingest and nothing after it.
+    reingestNote(r) {
+      if (!(r.steps || []).includes('reingest')) return '';
+      if (r.current === 'reingest') {
+        return r.status === 'failed' ? 'The re-ingest stage did not complete, so don\'t rely on a new Explorer yet.' : '';
+      }
+      return r.status === 'failed'
+        ? 'Re-ingest committed. A new Explorer can be generated now; this optional stage can be restarted.'
+        : 'Re-ingest committed. A new Explorer can be generated now; the remaining stages are optional.';
+    },
+    finishedNote(f) {
+      if (f.state === 'partial') {
+        const said = [];
+        if ((f.skipped || []).length) said.push('Skipped: ' + f.skipped.map(s => STEP[s] || s).join(', ') + '.');
+        if (f.cancelled) said.push('The remaining stages were cancelled.');
+        if (f.summaries_empty) said.push('No summaries were produced; check the AI provider.');
+        return 'Re-ingest committed. A new Explorer can be generated. ' + (said.join(' ') || 'Its optional stages were not all completed.');
+      }
+      const summary = (f.steps || []).includes('summarize') ? ' A summary index may still follow as its own row.' : '';
+      return 'Every planned stage finished: ' + (f.steps || []).map(s => STEP[s] || s).join(', ') + '. A new Explorer can be generated.' + summary;
+    },
+    async skipStage(r) { await this._post('/api/queue/' + encodeURIComponent(r.id) + '/skip-stage'); this.load(); },
     async cancel(r) { await this._post('/api/queue/' + encodeURIComponent(r.id) + '/cancel'); this.load(); },
     async del(r)    { await this._post('/api/queue/' + encodeURIComponent(r.id) + '/cancel'); this.load(); },
     async restart(r){ await this._post('/api/queue/' + encodeURIComponent(r.id) + '/restart'); this.load(); },

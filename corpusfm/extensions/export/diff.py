@@ -9,15 +9,16 @@ Only changed items are included — unchanged items are omitted.
 from __future__ import annotations
 
 import difflib
-import json
 import tempfile
 from corpusfm.core.instants import browser_time_js, parse_compact_utc
 from corpusfm.core import safe_xml as ET
+from corpusfm.core.graph_notes import compare_notes
 from datetime import datetime, timezone
 from pathlib import Path
 
 import corpusfm
 from corpusfm.app.sections import SECTION_ORDER
+from corpusfm.extensions.export.script_embed import script_json
 from corpusfm.core.git_formatter._renderer import DEFAULT_LARGE_THRESHOLD, large_marker
 from corpusfm.core.comparator import item_kind
 
@@ -49,6 +50,13 @@ def _load_highlight_asset() -> str:
 
 
 
+def _text_lines(text: str) -> list[str]:
+    """Lines of rendered text. str.splitlines also breaks on U+2028, U+0085 and others, which would
+    remove those characters from captured text and could report a change with nothing visible."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return lines[:-1] if lines and lines[-1] == "" else lines
+
+
 def _bound_line(ln: str) -> str:
     """Oversize presentation cap (packet 1282): a rendered line whose UTF-8 encoding exceeds the
     git formatter's 512 KiB threshold is replaced with its `[LARGE_CONTENT: …, SHA256: …]` marker
@@ -69,7 +77,7 @@ def _bound_body(body: str) -> str:
         return body
     if len(body.encode("utf-8")) <= DEFAULT_LARGE_THRESHOLD:
         return body
-    return "\n".join(_bound_line(ln) for ln in body.splitlines())
+    return "\n".join(_bound_line(ln) for ln in _text_lines(body))
 
 
 def _step_diff_lines(lines_a: list[str], lines_b: list[str]) -> list[str]:
@@ -218,7 +226,7 @@ def _paired_entry(e, mode: str) -> "dict | None":
             if ta != entry.get("table"):
                 entry["table_a"] = ta
     ra, rb = _body_of(ia), _body_of(ib)
-    lines_a, lines_b = ra.splitlines(), rb.splitlines()
+    lines_a, lines_b = _text_lines(ra), _text_lines(rb)
     if ra != rb:
         entry["diff_lines"] = _step_diff_lines(lines_a, lines_b)
         flags = _high_stakes_flags(ib.section, entry["diff_lines"])
@@ -238,6 +246,12 @@ def _paired_entry(e, mode: str) -> "dict | None":
         entry["count_a"] = len(lines_a)
         entry["count_b"] = len(lines_b)
     return entry
+
+
+def _note_entry(change, lines: list) -> dict:
+    identity = change.identity.split(":", 1)[-1]
+    return {"name": change.label, "kind": "note", "is_folder": False, "addr_a": "note:" + identity, "addr_b": "note:" + identity,
+            "id_a": "", "id_b": "", "body": "\n".join(lines)}
 
 
 def _build_data_from_artifacts(inp: "ArtifactDiffInput", generated: "datetime | None" = None) -> dict:
@@ -307,6 +321,20 @@ def _build_data_from_artifacts(inp: "ArtifactDiffInput", generated: "datetime | 
         if any(sec_data.get(k) for k in ("added", "removed", "changed", "unaligned", "tables")):
             sections.append(sec_data)
 
+    # Identity-paired whichever alignment is showing: a note has one stable identity in either mode.
+    notes = compare_notes(art_a.graph_notes, art_b.graph_notes)
+    note_sec = {"key": "RelationshipGraphNotes", "label": "Relationship Graph Notes", "unaligned": [],
+                "added": [_note_entry(n, n.lines_b) for n in notes.added],
+                "removed": [_note_entry(n, n.lines_a) for n in notes.removed],
+                "changed": [{**_note_entry(n, n.lines_b), "diff_lines": _step_diff_lines(n.lines_a, n.lines_b)} for n in notes.changed]}
+    if notes.incomplete:
+        note_sec["coverage_note"] = notes.incomplete
+    if notes.incomplete or notes.added or notes.removed or notes.changed:
+        sections.append(note_sec)
+    n_added += len(notes.added)
+    n_removed += len(notes.removed)
+    n_changed += len(notes.changed)
+
     metadata = {
         "label_a": art_a.identity.file_name or "",
         "label_b": art_b.identity.file_name or "",
@@ -315,6 +343,7 @@ def _build_data_from_artifacts(inp: "ArtifactDiffInput", generated: "datetime | 
         "fm_key": inp.meta_b.file_name,
         "alignment": mode,
         "total": n_changed + n_added + n_removed,
+        "notes_incomplete": bool(notes.incomplete),
         "unaligned": n_unaligned,
         "paired": n_paired,
         "generated_at": generated.strftime("%Y-%m-%d %H:%M UTC"),
@@ -758,13 +787,6 @@ def _esc(s: str) -> str:
              .replace(">", "&gt;").replace('"', "&quot;"))
 
 
-def _js_str(value: str) -> str:
-    """A safe JS string literal for a <script> block: JSON-encode + split `</` so an FM name
-    containing `</script>` can't close the element. The filename derives from the FM `File=`
-    attribute (attacker-influenceable) — never interpolate it into JS raw."""
-    return json.dumps(value).replace("</", "<\\/")
-
-
 def _diff_pre(lines: list[str]) -> str:
     parts = []
     for ln in lines:
@@ -850,7 +872,7 @@ def _render_view(data: dict) -> dict:
         if removed: parts.append(f'<span class="rem">-{removed}</span>')
         if changed: parts.append(f'<span class="chg">~{changed}</span>')
         if unaligned: parts.append(f'<span class="una" title="Not aligned — review">?{unaligned}</span>')
-        counts = "&nbsp;".join(parts) if parts else "—"
+        counts = "&nbsp;".join(parts) if parts else ("not compared" if sec.get("coverage_note") else "—")
         cards.append(
             f'<div class="sum-card" data-sec="{_esc(key)}" data-target="sec-{mode}-{_esc(key)}">'
             f'<div class="sec-name">{_esc(label)}</div>'
@@ -872,7 +894,7 @@ def _render_view(data: dict) -> dict:
         if r_count: count_parts.append(f'<span class="rem">-{r_count} removed</span>')
         if c_count: count_parts.append(f'<span class="chg">~{c_count} changed</span>')
         if u_count: count_parts.append(f'<span class="una">?{u_count} not aligned</span>')
-        counts_str = " &nbsp; ".join(count_parts)
+        counts_str = " &nbsp; ".join(count_parts) or ("not compared" if sec.get("coverage_note") else "")
 
         is_script = (key == "ScriptCatalog")
         is_cf = (key == "CustomFunctionsCatalog")
@@ -910,6 +932,8 @@ def _render_view(data: dict) -> dict:
             return _item_block("tag-chg", tag, entry, "".join(body_parts))
 
         inner = []
+        if sec.get("coverage_note"):
+            inner.append(f'<p class="item-note">{_esc(sec["coverage_note"])}</p>')
         inner.extend(_whole(e, "tag-add") for e in sec.get("added", []))
         inner.extend(_whole(e, "tag-rem") for e in sec.get("removed", []))
         inner.extend(_changed(e) for e in sec.get("changed", []))
@@ -947,7 +971,8 @@ def _render_view(data: dict) -> dict:
     align_label, align_text = _ALIGN_TEXT.get(mode, _ALIGN_TEXT["id"])
     counts = (f'<strong>{total}</strong> difference{"" if total == 1 else "s"}'
               + (f' &nbsp;·&nbsp; <strong class="una">{unaligned}</strong> not aligned — review below'
-                 if unaligned else ""))
+                 if unaligned else "")
+              + (' &nbsp;·&nbsp; <strong class="una">Graph notes not compared</strong>' if meta.get("notes_incomplete") else ""))
     align = (f'<strong>Aligned {_esc(align_label)}.</strong> {_esc(align_text)} A matching key does not '
              'establish that two objects share a lineage, and no rename is inferred.')
     return {"mode": mode, "counts": counts, "align": align,
@@ -1005,7 +1030,7 @@ def _render_html(views: "dict[str, dict]", initial: str, filenames: "dict[str, s
         build_a=_esc(meta.get("build_a", "?")),
         build_b=_esc(meta.get("build_b", "?")),
         highlight_js=_load_highlight_asset(),
-        filenames=json.dumps(filenames).replace("</", "<\\/"),
+        filenames=script_json(filenames),   # derives from the FM `File=` attribute
     )
 
 

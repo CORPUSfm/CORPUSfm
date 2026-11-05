@@ -14,6 +14,7 @@ names with embedded spaces are handled correctly.  The algorithm:
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -113,7 +114,10 @@ def _is_name_start(c: str) -> bool:
 
 
 def _is_name_body(c: str) -> bool:
-    return c in _NAME_CHARS
+    # Any letter or digit: _is_name_start accepts every letter, so a name body that didn't would read a
+    # zero-length name there. Combining marks too: a decomposed `é` is one letter of the name, and stopping
+    # at its mark would split it into two false names. Identity stays exact; nothing is normalized.
+    return c in _NAME_CHARS or (not c.isascii() and (c.isalnum() or unicodedata.category(c).startswith("M")))
 
 
 def _name_char_at(source: str, k: int, n: int) -> bool:
@@ -160,7 +164,7 @@ def _scan_name(source: str, start: int, n: int) -> int:
     return i
 
 
-def _read_identifier(source: str, start: int, n: int) -> tuple[str, str | None, int]:
+def _read_identifier(source: str, start: int, n: int, scan: list | None = None) -> tuple[str, str | None, int]:
     """Read an identifier, detecting whether it is part of a TO::Field reference.
 
     Reads the first plain word; then a boundary-aware scan (_scan_name) looks for
@@ -181,6 +185,11 @@ def _read_identifier(source: str, start: int, n: int) -> tuple[str, str | None, 
     # name — return it as its own token so `A::b or C::d` doesn't read `or C` as
     # a table occurrence.
     if source[start:first_end].lower() in _KEYWORDS:
+        return source[start:first_end], None, first_end
+
+    # A word inside a run already scanned to no `::` can't begin a reference: the scan would stop at the same
+    # place. Without this, a long run of words costs a rescan per word, quadratic on crafted input.
+    if scan is not None and start < scan[0]:
         return source[start:first_end], None, first_end
 
     # Boundary-aware scan for a (possibly multi-word) TO name, then look for ::
@@ -209,7 +218,27 @@ def _read_identifier(source: str, start: int, n: int) -> tuple[str, str | None, 
         return to_name, field_name, k
 
     # No :: — emit only the first plain word
+    if scan is not None:
+        scan[0] = end
     return source[start:first_end], None, first_end
+
+
+def _skip_rest_of_unreadable_name(source: str, i: int, n: int) -> int:
+    """Past the rest of a name holding a character no name can: its words, `::` and any more such characters."""
+    while i < n:
+        k = i
+        while k < n and source[k] == " ":
+            k += 1
+        if source.startswith("::", k):
+            i = k + 2
+            while i < n and source[i] == " ":
+                i += 1
+        elif (not source[i].isascii() and not source[i].isspace() and source[i] not in _SINGLE_OPS) \
+                or _name_char_at(source, i, n):
+            i = max(i + 1, _scan_name(source, i, n))
+        else:
+            break
+    return i
 
 
 def tokenize(source: str, *, resilient: bool = False) -> list[Token]:
@@ -224,6 +253,9 @@ def tokenize(source: str, *, resilient: bool = False) -> list[Token]:
     line = 1
     line_start = 0
     n = len(source)
+    scan = [0]       # how far a name scan has already looked and found no `::`
+    spans: dict[int, tuple[int, int]] = {}    # token index -> source span, for tokens holding an unquoted name
+    merge_close_possible = True
 
     def col() -> int:
         return i - line_start + 1
@@ -318,6 +350,7 @@ def tokenize(source: str, *, resilient: bool = False) -> list[Token]:
         # Variable ($var / $$var) or quoted identifier (${Bad+Name})
         if c == "$":
             sl, sc = line, col()
+            var_start = i
             # ${...} — quoted name for TO or field with illegal characters
             if i + 1 < n and source[i + 1] == "{":
                 i += 2  # skip ${
@@ -343,11 +376,10 @@ def tokenize(source: str, *, resilient: bool = False) -> list[Token]:
                             fj += 1
                         i = fj
                     else:
-                        fj = i
-                        while fj < n and (_is_name_body(source[fj]) or source[fj] == " "):
-                            fj += 1
+                        fj = _scan_name(source, i, n)
                         field_name = source[i:fj].rstrip()
                         i = fj
+                        spans[len(tokens)] = (var_start, i)
                     tokens.append(Token(TT.FIELD_REF, f"{quoted}::{field_name}", sl, sc))
                 else:
                     # Standalone ${...} not followed by :: — emit as bare IDENT
@@ -382,7 +414,8 @@ def tokenize(source: str, *, resilient: bool = False) -> list[Token]:
 
         # Merge field <<TO::Field>> — emit the inner reference as a FIELD_REF.
         if c == "<" and i + 1 < n and source[i + 1] == "<":
-            close = source.find(">>", i + 2)
+            close = source.find(">>", i + 2) if merge_close_possible else -1
+            merge_close_possible = close != -1
             if close != -1:
                 inner = source[i + 2:close].strip()
                 sl, sc = line, col()
@@ -437,16 +470,36 @@ def tokenize(source: str, *, resilient: bool = False) -> list[Token]:
         # Identifier, keyword, or field reference
         if _is_name_start(c):
             sl, sc = line, col()
-            name, field, end = _read_identifier(source, i, n)
+            name, field, end = _read_identifier(source, i, n, scan)
+            if end <= i:    # every branch of this loop must advance, or it never ends and tokens grow forever
+                if resilient:
+                    i += 1
+                    continue
+                raise LexError(f"{line}:{col()}: unexpected character {c!r}")
             if field is not None:
+                if source[end - 1] != "}":
+                    spans[len(tokens)] = (i, end)
                 tokens.append(Token(TT.FIELD_REF, f"{name}::{field}", sl, sc))
             else:
                 tt = _KEYWORDS.get(name.lower(), TT.IDENT)
+                if tt == TT.IDENT:
+                    spans[len(tokens)] = (i, end)
                 tokens.append(Token(tt, name, sl, sc))
             i = end
             continue
 
         if resilient:
+            # A non-ASCII character a name can't hold means this is one name we can't read, and its pieces aren't
+            # references. Words joined to it by single spaces belong to it, as they do in any multi-word name.
+            if not c.isascii() and not c.isspace():
+                cut = i
+                if spans.get(len(tokens) - 1, (0, -1))[1] == i:
+                    while (span := spans.get(len(tokens) - 1)) and not source[span[1]:cut].strip(" "):
+                        tokens.pop()
+                        del spans[len(tokens)]
+                        cut = span[0]
+                i = _skip_rest_of_unreadable_name(source, i, n)
+                continue
             i += 1  # skip the unrecognized character and keep going
             continue
         raise LexError(f"{line}:{col()}: unexpected character {c!r}")

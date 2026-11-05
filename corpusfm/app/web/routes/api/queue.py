@@ -49,6 +49,7 @@ def get_queue(request: Request, ctx: AppContext = Depends(get_ctx)) -> JSONRespo
     during activity, every 30s idle, from every open tab), and alongside the retained backend the
     auth layer had already resolved for the very same request."""
     from corpusfm.server import activity_feed
+    from corpusfm.server.queue_handlers import recent_reingests
     actor, is_admin = _actor(request)
     be = ctx.storage()
     feed = activity_feed.build_feed(be)
@@ -64,6 +65,7 @@ def get_queue(request: Request, ctx: AppContext = Depends(get_ctx)) -> JSONRespo
     failed = sum(1 for r in records if r.get("status") == "failed")
     return JSONResponse({"ok": True, "me": actor, "is_admin": is_admin,
                          "records": records, "failed_count": failed,
+                         "recent_reingests": recent_reingests(records, observed=sources["durable"]["ok"]),
                          "activity": feed["records"], "generation": feed["generation"],
                          "activity_sources": sources})
 
@@ -77,6 +79,14 @@ def cancel_job(job_id: str, request: Request, ctx: AppContext = Depends(get_ctx)
     from corpusfm.server import queue_handlers
     actor, is_admin = _actor(request)
     ok, code, msg = queue_handlers.cancel_record(ctx.storage(), job_id, actor, is_admin)
+    return JSONResponse({"ok": ok, "message": msg}, status_code=code)
+
+
+@router.post("/queue/{job_id}/skip-stage")
+def skip_stage(job_id: str, request: Request, ctx: AppContext = Depends(get_ctx)) -> JSONResponse:
+    from corpusfm.server import queue_handlers
+    actor, is_admin = _actor(request)
+    ok, code, msg = queue_handlers.skip_stage_record(ctx.storage(), job_id, actor, is_admin)
     return JSONResponse({"ok": ok, "message": msg}, status_code=code)
 
 

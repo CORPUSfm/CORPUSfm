@@ -147,6 +147,7 @@ class StepResult:
     """A handler's verdict. ``ok`` → advance/delete; else the record parks with ``outcome``."""
     ok: bool
     outcome: str = ""
+    settled: bool = False   # the record was already moved or removed elsewhere: leave it alone
 
 
 def ok() -> StepResult:
@@ -164,6 +165,28 @@ _HANDLERS: dict[str, Callable] = {}
 def register(step_type: str, handler: Callable) -> None:
     """Register the handler that DOES a step type. Idempotent (last registration wins)."""
     _HANDLERS[step_type] = handler
+
+
+_STUCK_HOOK: Optional[Callable] = None   # may place a timed-out record itself; True means it did
+_FINISH_HOOKS: dict[str, Callable] = {}
+
+
+def on_record_finished(name: str, hook: Callable) -> None:
+    """Run ``hook(row)`` when a record has done its last step; deletion is the only success there is."""
+    _FINISH_HOOKS[name] = hook
+
+
+def on_step_stuck(hook: Callable) -> None:
+    global _STUCK_HOOK
+    _STUCK_HOOK = hook
+
+
+def _record_finished(row) -> None:
+    for hook in _FINISH_HOOKS.values():
+        try:
+            hook(row)
+        except Exception:
+            log.debug("queue finish hook failed for %s", row.key, exc_info=True)
 
 
 def _repo():
@@ -269,6 +292,8 @@ class _Worker:
                             exc_info=True)
                 repo.set_failed(qid, f"{step} failed: {exc}")
                 return
+            if result.settled:
+                return
             if result.ok:
                 # The cursor transition can fail loud on a corrupt record (Type ∉ Steps). Guard it like
                 # the handler — otherwise the exception escapes to _loop, which re-claims + RE-RUNS the
@@ -283,6 +308,8 @@ class _Worker:
                 _m_completed = True
                 if nxt:
                     _poke_type(nxt)     # hand the record to the worker that owns the next step
+                else:
+                    _record_finished(row)
             else:
                 repo.set_failed(qid, result.outcome or f"{step} failed")
         finally:
@@ -640,7 +667,8 @@ def _sweep_stuck_steps(repo) -> int:
         log.error("queue worker %s: step '%s' on %s made no progress for %ss — timing it out",
                   w.name, w.current_step, qid, secs)
         try:
-            repo.set_failed(qid, f"timed out — no progress for {secs}s")
+            if not (_STUCK_HOOK and _STUCK_HOOK(repo, qid, f"timed out — no progress for {secs}s")):
+                repo.set_failed(qid, f"timed out — no progress for {secs}s")
         except Exception:
             log.error("queue watchdog: could not park timed-out %s; retrying next tick", qid,
                       exc_info=True)

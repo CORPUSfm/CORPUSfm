@@ -10,7 +10,7 @@
 <style>__CORPUSFM_CSS__</style>
 <script>(function(){try{var t=localStorage.getItem('fmc_theme');if(t==='light')document.getElementById('fmc-root').dataset.theme='light';}catch(e){}})()</script>
 </head>
-<body x-data="fmExplorer" x-init="init()" @keydown.window="handleKeydown($event)" :class="{'graph-fs': graphFullscreen, compact: isCompact, narrow: isNarrow}">
+<body x-data="fmExplorer" @keydown.window="handleKeydown($event)" :class="{'graph-fs': graphFullscreen, compact: isCompact, narrow: isNarrow}">
 
 <div id="splash">
   <div id="splash-wordmark">__CORPUSFM_WORDMARK__</div>
@@ -957,6 +957,8 @@
                   <button class="gtab" :class="{active:_graphTab==='cluster'}" @click="setGraphTab('cluster')">By Table</button>
                 </div>
                 <span class="graph-info" x-text="graphInfoText"></span>
+                <span id="graph-modified" class="graph-info-flag" x-show="graphModified" role="status">Arrangement modified</span>
+                <button type="button" id="graph-reset" class="graph-btn" x-show="graphModified" @click="resetGraph()" title="Return every occurrence and note to its captured position">Reset graph</button>
                 <button class="graph-btn" @click="fitGraph()" title="Fit to screen">⊞ Fit</button>
                 <button type="button" class="graph-btn" @click="toggleGraphFullscreen()"
                         :title="graphFullscreen ? 'Exit full screen (Esc)' : 'Full screen'"
@@ -964,7 +966,7 @@
               </div>
               <div id="graph-canvas-wrap">
                 <svg id="rel-graph"></svg>
-                <div id="graph-tooltip"></div>
+                <div id="graph-tooltip" role="tooltip"></div>
               </div>
             </div>
           </div>
@@ -1125,8 +1127,11 @@ async function _savePage() {
   var bytes = new Uint8Array(binStr.length);
   for (var i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
   var tpl = new TextDecoder('utf-8').decode(bytes);
-  var dataJson = JSON.stringify(appData).replace(/<\//g, '<\\/');
-  var html = tpl.replace('var appData = __CORPUSFM_APPDATA__;', function() { return 'var appData = ' + dataJson + ';'; });
+  // The same policy as script_json in script_embed.py.
+  var dataJson = JSON.stringify(appData).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+  // A saved copy can be saved again only if it carries the template too.
+  var html = tpl.replace('var _SAVE_TPL_B64 = "";', function() { return 'var _SAVE_TPL_B64 = "' + _SAVE_TPL_B64 + '";'; })
+                .replace('var appData = __CORPUSFM_APPDATA__;', function() { return 'var appData = ' + dataJson + ';'; });
   var blob = new Blob([html], {type: 'text/html; charset=utf-8'});
   if (window.showSaveFilePicker) {
     try {
@@ -1283,6 +1288,7 @@ document.addEventListener('alpine:init', () => {
     _graphTab: 'fm',
     _graphCache: {},
     _graphRestoreView: null,
+    _graphMoved: {},   // {fileIdx: {toId or 'note:<index>': {x, y}}}: this page session only, never in appData, history or storage
     _relIdxCache: {},
     graphFullscreen: false,
     deadEndMode: false,
@@ -1773,7 +1779,8 @@ document.addEventListener('alpine:init', () => {
     get graphInfoText() {
       const g = this.currentFileObj.graph || {}, nodes = g.nodes || [];
       const off = this._graphTab === 'fm' ? nodes.filter(n => n.x === null || n.x === undefined).length : 0;
-      return nodes.length + ' TOs · ' + (g.edges || []).length + ' relationships' + (off ? ' · ' + off + ' without a position' : '');
+      const missing = this._graphTab === 'fm' && g.notes_state === 'absent' ? ' · notes need a new import' : '';
+      return nodes.length + ' TOs · ' + (g.edges || []).length + ' relationships' + (off ? ' · ' + off + ' without a position' : '') + missing;
     },
 
     // ── Occurrence and relationship neighbourhoods (packet 1448) ─────────────
@@ -1851,6 +1858,34 @@ document.addEventListener('alpine:init', () => {
       });
       return { kind: 'rel', left: flip ? sides.r : sides.l, right: flip ? sides.l : sides.r, preds };
     },
+    _graphTipLines(kind, item) {
+      const idx = this._relIdx();
+      if (kind === 'to') {
+        const n = idx.byItem[item];
+        if (!n) return [];
+        const s = n.source || {}, lines = [this._toName(n)];
+        if (!n.source_color) lines.push('No color captured');
+        if (s.kind === 'local' && s.table) lines.push('Base table: ' + s.table);
+        if (s.kind === 'external') {
+          if (s.data_source) lines.push('External data source: ' + s.data_source);
+          if (s.table) lines.push('Table there: ' + s.table);
+        }
+        if (s.kind === 'sql') {
+          if (s.table) lines.push('SQL source: ' + s.table);
+          if (s.data_source) lines.push('Data source: ' + s.data_source);
+        }
+        return lines;
+      }
+      const rel = this._relItemData(item).rel;
+      if (!rel) return [];
+      const flip = this.flipAll;
+      const lines = [(flip ? rel.r : rel.l) + ' ↔ ' + (flip ? rel.l : rel.r)];
+      for (const p of rel.preds || []) {
+        if (p.op === 'CartesianProduct') lines.push(p.lf && p.rf ? (flip ? `${rel.r}::${p.rf} × ${rel.l}::${p.lf}` : `${rel.l}::${p.lf} × ${rel.r}::${p.rf}`) : '× Cartesian: every record relates to every record');
+        else lines.push(flip ? `${rel.r}::${p.rf} ${this._opLabel(p.op, true)} ${rel.l}::${p.lf}` : `${rel.l}::${p.lf} ${this._opLabel(p.op, false)} ${rel.r}::${p.rf}`);
+      }
+      return lines;
+    },
     selectRelItem(section, item) {
       if (!item) return;
       this.navigateExact(this.currentFileIdx, section, item);
@@ -1879,7 +1914,8 @@ document.addEventListener('alpine:init', () => {
       const rebuilt = this._graphCurrentFile !== fi;
       if (rebuilt) {
         const self = this;
-        _rgBuild(gd, svgEl, function(section, item) { self.selectRelItem(section, item); });
+        _rgBuild(gd, svgEl, function(section, item) { self.selectRelItem(section, item); }, function(kind, item) { return self._graphTipLines(kind, item); },
+                 function(id, at) { self._graphMoved = { ...self._graphMoved, [fi]: { ...(self._graphMoved[fi] || {}), [id]: at } }; });
         this._graphCurrentFile = fi;
       }
       const fresh = rebuilt || svgEl._rgLayoutKey !== layoutKey;
@@ -1912,8 +1948,8 @@ document.addEventListener('alpine:init', () => {
       const gd = this.currentFileObj.graph;
       if (!svgEl || !gd) return;
       if (tab === 'fm') {
-        const r = _rgLayoutFM(gd);
-        _rgApply(svgEl, r.positions);
+        const r = _rgLayoutFM(gd, this._graphMoved[fi]);
+        _rgApply(svgEl, r.positions, 'fm', r.notes);
         _rgClearOverlay(svgEl);
         _rgFit(svgEl, r.bounds);
       } else {
@@ -1923,18 +1959,27 @@ document.addEventListener('alpine:init', () => {
           this._graphCache = {...this._graphCache, [cacheKey]: r};
         }
         const c = this._graphCache[cacheKey];
-        _rgApply(svgEl, c.positions);
+        _rgApply(svgEl, { ...c.positions }, 'cluster');
         _rgBuildOverlay(svgEl, c.ovData);
         _rgFit(svgEl, c.bounds);
       }
     },
+    // Moves the viewport to whatever is on the map now; a temporary arrangement stays as it is.
     fitGraph() {
       const svgEl = document.getElementById('rel-graph');
-      if (svgEl && svgEl._rgFitVb) {
-        const v = svgEl._rgFitVb;
-        const vb = svgEl._rgVb;
-        if (vb) { vb.x=v.x; vb.y=v.y; vb.w=v.w; vb.h=v.h; }
-        svgEl.setAttribute('viewBox', v.x+' '+v.y+' '+v.w+' '+v.h);
+      if (svgEl && svgEl._rgPos) _rgFit(svgEl, _rgBounds(svgEl));
+    },
+    get graphModified() {
+      return this._graphTab === 'fm' && Object.keys(this._graphMoved[this.currentFileIdx] || {}).length > 0;
+    },
+    resetGraph() {
+      const fi = this.currentFileIdx;
+      const { [fi]: _dropped, ...rest } = this._graphMoved;
+      this._graphMoved = rest;
+      const svgEl = document.getElementById('rel-graph');
+      if (svgEl && this._graphTab === 'fm') {
+        const r = _rgLayoutFM(this.currentFileObj.graph);
+        _rgApply(svgEl, r.positions, 'fm', r.notes);
       }
     },
 
@@ -2145,8 +2190,6 @@ document.addEventListener('alpine:init', () => {
       return this.sectionLabelIn(this.currentFileIdx, this.currentSection);
     },
     _bindWindowTiers() {
-      if (this._tiersBound) return;
-      this._tiersBound = true;
       const apply = () => {
         this.isCompact = _TIER_COMPACT.matches;
         this.isNarrow = _TIER_NARROW.matches;
@@ -2226,6 +2269,7 @@ document.addEventListener('alpine:init', () => {
       });
       this.$watch('currentItem', () => { if (this.detailTab === 'graph') this.$nextTick(() => this._graphShow()); });
       this.$watch('detailTab', (val) => {
+        if (val !== 'graph') document.getElementById('rel-graph')?._rgHideTip?.();
         if (val !== 'graph' && this.graphFullscreen) this.graphFullscreen = false;
         if (val === 'graph') this.$nextTick(() => this._graphShow());
       });
@@ -2886,7 +2930,9 @@ document.addEventListener('alpine:init', () => {
 
     handleKeydown(e) {
       const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+      const tipWasUp = document.getElementById('rel-graph')?._rgHideTip?.();
       if (e.key === 'Escape') {
+        if (tipWasUp) return;
         if (this.searchOptsOpen) { this.toggleSearchOptions(false, true); return; }
         if (this.showShortcuts) { this.showShortcuts = false; return; }
         if (this.showAbout) { this.showAbout = false; return; }

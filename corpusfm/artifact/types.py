@@ -489,6 +489,8 @@ class Artifact:
     completeness_profile: CompletenessProfile
     structure_catalog: Optional[StructureCatalogSnapshot] = None
     has_corpusfm_export: bool = False  # True when SaveToDocumentsFolder script detected at ingestion
+    # Graph note objects as source XML. None: ingested before these were kept, so absent says nothing.
+    graph_notes: Optional[list] = None
     structure_intent: Optional[dict] = None  # rung-5 structural-intent block (see core/structure_intent)
     name_map: Optional[dict] = None     # {uuid_key: human_name} for addons; None for SaveAsXML.
                                         # Carried in the artifact so addon renders are self-contained
@@ -539,6 +541,8 @@ class Artifact:
             d["structure_catalog"] = self.structure_catalog.to_dict()
         if self.has_corpusfm_export:
             d["has_corpusfm_export"] = True
+        if self.graph_notes is not None:
+            d["graph_notes"] = self.graph_notes
         if self.structure_intent is not None:
             d["structure_intent"] = self.structure_intent
         if self.name_map is not None:
@@ -562,6 +566,7 @@ class Artifact:
             structure_catalog=StructureCatalogSnapshot.from_dict(sc_raw) if sc_raw else None,
             has_corpusfm_export=d.get("has_corpusfm_export", False),
             structure_intent=d.get("structure_intent"),
+            graph_notes=d.get("graph_notes"),
             name_map=d.get("name_map"),
             render_version=d.get("render_version", 0),
         )

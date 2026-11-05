@@ -85,5 +85,16 @@ def format_report(cr: CompareResult, section_cap: int = None) -> str:
         lines.extend(_names("Script Steps", "    ", sr, "    "))
         total += sr.total
 
+    # Relationship graph notes
+    sr = cr.graph_notes
+    if cr.graph_notes_incomplete:
+        lines.append(f"  [Relationship Graph Notes]: {cr.graph_notes_incomplete}\n")
+    elif not sr.has_diff:
+        lines.append("  [Relationship Graph Notes]: no differences\n")
+    else:
+        lines.append(f"\n  [Relationship Graph Notes]  +{len(sr.added)} added  -{len(sr.removed)} removed  ~{len(sr.changed)} changed\n")
+        lines.extend(_names("Relationship Graph Notes", "    ", sr, "    "))
+        total += sr.total
+
     lines.append(f"\n=== Total differences: {total} ===\n")
     return "".join(lines)
