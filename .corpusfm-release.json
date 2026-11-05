@@ -478,7 +478,7 @@
     "corpusfm/storage/fm_registry.py": "408d17f9644db47272d00207121f4136eaada66ad9a33582e6edaacd6ee9fe8e",
     "corpusfm/storage/git_backend.py": "5dac257f110abab25f16560adce473078ea4b889b677b2ff2a3382a4f2413fa0",
     "corpusfm/storage/job_identity_conversion.py": "1b8a17cd73bf08b6ec38ce5e84b0387aea91d6e033a887c8b899f44769b3609e",
-    "corpusfm/storage/local.py": "0a14effa33075af31fecce89576683a476feacb8c84cf43c6fe86be264f1e182",
+    "corpusfm/storage/local.py": "f448714c82503b85eb5e96db7cf119dd01270c387b92579ef49d43e327b0b4f3",
     "corpusfm/storage/projections.py": "f3f943ada57d20c29d9909340e69111b4e469b79469a240e66b90e91c0b16f23",
     "corpusfm/storage/queue_record.py": "a17ed1e4d3841121cb4f914b0142d1d37d269aebf026ecd1d4be0b267a8fcde6",
     "corpusfm/storage/repos.py": "233fb20f5d9cc5201b4a375be4080349a8904d99d887541cec948637d76d2932",
@@ -532,7 +532,7 @@
     "public/screenshots/artifacts.png": "bcc9e7b2a05971108e3f6aca1cc1d389dccd769eda72cbd50f2911703a66ea93",
     "public/screenshots/diff.png": "8cd8b63850650eac2e63867db53d63216a06bd24210863e7745c911709c221d6",
     "public/screenshots/explorer.png": "7bc18c39f10d81748c0679a7169a4679e60d6a423abb0f2df5e6f55014f1d679",
-    "release-build.txt": "83b2eab0aa975fa26340ef36f12c9a66872588b66717db14314dd10af82d19a2",
+    "release-build.txt": "9d34658cd48451bf3424571c25df8cdd624fb3708d3bb58bb248914838a3e67e",
     "requirements.txt": "de35ad4921dbea3081d2ecf6a9b214bf801806c4103c9c9b6dd0fb6fdea1c08b",
     "scripts/_release_gate_live.py": "335454a6e3e43c5e0375f7524a33a60647a862637e41dcba453cd474ab7d15b5",
     "scripts/generate-docs.mjs": "96f9fa72384472095a217ee27967ce7b9c50623c2c118c6498e3e12559955971",
@@ -3273,10 +3273,10 @@
     "profile_sha256": "06202387046b1750fb47d336abdbaf39b707e54300c04a9a63a3ad91f4e58d59",
     "profile_version": 1
   },
-  "release_build": 3175,
+  "release_build": 3178,
   "schema_version": 2,
   "source_commits": {
-    "application": "52056937a7d809c18edc5737f4214530a9e3e704",
+    "application": "4dac1f209e323173c31bf4cd35f5b9b1921b58a6",
     "installer": "8525cf6522d2251efa552c3680993cf69ae498a4"
   }
 }

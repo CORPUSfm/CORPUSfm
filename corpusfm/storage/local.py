@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 
 # corpusfm/storage/local.py → corpusfm/storage → corpusfm → project root
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
-_SETTINGS_FILE = _PROJECT_ROOT / ".corpusfm_settings.json"
+# The override is how the test suite keeps its child processes away from the developer's store: this
+# file's `archive_dir` selects where the default backend writes, and a child cannot inherit a patch.
+_SETTINGS_FILE = Path(os.environ.get("CORPUSFM_SETTINGS_FILE") or _PROJECT_ROOT / ".corpusfm_settings.json")
 
 
 _DB_FILENAME = "corpusfm.sqlite"
