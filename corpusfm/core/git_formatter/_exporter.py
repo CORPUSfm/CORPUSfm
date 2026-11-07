@@ -60,6 +60,9 @@ class ExportConfig:
     xref_graph: Optional[XRefGraph] = None
     # Flat dict of "folder_name/item_name" → one-line summary string.
     summaries: Optional[dict] = None
+    # An add-on package's source names ({key: name}, packet 1460). Optional: without it an add-on exports
+    # under its identifiers, exactly as before; with it names follow the same rule as artifact export.
+    name_map: Optional[dict] = None
 
 
 @dataclass
@@ -153,6 +156,36 @@ def _xref_block(folder_name: str, name: str, xref: XRefGraph) -> str:
     return "\n--- XRef ---\n" + "\n".join(lines)
 
 
+def _occurrence_titles(result: ParseResult, name_map: Optional[dict] = None):
+    """The file's occurrence index, built once per ParseResult and name map."""
+    key = id(name_map) if name_map else None
+    cached = getattr(result, "_occurrence_titles", None)
+    if cached is None or cached[0] != key:
+        from corpusfm.core.occurrence_titles import xml_occurrence_titles
+        cached = (key, xml_occurrence_titles((result.section_xml or {}).get("TableOccurrenceCatalog", {}), name_map))
+        try:
+            result._occurrence_titles = cached
+        except AttributeError:
+            pass
+    return cached[1]
+
+
+def _named(name: str, name_map: Optional[dict]) -> str:
+    """An item key's name under the package's names — the rule ingestion applies to item names."""
+    if not name_map:
+        return name
+    from corpusfm.ingestion.pipeline import _display_name
+    return name_map.get(name) or name_map.get(_display_name(name), name)
+
+
+def _with_names(text: str, name_map: Optional[dict]) -> str:
+    """The same identifier→name text pass ingestion applies to an add-on's rendered text."""
+    if not name_map:
+        return text
+    from corpusfm.ingestion.pipeline import _apply_name_map
+    return _apply_name_map(text, name_map)
+
+
 def _render_structured(
     folder_name: str,
     name: str,
@@ -171,7 +204,7 @@ def _render_structured(
     if folder_name == "value_lists":
         return render_valuelist_structured(name, xml_str)
     if folder_name == "relationships":
-        return render_relationship_structured(name, xml_str)
+        return render_relationship_structured(name, xml_str, _occurrence_titles(result, config.name_map))
     if folder_name == "addons":
         return render_addon_structured(name, xml_str)
     return f"Name: {name}"
@@ -196,7 +229,8 @@ def _render_rendered(
     if folder_name == "value_lists":
         return render_valuelist_rendered(name, xml_str)
     if folder_name == "relationships":
-        return render_relationship_rendered(name, xml_str)
+        return render_relationship_rendered(name, xml_str, _occurrence_titles(result, config.name_map),
+                                            name_map=config.name_map)
     if folder_name == "addons":
         return render_addon_rendered(name, xml_str)
     return f"Name: {name}"
@@ -240,10 +274,11 @@ def export(
 
             for name, xml_str in items.items():
                 if folder_name == "relationships":
-                    fname = relationship_filename(name, xml_str)
+                    fname = relationship_filename(name, xml_str, _occurrence_titles(result, config.name_map)
+                                                  if config.name_map else None)
                 else:
                     item_id = _get_item_id(xml_str)
-                    fname = item_filename(item_id, name)
+                    fname = item_filename(item_id, _named(name, config.name_map))
 
                 if mode == "structured":
                     content = _render_structured(folder_name, name, xml_str, result, config)
@@ -255,6 +290,7 @@ def export(
                             content += f"\n--- Summary ---\n{summary}"
                     if config.xref_graph is not None:
                         content += _xref_block(folder_name, name, config.xref_graph)
+                content = _with_names(content, config.name_map)
 
                 out_path = section_dir / fname
                 out_path.parent.mkdir(parents=True, exist_ok=True)

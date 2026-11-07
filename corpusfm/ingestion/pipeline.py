@@ -35,6 +35,7 @@ from corpusfm.artifact import (
     XRefRecord,
     make_item_id,
 )
+from corpusfm.core.occurrence_titles import occurrence_titles
 from corpusfm.core.identity import (field_context_index,
     ID_KIND, UUID_KIND, CatalogIdentity, build_indexes, identity_key, owner_identity,
     owner_identity_from_xml, reference_identity,
@@ -184,6 +185,26 @@ def _display_name(xml_key: str) -> str:
     if idx != -1 and xml_key[idx + 2:].isdigit():
         return xml_key[:idx]
     return xml_key
+
+
+def _item_name(section_key: str, xml_key: str, is_addon: bool, name_map: dict) -> str:
+    """An item's name: an add-on's UUID key → its human label; SaveAsXML → the display name."""
+    display = _display_name(xml_key)
+    if not is_addon:
+        return display
+    name = name_map.get(xml_key)
+    if name is None and section_key == "FieldsForTables" and "::" in xml_key:
+        # Addon FieldsForTables key is TABLE_UUID::FIELD_UUID.  Resolve both
+        # parts so the name matches SaveAsXML's TABLE::FIELD format — required
+        # for consistent rendered_text when diffing a SaveAsXML against its
+        # companion addon (same data, same fingerprint, no false "changed").
+        _tpart, _fpart = xml_key.split("::", 1)
+        _field_name = name_map.get(_fpart)
+        _table_name = name_map.get(_tpart)
+        if _field_name is not None:
+            # An unnamed table keeps its captured identifier, so the label stays owner-qualified (1462).
+            name = f"{_table_name or _tpart}::{_field_name}"
+    return name_map.get(display, display) if name is None else name
 
 
 def _elem_attrs(xml_str: str) -> dict:
@@ -510,6 +531,12 @@ def _stage_assemble_items(state: PipelineState) -> None:
     name_to_id: dict = {}
     items: dict = {}
 
+    # Each relationship end is named by the occurrence its id identifies, as the item is named.
+    to_titles = occurrence_titles(
+        (key, xml, _item_name("TableOccurrenceCatalog", key, result.is_addon, name_map))
+        for key, xml in (result.section_xml or {}).get("TableOccurrenceCatalog", {}).items()
+        if xml and not _folder_type(xml))
+
     for section_key, xml_section in (result.section_xml or {}).items():
         folder_paths = _compute_folder_paths(xml_section)
 
@@ -518,24 +545,7 @@ def _stage_assemble_items(state: PipelineState) -> None:
                 continue
 
             display = _display_name(xml_key)
-
-            # Resolve name: addon UUID keys → human label; SaveAsXML → display_name
-            if result.is_addon:
-                name = name_map.get(xml_key)
-                if name is None and section_key == "FieldsForTables" and "::" in xml_key:
-                    # Addon FieldsForTables key is TABLE_UUID::FIELD_UUID.  Resolve both
-                    # parts so the name matches SaveAsXML's TABLE::FIELD format — required
-                    # for consistent rendered_text when diffing a SaveAsXML against its
-                    # companion addon (same data, same fingerprint, no false "changed").
-                    _tpart, _fpart = xml_key.split("::", 1)
-                    _field_name = name_map.get(_fpart)
-                    _table_name = name_map.get(_tpart)
-                    if _field_name is not None:
-                        name = f"{_table_name}::{_field_name}" if _table_name else _field_name
-                if name is None:
-                    name = name_map.get(display, display)
-            else:
-                name = display
+            name = _item_name(section_key, xml_key, result.is_addon, name_map)
 
             fm_uuid_val = _fm_uuid(xml_str, section_key)
             item_id = alias.get((section_key, xml_key))
@@ -598,6 +608,8 @@ def _stage_assemble_items(state: PipelineState) -> None:
                 rk["options_xml"] = result.options_xml.get(display, "")
             elif section_key == "PrivilegeSetsCatalog":
                 rk["ext_privs_xml"] = ext_privs_xml
+            elif section_key == "RelationshipCatalog":
+                rk["to_titles"] = to_titles
 
             steps_xml = (_script_body(result, section_key, xml_str, display)
                          if section_key in _SCRIPT_SECTIONS and not is_fld else "")
@@ -804,6 +816,13 @@ def _stage_assemble_items(state: PipelineState) -> None:
                 name, name_map, _unique_addon_field_name_to_id)
         return to_id, field_key
 
+    def _field_label(item_id: str) -> str:
+        """A resolved field's label: its catalog key for SaveAsXML (unchanged), and for an add-on the
+        item's own name, which carries the package's names with the identifier as fallback (packet
+        1461) — the add-on catalog key is a pair of identifiers no text pass can name."""
+        item = items[item_id]
+        return item.name if result.is_addon else item.xml_key
+
     def _structured_field_target(detail: dict):
         """A field named by a STRUCTURED <FieldReference>.
 
@@ -819,7 +838,7 @@ def _stage_assemble_items(state: PipelineState) -> None:
             resolved = _item_for_uuid("FieldsForTables", uuid)
             # Label the object we RESOLVED, not the text the reference carried: a
             # stale name belongs to a different field and would mislabel the edge.
-            return resolved, (items[resolved].xml_key if resolved in items else label)
+            return resolved, (_field_label(resolved) if resolved in items else label)
         field_id = (detail.get("id") or "").strip()
         if not field_id:
             return None, label
@@ -830,7 +849,7 @@ def _stage_assemble_items(state: PipelineState) -> None:
             return None, label
         base = to_base.get(items[ctx].name)
         resolved = _field_by_context.get((base, field_id)) if base else None
-        return resolved, (items[resolved].xml_key if resolved in items else label)
+        return resolved, (_field_label(resolved) if resolved in items else label)
 
     for detail in (getattr(xref, "script_edge_details", None) or ()):
         # The SOURCE resolves by identity too. It used to fall back to the owner
@@ -973,17 +992,16 @@ def _stage_assemble_items(state: PipelineState) -> None:
         right = rel_el.find("./RightTable/TableOccurrenceReference")
         if left is None or right is None:
             continue
-        ln, rn = left.get("name", ""), right.get("name", "")
         lid = _item_for_reference("TableOccurrenceCatalog", left)
         rid = _item_for_reference("TableOccurrenceCatalog", right)
         if not (lid and rid):
             _note_unresolved("TableOccurrenceCatalog", left if not lid else right)
             continue
         rel_id = _display_name(rel_key)
-        for a_id, a_n, b_id, b_n in ((lid, ln, rid, rn), (rid, rn, lid, ln)):
+        for a_id, b_id in ((lid, rid), (rid, lid)):
             records.append(XRefRecord(
-                from_id=a_id, from_name=_resolved_name(a_n),
-                to=b_id, to_name=_resolved_name(b_n),
+                from_id=a_id, from_name=items[a_id].name,
+                to=b_id, to_name=items[b_id].name,
                 type="RelationshipTO", via=rel_id))
 
     _uuid_to_name = getattr(xref, "uuid_to_name", None) or {}

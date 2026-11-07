@@ -20,7 +20,7 @@ Public API:
     list_jobs() -> list[tuple[JobConfig | None, str | None]]
     delete_job(job_uuid) -> bool
     generate_token() -> str
-    assert_job_work_permitted()                 # the ProjectionVersion 2 gate
+    assert_job_work_permitted()                 # the ProjectionVersion gate
 """
 
 from __future__ import annotations
@@ -89,10 +89,10 @@ class JobWorkUnavailable(RuntimeError):
 
 
 def assert_job_work_permitted() -> None:
-    """Refuse BEFORE any JOB write or enqueue until `ProjectionVersion == 2` reads back.
+    """Refuse BEFORE any JOB write or enqueue until the current `ProjectionVersion` reads back.
 
     **This is the whole of R8's cutover discipline in one call.** Until startup has strictly read
-    back version 2, the JOB table may still be keyed the old way, and this build addresses it only by
+    back the current version, the JOB table may still be keyed the old way, and this build addresses it only by
     UUID — so a mutation or an enqueue would either fail confusingly or, worse, write a row (a
     blank-`UUIDJob` Job Run) that then blocks the very conversion that would fix it. Read-only
     administration and diagnosis stay available; writing and running do not.

@@ -41,7 +41,13 @@ from dataclasses import dataclass, field
 #       source, so when the formula lives in the PRIMARY CustomFunctionsCatalog <Calculation><Text>
 #       (the FM2026/SaveAsXML case) the body was signature-only. Now reads the primary first,
 #       falls back to the supplemental source. CustomFunctionsCatalog.
-RENDER_VERSION = 11
+#  12 — relationship ends are named by the occurrence their id identifies in the same file (its
+#       own title); an id that is missing or shared keeps the reference's supplied name. Identical
+#       output wherever a reference's name already equals its occurrence's. RelationshipCatalog.
+#  13 — add-on relationship predicate/sort fields resolve by exact name-map key, so a key the text
+#       pass cannot tokenise (space / non-ASCII occurrence name) is named too. Add-on only; identical
+#       output wherever the text pass already resolved it. RelationshipCatalog.
+RENDER_VERSION = 13
 
 @dataclass
 class RenderedItem:
@@ -260,7 +266,15 @@ def render_custom_function(name: str, xml_str: str, calc_xml_str: str = "", **_)
     return RenderedItem(name=name, summary=summary, body=body, xml_str=xml_str)
 
 
-def render_relationship(name: str, xml_str: str, external_tos=None, **_) -> RenderedItem:
+def render_relationship(name: str, xml_str: str, external_tos=None, to_titles=None, name_map=None,
+                        **_) -> RenderedItem:
+    """``to_titles`` (an ``OccurrenceTitles`` for this file) names each end by its occurrence's own
+    title; without it, or for an end it cannot identify, the reference's supplied name stands.
+
+    ``name_map`` (an add-on package's source names) names each predicate and sort FIELD by its exact
+    reference key, which already carries its occurrence context (packet 1460); a key the package does not
+    name stays as its identifier. Exact lookup, so a key the text pass cannot tokenise (a name with a
+    space or a non-ASCII character) still resolves."""
     try:
         elem = _parse(xml_str)
     except ET.ParseError:
@@ -271,10 +285,20 @@ def render_relationship(name: str, xml_str: str, external_tos=None, **_) -> Rend
         if side is None:
             return "?"
         ref = side.find("TableOccurrenceReference")
-        return ref.attrib.get("name", "?") if ref is not None else "?"
+        if ref is None:
+            return "?"
+        if to_titles is not None:
+            return to_titles.endpoint(ref)[0]
+        return ref.attrib.get("name", "?")
 
     def _to_label(raw: str) -> str:
         return f"{raw} [ext]" if (external_tos and raw in external_tos) else raw
+
+    def _field(fref) -> str:
+        if fref is None:
+            return "?"
+        raw = fref.attrib.get("name", "?")
+        return name_map.get(raw, raw) if name_map else raw
 
     left_raw  = _to_name("LeftTable")
     right_raw = _to_name("RightTable")
@@ -288,8 +312,7 @@ def render_relationship(name: str, xml_str: str, external_tos=None, **_) -> Rend
             pred_type = jp.attrib.get("type", "")
             lf = jp.find("./LeftField/FieldReference")
             rf = jp.find("./RightField/FieldReference")
-            lf_name = lf.attrib.get("name", "?") if lf is not None else "?"
-            rf_name = rf.attrib.get("name", "?") if rf is not None else "?"
+            lf_name, rf_name = _field(lf), _field(rf)
             op = "=" if pred_type == "Equal" else pred_type
             predicates.append(f"{left_to}::{lf_name}  {op}  {right_to}::{rf_name}")
 
@@ -334,8 +357,7 @@ def render_relationship(name: str, xml_str: str, external_tos=None, **_) -> Rend
         parts = []
         for s in sort_list.findall("Sort"):
             stype = s.attrib.get("type", "")
-            fref = s.find("./PrimaryField/FieldReference")
-            fname = fref.attrib.get("name", "?") if fref is not None else "?"
+            fname = _field(s.find("./PrimaryField/FieldReference"))
             vl = s.find("ValueListReference")
             if stype == "Custom" and vl is not None:
                 parts.append(f"{fname} by value list {vl.attrib.get('name', '?')}")

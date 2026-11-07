@@ -104,7 +104,11 @@ TABLE: dict[str, str] = {
 # one value. `projections.assert_projection` runs that conversion at the version-transition seam and
 # stamps 2 only after it and the incumbent refresh both succeed. Neither `Build` nor
 # `db_schema_build.txt` moves: this is not a fresh-database requirement.
-PROJECTION_VERSION: int = 2
+# 2 → 3 (packet 1459): the Runs filters. HISTORY gains `snapshot.status` and `snapshot.trigger`, so a
+# filtered page reads an indexed slot rather than scanning document text. Existing rows only have values
+# after the sweep, and the process stays paused until the stamp reads back, so no reader sees a half-filled
+# slot. Unused slots of the existing file: neither `Build` nor `db_schema_build.txt` moves.
+PROJECTION_VERSION: int = 3
 
 SLOTS: dict[str, dict[str, tuple[str, str]]] = {
     # STORAGE (the catalog) — classification → identity → linkage → matching → order → search → flags.
@@ -165,6 +169,8 @@ SLOTS: dict[str, dict[str, tuple[str, str]]] = {
         "UUIDRelatedStorage": ("TextField3", "text"),   # eq counterpart lookup
         "UUIDJob":            ("TextField4", "text"),   # eq per-job run history
         "ParentRootUUID":     ("TextField6", "text"),   # eq Related reverse lookup
+        "snapshot.status":    ("TextField7", "text"),   # eq the Runs status filter (nested document path)
+        "snapshot.trigger":   ("TextField8", "text"),   # eq the Runs trigger filter (nested document path)
     },
     # USER (packet 1007) — named accounts. Only NON-secret lookup keys are indexed slots; the sensitive
     # material (PBKDF2 hash+salt, MCP token-secret hash) rides the Corpus-Key-encrypted SecretData container,

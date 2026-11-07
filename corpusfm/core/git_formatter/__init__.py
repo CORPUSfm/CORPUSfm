@@ -66,6 +66,9 @@ def export_to_registration(
     result,
     registration_name: str,
     snap_dir=None,
+    name_map=None,
+    modes=None,
+    show_hidden=None,
 ) -> ExportResult:
     """Export a ParseResult using a named registration's config.
 
@@ -91,12 +94,13 @@ def export_to_registration(
             except Exception:
                 pass
     config = ExportConfig(
-        modes=reg.modes,
+        modes=list(modes) if modes else reg.modes,           # a per-call override (the CLI's --modes)
         sections=reg.sections,
-        show_hidden=reg.show_hidden,
+        show_hidden=reg.show_hidden if show_hidden is None else bool(show_hidden),
         large_content_threshold=reg.large_content_threshold,
         xref_graph=xref_graph,
         summaries=summaries,
+        name_map=name_map or None,
     )
     return export(result, resolve_local_path(reg), config)
 

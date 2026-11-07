@@ -1010,6 +1010,42 @@ def has_embedding_configured(app_config: "AppConfig") -> bool:
     )
 
 
+class _NoEmbedding:
+    """Stands in for the embedder when none is configured, so the stored index can still be read and
+    pruned (membership and deletion never embed). Any attempt to embed refuses."""
+
+    def name(self) -> str:
+        return "corpusfm-openai-compat"   # the identity the stored collection was opened with
+
+    def is_legacy(self) -> bool:
+        return True
+
+    def __call__(self, input):
+        raise RuntimeError("No embedding provider is configured.")
+
+    embed_documents = __call__
+
+    def embed_query(self, query):
+        raise RuntimeError("No embedding provider is configured.")
+
+
+def get_stored_index(app_config: "AppConfig") -> Optional[CORPUSfmVectorIndex]:
+    """The index for membership reads and deletions: the live one when embedding is configured, else the
+    stored one opened without an embedder (packet 1460 — an artifact whose index cannot be refreshed
+    must not keep stale vectors that would read as current once a provider returns). None ONLY when there
+    is no stored index at all; a store that exists but will not open RAISES (packet 1461), so a broken
+    store is never mistaken for an absent one."""
+    live = get_vector_index(app_config)
+    if live is not None:
+        return live
+    index_dir = resolve_index_dir(app_config)
+    if not (index_dir / "chroma.sqlite3").exists():
+        return None
+    # Opened per call and never cached: a cached handle would outlive a live instance's reset() of the
+    # collection (see _INDEX_CACHE). Only reached with no live instance, and only for reads/deletes.
+    return CORPUSfmVectorIndex(index_dir=index_dir, embedding_fn=_NoEmbedding())
+
+
 def embedding_ready(app_config: "AppConfig") -> bool:
     """True only when an embedding endpoint is configured AND tested working.
 
@@ -1124,8 +1160,27 @@ def list_endpoint_models(base_url: str, api_key: str = "", timeout: int = 15,
     return {"ok": True, "models": models, "endpoint": base_url}
 
 
+class IndexUnavailable(RuntimeError):
+    """Why no live index could be had (packet 1461-1462): ``category`` is ``no_provider`` (nothing
+    configured), ``provider_incomplete`` (configured but missing a required part) or ``open_failed`` (the
+    store would not open). The message is safe to show; the cause, if any, is chained for the log."""
+
+    def __init__(self, category: str, message: str):
+        super().__init__(message)
+        self.category = category
+
+
 def get_vector_index(app_config: "AppConfig") -> Optional[CORPUSfmVectorIndex]:
-    """Return a ready-to-use index, or None if embedding is not configured."""
+    """Return a ready-to-use index, or None if embedding is not configured (or the store won't open,
+    which :func:`open_vector_index` reports by category)."""
+    try:
+        return open_vector_index(app_config)
+    except IndexUnavailable:
+        return None
+
+
+def open_vector_index(app_config: "AppConfig") -> CORPUSfmVectorIndex:
+    """The live index, or :class:`IndexUnavailable` saying which of the three reasons applies."""
     from corpusfm.server.ai._endpoints import is_azure
     # packet 1151: the embedding endpoint is a first-class, decoupled provider — it no longer infers
     # its provider/key from the chat side. It keeps the base-url fallback to the chat URL only for a
@@ -1147,13 +1202,14 @@ def get_vector_index(app_config: "AppConfig") -> Optional[CORPUSfmVectorIndex]:
 
     if is_azure(provider) and (not base_url or not model):
         logger.debug("vector_index: azure embedding endpoint incomplete (need resource URL + deployment)")
-        return None
+        raise IndexUnavailable("provider_incomplete", "The embedding provider is configured incompletely "
+                                                      "(an Azure endpoint needs its resource URL and deployment).")
     if not base_url:
         # Try OpenAI default if we have a key
         api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
             logger.debug("vector_index: no embedding endpoint configured")
-            return None
+            raise IndexUnavailable("no_provider", "No embedding provider is configured.")
         base_url = "https://api.openai.com/v1"
 
     index_dir = resolve_index_dir(app_config)
@@ -1183,8 +1239,8 @@ def get_vector_index(app_config: "AppConfig") -> Optional[CORPUSfmVectorIndex]:
         try:
             idx = CORPUSfmVectorIndex(index_dir=index_dir, embedding_fn=embedding_fn, model=model,
                                       batch_size=batch_size)
-        except Exception:
+        except Exception as exc:
             logger.error("Failed to initialize vector index", exc_info=True)
-            return None
+            raise IndexUnavailable("open_failed", "The search index could not be opened.") from exc
         _INDEX_CACHE[cache_key] = idx
         return idx

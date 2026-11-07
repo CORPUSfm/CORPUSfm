@@ -180,6 +180,11 @@ class StorageBackend(Protocol):
         (lazy-migrating it into the blob) for back-compat."""
         ...
 
+    def clear_summaries(self, record_uuid: str) -> None:
+        """Remove an artifact's saved summaries — derived sidecar, container and HasSummaries — without
+        reading them: summaries are disposable (packet 1463). Raises on a storage failure."""
+        ...
+
     # ── Addon companion containers (packet 1166 A1) ──────────────────────────────
     # Both impls already have these; declared here for protocol uniformity so the container-download
     # resolver can address every retained container the same way (all keyed by the record UUID).

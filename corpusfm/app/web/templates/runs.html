@@ -25,7 +25,7 @@
     <div class="cfm-dd" @click.stop>
       <button type="button" class="cfm-dd-trigger" aria-label="Filter by job"
               @click="openDD = (openDD === 'job' ? '' : 'job')">
-        <span x-text="filterLabel || 'All jobs'"></span>
+        <span x-text="filterName()"></span>
         <svg class="cfm-dd-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
       </button>
       <div class="cfm-dd-menu" x-show="openDD === 'job'" x-cloak>
@@ -47,19 +47,25 @@
      stay on the last load that succeeded, so what is on screen is one consistent older answer. #}
   <div class="cfm-load-failed" role="alert" x-show="loadFailed" x-cloak>
     <span>
-      <strong>Unable to load run history.</strong>
+      <strong x-text="failureTitle()"></strong>
       <span x-show="runs.length > 0" x-text="staleNote()"></span>
     </span>
-    <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!loading" @click="retry()">Retry</button>
+    <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!loading" @click="retry()"
+            x-text="loading ? 'Retrying…' : 'Retry'"></button>
   </div>
 
+  <p class="cfm-muted" x-show="filterNote" x-text="filterNote"></p>
+
   {# ── Ledger: one list-card per successful run, actions on the row ────────────── #}
+  <template x-if="loading && !loaded && !loadFailed">
+    <p class="cfm-list-empty">Loading run history…</p>
+  </template>
   <template x-if="loaded && !loadFailed && runs.length === 0">
     <p class="cfm-list-empty">No runs found. Jobs record a run entry after each execution.</p>
   </template>
 
   <div x-show="runs.length > 0">
-    <template x-for="r in runs" :key="r.run_id || (r.job_uuid + r.ts)">
+    <template x-for="r in runs" :key="r.key || r.run_id || (r.job_uuid + r.ts)">
       <div class="cfm-listcard cfm-listcard--ok cfm-listcard--acts">
         <time class="cfm-lc-when" x-cfm-time="r.ts || r.ts_display"></time>
         <span class="cfm-lc-ident">
@@ -73,14 +79,12 @@
         <span class="cfm-lc-dur" x-text="(r.duration_s == null ? 0 : r.duration_s) + 's'"></span>
         <span class="cfm-lc-tail" x-text="r.trigger || 'manual'"></span>
         <span class="cfm-lc-actions">
+          {# All four stay enabled. What each one needs is resolved on the click, which reports what it finds. #}
           <button type="button" class="cfm-btn cfm-btn--sm" title="Open this run's job"
                   @click="goJob(r)">Job</button>
           <button type="button" class="cfm-btn cfm-btn--sm" title="Explore this run's artifact"
-                  x-show="!!r.archive_exists" @click="explore(r.archive_path)">Explore</button>
-          <button type="button" class="cfm-btn cfm-btn--sm"
-                  :disabled="!r.prev_archive_path"
-                  :title="r.prev_archive_path ? 'Diff against this job\'s previous artifact'
-                                              : 'No earlier artifact from this job to diff against'"
+                  @click="explore(r)">Explore</button>
+          <button type="button" class="cfm-btn cfm-btn--sm" title="Diff against this job's previous artifact"
                   @click="diff(r)">Diff</button>
           <button type="button" class="cfm-btn cfm-btn--sm" title="Show only this job's runs"
                   @click="filterBy(r)">Filter</button>
@@ -90,10 +94,10 @@
   </div>
 
   {# ── Pagination ───────────────────────────────────────────────────────────── #}
-  <div x-show="pages > 1" class="cfm-filterbar cfm-filterbar--center">
-    <button type="button" class="cfm-btn cfm-btn--sm" :disabled="page <= 1" @click="goPage(page - 1)">← Prev</button>
+  <div x-show="pages > 1 || page > 1" class="cfm-filterbar cfm-filterbar--center">
+    <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!loading || page <= 1" @click="goPage(page - 1)">← Prev</button>
     <span class="cfm-badge cfm-badge--muted" x-text="'Page ' + page + ' of ' + pages"></span>
-    <button type="button" class="cfm-btn cfm-btn--sm" :disabled="page >= pages" @click="goPage(page + 1)">Next →</button>
+    <button type="button" class="cfm-btn cfm-btn--sm" :disabled="!!loading || !hasNext" @click="goPage(page + 1)">Next →</button>
   </div>
 
 </div>
@@ -106,23 +110,25 @@ function runsPage() {
     runs: [], jobs: [], total: 0, page: 1, pages: 1, loading: false,
     filterJobUuid: '', filterLabel: '',
     loaded: false, loadFailed: false, failedView: null, loadSeq: 0,
+    requested: null, loadAbort: null, loadTimeoutMs: 60000,
+    hasNext: false, nextAfter: '', asOf: '', pageStarts: {}, legacyJobName: '', filterNote: '',
     taskError: '', openDD: '',
 
     async init() {
       const p = new URLSearchParams(window.location.search);
-      // Deep-link from a Jobs-page "Runs" jump. Keyed on uuid; `job` (a name) is still accepted
-      // so an older bookmark keeps working.
-      if (p.get('job_uuid')) this.filterJobUuid = p.get('job_uuid');
-      if (p.get('job')) this.filterLabel = p.get('job');
+      // Deep-link from a Jobs-page "Runs" jump, keyed on uuid, with the name as its label until a load
+      // can confirm it. A name alone is an older bookmark: it filters only if it names exactly one job.
+      const uuid = p.get('job_uuid'), name = p.get('job');
+      if (uuid) { this.filterJobUuid = uuid; this.filterLabel = name || ''; }
+      else if (name) this.legacyJobName = name;
       await this.load();
     },
 
-    async _fetch(view) {
+    async _fetch(view, signal) {
       // status=ok is not a filter the user can change — this page lists successes only.
       const p = new URLSearchParams({ page: view.page, per_page: 50, status: 'ok',
-                                      job_uuid: view.uuid,
-                                      job: view.uuid ? '' : view.label });
-      const r = await fetch('/api/runs/list?' + p);
+                                      job_uuid: view.uuid, after: view.after || '', as_of: view.asOf || '' });
+      const r = await fetch('/api/runs/list?' + p, { signal });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const d = await r.json();
       if (!d || d.error || !Array.isArray(d.runs)) throw new Error('unusable response');
@@ -133,69 +139,128 @@ function runsPage() {
     // A superseded response is dropped: an older reply must not overwrite or fail a newer view.
     async _show(view) {
       const seq = ++this.loadSeq;
+      if (this.loadAbort) this.loadAbort.abort();
+      const ctrl = new AbortController();
+      this.loadAbort = ctrl;
+      const timer = setTimeout(() => ctrl.abort(), this.loadTimeoutMs);
       this.loading = true;
+      this.requested = view;
       try {
-        const d = await this._fetch(view);
+        const d = await this._fetch(view, ctrl.signal);
         if (seq !== this.loadSeq) return;
-        this.runs = d.runs; this.total = d.total || 0; this.pages = d.pages || 1;
+        // Rows deleted while browsing can leave nothing here: start over and say so, not "No runs found".
+        if (d.runs.length === 0 && (view.page > 1 || view.asOf)) {
+          this.requested = null;
+          const restart = this._show({ uuid: view.uuid, label: view.label, page: 1 });
+          const own = this.loadSeq;
+          await restart;
+          if (own === this.loadSeq && !this.loadFailed) {
+            this.filterNote = 'The history changed while browsing, so the list started again from the newest run.';
+          }
+          return;
+        }
+        this.runs = d.runs; this.total = d.total || 0; this.pages = Math.max(d.pages || 1, view.page);
+        this.hasNext = !!d.has_next; this.nextAfter = d.next_after || ''; this.asOf = d.as_of || view.asOf || '';
+        if (view.page === 1) this.pageStarts = {};
+        this.pageStarts[view.page] = view.after || '';
         if (d.jobs) this.jobs = d.jobs;
         this.filterJobUuid = view.uuid;
-        const j = view.uuid && !view.label && this.jobs.find(x => x.uuid === view.uuid);
+        const j = view.uuid && this.jobs.find(x => x.uuid === view.uuid);
         this.filterLabel = j ? j.name : view.label;
         this.page = view.page;
         this.loaded = true; this.loadFailed = false; this.failedView = null;
+        this.filterNote = '';
+        const legacy = this.legacyJobName;
+        if (legacy && d.jobs) {
+          this.legacyJobName = '';
+          const named = this.jobs.filter(x => x.name === legacy);
+          if (named.length === 1) { await this._show({ uuid: named[0].uuid, label: legacy, page: 1 }); return; }
+          this.filterNote = 'No single job is named “' + legacy + '”, so all jobs are shown.';
+        }
       } catch (_) {
         if (seq !== this.loadSeq) return;
         this.loadFailed = true; this.failedView = view;
       } finally {
-        if (seq === this.loadSeq) this.loading = false;
+        clearTimeout(timer);
+        if (seq === this.loadSeq) { this.loading = false; this.requested = null; }
       }
     },
 
-    _view(page) { return { uuid: this.filterJobUuid, label: this.filterLabel, page }; },
+    // A filter still on its way is what the user last asked for, so a Refresh keeps it.
+    _view(page) {
+      const r = this.requested;
+      return { uuid: r ? r.uuid : this.filterJobUuid, label: r ? r.label : this.filterLabel, page };
+    },
     load()      { return this._show(this._view(1)); },
-    goPage(n)   { return this._show(this._view(n)); },
+    // Next continues from where this page ended; Prev returns to where that page began. Either way the
+    // browse keeps its `asOf`, so a run arriving meanwhile doesn't shift it. Refresh and filters start over.
+    goPage(n)   {
+      const after = n > this.page ? this.nextAfter : (this.pageStarts[n] || '');
+      return this._show({ ...this._view(n), after, asOf: this.asOf });
+    },
     retry()     { return this._show(this.failedView || this._view(this.page)); },
 
+    filterName() { return this.filterLabel || this.legacyJobName || (this.filterJobUuid ? 'Selected job' : 'All jobs'); },
+
+    failureTitle() {
+      const v = this.failedView;
+      const who = this.legacyJobName || (v && v.uuid ? (v.label || 'the selected job') : '');
+      return 'Unable to load run history' + (who ? ' for ' + who : '') + '.';
+    },
+
     staleNote() {
-      const where = (this.filterLabel || 'All jobs') + ', page ' + this.page;
+      const where = this.filterName() + ', page ' + this.page;
       return 'Showing the last runs that loaded (' + where + '). They may be outdated.';
     },
 
-    setFilter(uuid, label) { return this._show({ uuid, label, page: 1 }); },
-    filterBy(r) { this.setFilter(r.job_uuid || '', r.job_name || ''); },
+    setFilter(uuid, label) { this.legacyJobName = ''; return this._show({ uuid, label, page: 1 }); },
+    filterBy(r) {
+      this.taskError = '';
+      if (!r.job_uuid) { this.taskError = 'This run has no job identity, so there is no job to filter by.'; return; }
+      this.setFilter(r.job_uuid, r.job_name || '');
+    },
 
     // The run's OWN job, by uuid. A name is mutable and a deleted-then-recreated job reuses it,
     // so a name-keyed link can land on the wrong job or on nothing.
-    goJob(r) {
-      cfmGo('/jobs' + (r.job_uuid ? '?job_uuid=' + encodeURIComponent(r.job_uuid) : ''));
+    async goJob(r) {
+      this.taskError = '';
+      if (!r.job_uuid) { this.taskError = 'This run has no job identity, so there is no job to open.'; return; }
+      const uuid = encodeURIComponent(r.job_uuid);
+      try {
+        const res = await fetch('/api/jobs/locate?job_uuid=' + uuid);
+        const d = await this._json(res);
+        if (res.ok && d && d.ok) { cfmGo('/jobs?job_uuid=' + uuid); return; }
+        this.taskError = this._refusal(res, d, 'Could not check for this job just now. Try again.');
+      } catch (_) { this.taskError = 'Could not reach CORPUSfm. Try again.'; }
     },
 
-    async explore(uuid) {
-      const pending = window.cfmOpenPending(); this.taskError = '';
-      try {
-        const r = await fetch('/api/generate/explorer', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ artifact_paths: [uuid] }),
-        });
-        const d = await r.json();
-        if (d.error) { this.taskError = d.error; window.cfmResolvePending(pending, null, d.error); return; }
-        window.cfmTrackInTab(pending, d.task_id);
-      } catch (e) { this.taskError = String(e); window.cfmResolvePending(pending, null, String(e)); }
+    async _json(res) { try { return await res.json(); } catch (_) { return null; } },
+
+    _refusal(res, d, fallback) {
+      if (res.status === 403) return 'Your account does not have access to this.';
+      return (d && d.error) || fallback;
     },
 
-    async diff(run) {
+    // Called inside the click, so the pending tab opens before the first await and no popup blocker
+    // intervenes. A refusal shows on the page and in that tab.
+    async _openRun(r, action, path, bodyFrom) {
       const pending = window.cfmOpenPending(); this.taskError = '';
+      const fail = (msg) => { this.taskError = msg; window.cfmResolvePending(pending, null, msg); };
       try {
-        const r = await fetch('/api/generate/diff', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ artifact_a: run.prev_archive_path, artifact_b: run.archive_path }),
+        const res = await fetch('/api/runs/resolve?action=' + action + '&key=' + encodeURIComponent(r.key || ''));
+        const d = await this._json(res);
+        if (!res.ok || !d || !d.ok) { fail(this._refusal(res, d, 'This action failed. Try again.')); return; }
+        const g = await fetch(path, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyFrom(d)),
         });
-        const d = await r.json();
-        if (d.error) { this.taskError = d.error; window.cfmResolvePending(pending, null, d.error); return; }
-        window.cfmTrackInTab(pending, d.task_id);
-      } catch (e) { this.taskError = String(e); window.cfmResolvePending(pending, null, String(e)); }
+        const j = await this._json(g);
+        if (!g.ok || !j || j.error || !j.task_id) { fail(this._refusal(g, j, 'This could not be started. Try again.')); return; }
+        window.cfmTrackInTab(pending, j.task_id);
+      } catch (_) { fail('Could not reach CORPUSfm. Try again.'); }
     },
+
+    explore(r) { return this._openRun(r, 'explore', '/api/generate/explorer', d => ({ artifact_paths: [d.artifact] })); },
+    diff(r) { return this._openRun(r, 'diff', '/api/generate/diff', d => ({ artifact_a: d.artifact_a, artifact_b: d.artifact_b })); },
   };
 }
 </script>

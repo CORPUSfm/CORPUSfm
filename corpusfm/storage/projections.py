@@ -499,7 +499,7 @@ def assert_conversion_complete(backend) -> dict:
     out["ok"] = value == reg.PROJECTION_VERSION
     if not out["ok"]:
         out["reason"] = (f"the stored ProjectionVersion is {value!r}; this build requires "
-                         f"{reg.PROJECTION_VERSION}, so the JOB identity conversion has not "
+                         f"{reg.PROJECTION_VERSION}, so its conversion and projection sweep have not "
                          "completed")
     return out
 

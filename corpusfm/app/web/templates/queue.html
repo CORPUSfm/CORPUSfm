@@ -149,6 +149,7 @@ function queuePage() {
     reingestNote(r) {
       if (!(r.steps || []).includes('reingest')) return '';
       if (r.current === 'reingest') {
+        if (r.status === 'failed' && r.committed) return 'Re-ingest committed. A new Explorer can be generated now; restart to finish removing its old summaries.';
         return r.status === 'failed' ? 'The re-ingest stage did not complete, so don\'t rely on a new Explorer yet.' : '';
       }
       return r.status === 'failed'

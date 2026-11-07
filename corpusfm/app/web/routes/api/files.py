@@ -487,7 +487,7 @@ def _job_gate():
     """`None` when JOB work may proceed; a 503 JSONResponse when it may not (packet 1372-02, R8).
 
     Every JOB mutation and execution route calls this BEFORE it writes or enqueues. Until startup
-    has strictly read back `ProjectionVersion == 2`, the JOB table may still be keyed the old way and
+    has strictly read back the current `ProjectionVersion`, the JOB table may still be keyed the old way and
     this build addresses it only by UUID — so a write would either fail confusingly or land a row
     (a blank-`UUIDJob` Job Run) that then blocks the very conversion that would fix it.
 
@@ -597,15 +597,19 @@ async def job_locate(job_uuid: str = "") -> JSONResponse:
     if not ju:
         return JSONResponse({"ok": False, "error": "job_uuid is required"}, status_code=400)
     try:
-        from corpusfm.server.jobs.store import list_jobs
-        for cfg, _err in list_jobs():
-            if cfg is not None and (getattr(cfg, "id", "") or "") == ju:
+        # Strict: "no such job" and "could not read the jobs" are different answers.
+        from corpusfm.server.jobs.store import list_jobs_with_state
+        for cfg, _state in list_jobs_with_state(strict=True):
+            if (getattr(cfg, "id", "") or "") == ju:
                 return JSONResponse({"ok": True, "file": cfg.file or "", "name": cfg.name,
                                      "server_ref": _job_server_ref(cfg)})
         return JSONResponse({"ok": False, "error": "No job with that id — it may have been deleted."},
                             status_code=404)
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).error("Job locate failed", exc_info=True)
+        return JSONResponse({"ok": False, "error": "Could not check for this job just now. Try again."},
+                            status_code=503)
 
 
 @router.get("/files/{name}/jobs", dependencies=[Depends(require_auth)])

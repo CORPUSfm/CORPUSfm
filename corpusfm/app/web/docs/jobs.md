@@ -140,7 +140,8 @@ a job is deleted.
 
 The **Runs** page lists **successful** runs. Each row carries its own actions: **Job** (open the
 job that produced it), **Explore** (its artifact), **Diff** (against the previous artifact from
-that same job — disabled on a job's first run), and **Filter** (narrow the page to that job).
+that same job), and **Filter** (narrow the page to that job). All four are always available. Each
+looks up what it needs when you click it, and tells you if that is gone or can't be reached.
 
 If the history can't be read, the page says **Unable to load run history** and offers **Retry**. Any
 runs already on screen stay there, marked as possibly outdated, with the job and page they belong to.

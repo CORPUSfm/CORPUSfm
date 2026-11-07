@@ -3508,11 +3508,15 @@ def get_raw_xml(
         xname, xid = _xml_ids(item)
         return want in (xname, xid)
 
+    _titles = None
+
     def _rel_tokens(item) -> set:
         """Lowercased matchable tokens for a RelationshipCatalog item: each participating
-        table-occurrence name, each predicate field name, and each TO::field pair. A
-        relationship has no name attribute (only a numeric id), so this lets one be found
-        by a TO or field it joins on — the name a caller actually knows."""
+        table-occurrence name (as written in the XML and as its occurrence is titled), each
+        predicate field name, and each TO::field pair. A relationship has no name attribute
+        (only a numeric id), so this lets one be found by a TO or field it joins on — the
+        name a caller actually knows."""
+        nonlocal _titles
         toks: set = set()
         if not item.xml_sources:
             return toks
@@ -3520,10 +3524,14 @@ def get_raw_xml(
             root = _ET.fromstring(item.xml_sources[0].xml)
         except _ET.ParseError:
             return toks
+        if _titles is None:
+            from corpusfm.core.occurrence_titles import artifact_occurrence_titles
+            _titles = artifact_occurrence_titles(artifact)
         for tag in ("LeftTable", "RightTable"):
             ref = root.find(f"./{tag}/TableOccurrenceReference")
             if ref is not None and ref.get("name"):
                 toks.add(ref.get("name").lower())
+                toks.add(_titles.endpoint(ref, getattr(artifact, "name_map", None))[0].lower())
         for fr in root.findall(".//JoinPredicate//FieldReference"):
             fn = fr.get("name") or ""
             if fn:
@@ -3537,11 +3545,8 @@ def get_raw_xml(
         return toks
 
     def _rel_summary(item) -> str:
-        try:
-            from corpusfm.core.rendering.section_renderer import render_relationship
-            return render_relationship(item.name, item.xml_sources[0].xml).summary
-        except Exception:
-            return item.name
+        """The stored rendered summary — the same text search, Git export and Diff carry."""
+        return (item.rendered_text or "").split("\n", 1)[0] or item.name
 
     matches = [item for item in artifact.items.values() if _matches(item)]
     item = matches[0] if matches else None

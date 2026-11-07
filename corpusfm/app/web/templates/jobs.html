@@ -1021,7 +1021,7 @@ function jobsPage() {
     },
 
     // ── Job-row actions — every one scoped to THIS job's uuid (packet 1143) ──
-    goRuns(j)      { cfmGo('/runs?job_uuid=' + encodeURIComponent(j.uuid || '')); },
+    goRuns(j)      { cfmGo('/runs?job_uuid=' + encodeURIComponent(j.uuid || '') + '&job=' + encodeURIComponent(j.name || '')); },
     goArtifacts(j) { cfmGo('/artifacts?job_uuid=' + encodeURIComponent(j.uuid || '')); },
 
     // Fire and forget: report that the run STARTED, nothing more. The row's running badge and

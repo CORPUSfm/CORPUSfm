@@ -1,10 +1,14 @@
 (function() {
 var NS = 'http://www.w3.org/2000/svg';
 var CL_W = 150, CL_H = 28;  // normalized node size for the By Table view
-var READABLE = 0.8;  // screen pixels per map unit when first centering; node labels are 9 units high
+// Screen pixels per map unit for a readable subject. The reference: a 131-unit-wide occurrence at about 157 px.
+var READABLE = 1.2;
 // As Built occurrence anatomy. These match the sizing rule in explorer.py: 26 + 12 per row.
 var HDR_H = 18, ROWS_TOP = 22, ROW_H = 12, PANE_GAP = 6;
 var NOTE_COLLAPSED_H = 18;  // packet 1448: the screenshot-pair estimate; the XML keeps only the full bounds
+// Presentation choices, not source facts: the top bar sits INSIDE the captured bounds, so the footprint is unchanged;
+// the minimum keeps the bar's controls and a line of text usable.
+var NOTE_BAR_H = 12, NOTE_MIN_W = 80, NOTE_MIN_H = 40;
 
 function _el(tag, attrs) {
   var e = document.createElementNS(NS, tag);
@@ -49,13 +53,30 @@ window._rgBuild = function(gd, svgEl, navigateFn, describe, onNodeMoved) {
   }
   svgEl.appendChild(defs);
 
-  // Notes first: captured annotations sit behind everything, later ones over earlier ones.
+  // Notes first: captured annotations sit behind everything, later ones over earlier ones. Each has a top bar (the
+  // handle, with View and expand/collapse at its right), its text below, selectable and scrollable, and a grip.
   var nl = _el('g',{'class':'rg-notes'});
+  var XH='http://www.w3.org/1999/xhtml';
+  function _x(tag, cls, attrs){var e=document.createElementNS(XH,tag);e.className=cls;for(var k in attrs||{})e.setAttribute(k,attrs[k]);return e;}
   (gd.notes||[]).forEach(function(note,index){
     var fo=_el('foreignObject',{'class':'rg-note','data-note':index,x:note.x,y:note.y,width:note.w,height:note.collapsed?NOTE_COLLAPSED_H:note.h});
-    var d=document.createElementNS('http://www.w3.org/1999/xhtml','div');
-    d.className='rg-note-body'+(note.collapsed?' rg-note-collapsed':'');
-    d.textContent=note.text;
+    var d=_x('div','rg-note-body'+(note.collapsed?' rg-note-collapsed':''));
+    var bar=_x('div','rg-note-bar');
+    var view=_x('button','rg-note-btn rg-note-view',{type:'button','aria-label':'View full note text',title:'View full note text'});
+    var tog=_x('button','rg-note-btn rg-note-toggle',{type:'button'});
+    bar.appendChild(view); bar.appendChild(tog);
+    var text=_x('div','rg-note-text');
+    text.textContent=note.text;
+    // Text first: where the grid overlaps them (the collapsed strip, the grip's corner) the later bar and grip are on top.
+    d.appendChild(text); d.appendChild(bar); d.appendChild(_x('div','rg-note-grip',{'aria-hidden':'true'}));
+    d.style.setProperty('--note-bar-h',NOTE_BAR_H+'px');
+    view.addEventListener('click',function(){if(svgEl._rgOnNoteView)svgEl._rgOnNoteView(index,view);});
+    tog.addEventListener('click',function(){
+      var np=svgEl._rgNotePos[index]; if(!np)return;
+      np.collapsed=!np.collapsed;
+      _placeNote(svgEl,index);
+      if(onNodeMoved)onNodeMoved('note:'+index,{collapsed:np.collapsed});
+    });
     if(note.background){
       var b=note.background, c=b.slice(0,3);
       d.style.backgroundColor='rgba('+b.join(',')+')';
@@ -69,27 +90,9 @@ window._rgBuild = function(gd, svgEl, navigateFn, describe, onNodeMoved) {
   var ov = _el('g',{'class':'rg-ov'});
   svgEl.appendChild(ov);
 
-  // One line per condition, so each can meet its own field rows. By Table draws the first only.
+  // Filled once the boxes (and so their drawn rows) exist; layered here, behind the boxes.
   var eg = _el('g',{'class':'rg-edges'}), hg = _el('g',{'class':'rg-hits'}), og = _el('g',{'class':'rg-ops'});
   var nameOf = {}; for (var n of nodes) nameOf[n.id]=n.name;
-  for (var e of edges) {
-    var pairs = (e.pairs&&e.pairs.length) ? e.pairs : [{lf:null,rf:null,op:null}];
-    pairs.forEach(function(pair,pi){
-      var meta = {'data-cart':pair.op==='CartesianProduct'?'1':'','data-edge-cart':e.type==='cartesian'?'1':'','data-fid':e.from_id,'data-tid':e.to_id,'data-item':e.item||'','data-lf':pair.lf||'','data-rf':pair.rf||'','data-pair':pi,'data-op':pair.op||''};
-      var ln = _el('line',Object.assign({},meta));
-      eg.appendChild(ln);
-      var hit = _el('line',Object.assign({'class':'rg-hit'},meta));
-      if (pi===0) { hit.setAttribute('tabindex','0'); hit.setAttribute('role','button');
-        hit.setAttribute('aria-label','Relationship: '+(nameOf[e.from_id]||'?')+' to '+(nameOf[e.to_id]||'?')); }
-      hg.appendChild(hit);
-      if (pair.op) {
-        var op=_el('g',Object.assign({'class':'rg-op'},meta));
-        op.appendChild(_el('rect',{x:-7,y:-6,width:14,height:12,rx:2}));
-        var t=_el('text',{'text-anchor':'middle','dominant-baseline':'central','font-size':'9'});
-        op.appendChild(t); og.appendChild(op);
-      }
-    });
-  }
   svgEl.appendChild(eg); svgEl.appendChild(hg); svgEl.appendChild(og);
 
   // Nodes
@@ -161,25 +164,62 @@ window._rgBuild = function(gd, svgEl, navigateFn, describe, onNodeMoved) {
   }
   svgEl.appendChild(ng);
 
+  // One connected structure per RELATIONSHIP (packet 1448): a short branch from each distinct place a condition
+  // meets a box (a drawn field row, or the header where no row can honestly be named), joined beside each box into
+  // one trunk with one marker and one hit target. Conditions are never merged away: every one stays in the data,
+  // the tip and the details; two relationships between the same boxes stay two trunks.
+  svgEl._rgRels = [];
+  for (var e of edges) {
+    var pairs = e.pairs||[];
+    var meta = {'data-fid':e.from_id,'data-tid':e.to_id,'data-item':e.item||''};
+    var rel = {fid:e.from_id, tid:e.to_id, cartEdge:e.type==='cartesian', pairs:pairs, sides:{l:[],r:[]}, branches:[]};
+    [['l','lf',e.from_id],['r','rf',e.to_id]].forEach(function(sd){
+      var idx = svgEl._rgRowIndex[sd[2]]||{}, keys = {};
+      (pairs.length?pairs:[{}]).forEach(function(pair){
+        var f = pair[sd[1]]||'', i = f ? idx[f] : undefined, key = i===undefined ? 'h' : 'r'+i;
+        if (!keys[key]) { keys[key] = {key:key, fields:[], cart:true}; rel.sides[sd[0]].push(keys[key]); }
+        if (f && keys[key].fields.indexOf(f)<0) keys[key].fields.push(f);
+        if (pair.op!=='CartesianProduct') keys[key].cart = false;
+      });
+      rel.sides[sd[0]].forEach(function(a){
+        var b = _el('path', Object.assign({'class':'rg-branch','data-side':sd[0],'data-fields':a.fields.join(' ')}, meta));
+        eg.appendChild(b); rel.branches.push({el:b, side:sd[0], anchor:a});
+      });
+    });
+    rel.trunk = _el('path', Object.assign({'class':'rg-trunk','data-conds':pairs.length}, meta));
+    eg.appendChild(rel.trunk);
+    rel.hit = _el('path', Object.assign({'class':'rg-hit',tabindex:'0',role:'button',
+      'aria-label':'Relationship: '+(nameOf[e.from_id]||'?')+' to '+(nameOf[e.to_id]||'?')}, meta));
+    hg.appendChild(rel.hit);
+    var ops = pairs.map(function(pair){return pair.op;}).filter(Boolean);
+    if (ops.length) {
+      rel.op = _el('g', Object.assign({'class':'rg-op','data-op':ops.join(' ')}, meta));
+      rel.op.appendChild(_el('rect',{y:-6,height:12,rx:2}));
+      rel.op.appendChild(_el('text',{'text-anchor':'middle','dominant-baseline':'central','font-size':'9'}));
+      og.appendChild(rel.op);
+    }
+    svgEl._rgRels.push(rel);
+  }
+
   // Index node elements by id
   svgEl._rgNodeEls = new Map(Array.from(ng.children).map(g=>[g.getAttribute('data-nid'),g]));
   svgEl._rgEdgeEls = Array.from(eg.children).concat(Array.from(hg.children));
   svgEl._rgOpEls = Array.from(og.children);
   svgEl._rgNodeById = nodeById;
   svgEl._rgNoteEls = nl;
-  svgEl._rgNotePos = gd.notes||[];
+  svgEl._rgNotePos = (gd.notes||[]).map(function(n){return {x:n.x,y:n.y,w:n.w,h:n.h,collapsed:!!n.collapsed};});   // never appData itself
   svgEl._rgOv = ov;
   svgEl._rgMode = null;
 
   // ── Pan, node drag, pane scroll, zoom ────────────────────────────────────────
-  var vb={x:0,y:0,w:1000,h:1000}, mode=null, px=0, py=0, sx=0, sy=0, dragged=false, dragId=null, dragPane=null, dragNote=null;
+  var vb={x:0,y:0,w:1000,h:1000}, mode=null, px=0, py=0, sx=0, sy=0, dragged=false, dragId=null, dragPane=null, dragNote=null, sizeAt=null;
   svgEl._rgVb = vb;
   function setVb(){svgEl.setAttribute('viewBox',vb.x+' '+vb.y+' '+vb.w+' '+vb.h);}
   function scrollerAt(t){
     var p=t.closest&&t.closest('.rg-pane');
     if(p&&p._rgPane&&p._rgPane.max>0)return {pane:p._rgPane};
-    var d=t.closest&&t.closest('.rg-note-body');
-    if(d&&d.scrollHeight>d.clientHeight)return {note:d};
+    var d=t.closest&&t.closest('.rg-note-text');
+    if(d&&d.scrollHeight>d.clientHeight&&!d.closest('.rg-note-collapsed'))return {note:d};
     return null;
   }
   function scrollBy(s,dy){
@@ -194,12 +234,20 @@ window._rgBuild = function(gd, svgEl, navigateFn, describe, onNodeMoved) {
     dragged=false;px=sx=e.clientX;py=sy=e.clientY;dragId=null;dragPane=null;dragNote=null;
     var node=e.target.closest&&e.target.closest('g[data-nid]');
     var note=svgEl._rgMode==='fm'&&e.target.closest?e.target.closest('.rg-note'):null;
-    // On touch a long note scrolls, so its first line is where it can be picked up, like an occurrence's header.
-    var noteScrolls=note&&e.pointerType==='touch'&&scrollerAt(e.target)&&
-      e.clientY-note.getBoundingClientRect().top>NOTE_COLLAPSED_H*svgEl.getScreenCTM().d;
-    var scroller=e.pointerType==='touch'&&(!note||noteScrolls)?scrollerAt(e.target):null;
-    if(scroller){mode='scroll';dragPane=scroller;}
-    else if(note){mode='note';dragNote=+note.getAttribute('data-note');}
+    // A note's buttons act on their own click; nothing here may start a move or a pan from them.
+    if(note&&e.target.closest('.rg-note-btn'))return;
+    var noteIdx=note?+note.getAttribute('data-note'):null;
+    var scroller=e.pointerType==='touch'&&!note?scrollerAt(e.target):null;
+    if(note&&e.target.closest('.rg-note-grip')){mode='resize';dragNote=noteIdx;var rp=svgEl._rgNotePos[noteIdx];sizeAt={w:rp.w,h:rp.h};}
+    else if(note&&e.target.closest('.rg-note-bar')){mode='note';dragNote=noteIdx;}
+    else if(note){
+      // The text belongs to the reader: a mouse selects it (the wheel scrolls it); a finger scrolls it, or pans
+      // the map when there is nothing to scroll.
+      if(e.pointerType!=='touch')return;
+      var ns=scrollerAt(e.target);
+      if(ns){mode='scroll';dragPane=ns;}else mode='pan';
+    }
+    else if(scroller){mode='scroll';dragPane=scroller;}
     else if(node&&svgEl._rgMode==='fm'&&svgEl._rgPos[node.getAttribute('data-nid')]){mode='node';dragId=node.getAttribute('data-nid');}
     else mode='pan';
     if(mode==='pan')svgEl.style.cursor='grabbing';
@@ -210,9 +258,19 @@ window._rgBuild = function(gd, svgEl, navigateFn, describe, onNodeMoved) {
     if(Math.abs(e.clientX-sx)+Math.abs(e.clientY-sy)>4)dragged=true;
     var r=svgEl.getBoundingClientRect();if(!r.width||!r.height)return;
     // Below the drag threshold nothing is consumed, so a moved block doesn't start behind the pointer.
-    if((mode==='node'||mode==='note')&&!dragged)return;
+    if((mode==='node'||mode==='note'||mode==='resize')&&!dragged)return;
     var dx=e.clientX-px, dy=e.clientY-py; px=e.clientX;py=e.clientY;
     if(mode==='scroll'){scrollBy(dragPane,-dy/svgEl.getScreenCTM().d);return;}
+    if(mode==='resize'){
+      // From where the press began, through the actual transform, so the corner stays under the pointer at any zoom.
+      // A note captured smaller than the minimum is never enlarged just by taking hold of it.
+      var rm=svgEl.getScreenCTM(), rn=svgEl._rgNotePos[dragNote];
+      rn.w=Math.max(Math.min(NOTE_MIN_W,sizeAt.w),sizeAt.w+(e.clientX-sx)/rm.a);
+      rn.h=Math.max(Math.min(NOTE_MIN_H,sizeAt.h),sizeAt.h+(e.clientY-sy)/rm.d);
+      _placeNote(svgEl,dragNote);
+      if(onNodeMoved)onNodeMoved('note:'+dragNote,{w:rn.w,h:rn.h});
+      return;
+    }
     if(mode==='note'){
       var nm=svgEl.getScreenCTM(), np=svgEl._rgNotePos[dragNote];
       np.x+=dx/nm.a; np.y+=dy/nm.d;
@@ -228,22 +286,35 @@ window._rgBuild = function(gd, svgEl, navigateFn, describe, onNodeMoved) {
       if(onNodeMoved)onNodeMoved(dragId,{x:p.x,y:p.y});
       return;
     }
-    vb.x-=dx*(vb.w/r.width); vb.y-=dy*(vb.h/r.height);
+    // Through the actual transform: on a letterboxed view the element's size is not the scale.
+    var pm=svgEl.getScreenCTM();
+    vb.x-=dx/pm.a; vb.y-=dy/pm.d;
     setVb();
   }
   function onUp(){if(mode){mode=null;dragId=null;dragPane=null;dragNote=null;svgEl.style.cursor='grab';}}
+  // A sideways wheel (or tilt, or a mostly sideways trackpad stroke) pans sideways and never zooms; an upright one
+  // scrolls a field or note list under the pointer, else zooms about the pointer. An event with no movement does nothing.
   function onWheel(e){
     e.preventDefault();
+    var r=svgEl.getBoundingClientRect();if(!r.width||!r.height)return;
+    var unit=e.deltaMode===1?16:e.deltaMode===2?r.width:1, wdx=e.deltaX*unit, wdy=e.deltaY*unit;
+    if(!wdx&&!wdy)return;
     hideTip();
+    if(Math.abs(wdx)>=Math.abs(wdy)){
+      vb.x+=wdx/svgEl.getScreenCTM().a;
+      setVb();
+      return;
+    }
     var s=scrollerAt(e.target);
     if(s&&scrollBy(s,e.deltaY))return;
     var f=e.deltaY>0?1.15:1/1.15;
-    var r=svgEl.getBoundingClientRect();if(!r.width||!r.height)return;
-    var wx=vb.x+(e.clientX-r.left)/r.width*vb.w;
-    var wy=vb.y+(e.clientY-r.top)/r.height*vb.h;
+    var m0=svgEl.getScreenCTM(), wx=(e.clientX-m0.e)/m0.a, wy=(e.clientY-m0.f)/m0.d;
     vb.w*=f;vb.h*=f;
-    vb.x=wx-(e.clientX-r.left)/r.width*vb.w;
-    vb.y=wy-(e.clientY-r.top)/r.height*vb.h;
+    setVb();
+    // Whatever is under the pointer stays under it.
+    var m1=svgEl.getScreenCTM();
+    vb.x+=wx-(e.clientX-m1.e)/m1.a;
+    vb.y+=wy-(e.clientY-m1.f)/m1.d;
     setVb();
   }
   svgEl.addEventListener('pointerdown',onDown);
@@ -251,6 +322,23 @@ window._rgBuild = function(gd, svgEl, navigateFn, describe, onNodeMoved) {
   document.addEventListener('pointerup',onUp);
   document.addEventListener('pointercancel',onUp);
   svgEl.addEventListener('wheel',onWheel,{passive:false});
+
+  // A resize keeps the same scale and the same point in the middle, so a full-screen toggle or a moved
+  // window shows more or less of the map rather than rescaling it. A view that was hidden comes back here.
+  var hidden=true;
+  var resizeObs=typeof ResizeObserver==='function'?new ResizeObserver(function(){
+    var r=svgEl.getBoundingClientRect();
+    if(!r.width||!r.height){hidden=true;return;}
+    var was=svgEl._rgSize;
+    if(was&&was.w&&vb.w&&vb.h&&(was.w!==r.width||was.h!==r.height)){
+      var s=Math.min(was.w/vb.w,was.h/vb.h), cx=vb.x+vb.w/2, cy=vb.y+vb.h/2;
+      vb.w=r.width/s; vb.h=r.height/s; vb.x=cx-vb.w/2; vb.y=cy-vb.h/2;
+      setVb();
+    }
+    svgEl._rgSize={w:r.width,h:r.height};
+    if(hidden){hidden=false;if(svgEl._rgOnShown)svgEl._rgOnShown();}
+  }):null;
+  if(resizeObs)resizeObs.observe(svgEl);
 
   // ── Tooltip ──────────────────────────────────────────────────────────────────
   // Names can be longer than their box. Text only, never markup: these strings come from the file.
@@ -264,7 +352,7 @@ window._rgBuild = function(gd, svgEl, navigateFn, describe, onNodeMoved) {
   }
   function fill(t){
     var lines=describe?describe(t.hasAttribute('data-nid')?'to':'rel',t.getAttribute('data-item')):[];
-    if(lines.length>MAX_LINES)lines=lines.slice(0,MAX_LINES-1).concat('+'+(lines.length-MAX_LINES+1)+' more, listed on the card');
+    if(lines.length>MAX_LINES)lines=lines.slice(0,MAX_LINES-1).concat('+'+(lines.length-MAX_LINES+1)+' more, listed under Details');
     tip.textContent='';
     lines.forEach(function(text,i){var d=document.createElement(i===0?'strong':'div');d.textContent=text;d.style.display='block';tip.appendChild(d);});
     return lines.length>0;
@@ -328,6 +416,7 @@ window._rgBuild = function(gd, svgEl, navigateFn, describe, onNodeMoved) {
     document.removeEventListener('pointerup',onUp);
     document.removeEventListener('pointercancel',onUp);
     svgEl.removeEventListener('wheel',onWheel);
+    if(resizeObs)resizeObs.disconnect();
     hideTip();
   };
 };
@@ -335,6 +424,10 @@ window._rgBuild = function(gd, svgEl, navigateFn, describe, onNodeMoved) {
 function _placeNote(svgEl, index) {
   var fo=svgEl._rgNoteEls.children[index], p=svgEl._rgNotePos[index];
   fo.setAttribute('x',p.x); fo.setAttribute('y',p.y);
+  fo.setAttribute('width',p.w); fo.setAttribute('height',p.collapsed?NOTE_COLLAPSED_H:p.h);
+  var d=fo.firstChild, t=d.querySelector('.rg-note-toggle'), label=p.collapsed?'Expand note':'Collapse note';
+  d.classList.toggle('rg-note-collapsed',!!p.collapsed);
+  t.setAttribute('aria-label',label); t.setAttribute('title',label); t.setAttribute('aria-expanded',String(!p.collapsed));
 }
 
 function _placeNode(svgEl, id) {
@@ -345,48 +438,78 @@ function _placeNode(svgEl, id) {
   g.setAttribute('transform','translate('+p.x+','+p.y+')');
 }
 
-// Where a condition meets an occurrence: its displayed field row, or the header when no row can honestly be
-// named, since the header can never be mistaken for a field. As Built only; By Table keeps center-to-center lines.
-function _attach(svgEl, nodeId, fieldId, other) {
-  var p=svgEl._rgPos[nodeId];
-  var right = other.x+other.w/2 >= p.x+p.w/2;
-  var i = (svgEl._rgRowIndex[nodeId]||{})[fieldId];
-  var y = i!==undefined ? p.y+ROWS_TOP+ROW_H*i+ROW_H/2 : p.y+Math.min(HDR_H,p.h)/2;
-  return {x:right?p.x+p.w:p.x, y:y};
+// Where a relationship meets an occurrence: the side facing the other end, at a drawn field row or, when no row
+// can honestly be named, the header, which can never be mistaken for a field. As Built only.
+var STUB = 22, ELBOW = 8, LOOP = 14;
+function _anchorY(p, key) {
+  return key==='h' ? p.y+Math.min(HDR_H,p.h)/2 : p.y+ROWS_TOP+ROW_H*(+key.slice(1))+ROW_H/2;
 }
-// Whether the XML-left box is the one read second: by box centers, as _attach picks sides; top to bottom if stacked.
+// Whether the XML-left box is the one read second: by box centers, as the sides are picked; top to bottom if stacked.
 function _readsReversed(fp, tp) {
   var a=fp.x+fp.w/2, b=tp.x+tp.w/2;
   return a!==b ? a>b : fp.y>tp.y;
 }
 var _OP_LABEL={Equal:'=',NotEqual:'≠',Less:'<',Greater:'>',LessOrEqual:'≤',GreaterOrEqual:'≥',CartesianProduct:'×'};
 var _OP_MIRROR={Less:'Greater',Greater:'Less',LessOrEqual:'GreaterOrEqual',GreaterOrEqual:'LessOrEqual'};
+function _f(v){return Math.round(v*100)/100;}
 function _placeEdges(svgEl) {
-  var pos=svgEl._rgPos, fm=svgEl._rgMode==='fm', edgeEls=svgEl._rgEdgeEls;
-  var geometry={};
-  for (var ln of edgeEls) {
-    var fid=ln.getAttribute('data-fid'),tid=ln.getAttribute('data-tid');
-    var fp=pos[fid],tp=pos[tid],pi=+ln.getAttribute('data-pair');
-    var shown = !!(fp&&tp) && (fm || pi===0);
-    ln.style.display = shown ? '' : 'none';
+  var pos=svgEl._rgPos, fm=svgEl._rgMode==='fm';
+  for (var rel of (svgEl._rgRels||[])) {
+    var fp=pos[rel.fid], tp=pos[rel.tid], shown=!!(fp&&tp);
+    var parts=[rel.trunk,rel.hit].concat(rel.branches.map(function(b){return b.el;}));
+    parts.forEach(function(el){el.style.display=shown?'':'none';});
+    if(rel.op) rel.op.style.display=(shown&&fm)?'':'none';
     if(!shown)continue;
-    var a,b;
-    if(fm){a=_attach(svgEl,fid,ln.getAttribute('data-lf'),tp);b=_attach(svgEl,tid,ln.getAttribute('data-rf'),fp);}
-    else{a={x:fp.x+fp.w/2,y:fp.y+fp.h/2};b={x:tp.x+tp.w/2,y:tp.y+tp.h/2};}
-    ln.setAttribute('x1',a.x); ln.setAttribute('y1',a.y);
-    ln.setAttribute('x2',b.x); ln.setAttribute('y2',b.y);
-    var dashed = fm ? ln.getAttribute('data-cart') : ln.getAttribute('data-edge-cart');
-    if (dashed) ln.setAttribute('stroke-dasharray','5 3'); else ln.removeAttribute('stroke-dasharray');
-    geometry[ln.getAttribute('data-item')+'#'+pi]=[a,b];
-  }
-  for (var op of (svgEl._rgOpEls||[])) {
-    var g=geometry[op.getAttribute('data-item')+'#'+op.getAttribute('data-pair')];
-    op.style.display = (fm&&g) ? '' : 'none';
-    if(!fm||!g)continue;
-    op.setAttribute('transform','translate('+((g[0].x+g[1].x)/2)+','+((g[0].y+g[1].y)/2)+')');
-    // Read in screen order: a line whose XML-left box comes second shows the mirrored operator.
-    var raw=op.getAttribute('data-op'), mirrored=_readsReversed(pos[op.getAttribute('data-fid')],pos[op.getAttribute('data-tid')]);
-    op.querySelector('text').textContent=_OP_LABEL[mirrored?(_OP_MIRROR[raw]||raw):raw]||raw;
+    var d=[];
+    if(!fm){
+      // By Table: one plain center-to-center line per relationship, as before.
+      rel.branches.forEach(function(b){b.el.style.display='none';});
+      var td='M'+_f(fp.x+fp.w/2)+' '+_f(fp.y+fp.h/2)+'L'+_f(tp.x+tp.w/2)+' '+_f(tp.y+tp.h/2);
+      rel.trunk.setAttribute('d',td); rel.hit.setAttribute('d',td);
+      if(rel.cartEdge) rel.trunk.setAttribute('stroke-dasharray','5 3'); else rel.trunk.removeAttribute('stroke-dasharray');
+      continue;
+    }
+    var J={};
+    [['l',fp,tp],['r',tp,fp]].forEach(function(sd){
+      var p=sd[1], o=sd[2], right=o.x+o.w/2>=p.x+p.w/2, s=right?1:-1, ex=right?p.x+p.w:p.x;
+      var ys=rel.sides[sd[0]].map(function(a){return _anchorY(p,a.key);});
+      J[sd[0]]={x:ex+s*STUB, y:ys.reduce(function(t,v){return t+v;},0)/ys.length, ex:ex, s:s};
+    });
+    rel.branches.forEach(function(b){
+      var j=J[b.side], p=b.side==='l'?fp:tp, y=_anchorY(p,b.anchor.key);
+      var bd='M'+_f(j.ex)+' '+_f(y)+'H'+_f(j.ex+j.s*ELBOW)+'L'+_f(j.x)+' '+_f(j.y);
+      b.el.setAttribute('d',bd); d.push(bd);
+      if(b.anchor.cart) b.el.setAttribute('stroke-dasharray','5 3'); else b.el.removeAttribute('stroke-dasharray');
+    });
+    var a=J.l, z=J.r, mid, td;
+    if(rel.fid===rel.tid){
+      // A self-join loops outside its own box, so its trunk is never drawn over the box.
+      var lx=a.ex+a.s*(STUB+LOOP);
+      td='M'+_f(a.x)+' '+_f(a.y)+'H'+_f(lx)+'V'+_f(z.y)+'H'+_f(z.x);
+      mid={x:lx, y:(a.y+z.y)/2};
+    } else {
+      td='M'+_f(a.x)+' '+_f(a.y)+'L'+_f(z.x)+' '+_f(z.y);
+      mid={x:(_f(a.x)+_f(z.x))/2, y:(_f(a.y)+_f(z.y))/2};
+    }
+    rel.trunk.setAttribute('d',td);
+    rel.hit.setAttribute('d',[td].concat(d).join(''));
+    var allCart=rel.pairs.length&&rel.pairs.every(function(q){return q.op==='CartesianProduct';});
+    if(allCart) rel.trunk.setAttribute('stroke-dasharray','5 3'); else rel.trunk.removeAttribute('stroke-dasharray');
+    if(rel.op){
+      rel.op.setAttribute('transform','translate('+mid.x+','+mid.y+')');
+      // Read in screen order: a relationship whose XML-left box comes second shows mirrored operators. Mixed
+      // operators are all shown, in condition order, never one standing for the rest.
+      var mirrored=_readsReversed(fp,tp), labels=[];
+      rel.pairs.forEach(function(q){
+        if(!q.op)return;
+        var l=_OP_LABEL[mirrored?(_OP_MIRROR[q.op]||q.op):q.op]||q.op;
+        if(labels.indexOf(l)<0)labels.push(l);
+      });
+      var text=labels.join(' '), w=Math.max(14,text.length*5.6+8);
+      rel.op.querySelector('text').textContent=text;
+      var r=rel.op.querySelector('rect'); r.setAttribute('x',-w/2); r.setAttribute('width',w);
+      rel.op.classList.toggle('rg-op-mixed',labels.length>1);
+    }
   }
 }
 
@@ -432,6 +555,7 @@ window._rgFit = function(svgEl, bounds) {
   var v=svgEl._rgVb; if(!v)return;
   v.x=bounds.x; v.y=bounds.y; v.w=bounds.w; v.h=bounds.h;
   svgEl.setAttribute('viewBox',v.x+' '+v.y+' '+v.w+' '+v.h);
+  _fillElement(svgEl);
 };
 
 // ── Layout: As Built (FM CoordRect), with this session's temporary moves on top ──
@@ -441,10 +565,11 @@ window._rgLayoutFM = function(gd, moved) {
     var m=moved&&moved[n.id];
     pos[n.id]={x:m?m.x:n.x,y:m?m.y:n.y,w:n.w,h:n.h};
   }
-  // Copies: a drag writes to these, and appData must keep the captured arrangement.
+  // Copies: a drag, resize or toggle writes to these, and appData must keep the captured arrangement.
   var notes=(gd.notes||[]).map(function(n,i){
-    var m=moved&&moved['note:'+i];
-    return {x:m?m.x:n.x,y:m?m.y:n.y,w:n.w,h:n.h,collapsed:n.collapsed};
+    var m=(moved&&moved['note:'+i])||{};
+    function at(k){return m[k]!==undefined?m[k]:n[k];}
+    return {x:at('x'),y:at('y'),w:at('w'),h:at('h'),collapsed:!!at('collapsed')};
   });
   return {positions:pos, notes:notes, bounds:_bounds(pos, notes)};
 };
@@ -506,31 +631,54 @@ window._rgSelect = function(svgEl, sel) {
   }
 };
 
-// ── Center ids in the view by moving the viewBox; widen it only if they don't fit ──
-// readable: the view is still the whole-map fit, which on a large file makes every label too small to read.
-window._rgCenter = function(svgEl, ids, readable) {
+// A view with the element's own shape, same scale and same center, so nothing is letterboxed.
+function _fillElement(svgEl) {
+  var v=svgEl._rgVb, r=svgEl.getBoundingClientRect();
+  if(!v||!r.width||!r.height||!v.w||!v.h)return;
+  var s=Math.min(r.width/v.w,r.height/v.h), cx=v.x+v.w/2, cy=v.y+v.h/2;
+  v.w=r.width/s; v.h=r.height/s; v.x=cx-v.w/2; v.y=cy-v.h/2;
+  svgEl._rgSize={w:r.width,h:r.height};
+  svgEl.setAttribute('viewBox',v.x+' '+v.y+' '+v.w+' '+v.h);
+}
+
+// ── Focus: a readable subject at a fixed scale, whatever the size of the whole map ──
+// The policy for several boxes (a relationship's two ends): center on them all if they fit at this scale;
+// otherwise center on the first, so the subject stays readable and the far end is one pan or click away.
+// A box bigger than the view shows its top-left corner rather than its empty middle.
+window._rgFocus = function(svgEl, ids) {
   var pos=svgEl._rgPos, v=svgEl._rgVb; if(!pos||!v) return false;
   if(svgEl._rgHideTip)svgEl._rgHideTip();
-  var x0=1e9,y0=1e9,x1=-1e9,y1=-1e9,found=false;
-  for (var id of ids) {
-    var p=pos[id]; if(!p)continue; found=true;
-    if(p.x<x0)x0=p.x; if(p.y<y0)y0=p.y;
-    if(p.x+p.w>x1)x1=p.x+p.w; if(p.y+p.h>y1)y1=p.y+p.h;
+  var boxes=ids.map(function(id){return pos[id];}).filter(Boolean);
+  if(!boxes.length) return false;
+  var r=svgEl.getBoundingClientRect(); if(!r.width||!r.height) return false;
+  var w=r.width/READABLE, h=r.height/READABLE, margin=24/READABLE;
+  function span(list){
+    var x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+    list.forEach(function(p){x0=Math.min(x0,p.x);y0=Math.min(y0,p.y);x1=Math.max(x1,p.x+p.w);y1=Math.max(y1,p.y+p.h);});
+    return {x0:x0,y0:y0,x1:x1,y1:y1};
   }
-  if(!found) return false;
-  var r=svgEl.getBoundingClientRect();
-  if(readable&&r.width&&r.height&&Math.min(r.width/v.w,r.height/v.h)<READABLE){v.w=r.width/READABLE;v.h=r.height/READABLE;}
-  var scale=Math.max(1,(x1-x0)*1.25/v.w,(y1-y0)*1.25/v.h);
-  v.w*=scale; v.h*=scale;
-  v.x=(x0+x1)/2-v.w/2; v.y=(y0+y1)/2-v.h/2;
+  var all=span(boxes);
+  var fits=all.x1-all.x0+2*margin<=w&&all.y1-all.y0+2*margin<=h;
+  var b=fits?all:span([boxes[0]]);
+  v.w=w; v.h=h;
+  v.x=b.x1-b.x0+2*margin>w?b.x0-margin:(b.x0+b.x1)/2-w/2;
+  v.y=b.y1-b.y0+2*margin>h?b.y0-margin:(b.y0+b.y1)/2-h/2;
+  svgEl._rgSize={w:r.width,h:r.height};
   svgEl.setAttribute('viewBox',v.x+' '+v.y+' '+v.w+' '+v.h);
   return true;
+};
+// Where a map with nothing selected opens: its top-left box, the same one every time.
+window._rgStartOfMap = function(svgEl) {
+  var pos=svgEl._rgPos||{}, best=null, at=1e18;
+  for (var id in pos) { var d=pos[id].x+pos[id].y; if(d<at){at=d;best=id;} }
+  return best?[best]:[];
 };
 window._rgSetView = function(svgEl, view) {
   var v=svgEl._rgVb; if(!v||!view)return;
   if(svgEl._rgHideTip)svgEl._rgHideTip();
   v.x=view.x; v.y=view.y; v.w=view.w; v.h=view.h;
   svgEl.setAttribute('viewBox',v.x+' '+v.y+' '+v.w+' '+v.h);
+  _fillElement(svgEl);
 };
 
 })(); // end graph module

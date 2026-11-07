@@ -22,8 +22,10 @@ audit ledger (``server/audit.py``); HISTORY is artifact-activity, not an audit l
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid as _uuidlib
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -313,7 +315,199 @@ class RunHistoryUnavailable(RuntimeError):
     """
 
 
-def list_all_runs(backend, limit: int = 500, *, strict: bool = False) -> list:
+@dataclass
+class RunPage:
+    """One page of runs. ``items`` is ``[(record key, RunRecord)]``, newest first. ``as_of`` is the
+    newest position this browse can see, ``next_after`` where the next page continues from."""
+    items: list = field(default_factory=list)
+    total: int = 0
+    as_of: tuple | None = None
+    next_after: tuple | None = None
+    has_next: bool = False
+
+
+def _run_from_row(r):
+    """The row's RunRecord, or None when its document can't supply one."""
+    from corpusfm.server.jobs.history import RunRecord
+    j = r.jor
+    s = j.get("snapshot")
+    if j.get("Type") != RUN or not isinstance(s, dict) or not s.get("status"):
+        return None
+    return RunRecord(
+        ts=j.get("Timestamp", ""),
+        status=s.get("status", ""),
+        trigger=s.get("trigger", ""),
+        duration_s=s.get("duration_s", 0.0) or 0.0,
+        archive_path=s.get("archive_path") or None,
+        git_commits=s.get("git_commits") or None,
+        error=s.get("error") or None,
+        run_id=s.get("run_id") or r.key,
+        job_uuid=j.get("UUIDJob") or None,
+        job_name=s.get("job_name") or None,
+        source_server=dict(s.get("source_server") or {}) or None,
+    )
+
+
+def page_runs(backend, *, job_uuid: str = "", status: str = "", trigger: str = "", per_page: int = 50,
+              after: tuple | None = None, as_of: tuple | None = None, skip: int = 0) -> RunPage:
+    """One page of runs read from storage, filtered there, so reaching old rows costs what reaching new
+    ones costs. Next and Prev continue from a position rather than an offset, and ``as_of`` keeps a
+    browse's count and rows below the newest run it started from, so a newer run shifts nothing. A
+    deleted row simply leaves the count. RAISES `RunHistoryUnavailable` rather than reading as empty."""
+    eng = _engine(backend)
+    if eng is None:
+        raise RunHistoryUnavailable("this backend has no storage engine to read history from")
+    eq = {"Type": RUN}
+    if job_uuid:
+        eq["UUIDJob"] = job_uuid
+    if status:
+        eq["snapshot.status"] = status
+    if trigger:
+        eq["snapshot.trigger"] = trigger
+    query = dict(order="Timestamp", eq=eq)
+    try:
+        first_read = as_of is None and after is None
+        rows, total = eng.page_keyset(_HISTORY, **query, before=after, at_or_before=as_of,
+                                      limit=per_page + 1, skip=skip, count=first_read)
+        if not first_read:
+            _, total = eng.page_keyset(_HISTORY, **query, at_or_before=as_of, limit=1, count=True)
+    except Exception as exc:
+        raise RunHistoryUnavailable(f"the HISTORY read failed ({type(exc).__name__})") from exc
+
+    shown = rows[:per_page]
+    items = []
+    for r in shown:
+        run = _run_from_row(r)
+        if run is not None:
+            items.append((r.key, run))
+    if shown and not items:
+        raise RunHistoryUnavailable(f"none of the {len(shown)} run rows on this page could be read")
+    if len(items) < len(shown):
+        logger.warning("history: %d of %d run rows on a page could not be read",
+                       len(shown) - len(items), len(shown))
+    if not shown and first_read and not skip:
+        _raise_if_history_is_damaged(eng)
+
+    page = RunPage(items=items, total=max(0, total), as_of=as_of, has_next=len(rows) > per_page)
+    if items:
+        if first_read and not skip:
+            page.as_of = _run_position(*items[0])
+        page.next_after = _run_position(*items[-1])
+    return page
+
+
+def _run_position(key: str, run) -> tuple:
+    return ((run.ts or "").lower(), key)
+
+
+def _raise_if_history_is_damaged(eng) -> None:
+    """An empty page has to be a true answer. Any readable run means the store is fine and this filter
+    simply matched nothing. Only with no run rows at all does it look at a bounded sample of raw rows,
+    because a malformed document derives no slots and so no Type filter can return it."""
+    try:
+        sampled, _ = eng.page_keyset(_HISTORY, order="Timestamp", eq={"Type": RUN}, limit=20)
+        if sampled:
+            damaged = not any(_run_from_row(r) is not None for r in sampled)
+        else:
+            rows, _ = eng.page(_HISTORY, page=1, per_page=_DAMAGE_SAMPLE_ROWS, count=False)
+            damaged = any(not r.jor for r in rows)
+    except Exception as exc:
+        raise RunHistoryUnavailable(f"the HISTORY check failed ({type(exc).__name__})") from exc
+    if damaged:
+        raise RunHistoryUnavailable("HISTORY holds rows that could not be read")
+
+
+_DAMAGE_SAMPLE_ROWS = 200
+_PREDECESSOR_BATCH = 50
+_PREDECESSOR_BATCHES = 40
+
+
+def read_run(backend, key: str):
+    """The run stored under this record key, or None. RAISES `RunHistoryUnavailable` if it can't ask."""
+    eng = _engine(backend)
+    if eng is None:
+        raise RunHistoryUnavailable("this backend has no storage engine to read history from")
+    try:
+        rows = eng.get_by_keys(_HISTORY, [key])
+    except Exception as exc:
+        raise RunHistoryUnavailable(f"the HISTORY read failed ({type(exc).__name__})") from exc
+    return _run_from_row(rows[0]) if rows else None
+
+
+def find_run_predecessor(backend, key: str, run, present) -> tuple:
+    """The closest older successful run of this run's job whose artifact still exists, read on demand
+    so it can sit any distance back. ``present(refs)`` answers which refs exist, or None if it could
+    not tell. Returns ``(outcome, archive_path, runs searched)``, where outcome is ``found``, ``none``
+    (the whole job was searched), ``incomplete`` (the search reached its limit) or ``lookup_failed``."""
+    eng = _engine(backend)
+    cursor = _run_position(key, run)
+    searched = 0
+    for _ in range(_PREDECESSOR_BATCHES):
+        try:
+            rows, _total = eng.page_keyset(_HISTORY, order="Timestamp",
+                                           eq={"Type": RUN, "UUIDJob": run.job_uuid, "snapshot.status": "ok"},
+                                           before=cursor, limit=_PREDECESSOR_BATCH)
+        except Exception:
+            logger.warning("history: a predecessor read failed", exc_info=True)
+            return "lookup_failed", "", searched
+        runs = [(r.key, _run_from_row(r)) for r in rows]
+        runs = [(k, x) for k, x in runs if x is not None]
+        searched += len(rows)
+        exists = present([x.archive_path for _k, x in runs if x.archive_path])
+        if exists is None:
+            return "lookup_failed", "", searched
+        for _k, x in runs:
+            if x.archive_path and x.archive_path in exists:
+                return "found", x.archive_path, searched
+        if len(rows) < _PREDECESSOR_BATCH:
+            return "none", "", searched
+        cursor = ((rows[-1].jor.get("Timestamp") or cursor[0]).lower(), rows[-1].key)
+    return "incomplete", "", searched
+
+
+def run_job_options(backend) -> dict:
+    """Every job that appears in run history, ``{uuid: frozen name}``, so a deleted job stays selectable.
+    It hops from one job to the next on the UUIDJob slot and then reads that job's newest run: two
+    indexed reads per job, whatever its run count. The stop guard bounds a store that won't advance."""
+    eng = _engine(backend)
+    names: dict = {}
+    position = None
+    for _ in range(_JOB_OPTIONS_MAX):
+        rows, _total = eng.page_keyset(_HISTORY, order="UUIDJob", eq={"Type": RUN}, before=position, limit=1)
+        job = str((rows[0].jor.get("UUIDJob") or "") if rows else "").strip()
+        if not job:
+            break
+        position = (job, "")
+        newest, _total = eng.page_keyset(_HISTORY, order="Timestamp", eq={"Type": RUN, "UUIDJob": job}, limit=1)
+        run = _run_from_row(newest[0]) if newest else None
+        if run is not None and run.job_name:
+            names[job] = run.job_name
+    return names
+
+
+_JOB_OPTIONS_MAX = 1000
+
+
+# Both storage engines clamp one page to this many rows, so anything longer has to be paged.
+_HISTORY_PAGE_ROWS = 200
+
+
+def _holds_unparseable_row(eng) -> bool:
+    """A malformed document derives no slots, so a Type filter can never return it: only an unfiltered
+    raw read can tell "no runs" from "no runs that could be read"."""
+    for _key, raw in eng.iter_raw(_HISTORY):
+        if isinstance(raw, dict):
+            continue
+        try:
+            if isinstance(json.loads(raw), dict):
+                continue
+        except (TypeError, ValueError):
+            pass
+        return True
+    return False
+
+
+def list_all_runs(backend, limit: int | None = 500, *, strict: bool = False) -> list:
     """Every Type=Run row, newest first — regardless of whether its job still exists (packet 1149).
 
     The per-job reader above answers "this job's runs"; this one answers "what has run", which is a
@@ -322,15 +516,27 @@ def list_all_runs(backend, limit: int = 500, *, strict: bool = False) -> list:
     cannot be reached is the failure this packet is about. Each row carries its own frozen job label,
     so nothing here needs the job to be alive.
 
-    ``strict=True`` raises `RunHistoryUnavailable` rather than degrading an unreadable store to `[]`."""
+    ``limit=None`` reads every row. ``strict=True`` raises `RunHistoryUnavailable` rather than degrading
+    an unreadable store to `[]`, including when rows exist and none of them can be read."""
     eng = _engine(backend)
     if eng is None:
         if strict:
             raise RunHistoryUnavailable("this backend has no storage engine to read history from")
         return []
+    rows: list = []
+    seen: set = set()
+    page = 1
     try:
-        rows, _ = eng.page(_HISTORY, eq={"Type": RUN}, orderby="Timestamp", desc=True,
-                           page=1, per_page=(limit or 500), count=False)
+        while limit is None or len(rows) < limit:
+            batch, _ = eng.page(_HISTORY, eq={"Type": RUN}, orderby="Timestamp", desc=True,
+                                page=page, per_page=_HISTORY_PAGE_ROWS, count=False)
+            # A run recorded mid-read shifts later pages, so a row can arrive twice.
+            fresh = [r for r in batch if r.key not in seen]
+            seen.update(r.key for r in fresh)
+            rows += fresh
+            if len(batch) < _HISTORY_PAGE_ROWS or not fresh:
+                break
+            page += 1
     except Exception as exc:
         if strict:
             raise RunHistoryUnavailable(f"the HISTORY read failed ({type(exc).__name__})") from exc
@@ -338,11 +544,16 @@ def list_all_runs(backend, limit: int = 500, *, strict: bool = False) -> list:
         return []
     from corpusfm.server.jobs.history import RunRecord
     out = []
+    unreadable = 0
     for r in rows:
         j = r.jor
         if j.get("Type") != RUN:
+            unreadable += 1
             continue
-        s = j.get("snapshot") or {}
+        s = j.get("snapshot")
+        if not isinstance(s, dict) or not s.get("status"):
+            unreadable += 1
+            continue
         out.append(RunRecord(
             ts=j.get("Timestamp", ""),
             status=s.get("status", ""),
@@ -356,8 +567,19 @@ def list_all_runs(backend, limit: int = 500, *, strict: bool = False) -> list:
             job_name=s.get("job_name") or None,
             source_server=dict(s.get("source_server") or {}) or None,
         ))
+    if unreadable:
+        logger.warning("history: %d of %d run rows could not be read", unreadable, len(rows))
+        if strict and not out:
+            raise RunHistoryUnavailable(f"none of the {len(rows)} run rows could be read")
+    elif strict and not out:
+        try:
+            damaged = _holds_unparseable_row(eng)
+        except Exception as exc:
+            raise RunHistoryUnavailable(f"the HISTORY check failed ({type(exc).__name__})") from exc
+        if damaged:
+            raise RunHistoryUnavailable("HISTORY holds rows that could not be read")
     out.sort(key=lambda r: r.ts or "", reverse=True)
-    return out[: max(0, limit)] if limit else out
+    return out if limit is None else out[: max(0, limit)]
 
 
 # ── Readers (the detail History tab + the Logs page) ──────────────────────────────

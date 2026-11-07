@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import corpusfm
 from corpusfm.app.sections import SECTION_ORDER
 from corpusfm.core.filenames import ensure_fmp12
+from corpusfm.core.occurrence_titles import artifact_occurrence_titles
 from corpusfm.core.graph_notes import css_color as _note_css_color, read_note  # noqa: F401
 from corpusfm.extensions.export.script_embed import script_json
 from corpusfm.core.git_formatter._renderer import DEFAULT_LARGE_THRESHOLD, large_marker
@@ -125,7 +126,7 @@ def _without_leading_name(rendered: str, name: str) -> str:
 
 
 def _search_entry(section_key: str, item, rendered: str, summary: str, sources: "dict | None",
-                  is_folder: bool, name: str = "") -> dict:
+                  is_folder: bool, name: str = "", title: str = "") -> dict:
     """One header-search entry, with each searchable source in its own field (packet 1440).
 
     ``name`` is always searched; ``text`` holds the ordinary rendered text of non-script objects
@@ -133,8 +134,8 @@ def _search_entry(section_key: str, item, rendered: str, summary: str, sources: 
     A script's step body never goes into ``text``: comments and steps are separate opt-in-able
     fields. A script without structured steps keeps its rendered body under ``steps`` with
     ``steps_unclassified`` set — it cannot be split truthfully, so it stays behind the steps switch."""
-    entry = {"section": section_key, "item": item.item_id, "display_name": item.name,
-             "name": name or item.name, "text": "", "summary": summary}
+    entry = {"section": section_key, "item": item.item_id, "display_name": title or item.name,
+             "name": name or title or item.name, "text": "", "summary": summary}
     if section_key == "ScriptCatalog" and not is_folder:
         if sources is not None:
             entry.update(sources)
@@ -827,6 +828,14 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
 
     nodes: list = []
     node_id_map: dict = {}
+    titles = artifact_occurrence_titles(artifact)
+    id_count: dict = defaultdict(int)
+    for _key, _item in to_items:
+        try:
+            id_count[ET.fromstring(_item.xml_sources[0].xml).get("id", "")] += 1
+        except ET.ParseError:
+            pass
+    node_key_by_item: dict = {}
 
     for item_key, item in to_items:
         try:
@@ -834,7 +843,12 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
         except ET.ParseError:
             continue
         to_id   = elem.get("id", "")
-        to_name = elem.get("name", item.name)
+        to_name = item.name
+        # Map keys are XML ids; where several occurrences share one, each gets its own key so none is
+        # drawn over another. Relationship ends reach a node only through `titles` below.
+        if id_count[to_id] > 1:
+            to_id = f"{to_id}-shared{len(nodes)}"
+        node_key_by_item[item_key] = to_id
         # An occurrence with no usable rectangle stays in the payload with no position: its cards
         # still work, and As Built leaves it off the map rather than inventing a place for it.
         coord = elem.find("CoordRect")
@@ -901,6 +915,7 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
             "view": elem.get("View"), "height_attr": elem.get("height"),
             "captured_h": max(1, bottom - top) if rect else None,
             "source_color": source_color, "source_alpha": source_alpha,
+            "shared_id": to_id != elem.get("id", ""),
         }
         nodes.append(node)
         node_id_map[to_id] = node
@@ -932,12 +947,11 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
         rt_ref = right_elem.find("TableOccurrenceReference")
         if lt_ref is None or rt_ref is None:
             continue
-        from_id   = lt_ref.get("id",   "")
-        to_id     = rt_ref.get("id",   "")
-        from_name = lt_ref.get("name", "")
-        to_name   = rt_ref.get("name", "")
+        # Each end joins the node its reference identifies (the catalog's identity rule); an end it
+        # cannot identify gets a key no node carries, so the map draws no line and attaches no field.
+        from_id   = node_key_by_item.get(titles.resolve(lt_ref)[0]) or f"?{item_key}:left"
+        to_id     = node_key_by_item.get(titles.resolve(rt_ref)[0]) or f"?{item_key}:right"
         jp_list    = elem.find("JoinPredicateList")
-        predicates: list = []
         edge_type  = "equal"
         join_predicates = jp_list.findall("JoinPredicate") if jp_list is not None else []
         if not join_predicates:
@@ -950,17 +964,10 @@ def _build_graph_data_from_artifact(artifact: "Artifact") -> dict:
             pairs.append({"lf": note_field(from_id, lf), "rf": note_field(to_id, rf), "op": pred_type})
             if pred_type == "CartesianProduct":
                 edge_type = "cartesian"
-                predicates.append("× Cartesian product")
-            elif pred_type == "Equal":
-                lf_name = lf.get("name", "?") if lf is not None else "?"
-                rf_name = rf.get("name", "?") if rf is not None else "?"
-                predicates.append(f"{from_name}::{lf_name} = {to_name}::{rf_name}")
-            else:
-                predicates.append(pred_type)
         # An endpoint missing from the catalog keeps the edge: the cards name it and the map leaves it off.
         edges.append({
             "item": item_key, "from_id": from_id, "to_id": to_id,
-            "type": edge_type, "predicates": predicates, "pairs": pairs,
+            "type": edge_type, "pairs": pairs,
         })
 
     # Degree = relationships touching each TO; drives hub emphasis in the graph.
@@ -1403,6 +1410,7 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
     _nm: dict = getattr(artifact, "_name_map", None) or getattr(artifact, "name_map", None) or {}
     _schema_ver: str = provenance.catalog_version
     stat_step_facts: dict = {}
+    _to_title = artifact_occurrence_titles(artifact)
 
     ingested_at = provenance.ingested_at or ""
     generated = datetime.now(timezone.utc)   # ONE instant for both generated_at fields (packet 1418)
@@ -1455,6 +1463,7 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
 
     # External TO map for cross-file link detection
     external_tos_map: dict[str, str] = {}
+    external_tos_by_item: dict[str, str] = {}  # a relationship end reaches its occurrence by identity
     for _item in sections_items.get("TableOccurrenceCatalog", []):
         if not _item.is_folder and _item.xml_sources:
             try:
@@ -1464,6 +1473,7 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
                     _ds_ref = _src_ref.find("DataSourceReference")
                     ext_name = _ds_ref.get("name", _item.name) if _ds_ref is not None else _item.name
                     external_tos_map[_item.name] = ext_name
+                    external_tos_by_item[_item.item_id] = ext_name
             except ET.ParseError:
                 pass
 
@@ -1665,14 +1675,12 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
                             for _side_tag in ("LeftTable", "RightTable"):
                                 _side = _xml_e.find(_side_tag)
                                 if _side is not None:
-                                    _to_ref = _side.find("TableOccurrenceReference")
-                                    if _to_ref is not None:
-                                        _to_name = _to_ref.get("name", "")
-                                        if _to_name in external_tos_map:
-                                            _ef = external_tos_map[_to_name]
-                                            if _ef not in _seen_ext:
-                                                _seen_ext.add(_ef)
-                                                _cross.append({"file": _ef})
+                                    _to_key = _to_title.resolve(_side.find("TableOccurrenceReference"))[0]
+                                    if _to_key in external_tos_by_item:
+                                        _ef = external_tos_by_item[_to_key]
+                                        if _ef not in _seen_ext:
+                                            _seen_ext.add(_ef)
+                                            _cross.append({"file": _ef})
                             if _cross:
                                 xref_item["cross_files"] = _cross
                         except ET.ParseError:
@@ -1767,35 +1775,31 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
                     _lt = _rel_elem.find("LeftTable/TableOccurrenceReference")
                     _rt = _rel_elem.find("RightTable/TableOccurrenceReference")
                     if _lt is not None and _rt is not None:
-                        _ln = _lt.get("name", "")
-                        _rn = _rt.get("name", "")
-                        if _nm:
-                            _ln = _nm.get(_ln, _ln)
-                            _rn = _nm.get(_rn, _rn)
-                        if _ln and _rn:
-                            entry["display_name"] = f"{_ln} → {_rn}"
-                            entry["sort_left"]  = _ln   # sort-by-left-side-name
-                            entry["sort_right"] = _rn   # sort-by-right-side-name
-                            # Structured predicates so the sidebar/header can flip a
-                            # relationship's sides client-side (op inverted for non-=).
-                            _preds = []
-                            _jpl = _rel_elem.find("JoinPredicateList")
-                            if _jpl is not None:
-                                for _jp in _jpl.findall("JoinPredicate"):
-                                    _pt = _jp.get("type", "")
-                                    _lf = _jp.find("./LeftField/FieldReference")
-                                    _rf = _jp.find("./RightField/FieldReference")
-                                    _lfn = _lf.get("name", "") if _lf is not None else ""
-                                    _rfn = _rf.get("name", "") if _rf is not None else ""
-                                    if _nm:
-                                        _lfn = _nm.get(_lfn, _lfn)
-                                        _rfn = _nm.get(_rfn, _rfn)
-                                    _preds.append({"lf": _lfn,
-                                                   "op": "=" if _pt == "Equal" else _pt,
-                                                   "rf": _rfn})
-                            entry["rel"] = {"l": _ln, "r": _rn, "preds": _preds,
-                                            "lset": _relationship_side_settings(_rel_elem.find("LeftTable"), _nm),
-                                            "rset": _relationship_side_settings(_rel_elem.find("RightTable"), _nm)}
+                        _ln, _lstate = _to_title.endpoint(_lt, _nm)
+                        _rn, _rstate = _to_title.endpoint(_rt, _nm)
+                        entry["display_name"] = f"{_ln} → {_rn}"
+                        entry["sort_left"]  = _ln   # sort-by-left-side-name
+                        entry["sort_right"] = _rn   # sort-by-right-side-name
+                        # Structured predicates so the sidebar/header can flip a
+                        # relationship's sides client-side (op inverted for non-=).
+                        _preds = []
+                        _jpl = _rel_elem.find("JoinPredicateList")
+                        if _jpl is not None:
+                            for _jp in _jpl.findall("JoinPredicate"):
+                                _pt = _jp.get("type", "")
+                                _lf = _jp.find("./LeftField/FieldReference")
+                                _rf = _jp.find("./RightField/FieldReference")
+                                _lfn = _lf.get("name", "") if _lf is not None else ""
+                                _rfn = _rf.get("name", "") if _rf is not None else ""
+                                if _nm:
+                                    _lfn = _nm.get(_lfn, _lfn)
+                                    _rfn = _nm.get(_rfn, _rfn)
+                                _preds.append({"lf": _lfn,
+                                               "op": "=" if _pt == "Equal" else _pt,
+                                               "rf": _rfn})
+                        entry["rel"] = {"l": _ln, "r": _rn, "lstate": _lstate, "rstate": _rstate, "preds": _preds,
+                                        "lset": _relationship_side_settings(_rel_elem.find("LeftTable"), _nm),
+                                        "rset": _relationship_side_settings(_rel_elem.find("RightTable"), _nm)}
                 except ET.ParseError:
                     pass
 
@@ -1824,7 +1828,7 @@ def _build_sections_from_artifact(artifact: "Artifact") -> dict:  # noqa: C901
 
             if not is_separator:
                 search_index.append(_search_entry(section_key, _item, search_rendered, summary,
-                                                  search_sources, is_fldr))
+                                                  search_sources, is_fldr, title=entry.get("display_name", "") if section_key == "RelationshipCatalog" else ""))
                 if _item.dead_end and not is_fldr:
                     dead_count_by_section[section_key] = dead_count_by_section.get(section_key, 0) + 1
 

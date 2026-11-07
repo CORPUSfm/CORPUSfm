@@ -66,6 +66,9 @@ class StorageEngine(Protocol):
              exclude: Optional[dict] = None,
              orderby: Optional[str] = None, desc: bool = True,
              page: int = 1, per_page: int = 25, count: bool = False) -> tuple[list[Row], int]: ...
+    def page_keyset(self, logical: str, *, order: str, eq: Optional[dict] = None,
+                    before: Optional[tuple] = None, at_or_before: Optional[tuple] = None, limit: int = 25, skip: int = 0,
+                    count: bool = False) -> tuple[list[Row], int]: ...
     def list_all(self, logical: str) -> list[Row]: ...
     def list_where(self, logical: str, *, eq: Optional[dict] = None, ne: Optional[dict] = None,
                    isin: Optional[dict] = None) -> list[Row]: ...
@@ -238,6 +241,34 @@ class FMEngine:
         payload = self._get(logical, "&".join(parts).replace(" ", "%20"))
         # -1 means "count not requested / key absent (unknown)"; a genuine 0 must stay 0 (the old
         # `... or -1` collapsed a real empty count to -1 → a "-1" failed badge + a wrong drain count).
+        total = -1
+        if count:
+            c = payload.get("@odata.count", payload.get("@count", None))
+            total = int(c) if c is not None else -1
+        return self._rows(payload), total
+
+    def page_keyset(self, logical: str, *, order: str, eq: Optional[dict] = None,
+                    before: Optional[tuple] = None, at_or_before: Optional[tuple] = None, limit: int = 25, skip: int = 0,
+                    count: bool = False) -> tuple[list[Row], int]:
+        """Newest-first rows ordered by the ``order`` slot then record key, so equal values keep one
+        order. ``before`` and ``at_or_before`` are ``(order value, key)`` positions: a continuation
+        that later inserts cannot shift, unlike ``$skip``. Total is -1 unless ``count``."""
+        slot = reg.slot(logical, order)
+        clauses = [_clause(logical, k, v) for k, v in (eq or {}).items()]
+        for position, key_op in ((before, "lt"), (at_or_before, "le")):
+            if position:
+                value = str(position[0]).lower().replace("'", "''")
+                key = str(position[1] or "").replace("'", "''")
+                # No key means "strictly below this value". FileMaker rejects an empty '' literal.
+                clauses.append(f"({slot} lt '{value}' or ({slot} eq '{value}' and UUID {key_op} '{key}'))"
+                               if key else f"{slot} lt '{value}'")
+        parts = ["$select=UUID,JSONOfRecord", f"$top={max(1, min(int(limit), 200))}", f"$skip={max(0, int(skip))}",
+                 f"$orderby={slot}%20desc,UUID%20desc"]
+        if count:
+            parts.append("$count=true")
+        if clauses:
+            parts.append("$filter=" + _quote(_and(clauses), safe="(),'"))
+        payload = self._get(logical, "&".join(parts))
         total = -1
         if count:
             c = payload.get("@odata.count", payload.get("@count", None))
@@ -654,6 +685,34 @@ class SqliteEngine:
                     params).fetchone()[0])
         order = f"{reg.slot(logical, orderby)} {'DESC' if desc else 'ASC'}" if orderby else ""
         return self._select(logical, where, params, order=order, limit=per_page, offset=offset), total
+
+    def page_keyset(self, logical: str, *, order: str, eq: Optional[dict] = None,
+                    before: Optional[tuple] = None, at_or_before: Optional[tuple] = None, limit: int = 25, skip: int = 0,
+                    count: bool = False) -> tuple[list[Row], int]:
+        """Mirror of :meth:`FMEngine.page_keyset`."""
+        slot = reg.slot(logical, order)
+        clauses, params = [], []
+        for k, v in (eq or {}).items():
+            col, p = self._bind(logical, k, v); clauses.append(f"{col} = ?"); params.append(p)
+        for position, key_op in ((before, "<"), (at_or_before, "<=")):
+            if position:
+                value = str(position[0]).lower()
+                if position[1]:
+                    clauses.append(f"({slot} < ? OR ({slot} = ? AND uuid {key_op} ?))")
+                    params += [value, value, str(position[1])]
+                else:
+                    clauses.append(f"{slot} < ?")
+                    params.append(value)
+        where = _and(clauses)
+        total = -1
+        if count:
+            with self._lock:
+                total = int(self._conn.execute(
+                    f"SELECT COUNT(*) FROM {logical}" + (f" WHERE {where}" if where else ""),
+                    params).fetchone()[0])
+        rows = self._select(logical, where, params, order=f"{slot} DESC, uuid DESC",
+                            limit=max(1, min(int(limit), 200)), offset=max(0, int(skip)))
+        return rows, total
 
     def list_all(self, logical: str) -> list[Row]:
         return self._select(logical, "", [])

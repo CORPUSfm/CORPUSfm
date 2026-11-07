@@ -421,7 +421,7 @@
     </div>
 
     <!-- Detail panel -->
-    <div id="detail" x-show="!isSearching && !statsOpen" :class="{'graph-active': detailTab==='graph'}">
+    <div id="detail" x-show="!isSearching && !statsOpen" :class="{'graph-active': graphActive}">
 
       <!-- XRef left-edge tab (packet 1286): panel-toggle icon + vertical References·count label -->
       <div id="xref-tab"
@@ -733,6 +733,10 @@
           <div id="detail-code">
             <div id="detail-tabs" x-show="currentItem">
               <button class="dtab" :class="{active: detailTab==='rendered'}" @click="detailTab='rendered'">Rendered</button>
+              <!-- Second, and named for what it lists (packet 1448); its state key stays 'details'. -->
+              <button class="dtab" id="dtab-details" x-show="isGraphSection"
+                      :class="{active: detailTab==='details'}"
+                      @click="detailTab='details'" x-text="relTabLabel">Relationships</button>
               <button class="dtab" :class="{active: detailTab==='tree'}" @click="detailTab='tree'">Tree</button>
               <button class="dtab" :class="{active: detailTab==='attrs'}" @click="detailTab='attrs'">Attributes</button>
               <button class="dtab" :class="{active: detailTab==='raw'}" @click="detailTab='raw'">Raw</button>
@@ -744,70 +748,148 @@
                       x-show="currentSection==='LayoutCatalog' && !!currentItemData?.wireframe"
                       :class="{active: detailTab==='wireframe'}"
                       @click="detailTab='wireframe'">Wireframe</button>
-              <button class="dtab"
-                      x-show="isGraphSection && currentFileHasGraph"
-                      :class="{active: detailTab==='graph'}"
-                      @click="detailTab='graph'">Graph</button>
             </div>
-            <!-- Occurrence and relationship cards (packet 1448): the current item and its one-step neighbours.
-                 One element under both Rendered and Graph, so selection has a single presentation. -->
-            <div id="rel-cards" x-show="!!relCard && (detailTab==='rendered' || detailTab==='graph')">
+            <!-- The map (packet 1448). The toolbar's layout doesn't depend on whether anything has been moved: Reset keeps
+                 its room while hidden, so a first drag can't shift the canvas under the pointer. -->
+            <div id="graph-tab-content" x-show="graphActive" style="display:none">
+              <div id="graph-toolbar">
+                <div class="gtab-row">
+                  <button class="gtab" :class="{active:_graphTab==='fm'}" @click="setGraphTab('fm')">As Built</button>
+                  <button class="gtab" :class="{active:_graphTab==='cluster'}" @click="setGraphTab('cluster')">By Table</button>
+                </div>
+                <div class="graph-status">
+                  <span class="graph-info" x-text="graphInfoText"></span>
+                  <span id="graph-focus-note" class="graph-info-flag" x-show="!!graphFocusNote" role="status" x-text="graphFocusNote"></span>
+                </div>
+                <div class="graph-actions">
+                  <button type="button" id="graph-reset" class="graph-btn" :style="graphModified ? '' : 'visibility:hidden'" @click="resetGraph()" title="Return every occurrence and note to its captured position" aria-label="Reset: return every occurrence and note to its captured position">Reset</button>
+                  <button type="button" id="graph-refocus" class="graph-btn" @click="refocusGraph()" title="Center the selected occurrence or relationship at a readable size. Nothing moves on the map.">◎ Refocus</button>
+                  <button class="graph-btn" @click="fitGraph()" title="Fit the whole map on screen">⊞ Fit</button>
+                  <button type="button" class="graph-btn" @click="toggleGraphFullscreen()"
+                          :title="graphFullscreen ? 'Exit full screen (Esc)' : 'Full screen'"
+                          x-text="graphFullscreen ? '⊟ Exit' : '⊞ Full'"></button>
+                </div>
+              </div>
+              <div id="graph-canvas-wrap">
+                <svg id="rel-graph"></svg>
+                <div id="graph-tooltip" role="tooltip"></div>
+              </div>
+            </div>
+            <!-- The second tab (packet 1448): one full-width list sharing the map's selection. An occurrence lists its
+                 relationships; a relationship lists its two occurrences, then every condition. -->
+            <div id="rel-cards" x-show="detailTab==='details' && isGraphSection">
+              <div class="rel-note" x-show="!relCard">No details were captured for this item.</div>
               <template x-if="relCard && relCard.kind==='to'">
-                <div class="rel-card-grid">
-                  <section class="rel-card rel-card-main" aria-label="Selected occurrence">
-                    <div class="rel-kicker">Table occurrence</div>
-                    <h3 x-text="relCard.name"></h3>
-                    <template x-for="row in relCard.source" :key="row[0]">
-                      <div class="rel-row"><span x-text="row[0]"></span><span x-text="row[1]"></span></div>
+                <div class="rel-view">
+                  <div class="rel-ident" aria-label="Selected occurrence">
+                    <span class="rel-kicker">Table occurrence</span>
+                    <h3 class="rel-ident-name" x-text="relCard.name" :title="relCard.name"></h3>
+                    <dl class="rel-facts">
+                      <template x-for="row in relCard.source" :key="row[0]">
+                        <div><dt x-text="row[0]"></dt><dd x-text="row[1]" :title="row[1]"></dd></div>
+                      </template>
+                      <div x-show="!relCard.onMap"><dt>As Built map</dt><dd>No position captured, so it isn't on the map</dd></div>
+                    </dl>
+                  </div>
+                  <div class="rel-list-head">
+                    <span class="rel-count" x-text="relCard.rows.length + (relCard.rows.length === 1 ? ' relationship' : ' relationships')"></span>
+                  </div>
+                  <div class="rel-note" x-show="!relCard.rows.length">No relationships in this file.</div>
+                  <table class="rel-table rel-rows rel-table--to" x-show="relCard.rows.length">
+                    <thead>
+                      <tr><th rowspan="2" scope="col">Related occurrence</th><th rowspan="2" scope="col">Conditions</th>
+                          <th colspan="2" scope="colgroup" class="rel-grp" x-text="'At ' + relCard.name"></th>
+                          <th colspan="2" scope="colgroup" class="rel-grp">At the related occurrence</th></tr>
+                      <tr><th scope="col" class="rel-set">Create</th><th scope="col" class="rel-set">Delete</th><th scope="col" class="rel-set rel-grp">Create</th><th scope="col" class="rel-set">Delete</th></tr>
+                    </thead>
+                    <template x-for="r in relCard.rows" :key="r.item">
+                      <tbody class="rel-tr">
+                        <tr>
+                          <td data-label="Related occurrence" class="rel-name">
+                            <button type="button" class="rel-link" x-show="!!r.neighbor" @click="selectRelItem('TableOccurrenceCatalog', r.neighbor)" x-text="r.neighborName" :title="r.neighborName"></button>
+                            <span class="rel-dim" x-show="!r.neighbor" x-text="r.neighborName + ' (' + r.gap + ')'"></span>
+                            <span class="rel-tag" x-show="r.self">self-join</span>
+                          </td>
+                          <td data-label="Conditions" class="rel-cond-cell">
+                            <button type="button" class="rel-conds" @click="selectRelItem('RelationshipCatalog', r.item)" title="Open this relationship">
+                              <template x-for="(p, pi) in r.conds" :key="pi">
+                                <span class="rel-cond" :class="{'rel-cond--x': p.cartesian}">
+                                  <span class="rel-cf" x-text="p.cartesian ? (p.near || '') : p.near"></span>
+                                  <b class="rel-op" x-text="p.cartesian ? '×' : p.op"></b>
+                                  <span class="rel-cf" x-text="p.cartesian ? (p.far || 'Cartesian: every record relates to every record') : p.far"></span>
+                                </span>
+                              </template>
+                              <span class="rel-cond rel-dim" x-show="!r.conds.length">No conditions captured</span>
+                            </button>
+                            <span class="rel-more" x-show="r.conds.length > 1" x-text="r.conds.length + ' conditions, all required'"></span>
+                          </td>
+                          <td class="rel-set" :data-label="'Create at ' + r.hereName" :class="'rel-v-' + r.here.create.split(' ')[0].toLowerCase()" x-text="r.here.create"></td>
+                          <td class="rel-set" :data-label="'Delete at ' + r.hereName" :class="'rel-v-' + r.here.delete.split(' ')[0].toLowerCase()" x-text="r.here.delete"></td>
+                          <td class="rel-set rel-grp" :data-label="'Create at ' + r.thereName" :class="'rel-v-' + r.there.create.split(' ')[0].toLowerCase()" x-text="r.there.create"></td>
+                          <td class="rel-set" :data-label="'Delete at ' + r.thereName" :class="'rel-v-' + r.there.delete.split(' ')[0].toLowerCase()" x-text="r.there.delete"></td>
+                        </tr>
+                        <tr class="rel-sub" x-show="!!(r.here.sort || r.there.sort)">
+                          <td colspan="6">
+                            <span x-show="!!r.here.sort" x-text="'Sorted at ' + r.hereName + ': ' + r.here.sort"></span>
+                            <span x-show="!!r.there.sort" x-text="'Sorted at ' + r.thereName + ': ' + r.there.sort"></span>
+                          </td>
+                        </tr>
+                      </tbody>
                     </template>
-                    <div class="rel-note" x-show="!relCard.onMap">No position captured, so it isn't on the As Built map.</div>
-                  </section>
-                  <section class="rel-card" aria-label="Connections">
-                    <div class="rel-kicker" x-text="relCard.connections.length + (relCard.connections.length === 1 ? ' relationship' : ' relationships')"></div>
-                    <div class="rel-note" x-show="!relCard.connections.length">No relationships in this file.</div>
-                    <template x-for="c in relCard.connections" :key="c.item">
-                      <div class="rel-conn">
-                        <button type="button" class="rel-link" x-show="!!c.neighbor" @click="selectRelItem('TableOccurrenceCatalog', c.neighbor)" x-text="c.neighborName"></button>
-                        <span class="rel-dim" x-show="!c.neighbor" x-text="c.neighborName + ' (not in this file)'"></span>
-                        <button type="button" class="rel-link rel-via" @click="selectRelItem('RelationshipCatalog', c.item)" x-text="c.label"></button>
-                      </div>
-                    </template>
-                  </section>
+                  </table>
+                  <div class="rel-legend" x-show="relCard.rows.length"><b>Create</b>: records can be added to that side's table through the relationship. <b>Delete</b>: that side's matching records are deleted with the other side's record.</div>
                 </div>
               </template>
               <template x-if="relCard && relCard.kind==='rel'">
-                <div class="rel-card-grid rel-card-grid--rel">
-                  <template x-for="side in [relCard.left]" :key="'left'">
-                    <section class="rel-card" :aria-label="'Left endpoint: ' + side.name">
-                      <div class="rel-kicker">Occurrence</div>
-                      <h3><button type="button" class="rel-link" x-show="!!side.item" @click="selectRelItem('TableOccurrenceCatalog', side.item)" x-text="side.name"></button><span x-show="!side.item" x-text="side.name"></span></h3>
-                      <template x-for="row in side.settings" :key="row[0]"><div class="rel-row"><span x-text="row[0]"></span><span x-text="row[1]"></span></div></template>
-                    </section>
-                  </template>
-                  <section class="rel-card rel-card-main" aria-label="Selected relationship">
-                    <div class="rel-kicker rel-kicker-row">
-                      <span x-text="relCard.preds.length === 1 ? '1 condition' : relCard.preds.length + ' conditions'"></span>
-                      <button type="button" id="rel-flip" class="graph-btn" :aria-pressed="flipAll ? 'true' : 'false'" @click="flipAll = !flipAll">⇄ Flip sides</button>
-                    </div>
-                    <div class="rel-note" x-show="!relCard.preds.length">No conditions captured.</div>
-                    <template x-for="(p, pi) in relCard.preds" :key="pi">
-                      <div class="rel-pred" x-show="!p.cartesian"><span x-text="p.left"></span> <strong x-text="p.op"></strong> <span x-text="p.right"></span></div>
+                <div class="rel-view">
+                  <div class="rel-list-head">
+                    <span class="rel-count">2 table occurrences</span>
+                    <button type="button" id="rel-flip" class="graph-btn" :aria-pressed="flipAll ? 'true' : 'false'" @click="flipAll = !flipAll">⇄ Flip sides</button>
+                  </div>
+                  <table class="rel-table rel-rows rel-table--ends">
+                    <thead><tr><th scope="col">Side</th><th scope="col">Occurrence</th><th scope="col">Source</th><th scope="col" class="rel-set">Create</th><th scope="col" class="rel-set">Delete</th></tr></thead>
+                    <template x-for="end in relCard.ends" :key="end.key">
+                      <tbody class="rel-tr">
+                        <tr :aria-label="end.side + ' endpoint: ' + end.name">
+                          <td data-label="Side" class="rel-side" x-text="end.side"></td>
+                          <td data-label="Occurrence" class="rel-name">
+                            <button type="button" class="rel-link" x-show="!!end.item" @click="selectRelItem('TableOccurrenceCatalog', end.item)" x-text="end.name" :title="end.name"></button>
+                            <span x-show="!end.item" x-text="end.name"></span>
+                          </td>
+                          <td data-label="Source" class="rel-src">
+                            <template x-for="row in end.source" :key="row[0]"><span class="rel-srow"><span class="rel-dim" x-text="row[0]"></span> <span x-text="row[1]" :title="row[1]"></span></span></template>
+                          </td>
+                          <td class="rel-set" :data-label="'Create at ' + end.name" :class="'rel-v-' + end.create.split(' ')[0].toLowerCase()" x-text="end.create"></td>
+                          <td class="rel-set" :data-label="'Delete at ' + end.name" :class="'rel-v-' + end.delete.split(' ')[0].toLowerCase()" x-text="end.delete"></td>
+                        </tr>
+                        <tr class="rel-sub" x-show="!!end.sort"><td colspan="5" x-text="'Sorted at ' + end.name + ': ' + end.sort"></td></tr>
+                      </tbody>
                     </template>
-                    <template x-for="(p, pi) in relCard.preds.filter(q => q.cartesian)" :key="'x' + pi">
-                      <div class="rel-pred"><strong>× Cartesian</strong> <span>every record relates to every record</span></div>
-                    </template>
-                  </section>
-                  <template x-for="side in [relCard.right]" :key="'right'">
-                    <section class="rel-card" :aria-label="'Right endpoint: ' + side.name">
-                      <div class="rel-kicker">Occurrence</div>
-                      <h3><button type="button" class="rel-link" x-show="!!side.item" @click="selectRelItem('TableOccurrenceCatalog', side.item)" x-text="side.name"></button><span x-show="!side.item" x-text="side.name"></span></h3>
-                      <template x-for="row in side.settings" :key="row[0]"><div class="rel-row"><span x-text="row[0]"></span><span x-text="row[1]"></span></div></template>
-                    </section>
-                  </template>
+                  </table>
+                  <div class="rel-list-head rel-list-head--sub">
+                    <span class="rel-count" x-text="relCard.conds.length === 1 ? '1 condition' : relCard.conds.length + ' conditions' + (relCard.conds.length > 1 ? ', all required' : '')"></span>
+                  </div>
+                  <div class="rel-note" x-show="!relCard.conds.length">No conditions captured.</div>
+                  <table class="rel-table rel-table--conds" x-show="relCard.conds.length">
+                    <thead><tr><th scope="col" x-text="relCard.nearName"></th><th scope="col" class="rel-op-col" aria-label="Operator"></th><th scope="col" x-text="relCard.farName"></th></tr></thead>
+                    <tbody>
+                      <template x-for="(p, pi) in relCard.conds" :key="pi">
+                        <tr class="rel-pred">
+                          <td :data-label="relCard.nearName" class="rel-cf" x-text="p.cartesian ? (p.near || '—') : p.near"></td>
+                          <td class="rel-op" x-text="p.cartesian ? '×' : p.op"></td>
+                          <td :data-label="relCard.farName" class="rel-cf" x-text="p.cartesian ? (p.far || '—') : p.far"></td>
+                        </tr>
+                      </template>
+                      <template x-if="relCard.conds.some(p => p.cartesian)">
+                        <tr class="rel-sub"><td colspan="3"><strong>× Cartesian</strong>: every record relates to every record</td></tr>
+                      </template>
+                    </tbody>
+                  </table>
+                  <div class="rel-legend"><b>Create</b>: records can be added to that side's table through the relationship. <b>Delete</b>: that side's matching records are deleted with the other side's record.</div>
                 </div>
               </template>
             </div>
-            <div x-show="detailTab==='rendered' || (detailTab==='wireframe' && currentSection!=='LayoutCatalog')">
+            <div x-show="(detailTab==='rendered' && !graphActive) || (detailTab==='wireframe' && currentSection!=='LayoutCatalog')">
               <div x-show="currentSteps" class="steps-list">
                 <template x-for="(step, si) in (currentSteps || [])" :key="si">
                   <div x-show="isStepVisible(si)" class="step-row"
@@ -950,25 +1032,6 @@
               </div>
               <div id="wf-svg-wrap" x-html="wfSvgHtml"></div>
             </div>
-            <div id="graph-tab-content" x-show="detailTab==='graph' && isGraphSection" style="display:none">
-              <div id="graph-toolbar">
-                <div class="gtab-row">
-                  <button class="gtab" :class="{active:_graphTab==='fm'}" @click="setGraphTab('fm')">As Built</button>
-                  <button class="gtab" :class="{active:_graphTab==='cluster'}" @click="setGraphTab('cluster')">By Table</button>
-                </div>
-                <span class="graph-info" x-text="graphInfoText"></span>
-                <span id="graph-modified" class="graph-info-flag" x-show="graphModified" role="status">Arrangement modified</span>
-                <button type="button" id="graph-reset" class="graph-btn" x-show="graphModified" @click="resetGraph()" title="Return every occurrence and note to its captured position">Reset graph</button>
-                <button class="graph-btn" @click="fitGraph()" title="Fit to screen">⊞ Fit</button>
-                <button type="button" class="graph-btn" @click="toggleGraphFullscreen()"
-                        :title="graphFullscreen ? 'Exit full screen (Esc)' : 'Full screen'"
-                        x-text="graphFullscreen ? '⊟ Exit' : '⊞ Full'"></button>
-              </div>
-              <div id="graph-canvas-wrap">
-                <svg id="rel-graph"></svg>
-                <div id="graph-tooltip" role="tooltip"></div>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -991,8 +1054,8 @@
           <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Move between items</td></tr>
           <tr><td><kbd>Alt</kbd> <kbd>←</kbd> <kbd>→</kbd></td><td>Go back or forward in history</td></tr>
           <tr><td><kbd>u</kbd></td><td>Toggle unused / dead-end mode</td></tr>
-          <tr><td><kbd>1</kbd> – <kbd>5</kbd></td><td>Switch detail tab (Rendered · Tree · Attrs · Raw · Wireframe/Graph)</td></tr>
-          <tr><td><kbd>g</kbd></td><td>Toggle graph full-screen (when graph tab active)</td></tr>
+          <tr><td><kbd>1</kbd> – <kbd>5</kbd></td><td>Switch detail tab in the order shown: Rendered · Relationships (on an occurrence) or Table Occurrences (on a relationship) · Tree · Attributes · Raw; on a layout, Rendered · Tree · Attributes · Raw · Objects</td></tr>
+          <tr><td><kbd>g</kbd></td><td>Toggle graph full-screen (when the graph is showing)</td></tr>
           <tr><td><kbd>Esc</kbd></td><td>Close overlay · clear filter · exit full-screen · close Statistics</td></tr>
           <tr><td><kbd>?</kbd></td><td>Show / hide this reference</td></tr>
         </tbody>
@@ -1001,6 +1064,15 @@
   </div>
 </div>
 
+<div id="note-view-overlay" x-show="!!noteView" @pointerdown="_noteViewScrimDown = $event.target === $el" @click.self="if (_noteViewScrimDown) closeNoteView()" style="display:none">
+  <div id="note-view-panel" role="dialog" aria-modal="true" aria-labelledby="note-view-title" @keydown.tab="noteViewTab($event)">
+    <div id="note-view-hdr">
+      <h3 id="note-view-title">Note</h3>
+      <button type="button" id="note-view-close" class="about-close" @click="closeNoteView()" aria-label="Close">✕</button>
+    </div>
+    <div id="note-view-body" tabindex="0" x-text="noteView ? noteView.text : ''"></div>
+  </div>
+</div>
 <div id="about-overlay" x-show="showAbout" @click.self="showAbout=false" style="display:none">
   <div id="about-panel">
     <div id="about-hdr">
@@ -1274,7 +1346,7 @@ document.addEventListener('alpine:init', () => {
     _shownLongValues: {}, // per-parameter disclosure; deliberately separate from block folding
     _copyStatus: {},
     xrefOpen: false,
-    detailTab: 'rendered',  // rendered | tree | attrs | raw | wireframe
+    detailTab: 'rendered',  // rendered | tree | attrs | raw | details | objects | wireframe
     wfHiddenTypes: {},
     _history: [],
     _histIdx: -1,
@@ -1286,14 +1358,16 @@ document.addEventListener('alpine:init', () => {
     moreOpen: false,     // only ever true while isNarrow
     _graphCurrentFile: -1,
     _graphTab: 'fm',
+    graphFocusNote: '',
     _graphCache: {},
-    _graphRestoreView: null,
-    _graphMoved: {},   // {fileIdx: {toId or 'note:<index>': {x, y}}}: this page session only, never in appData, history or storage
+    _graphMoved: {},   // {fileIdx: {toId: {x, y}, 'note:<index>': {x?, y?, w?, h?, collapsed?}}}: this page session only, never in appData, history or storage
     _relIdxCache: {},
     graphFullscreen: false,
     deadEndMode: false,
     darkMode: (function(){ try { return localStorage.getItem('fmc_theme') !== 'light'; } catch(e) { return true; } })(),
     showAbout: false,
+    noteView: null,    // {text, ret}: the full-text View of one note; never part of the arrangement
+    _noteViewScrimDown: false,   // a selection dragged out onto the backdrop must not close the View
     showShortcuts: false,
     rawSourceIdx: 0,
     sortMode: '',  // set per-section on open/switch; not persisted across sessions
@@ -1509,11 +1583,11 @@ document.addEventListener('alpine:init', () => {
     _OP_FLIP: { Less: 'Greater', Greater: 'Less',
                 LessOrEqual: 'GreaterOrEqual', GreaterOrEqual: 'LessOrEqual' },
     _relPredString(rel, flipped) {
-      const preds = rel.preds || [];
-      const fmt = (p) => p.op === 'CartesianProduct' ? (flipped ? `${rel.r}  ×  ${rel.l}` : `${rel.l}  ×  ${rel.r}`) : flipped
-        ? `${rel.r}::${p.rf}  ${this._opLabel(p.op, true)}  ${rel.l}::${p.lf}`
-        : `${rel.l}::${p.lf}  ${this._opLabel(p.op, false)}  ${rel.r}::${p.rf}`;
-      if (!preds.length) return flipped ? `${rel.r}  ↔  ${rel.l}` : `${rel.l}  ↔  ${rel.r}`;
+      const preds = rel.preds || [], L = rel.l, R = rel.r;
+      const fmt = (p) => p.op === 'CartesianProduct' ? (flipped ? `${R}  ×  ${L}` : `${L}  ×  ${R}`) : flipped
+        ? `${R}::${p.rf}  ${this._opLabel(p.op, true)}  ${L}::${p.lf}`
+        : `${L}::${p.lf}  ${this._opLabel(p.op, false)}  ${R}::${p.rf}`;
+      if (!preds.length) return flipped ? `${R}  ↔  ${L}` : `${L}  ↔  ${R}`;
       let s = fmt(preds[0]);
       if (preds.length > 1) s += `  (+${preds.length - 1} more)`;
       return s;
@@ -1776,6 +1850,10 @@ document.addEventListener('alpine:init', () => {
     get isGraphSection() {
       return this.currentSection === 'RelationshipCatalog' || this.currentSection === 'TableOccurrenceCatalog';
     },
+    // For occurrences and relationships, Rendered IS the graph, when the file has one to show.
+    get graphActive() {
+      return this.detailTab === 'rendered' && this.isGraphSection && this.currentFileHasGraph;
+    },
     get graphInfoText() {
       const g = this.currentFileObj.graph || {}, nodes = g.nodes || [];
       const off = this._graphTab === 'fm' ? nodes.filter(n => n.x === null || n.x === undefined).length : 0;
@@ -1801,23 +1879,47 @@ document.addEventListener('alpine:init', () => {
     _relItemData(item) {
       return ((this.currentFileObj.sections || {}).RelationshipCatalog || {}).item_data?.[item] || {};
     },
-    _toName(node) {
-      const d = ((this.currentFileObj.sections || {}).TableOccurrenceCatalog || {}).item_data?.[node.item] || {};
-      return d.display_name || node.name;
-    },
     _opLabel(op, flipped) {
       const o = flipped ? (this._OP_FLIP[op] || op) : op;
       return { '=': '=', Equal: '=', NotEqual: '≠', Less: '<', Greater: '>', LessOrEqual: '≤', GreaterOrEqual: '≥' }[o] || o;
     },
-    _sideSettings(set) {
-      const yn = v => v === null || v === undefined ? 'Not captured' : (v ? 'Yes' : 'No');
-      if (!set) return [];
-      const rows = [['Create records here via this relationship', yn(set.cascade_create)], ['Delete records here with the other side\'s', yn(set.cascade_delete)]];
-      if ((set.sort || []).length) {
-        rows.push(['Sort', set.sort.map(s => (s.field || '?') + (s.value_list ? ' by value list ' + s.value_list : ' ' + (s.order || '').toLowerCase())).join(', ')
-                            + (set.maintain_sort ? ' (maintain order)' : '')]);
-      }
-      return rows;
+    // One side's options. Each belongs to the occurrence it is stored on, so a flip moves it with that occurrence.
+    _sideSet(set) {
+      const nc = 'Not captured', yn = v => v === null || v === undefined ? nc : (v ? 'Yes' : 'No');
+      if (!set) return { create: nc, delete: nc, sort: '' };
+      const sort = (set.sort || []).length
+        ? set.sort.map(s => (s.field || '?') + (s.value_list ? ' by value list ' + s.value_list : ' ' + (s.order || '').toLowerCase())).join(', ') + (set.maintain_sort ? ' (maintain order)' : '')
+        : '';
+      return { create: yn(set.cascade_create), delete: yn(set.cascade_delete), sort };
+    },
+    // Why an end names no occurrence: its id has no definition here, or several occurrences share it.
+    _endGap(state) {
+      return state === 'ambiguous' ? 'Id shared by more than one occurrence' : 'Definition not captured';
+    },
+    _toSource(n, state) {
+      const nc = 'Not captured', src = (n && n.source) || {}, source = [];
+      if (!n) source.push(['Source', this._endGap(state)]);
+      else if (src.kind === 'local') source.push(['Base table', src.table || nc]);
+      else if (src.kind === 'external') source.push(['External data source', src.data_source || nc], ['Table there', src.table || nc]);
+      else if (src.kind === 'sql') {
+        source.push(['SQL source', src.table || nc], ['Data source', src.data_source || nc]);
+        if (src.dsn && src.dsn !== src.data_source) source.push(['DSN', src.dsn]);
+      } else source.push(['Source', nc]);
+      if (n && n.shared_id) source.push(['Identity', 'Its id is shared with another occurrence, so only a reference naming it by UUID reaches it']);
+      return source;
+    },
+    // Every condition, read from the near occurrence to the far one; inequalities invert when the near side is the stored right.
+    _relConds(rel, nearIsRight) {
+      const nt = nearIsRight ? rel.r : rel.l, ft = nearIsRight ? rel.l : rel.r;
+      return (rel.preds || []).map(p => {
+        const nf = nearIsRight ? p.rf : p.lf, ff = nearIsRight ? p.lf : p.rf;
+        if (p.op === 'CartesianProduct') return { cartesian: true, near: nf ? nt + '::' + nf : '', far: ff ? ft + '::' + ff : '' };
+        return { near: nt + '::' + (nf || '?'), op: this._opLabel(p.op, nearIsRight), far: ft + '::' + (ff || '?') };
+      });
+    },
+    // The second tab is named for what it lists: an occurrence's relationships, a relationship's occurrences.
+    get relTabLabel() {
+      return this.currentSection === 'RelationshipCatalog' ? 'Table Occurrences' : 'Relationships';
     },
     get relCard() {
       if (!this.isGraphSection || !this.currentItem) return null;
@@ -1825,45 +1927,43 @@ document.addEventListener('alpine:init', () => {
       if (this.currentSection === 'TableOccurrenceCatalog') {
         const n = idx.byItem[this.currentItem];
         if (!n) return null;
-        const src = n.source || {}, nc = 'Not captured', source = [];
-        if (src.kind === 'local') source.push(['Base table', src.table || nc]);
-        else if (src.kind === 'external') source.push(['External data source', src.data_source || nc], ['Table there', src.table || nc]);
-        else if (src.kind === 'sql') {
-          source.push(['SQL source', src.table || nc], ['Data source', src.data_source || nc]);
-          if (src.dsn && src.dsn !== src.data_source) source.push(['DSN', src.dsn]);
-        } else source.push(['Source', nc]);
-        const connections = (idx.edgesOf[n.id] || []).map(e => {
+        const name = n.name;
+        const rows = (idx.edgesOf[n.id] || []).map(e => {
+          const self = e.from_id === e.to_id;
           const otherId = e.from_id === n.id ? e.to_id : e.from_id;
           const other = idx.byId[otherId];
           const rel = this._relItemData(e.item).rel;
           // Read from this occurrence outward, so the near side comes first even on the right of the XML.
-          const flipped = e.to_id === n.id && e.from_id !== n.id;
-          return { item: e.item, neighbor: other ? other.item : null, neighborName: other ? this._toName(other) : (flipped ? rel?.l : rel?.r) || '?',
-                   label: rel ? this._relPredString(rel, flipped) : (e.predicates || []).join(', ') || 'Relationship' };
+          const flipped = e.to_id === n.id && !self;
+          const otherName = other ? other.name : (rel ? (flipped ? rel.l : rel.r) : '') || '?';
+          const gap = other ? '' : this._endGap(rel ? (flipped ? rel.lstate : rel.rstate) : '').toLowerCase();
+          const here = this._sideSet(rel ? (flipped ? rel.rset : rel.lset) : null);
+          const there = this._sideSet(rel ? (flipped ? rel.lset : rel.rset) : null);
+          return { item: e.item, neighbor: other ? other.item : null, neighborName: otherName, gap, self,
+                   hereName: self ? name + ' (left)' : name, thereName: self ? name + ' (right)' : otherName,
+                   conds: rel ? this._relConds(rel, flipped) : [],
+                   here, there };
         });
-        return { kind: 'to', name: this._toName(n), source, onMap: n.x !== null && n.x !== undefined, connections };
+        return { kind: 'to', name, source: this._toSource(n), onMap: n.x !== null && n.x !== undefined, rows };
       }
       const e = idx.edgeByItem[this.currentItem];
       const rel = this._relItemData(this.currentItem).rel;
       if (!e || !rel) return null;
-      const sides = {
-        l: { name: rel.l, item: idx.byId[e.from_id]?.item || null, settings: this._sideSettings(rel.lset) },
-        r: { name: rel.r, item: idx.byId[e.to_id]?.item || null, settings: this._sideSettings(rel.rset) },
+      const end = (key, side, name, id, set, state) => {
+        const node = idx.byId[id];
+        return { key, side, name, item: node ? node.item : null, source: this._toSource(node, state), ...this._sideSet(set) };
       };
+      const l = end('from', 'Left', rel.l, e.from_id, rel.lset, rel.lstate), r = end('to', 'Right', rel.r, e.to_id, rel.rset, rel.rstate);
       const flip = this.flipAll;
-      const preds = (rel.preds || []).map(p => p.op === 'CartesianProduct' ? { cartesian: true } : {
-        left: (flip ? rel.r + '::' + p.rf : rel.l + '::' + p.lf),
-        op: this._opLabel(p.op, flip),
-        right: (flip ? rel.l + '::' + p.lf : rel.r + '::' + p.rf),
-      });
-      return { kind: 'rel', left: flip ? sides.r : sides.l, right: flip ? sides.l : sides.r, preds };
+      return { kind: 'rel', ends: flip ? [r, l] : [l, r], nearName: flip ? rel.r : rel.l, farName: flip ? rel.l : rel.r,
+               conds: this._relConds(rel, flip) };
     },
     _graphTipLines(kind, item) {
       const idx = this._relIdx();
       if (kind === 'to') {
         const n = idx.byItem[item];
         if (!n) return [];
-        const s = n.source || {}, lines = [this._toName(n)];
+        const s = n.source || {}, lines = [n.name];
         if (!n.source_color) lines.push('No color captured');
         if (s.kind === 'local' && s.table) lines.push('Base table: ' + s.table);
         if (s.kind === 'external') {
@@ -1878,11 +1978,11 @@ document.addEventListener('alpine:init', () => {
       }
       const rel = this._relItemData(item).rel;
       if (!rel) return [];
-      const flip = this.flipAll;
-      const lines = [(flip ? rel.r : rel.l) + ' ↔ ' + (flip ? rel.l : rel.r)];
+      const flip = this.flipAll, L = rel.l, R = rel.r;
+      const lines = [(flip ? R : L) + ' ↔ ' + (flip ? L : R)];
       for (const p of rel.preds || []) {
-        if (p.op === 'CartesianProduct') lines.push(p.lf && p.rf ? (flip ? `${rel.r}::${p.rf} × ${rel.l}::${p.lf}` : `${rel.l}::${p.lf} × ${rel.r}::${p.rf}`) : '× Cartesian: every record relates to every record');
-        else lines.push(flip ? `${rel.r}::${p.rf} ${this._opLabel(p.op, true)} ${rel.l}::${p.lf}` : `${rel.l}::${p.lf} ${this._opLabel(p.op, false)} ${rel.r}::${p.rf}`);
+        if (p.op === 'CartesianProduct') lines.push(p.lf && p.rf ? (flip ? `${R}::${p.rf} × ${L}::${p.lf}` : `${L}::${p.lf} × ${R}::${p.rf}`) : '× Cartesian: every record relates to every record');
+        else lines.push(flip ? `${R}::${p.rf} ${this._opLabel(p.op, true)} ${L}::${p.lf}` : `${L}::${p.lf} ${this._opLabel(p.op, false)} ${R}::${p.rf}`);
       }
       return lines;
     },
@@ -1909,13 +2009,16 @@ document.addEventListener('alpine:init', () => {
       const gd = this.currentFileObj.graph;
       if (!svgEl || !gd || !this.currentFileHasGraph) return;
       const layoutKey = fi + '_' + this._graphTab;
-      // A rebuild for the same layout (a theme change) keeps the user's view.
-      const keptView = svgEl._rgLayoutKey === layoutKey && svgEl._rgVb ? { ...svgEl._rgVb } : null;
+      // A rebuild for the same layout (a theme change) keeps the user's view. A map still waiting to open
+      // has no view yet, only the Fit laid down while it was hidden, so it goes on to open normally.
+      const keptView = !svgEl._rgOpening && svgEl._rgLayoutKey === layoutKey && svgEl._rgVb ? { ...svgEl._rgVb } : null;
       const rebuilt = this._graphCurrentFile !== fi;
       if (rebuilt) {
         const self = this;
         _rgBuild(gd, svgEl, function(section, item) { self.selectRelItem(section, item); }, function(kind, item) { return self._graphTipLines(kind, item); },
-                 function(id, at) { self._graphMoved = { ...self._graphMoved, [fi]: { ...(self._graphMoved[fi] || {}), [id]: at } }; });
+                 function(id, at) { const mine = self._graphMoved[fi] || {}; self._graphMoved = { ...self._graphMoved, [fi]: { ...mine, [id]: { ...(mine[id] || {}), ...at } } }; });
+        svgEl._rgOnShown = function() { if (self.graphActive) self._graphShow(); };
+        svgEl._rgOnNoteView = function(index, btn) { self.openNoteView(fi, index, btn); };
         this._graphCurrentFile = fi;
       }
       const fresh = rebuilt || svgEl._rgLayoutKey !== layoutKey;
@@ -1923,20 +2026,34 @@ document.addEventListener('alpine:init', () => {
         this._applyGraphLayout(this._graphTab);
         svgEl._rgLayoutKey = layoutKey;
         const wasCenteredOn = svgEl._rgCenteredOn;
-        svgEl._rgCenteredOn = null;
-        if (rebuilt && keptView) { _rgSetView(svgEl, keptView); svgEl._rgCenteredOn = wasCenteredOn; }
+        // Undefined, not null: null is a real answer here, meaning no item is selected.
+        svgEl._rgCenteredOn = undefined;
+        svgEl._rgOpening = true;
+        if (rebuilt && keptView) { _rgSetView(svgEl, keptView); svgEl._rgCenteredOn = wasCenteredOn; svgEl._rgOpening = false; }
       }
       const sel = this._graphSelection();
       _rgSelect(svgEl, sel);
-      const restore = this._graphRestoreView;
-      this._graphRestoreView = null;
-      if (restore && restore.item === this.currentItem) {
-        _rgSetView(svgEl, restore.view);
-        svgEl._rgCenteredOn = this.currentItem;
-      } else if (svgEl._rgCenteredOn !== this.currentItem) {
-        if (sel) _rgCenter(svgEl, sel.main, fresh);
+      if (svgEl._rgCenteredOn !== this.currentItem) {
+        // Not on screen yet (another tab or panel is up): it comes back through _rgOnShown.
+        if (!svgEl.getBoundingClientRect().width) return;
+        const focused = this._focusSubject(svgEl, sel);
+        // A selection with nowhere to go leaves the view alone, unless the map is opening and has none.
+        if (!focused && svgEl._rgOpening) _rgFocus(svgEl, _rgStartOfMap(svgEl));
+        svgEl._rgOpening = false;
         svgEl._rgCenteredOn = this.currentItem;
       }
+    },
+    _focusSubject(svgEl, sel) {
+      const focused = !!sel && _rgFocus(svgEl, sel.main);
+      this.graphFocusNote = focused ? '' : (this.currentItem ? 'The selected item has no position on this map.' : 'Select an occurrence or relationship to refocus.');
+      return focused;
+    },
+    // The viewport only: temporary moves, the layout and the selection all stay as they are.
+    refocusGraph() {
+      const svgEl = document.getElementById('rel-graph');
+      if (!svgEl || !svgEl._rgPos) return;
+      this._focusSubject(svgEl, this._graphSelection());
+      svgEl._rgCenteredOn = this.currentItem;
     },
     setGraphTab(tab) {
       this._graphTab = tab;
@@ -1967,7 +2084,7 @@ document.addEventListener('alpine:init', () => {
     // Moves the viewport to whatever is on the map now; a temporary arrangement stays as it is.
     fitGraph() {
       const svgEl = document.getElementById('rel-graph');
-      if (svgEl && svgEl._rgPos) _rgFit(svgEl, _rgBounds(svgEl));
+      if (svgEl && svgEl._rgPos) { _rgFit(svgEl, _rgBounds(svgEl)); this.graphFocusNote = ''; }
     },
     get graphModified() {
       return this._graphTab === 'fm' && Object.keys(this._graphMoved[this.currentFileIdx] || {}).length > 0;
@@ -1983,9 +2100,26 @@ document.addEventListener('alpine:init', () => {
       }
     },
 
+    // A note's complete captured text, readable whatever the zoom or whatever lies over it. Opening it changes nothing.
+    openNoteView(fi, index, btn) {
+      const note = ((appData.files[fi] || {}).graph?.notes || [])[index];
+      if (!note) return;
+      this.noteView = { text: note.text, ret: btn };
+      this.$nextTick(() => document.getElementById('note-view-close')?.focus());
+    },
+    closeNoteView() {
+      const ret = this.noteView?.ret;
+      this.noteView = null;
+      this.$nextTick(() => { if (ret && ret.isConnected) ret.focus(); });
+    },
+    noteViewTab(e) {
+      const a = document.getElementById('note-view-close'), b = document.getElementById('note-view-body');
+      e.preventDefault();
+      (document.activeElement === a ? b : a).focus();
+    },
+
     toggleGraphFullscreen() {
       this.graphFullscreen = !this.graphFullscreen;
-      this.$nextTick(() => this.fitGraph());
     },
 
     sectionLabel(key) {
@@ -2063,7 +2197,7 @@ document.addEventListener('alpine:init', () => {
         return;
       }
       this._history = this._history.slice(0, this._histIdx + 1);
-      // Its view is recorded on leaving: right now the map hasn't yet centered on the new item.
+      // Its presentation is recorded on leaving.
       this._history.push({fileIdx, section, item, deadEndMode: this.deadEndMode, stats, view: null});
       if (this._history.length > 50) this._history = this._history.slice(-50);
       this._histIdx = this._history.length - 1;
@@ -2071,23 +2205,24 @@ document.addEventListener('alpine:init', () => {
     _pushHistory() {
       this._addHist(this.currentFileIdx, this.currentSection, this.currentItem);
     },
-    // How the entry was being looked at: presentation, map view, relationship side and References.
+    // How the entry was being looked at: presentation, map layout, relationship side and References. Not where the
+    // map was panned: going back to an object centers it at the readable scale, the same as selecting it.
     _viewSnapshot() {
-      const svg = document.getElementById('rel-graph');
-      return { detailTab: this.detailTab, graphTab: this._graphTab, flipAll: this.flipAll, xrefOpen: this.xrefOpen,
-               graphView: svg?._rgVb && svg._rgCenteredOn === this.currentItem ? { ...svg._rgVb } : null };
+      return { detailTab: this.detailTab, graphTab: this._graphTab, flipAll: this.flipAll, xrefOpen: this.xrefOpen };
     },
     _viewRestore(view) {
       if (!view) return;
       this.flipAll = view.flipAll;
       this.xrefOpen = view.xrefOpen;
       this._graphTab = view.graphTab;
-      this._graphRestoreView = view.graphView ? { view: view.graphView, item: this.currentItem } : null;
-      const graphBack = view.detailTab === 'graph' && this.isGraphSection && this.currentFileHasGraph;
-      if (view.detailTab !== 'graph' || graphBack) this.detailTab = view.detailTab;
-      this.$nextTick(() => { if (this.detailTab === 'graph') this._graphShow(); });
+      this.detailTab = view.detailTab;
+      this.$nextTick(() => { if (this.graphActive) this._graphShow(); });
     },
 
+    // Details belongs to occurrences and relationships; every other section has Rendered.
+    _dropDetailsTab(section) {
+      if (this.detailTab === 'details' && section !== 'RelationshipCatalog' && section !== 'TableOccurrenceCatalog') this.detailTab = 'rendered';
+    },
     _navigateNoHistory(fileIdx, section, item, noRecord=false) {
       this.statsOpen = false;
       if (fileIdx !== this.currentFileIdx) {
@@ -2098,7 +2233,7 @@ document.addEventListener('alpine:init', () => {
         this.currentSection = section;
         this.filterQuery = '';
         if ((this.detailTab === 'wireframe' || this.detailTab === 'objects') && section !== 'LayoutCatalog') this.detailTab = 'rendered';
-        if (this.detailTab === 'graph' && !this.isGraphSection) this.detailTab = 'rendered';
+        this._dropDetailsTab(section);
         this.sortMode = this._defaultSort(section);
       }
       const fc = ((this.currentFileObj.sections || {})[section] || {}).folder_children || {};
@@ -2138,6 +2273,9 @@ document.addEventListener('alpine:init', () => {
       this.searchQuery = '';
       this.searchResults = [];
       this.deadEndMode = !!h.deadEndMode;
+      // Arriving at another object focuses it, even one the map, hidden in between, was last centered on.
+      const svgEl = document.getElementById('rel-graph');
+      if (svgEl && (h.fileIdx !== this.currentFileIdx || h.item !== this.currentItem)) svgEl._rgCenteredOn = undefined;
       this._navigateNoHistory(h.fileIdx, h.section, h.item, true);
       if (h.stats) this._statsRestore(h.stats);
       this._viewRestore(h.view);
@@ -2267,22 +2405,18 @@ document.addEventListener('alpine:init', () => {
         this._copyStatus = {};
         this.rawSourceIdx = 0;
       });
-      this.$watch('currentItem', () => { if (this.detailTab === 'graph') this.$nextTick(() => this._graphShow()); });
-      this.$watch('detailTab', (val) => {
-        if (val !== 'graph') document.getElementById('rel-graph')?._rgHideTip?.();
-        if (val !== 'graph' && this.graphFullscreen) this.graphFullscreen = false;
-        if (val === 'graph') this.$nextTick(() => this._graphShow());
+      this.$watch('currentItem', () => { if (this.graphActive) this.$nextTick(() => this._graphShow()); });
+      this.$watch('graphActive', (val) => {
+        if (!val) document.getElementById('rel-graph')?._rgHideTip?.();
+        if (!val && this.graphFullscreen) this.graphFullscreen = false;
+        if (val) this.$nextTick(() => this._graphShow());
       });
       this.$watch('darkMode', () => {
         this._graphCurrentFile = -1;
-        if (this.detailTab === 'graph') this.$nextTick(() => this._graphShow());
+        if (this.graphActive) this.$nextTick(() => this._graphShow());
       });
-      this.$watch('currentFileIdx', () => {
-        if (this.detailTab === 'graph') {
-          if (!this.currentFileHasGraph) { this.detailTab = 'rendered'; return; }
-          this._graphShow();
-        }
-      });
+      this.$watch('currentFileIdx', () => { if (this.graphActive) this.$nextTick(() => this._graphShow()); });
+      if (this.graphActive) this.$nextTick(() => this._graphShow());
       this.$nextTick(() => {
         const s = document.getElementById('splash');
         if (s) { s.style.opacity = '0'; setTimeout(() => s.remove(), 320); }
@@ -2300,7 +2434,7 @@ document.addEventListener('alpine:init', () => {
       this.isSearching = false;
       const order = this.currentFileObj.section_order || [];
       this.currentSection = (order[0] || [''])[0];
-      if (this.detailTab === 'graph' && !this.isGraphSection) this.detailTab = 'rendered';
+      this._dropDetailsTab(this.currentSection);
       this.sortMode = this._defaultSort(this.currentSection);
       this.flipAll = false;
       this.currentItem = this._firstSelectableItem(this.currentSection);
@@ -2314,14 +2448,15 @@ document.addEventListener('alpine:init', () => {
       const leavingStats = this.statsOpen;
       if (leavingStats) { this._pushHistory(); this.statsOpen = false; }
       if ((this.detailTab === 'wireframe' || this.detailTab === 'objects') && key !== 'LayoutCatalog') this.detailTab = 'rendered';
-      if (this.detailTab === 'graph' && key !== 'RelationshipCatalog' && key !== 'TableOccurrenceCatalog') this.detailTab = 'rendered';
+      this._dropDetailsTab(key);
       this.currentSection = key;
       this.sortMode = this._defaultSort(key);
       this.flipAll = false;
       this.filterQuery = '';
       this.deadEndMode = false;
       this.currentItem = this._firstSelectableItem(key);
-      if (leavingStats) this._addHist(this.currentFileIdx, key, this.currentItem);
+      // What the section opens on is an object the user sees, so Back can't skip it.
+      this._addHist(this.currentFileIdx, key, this.currentItem);
       this.$nextTick(() => {
         const btn = document.querySelector('#sec-tabs .sec-btn.active');
         if (btn) btn.scrollIntoView({ block: 'nearest' });
@@ -2931,8 +3066,11 @@ document.addEventListener('alpine:init', () => {
     handleKeydown(e) {
       const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
       const tipWasUp = document.getElementById('rel-graph')?._rgHideTip?.();
+      // The full-text View is modal: no shortcut reaches the page behind it; its keys scroll and select its text.
+      if (this.noteView && e.key !== 'Escape') return;
       if (e.key === 'Escape') {
         if (tipWasUp) return;
+        if (this.noteView) { this.closeNoteView(); return; }
         if (this.searchOptsOpen) { this.toggleSearchOptions(false, true); return; }
         if (this.showShortcuts) { this.showShortcuts = false; return; }
         if (this.showAbout) { this.showAbout = false; return; }
@@ -3025,17 +3163,16 @@ document.addEventListener('alpine:init', () => {
         this._pushHistory();
         return;
       }
-      // 1–5 — switch detail tab (Rendered / Tree / Attrs / Raw / Wireframe|Graph)
+      // 1–5 — switch detail tab in the order shown: the occurrence/relationship list is second, Objects is fifth on layouts
       if (e.key >= '1' && e.key <= '5' && this.currentItem) {
-        const tabs = ['rendered', 'tree', 'attrs', 'raw'];
+        const tabs = this.isGraphSection ? ['rendered', 'details', 'tree', 'attrs', 'raw'] : ['rendered', 'tree', 'attrs', 'raw'];
         if (this.currentSection === 'LayoutCatalog') { tabs.push('objects'); tabs.push('wireframe'); }
-        else if (this.isGraphSection && this.currentFileHasGraph) tabs.push('graph');
         const t = tabs[parseInt(e.key) - 1];
         if (t) this.detailTab = t;
         return;
       }
-      // g — toggle graph full-screen (only when graph tab active)
-      if (e.key === 'g' && this.detailTab === 'graph') {
+      // g — toggle graph full-screen (only when the graph is showing)
+      if (e.key === 'g' && this.graphActive) {
         this.graphFullscreen = !this.graphFullscreen;
         return;
       }

@@ -446,7 +446,8 @@ class QueueRepo:
             self._e.update(_QUEUE, queue_id, jor)
 
     def retain_steps(self, queue_id: str, steps: list) -> None:
-        """Narrow a live record's remaining plan, keeping its cursor. No-op if the record is gone."""
+        """Set a live record's remaining plan (narrowed, or widened when a pre-1452 record is normalised;
+        packet 1462), keeping its cursor. No-op if the record is gone."""
         row = self.get(queue_id)
         if row is not None:
             self._e.update(_QUEUE, queue_id, {**row.jor, "Steps": list(steps)})

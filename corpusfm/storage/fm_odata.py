@@ -1438,13 +1438,15 @@ class FileMakerODataBackend:
         for logical in reg.SLOTS:
             phys = self._phys(logical)
             try:
-                resp = self._session.get(self._url(phys) + "?$select=UUID,JSONOfRecord")
-                resp.raise_for_status()
+                # Every page, read before any write. A sweep that saw only the server's first page
+                # would be stamped complete with the rest of the table never projected.
+                records = list(self.engine.iter_raw(logical))
             except Exception:
                 logger.warning("FM OData: reproject skipping %s — list failed", logical, exc_info=True)
                 failed += 1
                 continue
-            for rec in resp.json().get("value", []):
+            for record_key, raw_jor in records:
+                rec = {"UUID": record_key, "JSONOfRecord": raw_jor}
                 record_uuid, jor = _parse_jor(rec)
                 # Poison-row guard (packet 064): a truncated/corrupt read makes _parse_jor return {}
                 # even though the stored field was non-empty. PATCHing {} back would WIPE that row's
@@ -1705,6 +1707,25 @@ class FileMakerODataBackend:
                 sp.write_text(json.dumps(summaries, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception:
             logger.debug("FM OData: store_summaries sidecar failed for %s", ref, exc_info=True)
+
+    def clear_summaries(self, ref: str) -> None:
+        record = self._get_record_by_uuid(ref)
+        if record is None:
+            return
+        record_uuid = record["UUID"]
+        _ruuid, jor = _parse_jor(record)
+        sp = self._summaries_sidecar_for(jor)
+        if sp is not None and sp.exists():
+            sp.unlink()          # first: load_summaries would migrate a lone sidecar back into the blob
+        self.engine.blob_delete("STORAGE", record_uuid, "SummariesData")
+        if jor.get("HasSummaries"):
+            jor["HasSummaries"] = False
+            _patched = self._patch_json(
+                self._url(f"{self._phys('STORAGE')}('{record_uuid}')"),
+                self._jor_payload("STORAGE", jor, record_uuid=record_uuid),
+            )
+            _patched.raise_for_status()
+            _publish_response(self, _patched, record_uuid)
 
     def load_summaries(self, ref: str) -> dict:
         import gzip

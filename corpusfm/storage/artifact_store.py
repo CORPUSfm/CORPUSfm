@@ -279,7 +279,7 @@ class ReingestResult:
 
 
 def reingest_artifact(backend, record_uuid: str, *, keep_source_xml: bool = True) -> "ReingestResult":
-    """Atomically re-ingest a stored SCHEMA artifact from its RETAINED source XML and REPLACE the
+    """Re-ingest a stored SCHEMA artifact from its RETAINED source XML and REPLACE the
     record IN PLACE — same record UUID, same identity/lineage (ArtifactTimestamp), fresh derived
     layers (rendered_text / xref / gaps / structure_intent). This is an *in-place refresh*, NOT a new
     snapshot or lineage (contrast :func:`land_artifact` and ``reimport_after_patch``, which mint a NEW
@@ -289,7 +289,9 @@ def reingest_artifact(backend, record_uuid: str, *, keep_source_xml: bool = True
     happens BEFORE any write to the record, so a parse error / version-fence rejection / incomplete
     layers leaves the OLD record entirely untouched (the packet's core guarantee). The only writes are
     the final blob swap + jor commit under the existing UUID; the source XML is already present (we read
-    it from there) and is left in place. Returns a :class:`ReingestResult`.
+    it from there) and is left in place. Those two writes are NOT atomic: a failed jor commit after the
+    blob swap is logged and returned as a failure, and the caller's queue retry re-runs it (accepted,
+    packet 1463 — no rollback). Returns a :class:`ReingestResult`.
 
     Re-ingesting the same source yields the same ``.fmp12`` identity (the File= name normalizes
     identically), so the record UUID and lineage stay stable with no new-snapshot risk."""

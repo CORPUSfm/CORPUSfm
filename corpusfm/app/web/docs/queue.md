@@ -31,8 +31,11 @@ highlight advances along its trail. It leaves the queue only when the whole pipe
 
 ## Re-ingest
 
-A re-ingest is one row with every stage it plans: re-ingest, then indexing or summaries if the artifact had them
-and they're configured. Completed stages carry a check mark; a stage that hasn't started is plain. **A new Explorer
+A re-ingest is one row with every stage it plans: re-ingest, then indexing if the artifact had a search index,
+then summaries if it had them and a summary provider is configured. An existing index is always rebuilt. If it can't
+be — no embedding provider, or the provider fails — its old entries are removed first, so search never serves the
+previous content as this artifact's, and the index stage shows as failed, with **Restart** for when the provider is
+back. Completed stages carry a check mark; a stage that hasn't started is plain. **A new Explorer
 can be generated as soon as the re-ingest stage has committed**: indexing and summaries are optional and don't
 affect it.
 

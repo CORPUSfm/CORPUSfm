@@ -136,19 +136,34 @@ re-ingest an older artifact and generate a new Explorer to pick up script calls.
 
 ## The relationship graph
 
-Open a table occurrence or a relationship and Explorer shows cards with the item and its immediate
-connections: which base table or external source an occurrence uses, and every condition and each side's
-settings for a relationship. Choose a neighbour to step to it. **Flip sides** swaps the view without changing what the relationship means.
+Open a table occurrence or a relationship and **Rendered** shows the graph, on **As Built**, FileMaker's own positions, or
+**By Table**. The second tab lists the same selection's immediate connections, one row each, across the full width:
 
-The **Graph** tab shows the same selection on **As Built**, FileMaker's own positions, or **By Table**. Choosing a
-box or a line selects it and centers it, without moving anything on the map; an occurrence with no captured
-position is left off and counted. Boxes use FileMaker's saved colors and view, collapsed, related fields or full, at sizes
-that approximate FileMaker's, with lines meeting their field rows and showing each operator. Notes from the graph
+- On an occurrence, **Relationships** names its base table or external source, then one row per relationship: the related
+  occurrence, every condition, and **Create** and **Delete** for each side, labelled with that side's occurrence.
+- On a relationship, **Table Occurrences** lists its two occurrences with their source and their own Create and Delete, then every
+  condition. **Flip sides** swaps the order without changing what the relationship means; each side keeps its own settings.
+
+Choose an occurrence or a condition there to step to it and stay on that tab. Moving between Rendered and the second tab keeps
+your view, your arrangement and As Built or By Table.
+
+Choosing a box or a line selects it and centers it at a readable size, without moving anything on the map. If a
+relationship's two ends don't both fit at that size, it centers on the first and the other is a pan or a click away. An
+occurrence with no captured position is left off and counted. Boxes use FileMaker's saved colors and view, collapsed, related fields or full, at sizes
+that approximate FileMaker's. Each relationship is one connection: short branches leave its field rows (or the
+header, where a field can't be identified) and join one line with one marker. The marker shows the operator, or
+every different operator in condition order (for example `× =`) when the conditions differ; the tip and the details
+list each condition in full. Two relationships between the same boxes stay two lines. Notes from the graph
 appear behind the boxes. Hover over or tab to a box or line to see its full name and details.
 
-On As Built you can drag a box or note to try a different arrangement. **Reset graph** puts everything back, and closing or
-reloading the page does too; nothing is saved to the file or to Save As. Drag the background to pan, use the wheel to zoom, and **Fit** to see everything. Back and
-`Alt`+`→` return to the same view.
+Each note has a narrow top bar: drag it to move the note. Its buttons show the note's full text in a window you can
+read and copy from (close it, or press `Esc`), and collapse or expand it. Note text can be selected and copied, and
+the wheel scrolls a long note. Drag the corner of an expanded note to resize it.
+
+On As Built you can drag a box or note to try a different arrangement. **Reset** puts every box and note back, with its
+captured size and collapsed state, and closing or reloading the page does too; nothing is saved to the file or to Save As. Drag the background to pan, use the wheel to zoom,
+**Refocus** to return to the selection at a readable size, and **Fit** to see everything. Neither moves anything on the map. Back and
+`Alt`+`→` return to an object and center it at a readable size, as selecting it does; where you had panned to isn't kept.
 
 ## Keyboard shortcuts
 

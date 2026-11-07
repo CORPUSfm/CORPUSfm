@@ -81,7 +81,7 @@ def record_enrichment_event(be, uuid: str, kind: str) -> None:
 
 # ── the ops (one target each; RAISE on failure) ──────────────────────────────────
 
-def summarize_one(be, uuid: str, *, on_progress=None, should_cancel=None) -> None:
+def summarize_one(be, uuid: str, *, on_progress=None, should_cancel=None) -> int:
     """Generate + store AI one-line summaries for one artifact. Raises if no provider is configured
     or the provider call fails (the worker parks the record). ``should_cancel`` is polled per object
     (packet 1155) — on a cooperative Stop, generate_summaries returns the partial dict gathered so far,
@@ -101,6 +101,9 @@ def summarize_one(be, uuid: str, *, on_progress=None, should_cancel=None) -> Non
     if summaries:
         be.store_summaries(uuid, summaries)
     record_enrichment_event(be, uuid, "summaries")
+    from corpusfm.server.ai.summarize import summarizable_items
+    # None when the content has nothing to summarise: an empty result is then not a provider failure.
+    return len(summaries) if summarizable_items(artifact) else None
 
 
 def _batch_hook(on_progress, should_cancel):
@@ -118,6 +121,72 @@ def _batch_hook(on_progress, should_cancel):
     return _hook
 
 
+class IndexStageError(RuntimeError):
+    """An index stage's failure in a named category, with a message safe to show on the Queue
+    (packet 1462); the cause stays chained, and the details go to the log."""
+
+    def __init__(self, category: str, message: str):
+        super().__init__(message)
+        self.category = category
+
+
+def live_index():
+    """The live index, or an :class:`IndexStageError` saying why not: ``no_provider``,
+    ``provider_incomplete`` or ``open_failed`` (the search index would not open)."""
+    idx = vector_index()
+    if idx is not None:
+        return idx
+    from corpusfm.app.app_config import load_app_config
+    from corpusfm.server.ai.vector_index import IndexUnavailable, open_vector_index
+    try:
+        return open_vector_index(load_app_config())
+    except IndexUnavailable as exc:
+        log.warning("index: %s", exc, exc_info=exc.__cause__ is not None)
+        raise IndexStageError(exc.category, str(exc)) from exc
+
+
+_UNREACHABLE_HINTS = ("max retries exceeded", "connection refused", "failed to establish a new connection",
+                      "name or service not known", "nodename nor servname", "timed out", "read timeout")
+
+
+def _unreachable(exc) -> bool:
+    """True when the embedding endpoint could not be reached (connection or timeout), through whatever
+    wrapping the store applies to the provider's exception."""
+    import requests
+    from corpusfm.server.ai._watchdog import CallTimeout
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout, CallTimeout)):
+            return True
+        if any(h in str(exc).lower() for h in _UNREACHABLE_HINTS):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+class _IndexingFailure:
+    """Re-raise an embedding/indexing failure as an :class:`IndexStageError`: ``provider_unreachable``,
+    or ``indexing_failed`` (naming the provider's HTTP status when it answered). A summary-layer
+    deferral keeps its own actionable message."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, exc, tb):
+        if exc is None or isinstance(exc, IndexStageError):
+            return False
+        from corpusfm.server.ai.vector_index import SummaryLayerDeferred
+        if isinstance(exc, SummaryLayerDeferred):
+            return False
+        log.warning("index: indexing failed: %s", exc, exc_info=(kind, exc, tb))
+        if _unreachable(exc):
+            raise IndexStageError("provider_unreachable", "The embedding provider could not be reached.") from exc
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        detail = f"the embedding provider answered HTTP {status}" if status else type(exc).__name__
+        raise IndexStageError("indexing_failed", f"Indexing failed ({detail}).") from exc
+
+
 def index_one(be, uuid: str, *, on_progress=None, should_cancel=None) -> None:
     """Build/refresh the RAW search layer for one artifact (packet 1006 — the search substrate, from
     deterministic rendered text; summaries are NOT consulted). Raises if the embedder is unconfigured
@@ -127,9 +196,7 @@ def index_one(be, uuid: str, *, on_progress=None, should_cancel=None) -> None:
     final batch never reaches the poll, so the index COMPLETES normally — the caller must key its
     cleanup on whether the poll actually fired, not on a post-hoc "was a cancel requested?" (see the
     index handler's ``stopped_early`` flag; packet 1000 re-sweep)."""
-    idx = vector_index()
-    if idx is None:
-        raise RuntimeError("Vector index not configured.")
+    idx = live_index()
     file_name, timestamp, _name = index_key(be, uuid)
     hook = _batch_hook(on_progress, should_cancel)
     meta = be.get_artifact_meta(uuid)
@@ -137,8 +204,9 @@ def index_one(be, uuid: str, *, on_progress=None, should_cancel=None) -> None:
         # A DELIVERABLE has no gz-pickled Artifact — index its text instead (packet 1035).
         _index_deliverable(be, uuid, meta, file_name, timestamp, idx, hook)
     else:
-        artifact = be.load_artifact(uuid)
-        idx.index_artifact(uuid, file_name, timestamp, artifact, should_cancel=hook)
+        artifact = be.load_artifact(uuid)     # a storage read failure is not an indexing failure
+        with _IndexingFailure():
+            idx.index_artifact(uuid, file_name, timestamp, artifact, should_cancel=hook)
     record_enrichment_event(be, uuid, "indexing")
 
 
@@ -174,16 +242,15 @@ def index_summaries_one(be, uuid: str, *, on_progress=None, should_cancel=None) 
     unconfigured or the embedding call fails — and raises ``SummaryLayerDeferred`` (packet 1008/C)
     when a model/schema change needs a raw reindex first, so the QUEUE record parks Restartable with
     an actionable Outcome instead of being silently dropped."""
-    idx = vector_index()
-    if idx is None:
-        raise RuntimeError("Vector index not configured.")
+    idx = live_index()
     summaries = _load_sidecar(be, uuid)
     if not summaries:
         return
     file_name, timestamp, _name = index_key(be, uuid)
     artifact = be.load_artifact(uuid)
-    idx.index_summaries(uuid, file_name, timestamp, artifact, summaries,
-                        should_cancel=_batch_hook(on_progress, should_cancel))
+    with _IndexingFailure():
+        idx.index_summaries(uuid, file_name, timestamp, artifact, summaries,
+                            should_cancel=_batch_hook(on_progress, should_cancel))
     record_enrichment_event(be, uuid, "indexing")
 
 
@@ -197,14 +264,35 @@ def deindex_one(file_name: str) -> None:
     idx.delete_file(file_name)
 
 
+def stored_index():
+    from corpusfm.app.app_config import load_app_config
+    from corpusfm.server.ai.vector_index import get_stored_index
+    return get_stored_index(load_app_config())
+
+
 def deindex_artifact_one(uuid: str) -> None:
     """De-index ONE artifact (its record uuid, all layers) — leaving siblings + same-named files intact.
-    The per-artifact inverse of index_one; used by the detail De-index action + cancel cleanup. Raises if
-    the embedder is unconfigured."""
-    idx = vector_index()
-    if idx is None:
-        raise RuntimeError("Vector index not configured.")
-    idx.delete_artifact(uuid)
+    The per-artifact inverse of index_one; used by the detail De-index action + cancel cleanup. Works on
+    the stored index even with no embedder configured (deletion embeds nothing); a no-op when there is no
+    stored index at all."""
+    idx = stored_index()
+    if idx is not None:
+        idx.delete_artifact(uuid)
+
+
+def index_membership(uuid: str):
+    """Whether ONE artifact has a raw index: True / False, or None when it could not be read (packet
+    1460). Reads the stored index even with no embedder configured. Only a store that does not exist at
+    all is a definite False; one that fails to open or read is unknown, and the failure is logged with its
+    cause (packet 1461) — the caller then attempts the refresh rather than treating it as absent."""
+    try:
+        idx = stored_index()
+        if idx is None:
+            return False
+        return idx.index_status(uuid)["raw"] > 0
+    except Exception as exc:
+        log.warning("index: could not read whether %s has a search index (%s); refreshing it anyway", uuid, exc)
+        return None
 
 
 def indexed_uuids() -> frozenset:

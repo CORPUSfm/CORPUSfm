@@ -130,8 +130,9 @@ def item_filename(item_id: str, name: str) -> str:
     return f"{slug}.txt"
 
 
-def relationship_filename(rel_id: str, xml_str: str) -> str:
-    """Build filename for a relationship: {id}_{left}_{right}.txt."""
+def relationship_filename(rel_id: str, xml_str: str, to_titles=None) -> str:
+    """Build filename for a relationship: {id}_{left}_{right}.txt. ``to_titles`` (given only when an
+    add-on's names are supplied) names the ends; otherwise the reference names, as always."""
     try:
         elem = ET.fromstring(xml_str)
 
@@ -140,7 +141,9 @@ def relationship_filename(rel_id: str, xml_str: str) -> str:
             if side is None:
                 return "unknown"
             ref = side.find("TableOccurrenceReference")
-            return slugify(ref.get("name", "unknown")) if ref is not None else "unknown"
+            if ref is None:
+                return "unknown"
+            return slugify(to_titles.endpoint(ref)[0] if to_titles is not None else ref.get("name", "unknown"))
 
         left = _tname("LeftTable")
         right = _tname("RightTable")
@@ -359,15 +362,21 @@ def render_valuelist_rendered(name: str, xml_str: str) -> str:
     return "\n".join([f"Name: {name}", f"ID: {item_id}", f"Source: {source_label}"])
 
 
-def render_relationship_structured(rel_id: str, xml_str: str) -> str:
+def _relationship_end(elem, tag: str, to_titles) -> str:
+    """One end's name: its occurrence's own title when ``to_titles`` identifies it, else the
+    reference's supplied name."""
+    side = elem.find(tag)
+    ref = side.find("TableOccurrenceReference") if side is not None else None
+    if ref is None:
+        return "?"
+    return to_titles.endpoint(ref)[0] if to_titles is not None else ref.get("name", "?")
+
+
+def render_relationship_structured(rel_id: str, xml_str: str, to_titles=None) -> str:
     elem = ET.fromstring(xml_str)
 
     def _tname(tag: str) -> str:
-        side = elem.find(tag)
-        if side is None:
-            return "?"
-        ref = side.find("TableOccurrenceReference")
-        return ref.get("name", "?") if ref is not None else "?"
+        return _relationship_end(elem, tag, to_titles)
 
     left = _tname("LeftTable")
     right = _tname("RightTable")
@@ -380,15 +389,11 @@ def render_relationship_structured(rel_id: str, xml_str: str) -> str:
     ])
 
 
-def render_relationship_rendered(rel_id: str, xml_str: str) -> str:
+def render_relationship_rendered(rel_id: str, xml_str: str, to_titles=None, name_map=None) -> str:
     elem = ET.fromstring(xml_str)
 
     def _tname(tag: str) -> str:
-        side = elem.find(tag)
-        if side is None:
-            return "?"
-        ref = side.find("TableOccurrenceReference")
-        return ref.get("name", "?") if ref is not None else "?"
+        return _relationship_end(elem, tag, to_titles)
 
     left = _tname("LeftTable")
     right = _tname("RightTable")
@@ -402,6 +407,8 @@ def render_relationship_rendered(rel_id: str, xml_str: str) -> str:
             rf = jp.find("./RightField/FieldReference")
             lf_name = lf.get("name", "?") if lf is not None else "?"
             rf_name = rf.get("name", "?") if rf is not None else "?"
+            if name_map:   # the package names each field by its exact, occurrence-scoped key
+                lf_name, rf_name = name_map.get(lf_name, lf_name), name_map.get(rf_name, rf_name)
             op = "=" if pred_type == "Equal" else pred_type
             lines.append(f"  {left}::{lf_name}  {op}  {right}::{rf_name}")
 

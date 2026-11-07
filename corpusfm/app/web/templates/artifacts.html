@@ -862,13 +862,17 @@
                     :title="detailSummarized ? 'Regenerate optional AI summaries for this artifact (replaces; background)' : 'Generate optional AI summaries for this artifact (background; does not enable search by itself)'"
                     @click="detailSummarize()" x-text="detailSummarized ? 'Re-summarize' : 'Summaries'"></button>
             {# Re-ingest (packet 1062/1063 B): re-run the whole pipeline from stored source and replace
-               the artifact in place. Distinct from Reindex (which only re-embeds). Shown ONLY for a
-               schema artifact with retained source. #}
-            <button type="button" class="cfm-btn cfm-btn--sm"
-                    x-show="!isDetailSelected && detail.content.is_schema && detail.content.has_source"
-                    :disabled="!!detailReingestBusy"
-                    title="Re-run the full pipeline from the stored source XML and refresh this artifact in place (same identity). Preserves your notes; re-indexes/re-summarizes only if it already was."
+               the artifact in place. Distinct from Reindex (which only re-embeds). A schema artifact
+               without retained source shows it unavailable, with the reason (packet 1460); the server
+               refuses it too. #}
+            <button type="button" class="cfm-btn cfm-btn--sm" id="detail-reingest"
+                    x-show="!isDetailSelected && detail.content.is_schema"
+                    :disabled="!!(detailReingestBusy || !detail.content.has_source)"
+                    :aria-describedby="detail.content.has_source ? null : 'detail-reingest-why'"
+                    :title="detail.content.has_source ? 'Re-run the full pipeline from the stored source XML and refresh this artifact in place (same identity). Preserves your notes; refreshes its search index and summaries only if it already had them.' : 'Unavailable: no source XML is stored for this artifact.'"
                     @click="detailReingest()" x-text="detailReingestBusy ? 'Queuing…' : 'Re-ingest'"></button>
+            <span id="detail-reingest-why" class="cfm-muted"
+                  x-show="!isDetailSelected && detail.content.is_schema && !detail.content.has_source">Re-ingest needs this artifact's stored source XML, which it doesn't have. Import the file again to refresh it.</span>
             <span class="cfm-spacer"></span>
             <span id="detail-reingest-status" role="status" x-show="!!detailReingestStatus" x-text="detailReingestStatus"
                   :class="detailReingestFailed ? 'cfm-inline-error' : 'cfm-muted'"></span>
@@ -2244,6 +2248,7 @@ function libraryPage() {
       const r = this._detailReingestCurrent;
       if (r) {
         if (r.current === 'reingest') {
+          if (r.status === 'failed' && r.committed) return 'Re-ingest committed: a new Explorer can be generated. Removing its old summaries failed; see Queue.';
           return r.status === 'failed' ? 'Re-ingest did not complete; see Queue.'
                                        : 'Re-ingest in progress; see Queue.';
         }

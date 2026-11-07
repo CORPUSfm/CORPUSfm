@@ -584,6 +584,14 @@ def reingest_eligible(meta) -> bool:
     return bool(getattr(meta, "is_schema", False) and getattr(meta, "has_source", False))
 
 
+def _planned_enrichment(was_indexed, was_summarized) -> list:
+    """The enrichment a re-ingest requeues (packet 1462): what the artifact already had, whatever the
+    providers' state now — the Queue owns whether each stage succeeds. A prior index → a fresh raw index
+    (unknown is attempted); prior summaries → fresh summarization, whose success queues their summary
+    index. Nothing is created that the artifact didn't have."""
+    return ([Q.INDEX] if was_indexed is not False else []) + ([Q.SUMMARIZE] if was_summarized else [])
+
+
 def enqueue_reingest(backend, uuid: str, *, owner: str = "", was_indexed=None) -> str:
     """Enqueue ONE atomic re-ingest-and-replace record (``[reingest]``, target = ``UUIDStorage``) for a
     source-retained schema artifact (packet 1062). Captures the artifact's CURRENT enrichment state
@@ -596,21 +604,24 @@ def enqueue_reingest(backend, uuid: str, *, owner: str = "", was_indexed=None) -
     row per stage. Index comes before summarize: a slow summary mustn't hold up search (packet 1170).
 
     ``was_indexed`` may be passed explicitly by a caller that already measured the artifact's index
-    state; when None, it is read from the live index here."""
+    state; when None, it is read from the stored index here — True, False, or None when an index exists
+    but cannot be read.
+
+    An index that existed is ALWAYS planned for refresh (packet 1460), whatever the embedder's state:
+    a refresh that cannot run must fail visibly rather than leave old vectors reading as current. An
+    unreadable index keeps the stage too, and the handler settles it once the content has committed."""
     repo = _repo(backend)
     if _in_flight(repo, Q.REINGEST, uuid):
         return ""
     if was_indexed is None:
-        was_indexed = uuid in enrichment.indexed_uuids()
-    was_indexed = bool(was_indexed)
+        was_indexed = enrichment.index_membership(uuid)
     was_summarized = False
     try:
         m = backend.get_artifact_meta(uuid)
         was_summarized = bool(getattr(m, "has_summaries", False))
     except Exception:
         pass
-    tail = ([Q.INDEX] if was_indexed and enrichment.embedder_ready() else []) + \
-           ([Q.SUMMARIZE] if was_summarized and enrichment.provider_ready() else [])
+    tail = _planned_enrichment(was_indexed, was_summarized)
     qid = repo.enqueue([Q.REINGEST] + tail,
                        payload={"was_indexed": was_indexed, "was_summarized": was_summarized},
                        owner=owner or "", uuid_storage=uuid)
@@ -880,8 +891,12 @@ def summarize_handler(repo, row) -> W.StepResult:
             stopped_early["v"] = True
             return True
         return False
-    enrichment.summarize_one(be, uuid, on_progress=lambda *a, **k: W.note_progress(),
-                             should_cancel=_should_cancel)
+    produced = enrichment.summarize_one(be, uuid, on_progress=lambda *a, **k: W.note_progress(),
+                                        should_cancel=_should_cancel)
+    if produced == 0 and not stopped_early["v"] and Q.REINGEST in (row.jor.get("Steps") or []):
+        # A re-ingest removed the old summary layer; a run that produced nothing must not let the old
+        # saved summaries be indexed as this content's (packet 1462). Its own visible outcome.
+        return W.fail("No summaries were produced; check the AI provider.")
     # Summaries never change raw index membership, and the `summarized` badge is per-record.
     if stopped_early["v"]:
         return W.fail(_INTERRUPTED)   # partial summaries kept; no summary-layer index chained
@@ -944,9 +959,12 @@ def index_handler(repo, row) -> W.StepResult:
 def reingest_handler(repo, row) -> W.StepResult:
     """Re-ingest one artifact IN PLACE from its retained source XML (packet 1062). Target = ``UUIDStorage``.
 
-    On a re-ingest failure the OLD record is left untouched (the atomic op guarantees it) and the step
-    parks (Restartable). On success, its planned enrichment stages stay on this record (packet 1452), minus
-    any whose provider has since gone; an index stage first DEINDEXES the stale same-UUID vectors.
+    A source or parse failure leaves the OLD record untouched; a failed write is reported and may have
+    replaced the content blob without the record (the accepted blob-first boundary of
+    ``reingest_artifact``). Either way the step parks, Restartable. On success its requeued enrichment
+    stays on this record (packets 1452/1462) and the Queue owns each stage's outcome: no stage is dropped for a provider's state. Every old layer is removed
+    first, so a stage that cannot run fails visibly instead of old vectors reading as current. An index
+    unknown at enqueue and confirmed absent now is not created.
     """
     from corpusfm.storage import get_backend
     from corpusfm.storage.artifact_store import reingest_artifact
@@ -956,41 +974,44 @@ def reingest_handler(repo, row) -> W.StepResult:
     uuid = row.jor.get("UUIDStorage", "")
     if not uuid:
         return W.fail("re-ingest target missing (no UUIDStorage).")
-    cfg = load_app_config()
-    res = reingest_artifact(be, uuid, keep_source_xml=cfg.keep_source_xml)
-    if not res.ok:
-        return W.fail(res.error or "re-ingest failed.")
+    p = dict(row.jor.get("Payload", {}) or {})
+    if not p.get("reingest_committed"):
+        cfg = load_app_config()
+        res = reingest_artifact(be, uuid, keep_source_xml=cfg.keep_source_xml)
+        if not res.ok:
+            return W.fail(res.error or "re-ingest failed.")     # summaries are only cleared after a success
+        # Restart after a later failure here resumes past the re-ingest instead of repeating it.
+        p["reingest_committed"] = True
+        repo.rewrite(row.key, {**(repo.get(row.key) or row).jor, "Payload": p})
+    row = repo.get(row.key) or row
     steps = row.jor.get("Steps") or [Q.REINGEST]
+    # One rule for every record: the plan follows what the artifact had (its payload). A record queued
+    # before 1452 — one step, its enrichment never on the record — is normalised into the same plan here.
     if len(steps) == 1:
-        _note_reingest_committed(be, row, steps)
+        tail = _planned_enrichment(p.get("was_indexed", False), bool(p.get("was_summarized")))
     else:
-        # A provider removed since this was queued means that stage is no longer planned, not failed.
-        tail = [s for s in steps[1:] if (enrichment.embedder_ready() if s == _INDEX else enrichment.provider_ready())]
-        if len(tail) != len(steps) - 1:
-            repo.retain_steps(row.key, [Q.REINGEST] + tail)
-        _note_reingest_committed(be, row, [Q.REINGEST] + tail)
-        if _INDEX in tail:
-            # Same-UUID content changed → the old vectors MUST be cleared before re-indexing, or search
-            # is polluted with stale text.
-            try:
-                enrichment.deindex_artifact_one(uuid)
-            except Exception:
-                log.debug("reingest: pre-index deindex failed for %s", uuid, exc_info=True)
-        return W.ok()
-    # A one-step record: queued before the update, or with no provider ready when it was queued. Any
-    # enrichment it should have follows as its own records.
-    p = row.jor.get("Payload", {}) or {}
-    owner = row.jor.get("owner", "") or "reingest"
-    if p.get("was_indexed") and enrichment.embedder_ready():
-        # Same-UUID content changed → the old vectors MUST be cleared before re-indexing or search is
-        # polluted with stale text. Deindex synchronously here, then queue the fresh index.
+        tail = [s for s in steps[1:] if s in (_INDEX, _SUMMARIZE)]
+    if _INDEX in tail and p.get("was_indexed") is None and enrichment.index_membership(uuid) is False:
+        tail.remove(_INDEX)     # unknown at enqueue, confirmed absent now: no new index
+    if tail != steps[1:]:
+        repo.retain_steps(row.key, [Q.REINGEST] + tail)
+    _note_reingest_committed(be, row, [Q.REINGEST] + tail)
+    if tail:
+        # Same-UUID content changed (or may have) → every layer goes before the requeued work rebuilds
+        # it, so neither old raw text nor old summaries read as this content's.
         try:
             enrichment.deindex_artifact_one(uuid)
         except Exception:
-            log.debug("reingest: pre-index deindex failed for %s", uuid, exc_info=True)
-        enqueue_enrichment_steps(be, uuid, [_INDEX], owner=owner)
-    if p.get("was_summarized") and enrichment.provider_ready():
-        enqueue_enrichment_steps(be, uuid, [_SUMMARIZE], owner=owner)
+            log.warning("reingest: could not remove the old index for %s", uuid, exc_info=True)
+    # Summaries are disposable (packet 1463): any saved ones describe the content just replaced, so they
+    # go without being read, and the requeued summarisation writes fresh ones. A failure is reported as
+    # what it is — committed, old summaries still stored — and Restart retries only this removal.
+    try:
+        be.clear_summaries(uuid)
+    except Exception as exc:
+        log.warning("reingest: could not remove the old summaries for %s", uuid, exc_info=True)
+        return W.fail(f"Re-ingest committed, but its old summaries could not be removed ({type(exc).__name__}). "
+                      "Restart retries the removal.")
     return W.ok()
 
 
@@ -1315,6 +1336,7 @@ def workspace_view(backend) -> list:
             # A re-ingest's optional stages (packet 1453): what failed or was skipped along the way.
             "stage_failures": p.get("stage_failures") or {},
             "stage_skipped": p.get("stage_skipped") or [],
+            "committed": bool(p.get("reingest_committed")),
             "can_skip_stage": _can_skip_stage(j, status == "running"),
             "created_at": j.get("created_at", ""),
             # JobRun fold (packet 1136 Stage 1, R4): the running-badge data (job identity + FM file)

@@ -448,6 +448,19 @@ class LocalBackend:
         except Exception:
             logger.debug("store_summaries sidecar failed for %s", ref, exc_info=True)
 
+    def clear_summaries(self, ref: str) -> None:
+        row = self._row(ref)
+        if row is None:
+            return
+        sp = self._summaries_sidecar_for(row)
+        if sp is not None and sp.exists():
+            sp.unlink()          # first: load_summaries would migrate a lone sidecar back into the blob
+        self._engine.blob_delete(_STORAGE, row.key, "SummariesData")
+        if row.jor.get("HasSummaries"):
+            jor = dict(row.jor)
+            jor["HasSummaries"] = False
+            _publish_committed(self, self._engine.update(_STORAGE, row.key, jor), row.key)
+
     def load_summaries(self, ref: str) -> dict:
         from corpusfm.core.crypto import decode_blob
         row = self._row(ref)

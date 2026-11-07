@@ -111,10 +111,13 @@ The catalog is the launch point for the rest of CORPUSfm:
   `.zip` back (re-importable via Import).
 - **Re-ingest** — refresh a schema artifact's derived data (rendered text, cross-references, gap
   analysis, structure) by re-running the whole pipeline from its **stored source XML**, replacing it
-  **in place** (same identity — your notes/tags are kept). It re-indexes/re-summarizes only if the
-  artifact already was. Available per-artifact in the detail pop-over and in bulk from the selection
-  toolbar; shown only for schema artifacts that **retained their source** (a deliverable, or one whose
-  source was deleted to reclaim space, is skipped — re-upload it to refresh). Distinct from **Reindex**,
+  **in place** (same identity — your notes/tags are kept). If the artifact had a search index, it is
+  **always rebuilt**, even when the text comes out the same; an artifact that had none isn't given one
+  (if the index can't be read to tell, it is rebuilt to be safe).
+  Summaries are redone only if it had them. Available per-artifact in the detail pop-over and in bulk
+  from the selection toolbar. It needs the artifact's **stored source XML**: for one without it (its source
+  was deleted to reclaim space, or never kept) the detail shows Re-ingest unavailable and says why, and
+  the server refuses it too — import the file again to refresh it. Deliverables are skipped. Distinct from **Reindex**,
   which only re-embeds the existing text. It's queued: the Queue shows every planned stage as one row,
   and both the Queue and the detail pop-over say when it's done. **A new Explorer can be generated as soon as
   the re-ingest stage has committed**; indexing and summaries are optional and may still be running.
