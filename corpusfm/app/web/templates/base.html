@@ -19,6 +19,14 @@
     // ~112 fetch('/api/…') / '/static' calls work unmodified behind /corpusfm; cfmGo()
     // does the same for navigations. No-op when the prefix is empty.
     window.CFM_PREFIX = "{{ url_prefix }}";
+    // Packet 1467: one sentence for the result of a "re-ingest affected" request, shared by the
+    // post-update notice and the Artifacts page so both report queued / already pending / no source alike.
+    window.reingestAffectedMessage = function (d) {
+      var parts = [(d.queued || 0) + " queued for re-ingestion — see Queue"];
+      if (d.already) parts.push(d.already + " already queued");
+      if (d.skipped) parts.push(d.skipped + " can't be re-ingested: no stored source XML (import those files again)");
+      return parts.join("; ") + ".";
+    };
     (function () {
       var pfx = window.CFM_PREFIX;
       window.cfmGo = function (p) {
@@ -167,15 +175,19 @@
     <button type="button" class="conn-dismiss" @click="offline = false" aria-label="Dismiss">&times;</button>
   </div>
 
-  {# Post-update ACTION WARNING (packet 1359). The server raises it only when the crossed release
-     window recommends re-ingestion, and its text is that one sentence — no version, no release
-     description, no instruction. This is not a place to document application changes; the durable
-     narrative lives in About and in the `corpusfm update-notice` CLI. Icon, text, dismiss: the
-     "Review artifacts" link was removed with the rest, because a warning does not need to navigate
-     for the reader. Shown once, then dismissed (server-gated per box). #}
+  {# Post-update ACTION WARNING (packet 1359). The server raises it only when the update marked
+     artifacts Needs re-ingestion (or a crossed release recommended it), and its text is that one
+     sentence — no version, no release description. Packet 1467 (developer-approved, superseding
+     1359's no-action rule for this one action): **Re-ingest affected** queues the marked artifacts
+     through the same endpoint, eligibility and deduplication as the Artifacts banner, and is shown
+     only while some can actually be queued. Showing the notice runs nothing; dismissing it clears
+     no mark and leaves the Artifacts banner and filter in place. #}
   <div class="update-notice-banner" x-show="!!updateNotice" x-cloak x-transition.opacity>
     <span class="update-notice-icon" aria-hidden="true"><svg viewBox="0 0 20 20" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 5.5a6.5 6.5 0 1 0 1.4 4.5"/><path d="M16.5 3v3.2h-3.2"/></svg></span>
     <span class="update-notice-text" x-text="updateNotice ? updateNotice.text : ''"></span>
+    <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary update-notice-action"
+            x-show="noticeReingestEligible > 0" :disabled="!!noticeReingestBusy"
+            @click="reingestAffectedFromNotice()">Re-ingest affected</button>
     <button type="button" class="conn-dismiss" @click="dismissUpdateNotice()" aria-label="Dismiss">&times;</button>
   </div>
 
@@ -626,6 +638,8 @@
         updateVersion: '',
         currentVersion: '{{ version }}',
         updateNotice: null,          // post-update action warning; null unless one is owed
+        noticeReingestEligible: 0,   // packet 1467: marked artifacts the notice's action can queue
+        noticeReingestBusy: false,
 
         // Documentation drawer (global, lazy-loaded, context-aware)
         docsOpen: false,
@@ -1016,7 +1030,30 @@
             if (!r.ok) return;
             const d = await r.json();
             if (d && d.text) this.updateNotice = d;
+            if (d && d.reingest_recommended) this._loadNoticeReingest();
           } catch (_) {}
+        },
+        // Packet 1467: a read-only count, so the action is offered only when something can be queued.
+        async _loadNoticeReingest() {
+          try {
+            const r = await fetch('/api/artifacts/needs-reingest', { cache: 'no-store' });
+            const d = await r.json();
+            this.noticeReingestEligible = (r.ok && d && d.ok) ? (d.eligible || 0) : 0;
+          } catch (_) { this.noticeReingestEligible = 0; }
+        },
+        async reingestAffectedFromNotice() {
+          if (this.noticeReingestBusy) return;
+          this.noticeReingestBusy = true;
+          try {
+            const r = await fetch('/api/artifacts/reingest-bulk', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ scope: 'needs_reingest' }),
+            });
+            const d = await r.json();
+            if (!r.ok || d.ok === false) { window.cfmNotify.error(d.error || 'Re-ingest failed.'); return; }
+            window.cfmNotify.info(reingestAffectedMessage(d));
+          } catch (e) { window.cfmNotify.error(String(e)); }
+          finally { this.noticeReingestBusy = false; this._loadNoticeReingest(); }
         },
         async dismissUpdateNotice() {
           this.updateNotice = null;

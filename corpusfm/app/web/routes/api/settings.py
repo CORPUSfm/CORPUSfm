@@ -856,6 +856,7 @@ def apply_update(request: Request) -> JSONResponse:
             return JSONResponse({
                 "ok": True, "output": r.pull_output, "restarting": True, "mode": r.restart_mode,
                 "stamp_repair": r.stamp_repair,
+                "reingest_requirement": (r.extra or {}).get("reingest_requirement"),
             })
         body: dict = {"ok": False, "error": r.message, "reason_code": r.reason_code}
         if r.reason_code == "needs_installer":

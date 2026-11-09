@@ -154,4 +154,21 @@ def meta_from_jor(jor: dict, uuid: str = "") -> ArtifactMeta:
         # packet 1121 — surface the acceptance OBSERVATION state + batch id as cheap scalars derived from the
         # additive AcceptanceCase JOR record, so the card/facets project them without a blob reload.
         acceptance_state=(jor.get("AcceptanceCase") or {}).get("acceptance_state", "") or "",
-        acceptance_batch=(jor.get("AcceptanceCase") or {}).get("batch_id", "") or "")
+        acceptance_batch=(jor.get("AcceptanceCase") or {}).get("batch_id", "") or "",
+        reingest_required=reingest_mark(jor))
+
+
+#: Packet 1467: written by the update that required re-ingestion; removed by the committed re-ingest.
+REINGEST_MARK_KEY = "reingest_required"
+
+
+def reingest_mark(jor: dict) -> str:
+    """The version an outstanding mark names; ``"update"`` for a mark without one; ``""`` for none."""
+    from collections.abc import Mapping   # the catalog hands over a frozen mapping, not a dict
+
+    mark = jor.get(REINGEST_MARK_KEY) if isinstance(jor, Mapping) else None
+    if not mark:
+        return ""
+    if isinstance(mark, Mapping):
+        return str(mark.get("version") or "update")
+    return "update"

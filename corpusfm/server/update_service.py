@@ -954,6 +954,7 @@ def apply(*, expected_head: Optional[str] = None, actor: str = "unknown") -> App
                             "update_check and authorize that commit.")
             result = _trigger_privileged_update(expected_head=expected_head, actor=actor)
             if result.ok:
+                _mark_reingest_requirement(result)
                 _default_restart_scheduler(True)
             return result
 
@@ -972,6 +973,33 @@ def apply(*, expected_head: Optional[str] = None, actor: str = "unknown") -> App
                     f"service. Run the installer on the server: {operator_command()}")
     finally:
         _UPDATE_LOCK.release()
+
+
+def _mark_reingest_requirement(result: "ApplyResult") -> None:
+    """Packet 1467: set every existing schema artifact's re-ingestion status for the update that just
+    completed, from the incoming tree's own declaration (``reingest_requirement``).
+
+    Runs here because this is the update: root has moved the checkout and this process, which holds
+    storage, has not yet restarted. Never fails or rolls back the update, which has already landed; a
+    failure is logged and stated in the result, and the next update sets the status again."""
+    from corpusfm import updater
+    from corpusfm.server import reingest_requirement
+    from corpusfm.storage import get_backend
+
+    try:
+        summary = reingest_requirement.apply_in_app(get_backend(), repo=updater._repo_root(),
+                                                    new_head=result.applied_head or "")
+    except Exception as exc:
+        logger.error("update applied, but the re-ingestion status could not be set", exc_info=True)
+        summary = {"error": str(exc)}
+    line = reingest_requirement.summary_line(summary)
+    if line:
+        result.message = f"{result.message} {line}".strip()
+    public = {k: summary[k] for k in ("transition", "required", "determined", "declared_revision",
+                                      "changed", "unchanged", "repeat", "error") if k in summary}
+    if isinstance(summary.get("failed"), list):
+        public["failed"] = len(summary["failed"])
+    result.extra = {**(result.extra or {}), "reingest_requirement": public}
 
 
 def _new_request_id() -> str:

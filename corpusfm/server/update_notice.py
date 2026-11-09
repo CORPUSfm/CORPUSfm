@@ -239,11 +239,14 @@ def _run_update_flow_locked() -> dict:
         return {"ok": True, "action": "none", "version": current, "notice": text}
 
     actions = pending_actions(last_seen_build, current)
+    # Packet 1467: an in-app update records its re-ingestion status before the restart that runs this.
+    latest = state.get(_LATEST_TRANSITION) or {}
+    marked = bool(latest.get("required")) and last_seen_build < _state_build(latest, "incoming", 0) <= current
     result = {"ok": True, "action": "update", "version": current,
               "prev_version": last_seen_build, "whats_new": actions["whats_new"],
               # Persisted on the newly published notice only. Older `last_notice.detail` objects omit
               # the key and therefore read as False — additive, so no state migration or rewrite.
-              "reingest_recommended": bool(actions.get("reingest_recommended"))}
+              "reingest_recommended": bool(actions.get("reingest_recommended") or marked)}
     result["notice"] = notice_text(result)
     state["last_seen_version"] = current
     state["last_notice"] = {"version": current, "text": result["notice"], "detail": result}
@@ -284,8 +287,9 @@ def _recommended(notice: dict) -> bool:
 def current_notice() -> dict:
     """The transient web toast — an ACTION WARNING, and only that (packet 1359).
 
-    It appears only when the crossed release window recommended re-ingestion, and it carries the
-    recommendation sentence and nothing else: no version, no release description, no instruction.
+    It appears only when the update marked artifacts Needs re-ingestion (packet 1467) or the crossed
+    release window recommended it, and it carries the recommendation sentence and nothing else: no
+    version, no release description, no instruction. The page adds one explicit action beside it.
     Measured before the change: an update from 2662 to 2736 produced 342 characters of release notes,
     and an ordinary update carrying no recommendation at all still raised a toast — so the surface was
     a general release-note channel rather than a warning.
@@ -298,14 +302,19 @@ def current_notice() -> dict:
     """
     state = _load_state()
     notice = state.get("last_notice") or {}
-    if not notice or not notice.get("text"):
+    latest = state.get(_LATEST_TRANSITION) or {}
+    current = current_build()
+    try:
+        by_update = bool(latest.get("required")) and int(latest.get("incoming", 0)) == current
+        by_notice = bool(notice and notice.get("text") and _recommended(notice))
+        if not (by_update or by_notice):
+            return {}
+        version = current if by_update else int(notice.get("version", 0))
+        if version <= int(state.get("notice_dismissed_version", 0)):
+            return {}
+    except (TypeError, ValueError):
         return {}
-    if not _recommended(notice):
-        return {}
-    if int(notice.get("version", 0)) <= int(state.get("notice_dismissed_version", 0)):
-        return {}
-    return {"version": notice.get("version"), "text": REINGEST_SENTENCE,
-            "reingest_recommended": True}
+    return {"version": version, "text": REINGEST_SENTENCE, "reingest_recommended": True}
 
 
 def about_notice() -> dict:
@@ -319,6 +328,57 @@ def about_notice() -> dict:
         return {}
     return {"version": notice.get("version"), "text": notice.get("text"),
             "reingest_recommended": _recommended(notice)}
+
+
+# ── Needs re-ingestion ledger (packet 1467) ──────────────────────────────────────────────────────
+# Each update transition whose artifact status was set is recorded here, beside the notice it raises,
+# so the same transition is never applied twice. The status itself lives on the artifact records.
+_APPLIED_TRANSITIONS = "reingest_transitions_applied"
+_LATEST_TRANSITION = "reingest_latest_transition"
+_APPLIED_KEEP = 50
+
+
+def reingest_transition_applied(transition: str) -> bool:
+    return transition in (_load_state(strict=True).get(_APPLIED_TRANSITIONS) or [])
+
+
+def recorded_prev_build(current: int | None) -> int | None:
+    """The build this one was updated from, as the notice flow recorded the transition."""
+    notice = _load_state().get("last_notice") or {}
+    detail = notice.get("detail") if isinstance(notice, dict) else None
+    try:
+        if current and isinstance(detail, dict) and int(notice.get("version", 0)) == int(current):
+            prev = int(detail.get("prev_version") or 0)
+            return prev or None
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def record_reingest_transition(transition: str, *, incoming_build: int, required: bool,
+                               outstanding: int) -> None:
+    """Record one applied transition; the notice warns when it marked artifacts."""
+    from corpusfm.core.proc_lock import ProcessLock, ACQUIRED, HELD
+
+    deadline = time.monotonic() + _OBSERVE_SECONDS
+    lock = ProcessLock(_flow_lock_path())
+    while True:
+        status = lock.try_acquire()
+        if status == ACQUIRED:
+            break
+        if status != HELD or time.monotonic() >= deadline:
+            raise UpdateNoticeStateError("the update notice lock could not be acquired")
+        time.sleep(_OBSERVE_POLL_SECONDS)
+    try:
+        state = _load_state(strict=True)
+        applied = [t for t in (state.get(_APPLIED_TRANSITIONS) or []) if t != transition]
+        state[_APPLIED_TRANSITIONS] = (applied + [transition])[-_APPLIED_KEEP:]
+        state[_LATEST_TRANSITION] = {"transition": transition, "incoming": int(incoming_build),
+                                     "required": bool(required and outstanding),
+                                     "outstanding": int(outstanding)}
+        _save_state(state)
+    finally:
+        lock.release()
 
 
 def dismiss_notice() -> None:

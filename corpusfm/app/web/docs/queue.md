@@ -43,8 +43,9 @@ Optional stages don't depend on each other. If indexing fails, summaries still r
 rests on what failed, and **Restart** repeats only that. **Skip** stops the current optional stage and carries on with
 the next. **Cancel** is for the whole operation: nothing further starts.
 
-When the row leaves the queue, the result stays under **Recently finished re-ingests** for an hour, and on the
-artifact's detail. This list isn't kept across a server restart. Summaries can add a summary index as a row of its own.
+When every planned stage is done, the row leaves the queue: the queue shows only current work. The result stays on
+the artifact's detail for an hour; it isn't kept across a server restart. Summaries can add a summary index as a row
+of its own.
 
 ## Why a queue
 

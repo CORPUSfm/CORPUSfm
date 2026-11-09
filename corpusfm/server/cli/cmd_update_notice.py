@@ -4,7 +4,12 @@ The installer calls this as its FINAL line after restarting the service, so a CL
 update without anyone opening a browser. It prints the DURABLE narrative — version, release lines and
 any recommendation — which since packet 1359 is deliberately NOT what the transient web toast shows:
 that toast carries the recommendation sentence alone, and appears only when there is one. The stable
-command is retained as an installer contract; it performs no storage, index, queue or migration work.
+command is retained as an installer contract.
+
+Packet 1467: because the installer runs it as the last step of an upgrade, in the new code, it is the
+installer path's update-time hook for the artifacts' re-ingestion status — the same operation the
+in-app updater runs (``reingest_requirement.apply_update_status``). It never queues or re-ingests
+anything, and a transition already applied is not applied again. Service startup does not do this.
 """
 from __future__ import annotations
 
@@ -22,10 +27,11 @@ def add_parser(subparsers) -> None:
 def run(args) -> int:
     from corpusfm.server import update_notice
     result = update_notice.run_update_flow()
+    status = _apply_reingest_status()
 
     if getattr(args, "json", False):
         import json
-        print(json.dumps(result, indent=2, default=str))
+        print(json.dumps({**result, "reingest_status": status}, indent=2, default=str))
         return 0 if result.get("ok") else 1
 
     if not result.get("ok"):
@@ -33,6 +39,8 @@ def run(args) -> int:
         # status, so the operator must still see that notice publication was indeterminate/failed.
         print("WARNING: CORPUSfm update notice could not be published: "
               + (result.get("error") or result.get("reason") or "unknown failure"))
+        if status:
+            print(status)
         return 1
 
     notice = result.get("notice") or ""
@@ -41,7 +49,22 @@ def run(args) -> int:
         notice = stored.get("text") or ""
     # Windows-console-safe (cp1252): the installer runs this on WS boxes.
     print(notice or f"CORPUSfm is up to date (v{_version()}).")
+    if status:
+        print(status)
     return 0
+
+
+def _apply_reingest_status() -> str:
+    """Never fails the command: a failure is reported, and the next update sets the status again."""
+    from corpusfm.server import reingest_requirement
+    try:
+        from corpusfm.storage import get_backend
+        summary = reingest_requirement.apply_installer(get_backend())
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("re-ingestion status could not be set", exc_info=True)
+        summary = {"error": str(exc)}
+    return reingest_requirement.summary_line(summary)
 
 
 def _version() -> str:

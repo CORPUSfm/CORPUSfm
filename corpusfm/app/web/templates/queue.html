@@ -23,24 +23,6 @@
     <p class="cfm-list-empty">The queue is empty.</p>
   </template>
 
-  {# Packet 1452: a finished record is deleted, so this is where its result stays visible. #}
-  <div class="cfm-panel cfm-mb-12" id="recent-reingests" x-show="recent.length" x-cloak>
-    <p class="cfm-muted">Recently finished re-ingests</p>
-    <template x-for="f in recent" :key="f.id">
-      <div class="cfm-qrow" role="status">
-        <div class="cfm-qrow-main">
-          <div class="cfm-qrow-hd">
-            <span class="cfm-badge" :class="f.state === 'done' ? 'cfm-badge--ok' : 'cfm-badge--muted'" x-text="f.state === 'done' ? 'Finished' : 'Committed'"></span>
-            <strong x-text="f.target"></strong>
-            <span class="cfm-spacer"></span>
-            <time class="cfm-muted" x-cfm-time="f.finished_at || f.committed_at"></time>
-          </div>
-          <div class="cfm-mt-6" x-text="finishedNote(f)"></div>
-        </div>
-      </div>
-    </template>
-  </div>
-
   <div class="cfm-panel" x-show="records.length" x-cloak>
     <template x-for="r in records" :key="r.id">
       <div class="cfm-qrow">
@@ -98,7 +80,6 @@ function queuePage() {
     // Binds to the app-wide $store.queue payload (ONE /api/queue poll loop app-wide) — no second poller.
     get _d() { return (this.$store.queue && this.$store.queue.data) || {}; },
     get records() { return this._d.records || []; },
-    get recent() { return this._d.recent_reingests || []; },
     get failedCount() { return this._d.failed_count || 0; },
     get me() { return this._d.me || ''; },
     get isAdmin() { return !!this._d.is_admin; },
@@ -155,17 +136,6 @@ function queuePage() {
       return r.status === 'failed'
         ? 'Re-ingest committed. A new Explorer can be generated now; this optional stage can be restarted.'
         : 'Re-ingest committed. A new Explorer can be generated now; the remaining stages are optional.';
-    },
-    finishedNote(f) {
-      if (f.state === 'partial') {
-        const said = [];
-        if ((f.skipped || []).length) said.push('Skipped: ' + f.skipped.map(s => STEP[s] || s).join(', ') + '.');
-        if (f.cancelled) said.push('The remaining stages were cancelled.');
-        if (f.summaries_empty) said.push('No summaries were produced; check the AI provider.');
-        return 'Re-ingest committed. A new Explorer can be generated. ' + (said.join(' ') || 'Its optional stages were not all completed.');
-      }
-      const summary = (f.steps || []).includes('summarize') ? ' A summary index may still follow as its own row.' : '';
-      return 'Every planned stage finished: ' + (f.steps || []).map(s => STEP[s] || s).join(', ') + '. A new Explorer can be generated.' + summary;
     },
     async skipStage(r) { await this._post('/api/queue/' + encodeURIComponent(r.id) + '/skip-stage'); this.load(); },
     async cancel(r) { await this._post('/api/queue/' + encodeURIComponent(r.id) + '/cancel'); this.load(); },

@@ -118,9 +118,28 @@ The catalog is the launch point for the rest of CORPUSfm:
   from the selection toolbar. It needs the artifact's **stored source XML**: for one without it (its source
   was deleted to reclaim space, or never kept) the detail shows Re-ingest unavailable and says why, and
   the server refuses it too — import the file again to refresh it. Deliverables are skipped. Distinct from **Reindex**,
-  which only re-embeds the existing text. It's queued: the Queue shows every planned stage as one row,
-  and both the Queue and the detail pop-over say when it's done. **A new Explorer can be generated as soon as
+  which only re-embeds the existing text. It's queued: the Queue shows every planned stage as one row
+  while it runs, and the detail pop-over says when it's done. **A new Explorer can be generated as soon as
   the re-ingest stage has committed**; indexing and summaries are optional and may still be running.
+
+### Needs re-ingestion
+
+Some updates change what ingestion stores — for example a parser fix — and each update says whether
+it does. When it does, the update marks every schema artifact already in the catalog **Needs
+re-ingestion**, because those artifacts keep the old results until they're re-ingested. This happens
+whether you update from **Settings → Updates** or by running the installer. A banner on this page gives
+the count, the **Needs re-ingestion** filter lists them, and the detail pop-over names the update that
+marked them. Files imported after the update aren't marked.
+
+An update that doesn't change ingestion clears the marks. That clears the reminder only: it doesn't mean
+those artifacts were re-ingested, so re-ingest them yourself if the earlier update mattered to you.
+
+**Re-ingest affected** — on the banner, and on the notice shown after the update — queues every marked
+artifact that has stored source XML. Nothing starts until you choose it. Artifacts already queued aren't
+queued twice, and ones without stored source XML are counted and left alone — import those files again.
+Each mark clears when that artifact's re-ingest commits; a failed re-ingest keeps it, with the error and
+**Restart** in the Queue. Dismissing the notice doesn't clear anything: the banner and the filter stay
+until the artifacts are re-ingested.
 
 ## Paste a clip
 

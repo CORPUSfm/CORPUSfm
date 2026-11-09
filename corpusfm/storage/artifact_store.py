@@ -296,7 +296,7 @@ def reingest_artifact(backend, record_uuid: str, *, keep_source_xml: bool = True
     Re-ingesting the same source yields the same ``.fmp12`` identity (the File= name normalizes
     identically), so the record UUID and lineage stay stable with no new-snapshot risk."""
     from corpusfm.ingestion.pipeline import ingest
-    from corpusfm.storage.artifact_record import build_record, meta_from_jor
+    from corpusfm.storage.artifact_record import REINGEST_MARK_KEY, build_record, meta_from_jor
 
     eng = backend.engine
     try:
@@ -357,6 +357,9 @@ def reingest_artifact(backend, record_uuid: str, *, keep_source_xml: bool = True
     merged["has_source"] = bool(keep_source_xml)   # the source stays as it was
     # A fresh re-ingest carries no summaries; the caller re-enqueues SUMMARIZE if it had them.
     merged["HasSummaries"] = False
+    # Packet 1467: this commit IS the re-ingestion an update asked for, so its mark goes with it.
+    # Every failure above returns before here and leaves the record, and its mark, untouched.
+    merged.pop(REINGEST_MARK_KEY, None)
 
     # The only writes: swap the ArtifactData blob (+ NameMapData for an addon), then commit the jor.
     # No transaction primitive exists on either substrate; blob-first-then-jor mirrors store_artifact.

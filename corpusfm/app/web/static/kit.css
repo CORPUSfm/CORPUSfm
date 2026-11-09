@@ -242,6 +242,8 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
   padding: 12px 18px; border-top: 1px solid var(--border);
 }
 .cfm-dialog-ftr .cfm-spacer { flex: 1 1 auto; }
+/* Artifacts "Needs re-ingestion" banner (packet 1467): a row like the filter bar, but not one. */
+.cfm-reingest-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 .cfm-dialog-contents { display: contents; }
 
 /* Keyboard-shortcuts help overlay (built by kit.js _cfmInitShortcuts). */

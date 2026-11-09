@@ -33,7 +33,8 @@ def _xml_type_rec(rec: dict) -> str:
     return at if at in ("fmClip", "MergedXML", "AddonXML") else "SaveAsXML"
 
 
-def _inject_signals(system_tags, *, gap_issues, analyzer_failed, acceptance_state) -> list[str]:
+def _inject_signals(system_tags, *, gap_issues, analyzer_failed, acceptance_state,
+                    reingest_status: str = "") -> list[str]:
     """Append the packet-1121 COMPUTED signal tags (never stored): `has-gaps` when the warning badge is
     nonzero (schema OR clip — the clip badge now counts clip_gaps too), `analysis-incomplete` when a
     forward-compat analyzer crashed (visible even at gap_issues==0, so a fail-open can't read as clean), and
@@ -48,7 +49,22 @@ def _inject_signals(system_tags, *, gap_issues, analyzer_failed, acceptance_stat
     at = SYSTEM_TAG.get(acceptance_state or "")
     if at:
         tags.append(at)
+    if reingest_status:
+        # Packet 1467: derived from the mark the requiring update wrote on the record, so the
+        # Artifacts filter and its count are the durable "find them" surface.
+        tags.append(NEEDS_REINGEST_TAG)
     return tags
+
+
+NEEDS_REINGEST_TAG = "needs-reingest"
+
+
+def _reingest_status(meta) -> str:
+    """``"required"`` while an update's mark is outstanding on a schema artifact (packet 1467)."""
+    from corpusfm.artifact.capabilities import is_schema_type
+    if getattr(meta, "reingest_required", "") and is_schema_type(getattr(meta, "artifact_type", "") or ""):
+        return "required"
+    return ""
 
 
 def _inject_type(system_tags, type_value: str) -> list[str]:
@@ -481,6 +497,7 @@ def _enrich_meta(fm_file, meta, tags_map, is_latest, indexed_keys=frozenset(),
     enc_kb = round(meta.enc_bytes / 1024) if meta.enc_bytes > 0 else 0
     pct = int(100 - meta.enc_bytes / meta.xml_bytes * 100) if meta.xml_bytes > 0 else 0
     has_icon = getattr(meta, "has_icon", False)
+    needs = _reingest_status(meta)
     return {
         "fm_file":       fm_file,
         "timestamp":     meta.timestamp,
@@ -536,7 +553,10 @@ def _enrich_meta(fm_file, meta, tags_map, is_latest, indexed_keys=frozenset(),
                     meta.uuid, indexed_keys, embedder_on),
                 getattr(meta, "has_summaries", False), summarizer_on),
             gap_issues=meta.gap_issues, analyzer_failed=getattr(meta, "analyzer_failed", []),
-            acceptance_state=getattr(meta, "acceptance_state", "")),
+            acceptance_state=getattr(meta, "acceptance_state", ""), reingest_status=needs),
+        # Packet 1467: "" | "required". Source-less artifacts keep the status and are told they
+        # cannot be re-ingested; nothing here enqueues.
+        "reingest_status": needs,
         # packet 1121 — the acceptance OBSERVATION is a separate axis from format gaps; the card shows its
         # badge, the detail links batch/case/source/return. Both may coexist on one artifact.
         "acceptance_state": getattr(meta, "acceptance_state", ""),
@@ -1612,6 +1632,9 @@ def artifact_detail(ref: str) -> JSONResponse:
             "summarizable_count": getattr(meta, "summarizable_count", 0),
             "has_source":    getattr(meta, "has_source", False),   # (packet 059)
             "xml_bytes":     getattr(meta, "xml_bytes", 0),
+            # Packet 1467: an outstanding mark from the update that changed what ingestion stores.
+            "reingest_status": _reingest_status(meta),
+            "reingest_required": getattr(meta, "reingest_required", ""),
         },
         "merge_parents": _merge_parents(backend, uuid, meta, record=record),
         "analysis": _gap_analysis(backend, uuid, meta, record=record),
@@ -1827,12 +1850,41 @@ async def reingest_artifact_route(ref: str, request: Request) -> JSONResponse:
                          "message": "Re-ingest queued — see Queue."})
 
 
+def _needs_reingest_metas(view) -> list:
+    """Every stored artifact still carrying an update's re-ingestion mark (packet 1467)."""
+    out = []
+    for rec in view.projections_of(view.candidate_uuids()):
+        meta = rec.get("meta") if isinstance(rec, dict) else None
+        if meta is not None and getattr(meta, "uuid", "") and _reingest_status(meta):
+            out.append(meta)
+    return out
+
+
+@router.get("/artifacts/needs-reingest", dependencies=[Depends(require_auth)])
+def needs_reingest_summary(ctx: AppContext = Depends(get_ctx)) -> JSONResponse:
+    """Read-only count of artifacts needing re-ingestion (packet 1467): the durable post-update
+    surface. ``eligible`` can be queued; ``no_source`` cannot, because their source XML is gone."""
+    from corpusfm.server.queue_handlers import reingest_eligible
+    _backend, view = read_catalog(ctx.storage)
+    if view.failed:
+        return JSONResponse({"ok": False, "unavailable": True, "count": 0})
+    metas = _needs_reingest_metas(view)
+    eligible = [m for m in metas if reingest_eligible(m)]
+    return JSONResponse({"ok": True, "count": len(metas), "eligible": len(eligible),
+                         "no_source": len(metas) - len(eligible)})
+
+
 @router.post("/artifacts/reingest-bulk", dependencies=[Depends(require_auth)])
 async def reingest_bulk_route(request: Request) -> JSONResponse:
     """Queue an atomic re-ingest for each ELIGIBLE artifact in a selection (packet 1062). Body:
     ``{"refs": [<ref>, …]}``. Only schema artifacts with retained source are enqueued; deliverables and
     `delete_source`d artifacts are skipped and reported. Returns ``{queued, skipped, already}``. No
-    browser wall (server-side enqueue, not a download)."""
+    browser wall (server-side enqueue, not a download).
+
+    ``{"scope": "needs_reingest"}`` (packet 1467) selects, server-side, every stored artifact an update
+    marked Needs re-ingestion — the post-update action, on Artifacts and on the post-update notice. It reuses the same
+    eligibility and the same deduplicated Queue enqueue, and adds ``no_source``: affected artifacts
+    whose source XML is not retained, which cannot be re-ingested and are reported, not queued."""
     from corpusfm.app.web.artifact_ref import resolve_ref
     from corpusfm.storage import get_backend
     from corpusfm.server.queue_handlers import enqueue_reingest, reingest_eligible
@@ -1841,12 +1893,38 @@ async def reingest_bulk_route(request: Request) -> JSONResponse:
         body = await request.json()
     except Exception:
         body = {}
+    if not isinstance(body, dict):
+        body = {}
+    scope = str(body.get("scope") or "")
+    if scope and scope != "needs_reingest":
+        return JSONResponse({"ok": False, "error": "Unknown re-ingest scope."}, status_code=400)
     refs = [r for r in (body.get("refs") or []) if isinstance(r, str) and r.strip()]
-    if not refs:
+    if not scope and not refs:
         return JSONResponse({"ok": False, "error": "No artifacts selected."}, status_code=400)
-    backend = get_backend()
     me = current_user(request)
     owner = f"user:{me.username}" if me else "reingest"
+
+    if scope:
+        backend, view = read_catalog(get_backend)
+        if view.failed:
+            return JSONResponse({"ok": False, "unavailable": True,
+                                 "error": "Storage is unavailable; nothing was queued."}, status_code=503)
+
+        def _affected():
+            queued, already, no_source = [], [], []
+            for meta in _needs_reingest_metas(view):
+                if not reingest_eligible(meta):
+                    no_source.append({"uuid": meta.uuid, "name": meta.name or meta.file_name})
+                    continue
+                qid = enqueue_reingest(backend, meta.uuid, owner=owner)
+                (queued if qid else already).append(meta.uuid)
+            return {"ok": True, "scope": scope, "queued": len(queued), "already": len(already),
+                    "skipped": len(no_source), "no_source": no_source}
+
+        from corpusfm.app.web.routes.api.upload import _offload
+        return JSONResponse(await _offload(_affected))
+
+    backend = get_backend()
 
     def _work():
         queued, skipped, already = [], [], []

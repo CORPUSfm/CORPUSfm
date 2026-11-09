@@ -74,6 +74,7 @@ class ArtifactMeta:
     analyzer_failed: list[str] = field(default_factory=list)  # crashed miners (packet 072-D) — card-cheap
     acceptance_state: str = ""         # packet 1121 — paste-acceptance OBSERVATION state (fmClip cases only)
     acceptance_batch: str = ""         # packet 1121 — acceptance batch id (cheap filter key; no FM slot)
+    reingest_required: str = ""        # packet 1467 — the update version that marked it ("" = not marked)
 
     @property
     def is_addon(self) -> bool:

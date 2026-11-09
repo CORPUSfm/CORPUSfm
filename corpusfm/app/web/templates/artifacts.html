@@ -45,6 +45,22 @@
     </div>
   </div>
 
+  {# Packet 1467: an update that changed what ingestion stores marked these artifacts. The mark is on
+     each record, so this stays until they are re-ingested — dismissing the post-update notice does not
+     clear it. Nothing here starts work on its own. #}
+  <div class="cfm-panel cfm-mb-12 cfm-reingest-bar" id="needs-reingest" role="status"
+       x-show="needsReingest.count > 0" x-cloak>
+    <span><strong x-text="needsReingest.count"></strong>
+      <span x-text="needsReingest.count === 1 ? 'artifact needs' : 'artifacts need'"></span> re-ingestion:
+      an update changed what ingestion stores.<span x-show="needsReingest.no_source > 0"
+        x-text="' ' + needsReingest.no_source + ' without stored source XML can\'t be re-ingested; import those files again.'"></span></span>
+    <span class="cfm-spacer"></span>
+    <button type="button" class="cfm-btn cfm-btn--sm" @click="showNeedsReingest()">Show them</button>
+    <button type="button" class="cfm-btn cfm-btn--sm cfm-btn--primary" x-show="needsReingest.eligible > 0"
+            :disabled="!!reingestBusy" @click="reingestAffected()"
+            x-text="reingestBusy ? 'Queuing…' : 'Re-ingest affected'"></button>
+  </div>
+
   {# ── Selection space — box-less. A persistent cue that multi-select happens here:
        when empty it shows the drop hint; selected cards lift into it (out of the grid
        below). Drag a card up to select. (Importing files is the Import button, not here.) #}
@@ -550,6 +566,14 @@
                   <span class="cfm-meta-v"><span class="cfm-badge cfm-badge--idle" data-index-status="unavailable">Index status unavailable</span></span></template>
                 <template x-if="detailIndexConfigured && detailIndexKnown && !detailIndexError">
                   <span class="cfm-meta-v"><span class="cfm-badge" :class="detailIndexed ? 'cfm-badge--ok' : 'cfm-badge--idle'" x-text="detailIndexed ? 'Indexed' : 'Not indexed'"></span></span></template>
+                {# Packet 1467: an update's outstanding re-ingestion mark. #}
+                <template x-if="detail.content.reingest_status">
+                  <span class="cfm-meta-k">Ingestion</span></template>
+                <template x-if="detail.content.reingest_status">
+                  <span class="cfm-meta-v" id="detail-needs-reingest">
+                    <span class="cfm-badge cfm-badge--warn">Needs re-ingestion</span>
+                    <span class="cfm-muted" x-text="needsReingestWhy()"></span>
+                  </span></template>
                 {# Packet 059: retained source XML + the delete election (User). #}
                 <template x-if="detail.content.xml_bytes">
                   <span class="cfm-meta-k">Source XML</span></template>
@@ -1170,6 +1194,7 @@ function libraryPage() {
     facetTags:     [],
     facetSys:      [],
     facetUntagged: 0,
+    needsReingest: { count: 0, eligible: 0, no_source: 0 },   // packet 1467
     filterOpen:    false,
     // Bulk Tag dialog (packet 1280). tagAdjustBusy is this operation's OWN in-flight flag.
     tagDlg: false, tagAddInput: '', tagRemoveStaged: [], tagAdjustBusy: false, tagDlgErr: '',
@@ -1608,6 +1633,39 @@ function libraryPage() {
       finally { this.downloadBusy = false; }
     },
 
+    // Packet 1467: the durable "needs re-ingestion" count and its explicit bulk action.
+    async loadNeedsReingest() {
+      try {
+        const r = await fetch('/api/artifacts/needs-reingest', { cache: 'no-store' });
+        const d = await r.json();
+        if (d && d.ok) this.needsReingest = { count: d.count || 0, eligible: d.eligible || 0, no_source: d.no_source || 0 };
+      } catch (_) {}
+    },
+    showNeedsReingest() {
+      if (!this.selSys.includes('needs-reingest')) this.selSys.push('needs-reingest');
+      this.page = 1; this.load();
+    },
+    needsReingestWhy() {
+      const c = (this.detail && this.detail.content) || {};
+      const v = c.reingest_required && c.reingest_required !== 'update' ? 'The update to ' + c.reingest_required : 'An update';
+      return v + ' changed what ingestion stores; this artifact was stored before it.'
+        + (c.has_source ? '' : ' Its source XML isn\'t stored: import the file again.');
+    },
+    async reingestAffected() {
+      if (this.reingestBusy) return;
+      this.reingestBusy = true;
+      try {
+        const r = await fetch('/api/artifacts/reingest-bulk', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scope: 'needs_reingest' }),
+        });
+        const d = await r.json();
+        if (!r.ok || d.ok === false) { window.cfmNotify.error(d.error || 'Re-ingest failed.'); return; }
+        window.cfmNotify.info(reingestAffectedMessage(d));
+      } catch (e) { window.cfmNotify.error(String(e)); }
+      finally { this.reingestBusy = false; this.loadNeedsReingest(); }
+    },
+
     // Bulk re-ingest of a selection (packet 1063 D): server-side enqueue, eligibility-filtered
     // (schema + retained source). No browser wall — this isn't a download.
     async selReingest() {
@@ -1806,6 +1864,7 @@ function libraryPage() {
       if (name === 'unsummarized')    return 'Unsummarized';
       if (name === 'has-gaps')        return 'Has gaps';
       if (name === 'analysis-incomplete') return 'Analysis incomplete';
+      if (name === 'needs-reingest')  return 'Needs re-ingestion';
       if (name.startsWith('acceptance:')) return 'Acceptance: ' + name.slice(11).replace(/-/g, ' ');
       return name;
     },
@@ -1825,6 +1884,8 @@ function libraryPage() {
       // never a file name — many unrelated artifacts can carry the same name.
       if (p.get('job_uuid')) this.jobUuid = p.get('job_uuid');
       if (p.get('q')) this.search = p.get('q');
+      if (p.get('sys')) this.selSys = p.get('sys').split(',').map(t => t.trim()).filter(Boolean);
+      this.loadNeedsReingest();
       await Promise.all([this.load(), this.loadTagNames()]);
       const m = (window.location.hash || '').match(/^#detail=(.+)$/);
       if (m) this.openDetail(decodeURIComponent(m[1]));
@@ -2378,6 +2439,9 @@ function libraryPage() {
         this.unavailable = false; this.unavailReason = '';
         this.total   = d.total || 0;      // scalars: cheap, no flicker — always current
         this.hasMore = !!d.has_more;
+        // Packet 1467: re-ingests clear the count as they commit. New stale artifacts only appear after
+        // an update and restart, which reloads the page, so a zero count needs no polling.
+        if (this.needsReingest.count > 0) this.loadNeedsReingest();
         const incoming = d.rows || [];
         const sig = JSON.stringify(incoming);
         if (sig === this._rowsSig) return;   // identical page → don't touch the DOM (no flicker/scroll jump)
